@@ -33,6 +33,7 @@ METHOD = RepairMethod(
     # (needs_user_input): the interior plug is picked explicitly
     # (--methods 17 / --tamponade) as an alternative to the default pipeline.
     needs_user_input=True,
-    kwargs={'tamponade': True, 'deep_repair': 'off', 'ftetwild': False},
+    kwargs={'tamponade': True, 'tamponade_force': True,
+            'deep_repair': 'off', 'ftetwild': False},
     available_fn=tamponade_available,
 )

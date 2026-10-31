@@ -258,9 +258,9 @@ def test_invalid_budget_values_rejected(tmp):
                  ['--max-risk', '200'],
                  ['--max-risk', '-5']):
         r = _run([path] + args)
-        assert r.returncode == 1, (args, r.stdout)
-        d = _json(r)
-        assert 'error' in d, (args, d)
+        assert r.returncode == 2, (args, r.stdout, r.stderr)
+        assert r.stdout.strip() == '', (args, r.stdout)
+        assert 'error:' in r.stderr, (args, r.stderr)
 
 
 # --- multi-object 3MF budget case -----------------------------------------

@@ -9,6 +9,7 @@ import numpy as np
 
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.tiers.dressing import _dressing_suggestion_text
+import classification
 
 # --- Print-impact report ---------------------------------------------------
 #
@@ -32,6 +33,18 @@ _SEVERITY_RANK = {SEVERITY_BREAKS: 0, SEVERITY_MAY: 1, SEVERITY_COSMETIC: 2}
 # (``closest_points``), sampling the result surface toward the input.
 DEVIATION_MAX_FACES = 150_000
 DEVIATION_SAMPLES = 20_000
+
+# Thin-wall advisory trigger, calibrated on the 41-mesh gate set + 100
+# core-clean meshes (clean fires 40 -> 8, gate 30 -> 5; the survivors are
+# genuinely thin). Data: measured on the local thin-wall calibration run (not
+# in the repo).
+# BOTH must hold: the area-weighted sample fraction is stable but alone fires on
+# a tiny thin region sampled repeatedly, and the exact flagged-face area alone
+# is unstable fast-vs-deep; together they suppress the noise. A ``min``/regions
+# condition was rejected by the data (broadly-thin parts sit at min ~ threshold).
+THIN_WALL_MIN_RATIO = 0.02        # thin-sample fraction of the sampled surface
+THIN_WALL_MIN_AREA_FRAC = 0.005   # flagged-face share of the total surface area
+THIN_WALL_FACE_BIT = 128          # diagnosis_v2 face-mask thin bit (thin.rs)
 
 # Heuristic thresholds (NOT read from the mesh literature or the repo; they are
 # engineering estimates, flagged ``heuristic`` in the issue detail so the UI can
@@ -150,6 +163,91 @@ def _deviation_issue(dev_pct):
             'detail': {'pct': round(float(dev_pct), 3), 'heuristic': True}}
 
 
+def _thin_area_frac(in_v, in_t, diag):
+    """Exact flagged-face share of the surface area, or None.
+
+    Decodes the diagnosis_v2 face-mask RLE (bit ``THIN_WALL_FACE_BIT``) and sums
+    the areas of the flagged faces. Returns None when the mask was omitted (too
+    large) so the caller declines the advisory rather than fire on ratio alone.
+    """
+    mask = (diag or {}).get('face_mask') or {}
+    if mask.get('omitted') or mask.get('encoding') != 'rle':
+        return None
+    a = in_v[in_t[:, 0]]
+    b = in_v[in_t[:, 1]]
+    c = in_v[in_t[:, 2]]
+    areas = 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1)
+    total = float(areas.sum())
+    if not total > 0.0:
+        return None
+    thin = 0.0
+    for run in (mask.get('runs') or []):
+        try:
+            start, count, value = int(run[0]), int(run[1]), int(run[2])
+        except (TypeError, IndexError, ValueError):
+            continue
+        if count > 0 and start >= 0 and (value & THIN_WALL_FACE_BIT):
+            thin += float(areas[start:start + count].sum())
+    return thin / total
+
+
+def _thin_wall_advisory(report, in_arrays):
+    """Thin-wall advisory from the Rust diagnosis_v2 channel, or None.
+
+    Surfaces the ``thin_wall`` channel (``sutura_geom.diagnose``) that the
+    pipeline already computes but no report consumed. It is informational
+    only -- it never feeds the repair -- and is reported as a fraction of the
+    bounding-box diagonal, because the channel labels its raw values
+    ``mm_assumed``. Absolute millimetres are shown only when the existing unit
+    heuristic treats the file as millimetres (the report then carries no
+    ``unit_warning``). Gated by the same face cap as the deviation measurement
+    so a huge scan is not sampled for an advisory. Fires only when the surface
+    is meaningfully thin (``THIN_WALL_MIN_RATIO``) over a meaningful area
+    (``THIN_WALL_MIN_AREA_FRAC``).
+    """
+    in_v = _as_f64(in_arrays[0]) if in_arrays else None
+    in_t = _as_i32(in_arrays[1]) if in_arrays else None
+    if in_v is None or in_t is None or in_v.size == 0 or in_t.size == 0:
+        return None
+    if in_t.shape[0] > DEVIATION_MAX_FACES:
+        return None
+    try:
+        import sutura_geom
+        if not hasattr(sutura_geom, 'diagnose'):
+            return None
+        diag = sutura_geom.diagnose(in_v, in_t, detail='fast', masks=True)
+    except Exception:  # noqa: BLE001 - advisory is informational, never fatal
+        return None
+    tw = (diag or {}).get('thin_wall') or {}
+    if not tw.get('available'):
+        return None
+    ratio = tw.get('thin_ratio')
+    if not isinstance(ratio, (int, float)) or isinstance(ratio, bool) \
+            or ratio < THIN_WALL_MIN_RATIO:
+        return None
+    area_frac = _thin_area_frac(in_v, in_t, diag)
+    if area_frac is None or area_frac < THIN_WALL_MIN_AREA_FRAC:
+        return None
+    adv = {
+        'code': 'thin_wall',
+        'message_key': 'pr_thin_wall',
+        'thin_ratio': round(float(ratio), 4),
+        'thin_area_frac': round(float(area_frac), 4),
+        'regions': int(tw.get('thin_faces') or 0),
+        'min_norm': round(float(tw.get('min_norm') or 0.0), 4),
+        'median_norm': round(float(tw.get('median_norm') or 0.0), 4),
+        'threshold_norm': round(float(tw.get('threshold_norm') or 0.0), 4),
+        'estimated': bool(tw.get('estimated')),
+        'heuristic': True,
+    }
+    if not report.get('unit_warning'):
+        adv['min_mm'] = round(float(tw.get('min') or 0.0), 4)
+        adv['median_mm'] = round(float(tw.get('median') or 0.0), 4)
+        adv['threshold_mm'] = round(float(tw.get('threshold_mm') or 0.0), 4)
+        adv['units'] = tw.get('units')
+    return adv
+
+
 def build_print_report(report, in_arrays=None, out_arrays=None):
     """Per-defect print-impact decomposition of a finished repair report.
 
@@ -236,8 +334,12 @@ def build_print_report(report, in_arrays=None, out_arrays=None):
         'components_before': comp_before,
         'components_after': comp,
     }
+    advisories = []
+    tw = _thin_wall_advisory(report, in_arrays)
+    if tw:
+        advisories.append(tw)
     return {'issues': issues, 'fixed': fixed, 'geometry': geometry,
-            'not_assessed': not_assessed}
+            'advisories': advisories, 'not_assessed': not_assessed}
 
 
 def aggregate_print_reports(prs):
@@ -252,6 +354,7 @@ def aggregate_print_reports(prs):
         return None
     issues = {}
     fixed = {}
+    advisories = {}
     not_assessed = set()
     for p in prs:
         for it in p.get('issues', []):
@@ -265,6 +368,11 @@ def aggregate_print_reports(prs):
                     cur['severity'] = it['severity']
         for f in p.get('fixed', []):
             fixed[f['code']] = fixed.get(f['code'], 0) + (f.get('count') or 0)
+        for a in p.get('advisories', []):
+            cur = advisories.get(a['code'])
+            if cur is None or (a.get('thin_ratio') or 0.0) > \
+                    (cur.get('thin_ratio') or 0.0):
+                advisories[a['code']] = dict(a)
         not_assessed.update(p.get('not_assessed', []))
     worst = max(prs, key=lambda p: abs(
         (p.get('geometry') or {}).get('volume_change_pct') or 0.0))
@@ -273,6 +381,7 @@ def aggregate_print_reports(prs):
                          key=lambda it: _SEVERITY_RANK.get(it.get('severity'), 9)),
         'fixed': [{'code': k, 'count': v} for k, v in sorted(fixed.items())],
         'geometry': worst.get('geometry'),
+        'advisories': [advisories[k] for k in sorted(advisories)],
         'not_assessed': sorted(not_assessed),
     }
 
@@ -286,7 +395,7 @@ def _int(v):
         return 0
 
 
-def human_print_report(pr):
+def human_print_report(pr, include_advisories=True):
     """Render the print-impact block for --human mode (English labels)."""
     if not pr:
         return None
@@ -329,10 +438,28 @@ def human_print_report(pr):
         seg.append('deviation max %s%% of size' % g['deviation_max_pct'])
     if seg:
         lines.append('  Geometry: ' + ', '.join(seg))
+    advisories = pr.get('advisories') or []
+    adv_parts = [_thin_wall_human(a) for a in advisories
+                 if a.get('code') == 'thin_wall']
+    if include_advisories and adv_parts:
+        lines.append('  Advisory: ' + ', '.join(adv_parts))
     na = pr.get('not_assessed') or []
     if na:
         lines.append('  Not assessed: ' + ', '.join(na))
     return '\n'.join(lines)
+
+
+def _thin_wall_human(a):
+    """English one-line rendering of a thin-wall advisory (--human)."""
+    pct = 100.0 * float(a.get('thin_ratio') or 0.0)
+    thr = 100.0 * float(a.get('threshold_norm') or 0.0)
+    s = ('thin walls: ~%.1f%% of the surface is thinner than %.1f%% of the '
+         'model size' % (pct, thr))
+    if a.get('min_mm') is not None:
+        s += ' (thinnest ~%.2f mm)' % a['min_mm']
+    if a.get('estimated'):
+        s += ' [estimated]'
+    return s
 
 
 def _geom_change_pct(s1):
@@ -458,11 +585,90 @@ def human_defects(r):
     return '\n'.join(lines)
 
 
+def _brief_count_line(b):
+    """One plain counts line (English; the GUI localizes the same fields)."""
+    fields = ['Holes closed: %d' % b.get('holes_closed', 0),
+              'Orientation: %s' % ('corrected'
+                                   if b.get('orientation_corrected')
+                                   else 'already correct')]
+    pb, pa = b.get('parts_before'), b.get('parts_after')
+    if pb is not None and pa is not None:
+        if pa < pb:
+            fields.append('Parts: %d -> %d (%d removed)' % (pb, pa, pb - pa))
+        elif pa > pb:
+            fields.append('Parts: %d -> %d (%d added)' % (pb, pa, pa - pb))
+        else:
+            fields.append('Parts: %d kept' % pa)
+    sh = b.get('shape_change_pct')
+    if sh is not None:
+        suffix = ' (volume)' if b.get('shape_source') == 'volume' else ''
+        fields.append('Shape change: %.2f%%%s' % (sh, suffix))
+    return '  ' + ' · '.join(fields)
+
+
+def _brief_note_lines(b):
+    out = []
+    for note in b.get('notes') or []:
+        code = note.get('code')
+        a = note.get('args') or {}
+        if code == 'stage2_skipped':
+            out.append('  Note: The final solid check was skipped; the '
+                       'closed model was kept.')
+        elif code == 'stage2_error':
+            out.append('  Note: The final solid check could not confirm the '
+                       'model.')
+        elif code == 'shape_changed':
+            out.append('  Note: The shape changed; check it in the slicer.')
+        elif code == 'volume_warning':
+            out.append('  Note: The volume changed; check it in the slicer.')
+        elif code == 'graft_detail_loss':
+            out.append('  Note: The surface was smoothed, so fine detail may '
+                       'be reduced.')
+        elif code == 'dressing_detail_loss':
+            out.append('  Note: The surface was coated, so it may sit slightly '
+                       'outside the original.')
+        elif code == 'reload_non_manifold_vertices':
+            out.append('  Note: The saved file reopens with a topology '
+                       'problem.')
+        elif code == 'unit_warning':
+            out.append('  Note: The model may not be in millimetres.')
+        elif code == 'material_discarded':
+            out.append('  Note: OBJ material references were not preserved.')
+        elif code == 'budget':
+            out.append('  Note: The result was not saved because the repair '
+                       'went over its size or risk limit.')
+        elif code == 'thin_wall':
+            out.append('  Note: ' + _thin_wall_human({
+                'thin_ratio': a.get('ratio'),
+                'threshold_norm': a.get('threshold'),
+                'min_mm': a.get('min_mm'),
+                'estimated': a.get('estimated')}))
+        elif code == 'holes_remaining':
+            out.append('  Note: %d hole(s) remain.' % a.get('count', 0))
+        elif code == 'not_closed':
+            out.append('  Note: The mesh is still not closed.')
+        elif code == 'si_escalation':
+            if a.get('outcome') == 'adopted':
+                out.append('  Note: Overlapping surfaces were fixed with a '
+                           'stronger repair method.')
+            else:
+                out.append('  Note: Overlapping surfaces remain; the safer '
+                           'repair was kept.')
+    return out
+
+
 def human_report(r, show_defects=False, show_diff=False):
     if 'error' in r and 'stage1' not in r:
         return 'ERROR: %s' % r['error']
+    brief = classification.brief(r)
     s1 = r.get('stage1', {})
     lines = []
+    lines.append(classification.VERDICT_LABELS[brief['verdict']])
+    lines.append(_brief_count_line(brief))
+    lines.extend(_brief_note_lines(brief))
+    if brief['verdict'] == 'failed' and brief.get('error'):
+        lines.append('  Error: %s' % brief['error'])
+    lines.append('')
     lines.append('Input : %s' % r.get('input'))
     lines.append('Output: %s' % r.get('output'))
     lines.append('Mode  : %s' % r.get('repair_mode', 'auto'))
@@ -496,7 +702,7 @@ def human_report(r, show_defects=False, show_diff=False):
             r.get('repair_status', 'n/a')))
     pr = r.get('print_report')
     if pr:
-        block = human_print_report(pr)
+        block = human_print_report(pr, include_advisories=False)
         if block:
             lines.append(block)
     mh = r.get('method_health')
@@ -616,21 +822,25 @@ def human_report(r, show_defects=False, show_diff=False):
                         fl_r.get('patch_faces'), fl_r.get('time_s') or 0,
                         fl_r.get('max_orig_vertex_move_mm') or 0, state))
     tp_r = r.get('tamponade')
-    if tp_r and tp_r.get('ran'):
-        if tp_r.get('adopted'):
-            state = ' adopted'
+    if tp_r and (tp_r.get('ran') or tp_r.get('gate') == 'shape_card'):
+        if not tp_r.get('ran') and tp_r.get('gate') == 'shape_card':
+            lines.append('  Tamponade (plug)        : skipped (%s)'
+                         % (tp_r.get('reason') or 'not suitable'))
         else:
-            state = ' NOT adopted (%s)' % (tp_r.get('reason') or '?')
-        lines.append('  Tamponade (plug)        : %s plugs, %s plug faces, '
-                     'holes=%s nm=%s, healthy kept %s in %.2fs%s%s'
-                     % (tp_r.get('plugs'), tp_r.get('plug_faces'),
-                        tp_r.get('candidate_holes'),
-                        tp_r.get('candidate_non_manifold'),
-                        tp_r.get('healthy_faces_kept'),
-                        tp_r.get('seconds') or 0, state,
-                        '' if not tp_r.get('plugs_rolled_back')
-                        else ', rolled back %s'
-                        % tp_r.get('plugs_rolled_back')))
+            if tp_r.get('adopted'):
+                state = ' adopted'
+            else:
+                state = ' NOT adopted (%s)' % (tp_r.get('reason') or '?')
+            lines.append('  Tamponade (plug)        : %s plugs, %s plug faces, '
+                         'holes=%s nm=%s, healthy kept %s in %.2fs%s%s'
+                         % (tp_r.get('plugs'), tp_r.get('plug_faces'),
+                            tp_r.get('candidate_holes'),
+                            tp_r.get('candidate_non_manifold'),
+                            tp_r.get('healthy_faces_kept'),
+                            tp_r.get('seconds') or 0, state,
+                            '' if not tp_r.get('plugs_rolled_back')
+                            else ', rolled back %s'
+                            % tp_r.get('plugs_rolled_back')))
     gr = r.get('graft')
     if gr and gr.get('ran'):
         if gr.get('adopted'):

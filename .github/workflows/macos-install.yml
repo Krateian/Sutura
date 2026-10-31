@@ -1,12 +1,11 @@
 name: macOS Install E2E
 
 # End-to-end install regression on Apple Silicon, the macOS twin of
-# linux-install.yml. install-macos.sh expects Homebrew (present on the runner)
-# and an existing conda installation; setup-miniconda provides conda, so the
-# installer runs non-interactively without its Miniforge prompt path. Every
-# check after the install uses ONLY the installed artifacts (the CLI wrapper,
-# the sutura-gui launcher and the ~/Applications/Sutura.app bundle), never the
-# repo sources directly.
+# linux-install.yml. The installer reuses the runner's conda/Miniforge (or
+# bootstraps Miniforge in the same run); setup-miniconda keeps it
+# non-interactive. Every check after the install uses ONLY the installed
+# artifacts (the CLI wrapper, the sutura-gui launcher and the
+# ~/Applications/Sutura.app bundle), never the repo sources directly.
 
 on:
   push:
@@ -41,19 +40,20 @@ jobs:
           mkdir -p /tmp/fresh-home
           echo "HOME=/tmp/fresh-home" >> "$GITHUB_ENV"
 
-      # The fresh HOME above hides the runner's preinstalled rustup toolchain,
-      # so install a stable one for the required sutura_geom source build.
-      - name: Set up Rust toolchain for sutura_geom
+      # Build a local wheel first: the installer must take the wheel path
+      # (the source fallback is covered by ci.yml).
+      - name: Build sutura_geom wheel
         run: |
-          rustup default stable
-          cargo --version
+          python3 -m pip install --quiet maturin==1.15.0
+          (cd rust/sutura-geom && maturin build --release --out "$GITHUB_WORKSPACE/dist")
+          WHEEL="$(ls "$GITHUB_WORKSPACE"/dist/*.whl | head -1)"
+          test -n "$WHEEL"
+          echo "SUTURA_GEOM_WHEEL=$WHEEL" >> "$GITHUB_ENV"
 
       - name: Run installer non-interactively
         env:
           SUTURA_WITH_FTETWILD: "1"
-          # sutura_geom is required. Build it from source so the install never
-          # depends on a live GitHub-release wheel download.
-          SUTURA_GEOM_FROM_SOURCE: "1"
+          SHELL: /bin/zsh
         run: ./install-macos.sh
 
       - name: Resolve installed interpreter
@@ -189,3 +189,28 @@ jobs:
             exit 1
           fi
           grep -q "fTetWild default tests passed" /tmp/ftetwild.log
+
+      - name: "Check e: zsh login finds sutura"
+        run: |
+          HOME=/tmp/fresh-home zsh -ic 'command -v sutura' | grep -q '/.local/bin/sutura'
+
+      - name: "Check f: Quick Action dry-run uses the installed CLI"
+        run: |
+          SUTURA_QA_DRY_RUN=1 "$HOME/.local/share/sutura/macos-quick-action.sh" | grep -q "$HOME/.local/bin/sutura"
+
+      - name: "Check g: uninstall keeps user data and --purge removes it"
+        run: |
+          APP="$HOME/.local/share/sutura"
+          mkdir -p "$APP/data" "$HOME/.config/sutura"
+          echo keep > "$APP/data/keep"
+          echo '{}' > "$HOME/.config/sutura/config.json"
+          SUTURA_DRY_RUN=1 ./uninstall.sh | grep -q 'would remove'
+          ./uninstall.sh
+          test ! -e "$HOME/.local/bin/sutura"
+          test ! -e "$HOME/Applications/Sutura.app"
+          test ! -e "$HOME/Library/Services/Sutura Quick Action.workflow"
+          test -f "$APP/data/keep"
+          test -f "$HOME/.config/sutura/config.json"
+          ./uninstall.sh --purge
+          test ! -e "$APP/data"
+          test ! -e "$HOME/.config/sutura"

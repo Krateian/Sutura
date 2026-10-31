@@ -24,6 +24,12 @@ MAIN_PY="${PYTHON:-python3}"
 
 die() { echo "error: $*" >&2; exit 1; }
 
+if [ "${SUTURA_DRY_RUN:-0}" = "1" ]; then
+    echo "dry-run: would install Sutura under $APP_DIR and $BIN_DIR"
+    echo "dry-run: no download, venv or file change performed"
+    exit 0
+fi
+
 # --- locate the repository source ------------------------------------------
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd)"
 if [ -f "$script_dir/requirements.txt" ]; then
@@ -36,6 +42,8 @@ else
     curl -fsSL "$REPO_URL" | tar xz --strip-components=1 -C "$SRC"
 fi
 [ -f "$SRC/requirements.txt" ] || die "could not obtain requirements.txt"
+# shellcheck source=scripts/install_owner.sh
+. "$SRC/scripts/install_owner.sh"
 
 WANT_FTETWILD="${SUTURA_WITH_FTETWILD:-1}"
 
@@ -139,11 +147,30 @@ if [ "$WANT_FTETWILD" = "1" ] && [ "$FTETWILD_IN_MAIN" = "0" ]; then
     [ -n "$VENV311_PY" ] || warn_python311
 fi
 command -v "$MAIN_PY" >/dev/null || die "python3 not found"
+"$MAIN_PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
+    || die "$MAIN_PY is older than Python 3.11"
+MAIN_VER="$("$MAIN_PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 
 mkdir -p "$APP_DIR" "$BIN_DIR" "$SERVICE_DIR"
 
 echo "==> virtualenv (native stage 1 + GUI) [$MAIN_PY]"
-[ -d "$APP_DIR/venv" ] || "$MAIN_PY" -m venv "$APP_DIR/venv"
+if [ -d "$APP_DIR/venv" ]; then
+    VENV_PY_CHECK="$APP_DIR/venv/bin/python"
+    VENV_VER="$("$VENV_PY_CHECK" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+    if [ "$VENV_VER" != "$MAIN_VER" ]; then
+        echo "==> recreating venv (interpreter $MAIN_VER != $VENV_VER)"
+        rm -rf "$APP_DIR/venv"
+    fi
+fi
+if [ ! -d "$APP_DIR/venv" ]; then
+    if ! "$MAIN_PY" -m venv "$APP_DIR/venv" 2>/dev/null; then
+        # Debian without python3-venv: reuse the standalone 3.11 runtime.
+        echo "==> python3 -m venv unavailable; using the standalone Python 3.11 runtime"
+        fetch_python311 || die "could not create a Python virtualenv (python3-venv is missing)"
+        "$APP_DIR/python311/bin/python3.11" -m venv "$APP_DIR/venv" \
+            || die "could not create the virtualenv with the standalone Python"
+    fi
+fi
 "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$APP_DIR/venv/bin/pip" install --quiet -r "$SRC/requirements.txt"
 "$APP_DIR/venv/bin/pip" install --quiet -r "$SRC/requirements-gui.txt"
@@ -276,31 +303,36 @@ if command -v kbuildsycoca6 >/dev/null 2>&1; then
     kbuildsycoca6 >/dev/null 2>&1 || true
 fi
 
+# --- verify the installed tree before declaring success -------------------
+echo "==> verifying installed files"
+"$APP_DIR/venv/bin/python" "$APP_DIR/repair.py" --version \
+    || die "installed CLI failed its --version check"
+"$APP_DIR/venv/bin/python" -c \
+    "import numpy, sutura_geom; from PySide6 import QtWidgets" \
+    || die "installed dependencies are not importable"
+
+# --- record install ownership for uninstall.sh -----------------------------
+if ! write_sutura_owner "$APP_DIR" "install.sh" "0" "" "" ""; then
+    echo "warning: could not write the install ownership marker under $APP_DIR/data" >&2
+fi
+
 # --- make sure ~/.local/bin is on PATH -------------------------------------
-# Many desktops (some Fedora/Ubuntu setups, macOS) do not put
-# ~/.local/bin on PATH, so a fresh `sutura` would be "command not found".
+# Write the marker to the file the user's shell actually reads. The current
+# installer process cannot change the parent shell's PATH, so the summary also
+# prints the absolute working path.
 PATH_NOTE=""
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *)
-        PATH_LINE='export PATH="$HOME/.local/bin:$PATH"  # added by Sutura installer'
-        added=""
-        for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-            [ -f "$rc" ] || continue
-            if ! grep -qF "# added by Sutura installer" "$rc"; then
-                [ -n "$(tail -c1 "$rc")" ] && echo >> "$rc"
-                printf '%s\n' "$PATH_LINE" >> "$rc"
-            fi
-            added="$added $rc"
-        done
-        if [ -z "$added" ]; then
-            printf '%s\n' "$PATH_LINE" >> "$HOME/.profile"
-            added=" $HOME/.profile"
-        fi
+        # shellcheck source=scripts/install_path.sh
+        . "$SRC/scripts/install_path.sh"
+        added="$(add_sutura_path)"
         if command -v fish >/dev/null 2>&1; then
             fish -c 'fish_add_path -U $HOME/.local/bin' >/dev/null 2>&1 || true
         fi
-        PATH_NOTE="Added ~/.local/bin to PATH in:$added - open a new terminal to use 'sutura'."
+        if [ -n "$added" ]; then
+            PATH_NOTE="Added ~/.local/bin to PATH in:$added"
+        fi
         ;;
 esac
 
@@ -311,3 +343,5 @@ echo "  GUI:       $APP_DIR/gui.py"
 echo "  Dolphin:   right-click an STL/OBJ/3MF -> Repair with Sutura"
 
 if [ -n "$PATH_NOTE" ]; then echo; echo "$PATH_NOTE"; fi
+echo
+echo "Current shell: $BIN_DIR/sutura"

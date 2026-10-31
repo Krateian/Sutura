@@ -204,3 +204,141 @@ def summary_args(data):
 def issue_label(code):
     """English human-readable label for an issue code (CLI --human)."""
     return ISSUE_LABELS.get(code, code)
+
+
+# Human verdicts: the machine category stays unchanged; this maps it to the
+# one line a normal user needs. The GUI localizes these keys.
+VERDICT_LABELS = {
+    'ready': 'Ready to print',
+    'notes': 'Repaired with notes',
+    'failed': 'Could not fully repair',
+}
+
+
+def _num(v, default=None):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return default
+    return v
+
+
+def _fixed_counts(data):
+    out = {}
+    for f in ((data.get('print_report') or {}).get('fixed') or []):
+        try:
+            out[f['code']] = int(f.get('count') or 0)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _code_value(data, code):
+    for f in ((data.get('print_report') or {}).get('fixed') or []):
+        if f.get('code') == code:
+            try:
+                return int(f.get('count') or 0)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _brief_notes(data, issues, pr):
+    """Machine-readable notes (code + args) for the compact report."""
+    notes = []
+    seen = set()
+
+    def add(code, **args):
+        if code in seen:
+            return
+        seen.add(code)
+        notes.append({'code': code, 'args': args})
+
+    for code in issues:
+        if code in ('stage2_skipped', 'stage2_error', 'shape_changed',
+                    'volume_warning', 'graft_detail_loss',
+                    'dressing_detail_loss', 'reload_non_manifold_vertices'):
+            add(code)
+    if data.get('unit_warning'):
+        add('unit_warning')
+    if data.get('material_discarded'):
+        add('material_discarded')
+    b = data.get('budget')
+    if isinstance(b, dict) and b.get('within_budget') is False:
+        add('budget')
+    for a in (pr.get('advisories') or []):
+        if a.get('code') == 'thin_wall':
+            add('thin_wall', ratio=a.get('thin_ratio'),
+                threshold=a.get('threshold_norm'),
+                min_mm=a.get('min_mm'), estimated=bool(a.get('estimated')))
+    esc = data.get('si_escalation')
+    if isinstance(esc, dict) and esc.get('triggered'):
+        add('si_escalation', outcome=esc.get('outcome'),
+            reason=esc.get('reason'), method=esc.get('method'))
+    return notes
+
+
+def brief(data):
+    """Compact user-facing summary for one repair result.
+
+    Returns a dict with a stable ``verdict`` key, four plain counts and a
+    machine-readable note list. It never changes ``classify()`` or the JSON
+    category; the GUI and the CLI only format this dict.
+    """
+    category, issues, summary = classify(data)
+    pr = data.get('print_report') or {}
+    s1 = data.get('stage1') or {}
+    geom = pr.get('geometry') or {}
+
+    holes = _code_value(data, 'holes_closed')
+    if not holes:
+        holes = int(_num(s1.get('holes_closed'), 0) or 0)
+    orientation = bool(_code_value(data, 'orientation_corrected'))
+    if not orientation:
+        vb = _num(s1.get('volume_before'))
+        va = _num(s1.get('volume_after'))
+        orientation = bool(vb is not None and va is not None and vb < 0 < va)
+    parts_before = _num(geom.get('components_before'))
+    if parts_before is None:
+        parts_before = _num(s1.get('components_before'))
+    parts_after = _num(geom.get('components_after'))
+    if parts_after is None:
+        parts_after = _num(s1.get('components'))
+    shape = _num(geom.get('deviation_max_pct'))
+    shape_source = 'deviation' if shape is not None else None
+    if shape is None:
+        shape = _num(geom.get('volume_change_pct'))
+        if shape is not None:
+            shape_source = 'volume'
+
+    notes = _brief_notes(data, issues, pr)
+    out = data.get('output')
+    failed = (category == 'error' or summary in ('partial', 'holes')
+              or not out)
+    if failed:
+        holes_left = 0
+        for it in (pr.get('issues') or []):
+            if it.get('code') == 'holes_remaining':
+                holes_left = int(it.get('count') or 0)
+                break
+        if not holes_left:
+            holes_left = int(_num(s1.get('holes_remaining'), 0) or 0)
+        if holes_left > 0:
+            notes.append({'code': 'holes_remaining',
+                          'args': {'count': holes_left}})
+        elif summary in ('partial', 'holes') or (category != 'error' and not out):
+            notes.append({'code': 'not_closed', 'args': {}})
+        verdict = 'failed'
+    elif category == 'watertight' and not issues and not notes:
+        verdict = 'ready'
+    else:
+        verdict = 'notes'
+    return {
+        'verdict': verdict,
+        'holes_closed': holes,
+        'orientation_corrected': orientation,
+        'parts_before': None if parts_before is None else int(parts_before),
+        'parts_after': None if parts_after is None else int(parts_after),
+        'shape_change_pct': shape,
+        'shape_source': shape_source,
+        'notes': notes,
+        'error': data.get('error'),
+    }

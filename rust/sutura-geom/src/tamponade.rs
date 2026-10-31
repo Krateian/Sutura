@@ -5821,6 +5821,9 @@ pub fn tamponade_repair(
         if rim.len() < 3 {
             continue;
         }
+        if crate::cancel::is_cancelled() {
+            break;
+        }
         // Deterministic work gate: charge the cut-grid cells (plus a small
         // per-rim term for the plug solve) before the loop starts.  The stop
         // point is a pure function of the input and the preset.

@@ -25,16 +25,20 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-FACE_RATIO = 4.0
-VERTEX_RATIO = 4.0
-MIN_SLACK = 256
-LOOP_FACE_SLACK = 16
-LOOP_VERTEX_SLACK = 16
+from sutura_engine.policy import GATES as _GATES
+
+_ADOPTION = _GATES['adoption']
+
+FACE_RATIO = float(_ADOPTION['face_ratio'])
+VERTEX_RATIO = float(_ADOPTION['vertex_ratio'])
+MIN_SLACK = int(_ADOPTION['min_slack'])
+LOOP_FACE_SLACK = int(_ADOPTION['loop_face_slack'])
+LOOP_VERTEX_SLACK = int(_ADOPTION['loop_vertex_slack'])
 # fTetWild's tetrahedral boundary is naturally much denser than the input
 # surface; a pure 4x ratio would reject ordinary small-mesh output (71 -> 5,120).
 # It gets an absolute floor instead, and a topology-improving result may exceed
 # the ceiling as a flag rather than a rejection.
-FTETWILD_ABS_FLOOR = 50_000
+FTETWILD_ABS_FLOOR = int(_ADOPTION['ftetwild_abs_floor'])
 
 SI_POLICIES = ('non_rise', 'strict_zero', 'flag', 'improved_flag', 'off')
 

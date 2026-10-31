@@ -44,6 +44,7 @@ def test_clean_report_has_no_issues():
     pr = build_print_report(_report(), in_arrays=None, out_arrays=None)
     assert pr is not None
     assert pr['issues'] == [], pr['issues']
+    assert pr['advisories'] == [], pr['advisories']
     assert pr['not_assessed'] == ['deviation'], pr['not_assessed']
     fixed = {f['code']: f['count'] for f in pr['fixed']}
     assert fixed.get('holes_closed') == 2
@@ -149,6 +150,97 @@ def test_human_block():
     assert 'Print impact:' in text
     assert 'hole' in text
     assert human_print_report(None) is None
+
+
+# Four equal-area triangles -> a flagged count of k is an area fraction k/4.
+_THIN_ARR = (np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]] * 4, dtype=float),
+             np.array([[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]],
+                      dtype=np.int32))
+
+
+def _fake_thin_geom(ratio, thin_faces=1, omitted=False):
+    import types
+    mask = {'encoding': 'rle', 'length': 4, 'omitted': omitted,
+            'runs': [] if omitted else [(0, thin_faces, 128)]}
+    thin_wall = {'available': True, 'thin_ratio': ratio,
+                 'thin_faces': thin_faces, 'min_norm': 0.002,
+                 'median_norm': 0.004, 'threshold_norm': 0.005,
+                 'estimated': True, 'min': 0.2, 'median': 0.4,
+                 'threshold_mm': 0.5, 'units': 'mm_assumed'}
+    return types.SimpleNamespace(
+        diagnose=lambda v, t, detail='fast', masks=True:
+        {'thin_wall': thin_wall, 'face_mask': mask})
+
+
+def _with_geom(geom, fn):
+    import sys
+    saved = sys.modules.get('sutura_geom')
+    sys.modules['sutura_geom'] = geom
+    try:
+        return fn()
+    finally:
+        if saved is not None:
+            sys.modules['sutura_geom'] = saved
+        else:
+            sys.modules.pop('sutura_geom', None)
+
+
+def test_thin_wall_advisory_trigger():
+    """Both calibrated conditions must hold: thin_ratio >= THIN_WALL_MIN_RATIO
+    and the flagged-face area fraction >= THIN_WALL_MIN_AREA_FRAC."""
+    from sutura_engine.pipeline.report import (
+        THIN_WALL_MIN_AREA_FRAC, THIN_WALL_MIN_RATIO, _thin_wall_advisory)
+    assert THIN_WALL_MIN_RATIO == 0.02 and THIN_WALL_MIN_AREA_FRAC == 0.005
+
+    # fires: ratio 0.05, one of four equal-area faces flagged (area 0.25)
+    fires = _with_geom(_fake_thin_geom(0.05, thin_faces=1),
+                       lambda: _thin_wall_advisory({'stage1': {}}, _THIN_ARR))
+    assert fires['code'] == 'thin_wall'
+    assert fires['thin_area_frac'] == 0.25
+    assert fires['min_mm'] == 0.2
+
+    # no fire: ratio below the floor
+    assert _with_geom(_fake_thin_geom(0.01, thin_faces=1),
+                      lambda: _thin_wall_advisory({'stage1': {}}, _THIN_ARR)) is None
+    # no fire: thin area below the floor (no flagged faces)
+    assert _with_geom(_fake_thin_geom(0.05, thin_faces=0),
+                      lambda: _thin_wall_advisory({'stage1': {}}, _THIN_ARR)) is None
+    # no fire: face mask omitted (cannot measure the area)
+    assert _with_geom(_fake_thin_geom(0.05, omitted=True),
+                      lambda: _thin_wall_advisory({'stage1': {}}, _THIN_ARR)) is None
+    # unit warning keeps the advisory but suppresses the absolute mm label
+    warned = _with_geom(_fake_thin_geom(0.05, thin_faces=1),
+                        lambda: _thin_wall_advisory({'stage1': {},
+                                                     'unit_warning': True},
+                                                    _THIN_ARR))
+    assert warned['code'] == 'thin_wall' and 'min_mm' not in warned
+
+
+def test_thin_wall_advisory_empty_faces():
+    """An empty face list yields no advisory."""
+    from sutura_engine.pipeline.report import _thin_wall_advisory
+    geom = _fake_thin_geom(0.05, thin_faces=1)
+    assert _with_geom(geom, lambda: _thin_wall_advisory(
+        {'stage1': {}}, (np.zeros((4, 3)), np.zeros((0, 3), np.int32)))) is None
+
+
+def test_advisory_human_and_aggregate():
+    pr = build_print_report(_report(), None, None)
+    pr['advisories'] = [{'code': 'thin_wall', 'message_key': 'pr_thin_wall',
+                         'thin_ratio': 0.05, 'regions': 120, 'min_norm': 0.002,
+                         'median_norm': 0.004, 'threshold_norm': 0.005,
+                         'estimated': True, 'heuristic': True, 'min_mm': 0.2,
+                         'median_mm': 0.4, 'threshold_mm': 0.5,
+                         'units': 'mm_assumed'}]
+    text = human_print_report(pr)
+    assert 'Advisory:' in text
+    assert 'thin walls' in text
+    assert '0.20 mm' in text
+    assert '[estimated]' in text
+    agg = aggregate_print_reports([pr])
+    assert agg['advisories'][0]['code'] == 'thin_wall'
+    assert aggregate_print_reports(
+        [build_print_report(_report(), None, None)])['advisories'] == []
 
 
 def test_measured_deviation_matches_offset():

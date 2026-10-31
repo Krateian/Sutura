@@ -4,6 +4,7 @@
 
 Moved verbatim from sutura/repair.py; no logic change.
 """
+import math
 import os
 
 import numpy as np
@@ -18,8 +19,12 @@ from sutura_engine.pipeline.p_weld import (
 from sutura_engine.pipeline.tiers.local_remesh import _local_si_rise
 from sutura_engine.pipeline.utils import (
     _bbox_diagonal, _count_vertex_components, _exact_si_face_count,
-    _internal_wall_count,
+    _internal_wall_count, signed_volume, surface_area,
 )
+from sutura_engine.policy import TIERS as _TIERS
+
+_TAMP_POLICY = _TIERS['tamponade']
+_TAMP_GATES = _TAMP_POLICY['gates']
 
 
 # Tamponade final safety net (G11/G12 release blocker). The Tamponade adoption
@@ -32,7 +37,7 @@ from sutura_engine.pipeline.utils import (
 # leak the no-tamponade path did not have (leak trigger). repair_file re-runs
 # once with Tamponade OFF and keeps the candidate that covers more of the input
 # and does not leak further outside it (never worse on damage or part count).
-TAMP_COLLAPSE_BBOX_FRAC = 0.5
+TAMP_COLLAPSE_BBOX_FRAC = float(_TAMP_GATES['collapse_bbox_frac'])
 
 
 # Outside-the-input leak trigger: a Tamponade-adopted result whose added
@@ -40,12 +45,212 @@ TAMP_COLLAPSE_BBOX_FRAC = 0.5
 # diagonal re-runs Tamponade OFF. 1 % is above the pre-existing (non-Tamponade)
 # leak of heavily folded meshes (ornate-frame 0.09 %) but far below the
 # 100827 Tamponade leak (4.9 %).
-TAMP_LEAK_TRIGGER_FRAC = 0.01
+TAMP_LEAK_TRIGGER_FRAC = float(_TAMP_GATES['leak_trigger_frac'])
 
 
 # Above this face count the leak metric is skipped (its input-face key set +
 # BVH would dominate the run) and only the cheap bbox trigger applies.
-TAMP_LEAK_MAX_FACES = 150000
+TAMP_LEAK_MAX_FACES = int(_TAMP_POLICY['leak_max_faces'])
+
+
+# Shape suitability gate (v1). A tier-level gate on existing fields: a model
+# with no real interior (open sheet / thin shell) has nothing for the inside-out
+# plug to fill and is left to Flap. Compactness = 36*pi*V^2/A^3 (sphere 1, cube
+# 0.52, sheet ~0); open_area_ratio is the diagnosed boundary-loop area / surface
+# area; thin_sample_fraction is the existing diagnosis_v2 thin_wall ratio.
+# All three must agree, so no single field can gate on its own. interior_depth
+# is reported from the melt DepthField but is not yet a hard gate until the
+# calibration run proves a safe threshold.
+TAMP_SHAPE_COMPACTNESS = float(_TAMP_GATES['shape_compactness'])
+TAMP_SHAPE_OPEN_AREA = float(_TAMP_GATES['shape_open_area'])
+TAMP_SHAPE_THIN = float(_TAMP_GATES['shape_thin'])
+TAMP_SHAPE_THICKNESS = float(_TAMP_GATES['shape_thickness'])
+TAMP_SHAPE_DEPTH_CELLS = int(_TAMP_GATES['shape_depth_cells'])
+TAMP_SHAPE_PERIMETER_RATIO = float(_TAMP_GATES['shape_perimeter_ratio'])
+TAMP_SHAPE_SOLID_AREA = float(_TAMP_GATES['shape_solid_area'])
+TAMP_SHAPE_WINDING = float(_TAMP_GATES['shape_winding'])
+TAMP_SHAPE_SIDE_SAMPLES = int(_TAMP_GATES['shape_side_samples'])
+TAMP_SHAPE_SIDE_EPS = float(_TAMP_GATES['shape_side_eps'])
+
+
+def _shape_gate_enabled():
+    return os.environ.get('SUTURA_TAMPONADE_SHAPE_GATE', '1') != '0'
+
+
+def _loop_spanned_area(verts, loop_idx):
+    idx = np.asarray(loop_idx, dtype=np.int64)
+    if len(idx) < 3:
+        return 0.0
+    p = np.asarray(verts, dtype=np.float64)[idx]
+    q = np.roll(p, -1, axis=0)
+    nrm = np.array([
+        np.sum((p[:, 1] - q[:, 1]) * (p[:, 2] + q[:, 2])),
+        np.sum((p[:, 2] - q[:, 2]) * (p[:, 0] + q[:, 0])),
+        np.sum((p[:, 0] - q[:, 0]) * (p[:, 1] + q[:, 1])),
+    ])
+    return float(0.5 * np.linalg.norm(nrm))
+
+
+def _boundary_perimeter(v, t):
+    """Total length of boundary edges (edges used by exactly one face)."""
+    tt = np.asarray(t, dtype=np.int64)
+    if len(tt) == 0:
+        return 0.0
+    V = int(tt.max()) + 1
+    f0, f1, f2 = tt[:, 0], tt[:, 1], tt[:, 2]
+    keys = np.concatenate([
+        np.minimum(f0, f1) * V + np.maximum(f0, f1),
+        np.minimum(f1, f2) * V + np.maximum(f1, f2),
+        np.minimum(f0, f2) * V + np.maximum(f0, f2),
+    ])
+    uniq, counts = np.unique(keys, return_counts=True)
+    bkeys = uniq[counts == 1]
+    if len(bkeys) == 0:
+        return 0.0
+    ba, bb = bkeys // V, bkeys % V
+    vv = np.asarray(v, dtype=np.float64)
+    return float(np.linalg.norm(vv[ba] - vv[bb], axis=1).sum())
+
+
+def _solid_area_fraction(v, t):
+    """Area fraction whose two face sides reach a solid winding (|w| > 0.9).
+
+    Open shells have winding magnitudes around 0.5-0.8 on both sides; a solid
+    has one side near 1. The fraction is area-weighted and sampled
+    deterministically so tessellation and face count do not move the threshold.
+    Returns ``None`` when the extension or a valid normal is unavailable.
+    """
+    try:
+        import sutura_geom
+        if not hasattr(sutura_geom, 'PyMeshBvh'):
+            return None
+        vv = np.asarray(v, dtype=np.float64)
+        tt = np.asarray(t, dtype=np.int32)
+        if len(vv) == 0 or len(tt) == 0:
+            return None
+        if len(tt) > TAMP_SHAPE_SIDE_SAMPLES:
+            sel = np.unique(np.linspace(
+                0, len(tt) - 1, TAMP_SHAPE_SIDE_SAMPLES).astype(np.int64))
+            ft = tt[sel]
+        else:
+            ft = tt
+        a, b, c = vv[ft[:, 0]], vv[ft[:, 1]], vv[ft[:, 2]]
+        cross = np.cross(b - a, c - a)
+        lengths = np.linalg.norm(cross, axis=1)
+        areas = 0.5 * lengths
+        total = float(areas.sum())
+        if total <= 0.0:
+            return None
+        normals = np.zeros_like(cross)
+        good = lengths > 1e-12
+        normals[good] = cross[good] / lengths[good, None]
+        diag = _bbox_diagonal(vv)
+        eps = diag * TAMP_SHAPE_SIDE_EPS
+        if not (eps > 0.0):
+            return None
+        centers = (a + b + c) / 3.0
+        pts = np.vstack([centers + normals * eps,
+                         centers - normals * eps])
+        bvh = sutura_geom.PyMeshBvh(vv, tt)
+        w = np.asarray(bvh.winding_points(pts), dtype=np.float64)
+        n = len(ft)
+        mx = np.maximum(np.abs(w[:n]), np.abs(w[n:]))
+        return float(areas[mx > TAMP_SHAPE_WINDING].sum() / total)
+    except Exception:
+        return None
+
+
+def _thin_sample_fraction(v, t):
+    try:
+        import sutura_geom
+        if not hasattr(sutura_geom, 'diagnose'):
+            return None
+        diag = sutura_geom.diagnose(
+            np.asarray(v, dtype=np.float32), np.asarray(t, dtype=np.int32),
+            detail='fast', masks=False)
+        tw = (diag or {}).get('thin_wall') or {}
+        if not tw.get('available'):
+            return None
+        return float(tw.get('thin_ratio') or 0.0)
+    except Exception:
+        return None
+
+
+def _interior_depth_norm(v, t):
+    try:
+        import sutura_geom
+        fn = getattr(sutura_geom, 'interior_depth', None)
+        if fn is None:
+            return None
+        out = fn(np.asarray(v, dtype=np.float64),
+                 np.asarray(t, dtype=np.int32), TAMP_SHAPE_DEPTH_CELLS)
+        return None if out is None else float(out)
+    except Exception:
+        return None
+
+
+def _tamponade_shape(v, t, holes, after=None):
+    """Shape suitability card for Tamponade (cheap; depth is report-only)."""
+    area = surface_area(v, t)
+    vol = abs(signed_volume(v, t))
+    compactness = (36.0 * math.pi * vol * vol / (area ** 3)
+                   if area > 0.0 else 0.0)
+    open_area = sum(_loop_spanned_area(v, h.get('verts_idx') or [])
+                    for h in (holes or []))
+    open_ratio = open_area / area if area > 0.0 else 0.0
+    genus = None
+    try:
+        if isinstance(after, dict):
+            genus = after.get('genus')
+        if genus is None:
+            genus = topology.mesh_topology(v, t).get('genus')
+    except Exception:
+        genus = None
+    diag = _bbox_diagonal(v)
+    thickness = (2.0 * vol / area / diag
+                 if area > 0.0 and diag > 0.0 else 0.0)
+    thin = None
+    if compactness <= TAMP_SHAPE_COMPACTNESS and open_ratio >= TAMP_SHAPE_OPEN_AREA:
+        thin = _thin_sample_fraction(v, t)
+    thin_shell = (compactness <= TAMP_SHAPE_COMPACTNESS
+                  and open_ratio >= TAMP_SHAPE_OPEN_AREA
+                  and thin is not None and thin >= TAMP_SHAPE_THIN)
+    no_volume = (thickness <= TAMP_SHAPE_THICKNESS
+                 and open_ratio >= TAMP_SHAPE_OPEN_AREA)
+    perimeter = _boundary_perimeter(v, t)
+    perimeter_ratio = (perimeter / math.sqrt(area)
+                       if area > 0.0 else 0.0)
+    solid_area = None
+    if (not thin_shell and not no_volume
+            and perimeter_ratio >= TAMP_SHAPE_PERIMETER_RATIO):
+        solid_area = _solid_area_fraction(v, t)
+    open_shell = (perimeter_ratio >= TAMP_SHAPE_PERIMETER_RATIO
+                  and solid_area is not None
+                  and solid_area <= TAMP_SHAPE_SOLID_AREA)
+    return {
+        'genus': None if genus is None else int(genus),
+        'compactness': round(float(compactness), 6),
+        'open_area_ratio': round(float(open_ratio), 6),
+        'effective_thickness_norm': round(float(thickness), 6),
+        'thin_sample_fraction': (None if thin is None else round(float(thin), 6)),
+        'interior_depth_norm': _interior_depth_norm(v, t),
+        'boundary_perimeter': round(float(perimeter), 6),
+        'perimeter_ratio': round(float(perimeter_ratio), 6),
+        'solid_area_fraction': (None if solid_area is None
+                                else round(float(solid_area), 6)),
+        'thresholds': {
+            'compactness': TAMP_SHAPE_COMPACTNESS,
+            'open_area_ratio': TAMP_SHAPE_OPEN_AREA,
+            'thin_sample_fraction': TAMP_SHAPE_THIN,
+            'effective_thickness_norm': TAMP_SHAPE_THICKNESS,
+            'perimeter_ratio': TAMP_SHAPE_PERIMETER_RATIO,
+            'solid_area_fraction': TAMP_SHAPE_SOLID_AREA,
+        },
+        'skip': bool(thin_shell or no_volume or open_shell),
+        'reason': ('thin_shell' if thin_shell else
+                   ('no_volume' if no_volume else
+                    ('open_shell' if open_shell else None))),
+    }
 
 
 def _tamponade_shape_leak(in_verts, in_tris, out_verts, out_tris, in_diag):
@@ -204,7 +409,7 @@ from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
 
 def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
                    tmpdir=None, tamponade=False, intensity=None, spec=None,
-                   si_mode='report', prepass=False):
+                   si_mode='report', prepass=False, tamponade_force=False):
     """Interior-plug tier for registry method 17 (Tamponade).
 
     Runs ``sutura_engine.tamponade.run_tamponade`` on the CURRENT stage-1 result
@@ -255,7 +460,8 @@ def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
            'guard_rejected': None, 'guard_reason': None,
            'baseline_self_intersections': None,
            'candidate_self_intersections': None,
-           'si_policy': None, 'si_checked': False, 'si_flagged': False}
+           'si_policy': None, 'si_checked': False, 'si_flagged': False,
+           'gate': None, 'shape': None, 'reason_key': None}
     if 'tamponade_shell_prepass' in stats:
         rec['shell_prepass'] = stats['tamponade_shell_prepass']
     with method_health.tier_guard('tamponade', 'tier') as _g:
@@ -271,7 +477,7 @@ def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
         # look like a regression (ornate-frame: boundary_loop_stats 39 vs the
         # reload-honest 23).  `after` carries the in-memory measures only.
         wb_v, wb_t = weld_reload_equivalent(cur_v, cur_t)
-        _base_defects = detect_defects(wb_v, wb_t)
+        _base_defects = detect_defects(wb_v, wb_t, with_indices=True)
         base_holes = len(_base_defects['holes'])
         base_nm = len(_base_defects['non_manifold'])
         base_parts = _count_vertex_components(len(wb_v), wb_t)
@@ -331,6 +537,28 @@ def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
                              'tier skipped')
             stats['tamponade'] = rec
             return v, t, after
+
+        shape = _tamponade_shape(wb_v, wb_t, _base_defects.get('holes'), after)
+        rec['shape'] = shape
+        if not tamponade_force and _shape_gate_enabled() and shape['skip']:
+            rec['gate'] = 'shape_card'
+            _skip_reason = shape.get('reason')
+            if _skip_reason == 'no_volume':
+                rec['reason_key'] = 'tamponade_skip_no_volume'
+                rec['reason'] = ('not suitable: no interior volume (open sheet); '
+                                 'left to Flap')
+            elif _skip_reason == 'open_shell':
+                rec['reason_key'] = 'tamponade_skip_open_shell'
+                rec['reason'] = ('not suitable: open shell / no solid interior; '
+                                 'left to Flap')
+            else:
+                rec['reason_key'] = 'tamponade_skip_no_interior'
+                rec['reason'] = ('not suitable: thin shell / no interior volume; '
+                                 'left to Flap')
+            stats['tamponade'] = rec
+            return v, t, after
+        if tamponade_force and shape['skip']:
+            rec['gate'] = 'user_forced'
 
         seal_budget = None
         if prepass and prepass_budget is not None:

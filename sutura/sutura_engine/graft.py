@@ -57,6 +57,9 @@ from sutura_engine.pipeline.p_weld import (
 )
 from sutura_engine.pipeline.tiers.local_remesh import _damaged_region
 from sutura_engine.pipeline.utils import _referenced_only
+from sutura_engine.pipeline.work_estimate import (
+    fits_budget, graft_grid_work_budget, grid_work, grid_work_with_holes,
+)
 from sutura_engine.wall import sample_surface as _wall_sample_surface
 
 METHOD_NUMBER = 13
@@ -466,6 +469,22 @@ def _grid_cell_count(v, voxel):
     dims = np.ceil(np.maximum(ext, 0.0) / float(voxel)) + 1 + 2 * BUDGET_PAD
     dims = np.maximum(dims, 3)
     return int(np.prod(dims))
+
+
+def estimate_grid_cells(verts, tris, *, intensity=None, grid_budget=None):
+    """Deterministic whole-mesh grid estimate for the Graft pre-gate.
+
+    Returns ``(cells, voxel)`` at the resolved grid budget (the same auto voxel
+    ``shell_wrap`` would use).  No geometry is modified and no grid is allocated.
+    """
+    v = _as_f64(verts)
+    t = _as_i64(tris)
+    if len(v) == 0 or len(t) == 0:
+        return 0, 1.0
+    if grid_budget is None:
+        grid_budget = resolve_grid_budget(intensity)
+    voxel = _auto_voxel(v, t, _diag(v), int(grid_budget))
+    return _grid_cell_count(v, voxel), float(voxel)
 
 
 def _gap_estimate(verts, tris):
@@ -1175,6 +1194,42 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     work_budget = int(GRAFT_WORK_BUDGET_BY_INTENSITY.get(
         intensity, GRAFT_WORK_BUDGET_BY_INTENSITY['balanced']))
     report["work_budget"] = work_budget
+    # Deterministic whole-mesh pre-gate: a single morph_close is not
+    # interruptible, and the inner cell budget only stops between attempts once
+    # a candidate exists.  Estimate the one-attempt cost (grid cells x BVH
+    # faces) before allocating the SDF grid and keep the input when it cannot
+    # fit the shared fallback work budget.  Pure function of the input + preset.
+    raw_grid_cost = grid_work(len(t0), per_attempt_cost)
+    # Many open holes multiply the real cost: every rung of the closing ladder
+    # and the projection/hybrid decision revisits them.  Charge one extra unit
+    # per 100 holes (deterministic, pure function of the input).
+    holes = int((analysis or {}).get('holes') or 0)
+    hole_factor = 1 + holes // 100
+    grid_cost = grid_work_with_holes(len(t0), per_attempt_cost, holes)
+    fb_budget = graft_grid_work_budget()
+    report["fallback_work_units"] = int(grid_cost)
+    report["grid_work_raw"] = int(raw_grid_cost)
+    report["hole_work_factor"] = int(hole_factor)
+    report["fallback_work_budget"] = (None if fb_budget is None
+                                      else int(fb_budget))
+    report["grid_cells"] = int(per_attempt_cost)
+    if not fits_budget(grid_cost, fb_budget):
+        report["budget_exceeded"] = True
+        report["budget_limited_by"] = "work"
+        report["precheck_skipped"] = True
+        report["reject_reason"] = "budget"
+        report["reason"] = (
+            "Graft skipped: estimated grid work %d (kilo cell-face units, "
+            "%d raw x %d hole factor) is above the deterministic fallback "
+            "budget %d; the stage-1 result was kept"
+            % (int(grid_cost), int(raw_grid_cost), int(hole_factor),
+               int(fb_budget)))
+        report["warnings"] = [{
+            "code": "skipped_budget",
+            "message": report["reason"],
+        }]
+        report["seconds"] = round(time.perf_counter() - t_start, 3)
+        return v0, t0, report
     spent_work = 0
     best = None
     for attempt, rval in enumerate(ladder):

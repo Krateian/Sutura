@@ -23,7 +23,8 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 * **macOS right-click needs a Quick Action, not a Dolphin-style menu.**
   macOS has no ServiceMenu equivalent; instead the installer adds a Finder
   **Quick Action** ("Sutura — Repair") in `~/Library/Services/`, available
-  under right-click → Quick Actions for selected STL/3MF files. It calls the
+  under right-click → Quick Actions for any selected file; only STL/3MF files
+  are repaired, and other selections are skipped with a notification. It calls the
   bundled `sutura-cli` inside a PyInstaller `Sutura.app`, so it only repairs
   when such an app is present (in `/Applications` or `~/Applications`) — the
   dev-install wrapper app alone has no bundled CLI. A downloaded

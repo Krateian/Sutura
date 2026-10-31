@@ -94,7 +94,7 @@ yazılır.
 on dokuz onarım **yönteminin** genişletilebilir kayıt defteridir (`--list-methods`
 numara, kimlik, aile, kullanılabilirlik ve görünen adı yazdırır). 1–7 numaralı
 yöntemler temel boru hattı üzerinde seçicilerdir (#1 Hızlı Temizlik, #2 Yerel Onarım,
-#3 Tam Onarım, #4 Birleştir, #5 Kendini Onarım, #6 Kesin Onarım, #7 fTetWild);
+#3 Tam Onarım, #4 Birleştir, #5 Otomatik İyileştirme (SI), #6 Kesin Onarım, #7 fTetWild);
 #8–#10 bağımsız yüzey yeniden inşa katmanlarıdır (#8 Balon native örtük kapatma,
 #9 Arka Plaka düz kapatma, #10 İskelet vekil şablon onarımı); #11 Nakil ve #12 Nakil+
 otomatik ve nokta kılavuzlu yineleme onarımlarıdır; #13 Graft sağlıklı üçgenleri
@@ -133,7 +133,7 @@ kimlikler gösterilmektedir; eski slug'lar takma ad olarak desteklenir):
 | 2 | `local_mend` | Yerel Onarım | topoloji | Derin onarım merdiveni `local`: yalnızca hasarlı bölgeleri yeniden mesh'ler. | hayır |
 | 3 | `full_mend` | Tam Onarım | topoloji | Derin onarım merdiveni `full` (varsayılan dengeli davranış). | hayır |
 | 4 | `join` | Birleştir | topoloji | Küçük ayrık bileşenleri silmek yerine en yakın büyük bileşene taşır. | hayır (taşır) |
-| 5 | `autorefine` | Kendini Onarım | si | Kesişen üçgenleri kesişim segmentleri boyunca böler (Lazard & Valque 2025). | hayır |
+| 5 | `autorefine` | Otomatik İyileştirme (SI) | si | Kesişen üçgenleri kesişim segmentleri boyunca böler (Lazard & Valque 2025). | hayır |
 | 6 | `exact_refine` | Kesin Onarım | si | Rust çekirdeği (`sutura_geom`) ile tam düzenleme-lite kendini kesme ayırması. | hayır |
 | 7 | `ftetwild` | fTetWild | zarf | Özgün yüzeyi tetrahedralize edip su geçirmez, SI'sız bir sınır çıkarır. | evet (hacimsel ağ) |
 | 8 | `balloon` | Balon | kapama | Tek-taraflı taramaların büyük açıklıklarını native örtük (genelleştirilmiş sarım seviye kümesi) yöntemle kapatır. | evet (arka yüzey) |
@@ -194,6 +194,23 @@ bağımsız olarak önerilen yedek yöntemlerle onarılır (nesne başına `meth
 raporlanır). Rapor `method_used`, `methods_tried`, `method_reached_watertight` ve
 ek deneme çalıştıysa `analysis` ile `recommendations` alanlarını ekler.
 
+**Önerilen yöntemler (gelişmiş).** `--analyze` artık her nesne için (ve dosya
+için en kötü durum birleşimi olarak) bir `suggestions` listesi ekler: en fazla
+üç güvenli yöntem, 0–100 **tahmini** güven (en fazla 95), Yüksek/Orta/Düşük
+etiketi ve tek satırlık sade bir gerekçe. Yüksek için kapaktan sonra ≥85 puan
+ve bir sonraki seçeneğe göre ≥10 puan fark gerekir (son öğe için bir önceki
+seçenek); eşitlik asla Yüksek değildir. Orta 50'den, Düşük 50'nin altından
+başlar. Join (#4) yalnızca tanı üst üste binen veya birbirine değen gövdeler
+bildirdiğinde gösterilir; meşru ayrı parçalar birleştirilmez. Sıralama
+`rank_methods` ile `core150-c26ed2e`
+seçicisinden (18 kademe, şekil katı kapısı) gelen küçük %15 önselin
+birleşimidir; yalnızca bilgilendiricidir, hiçbir yöntemi etiketlemez, otomatik
+çalıştırmaz veya varsayılan onarım yolunu değiştirmez. Kullanıcı girdisi
+gerektiren isteğe bağlı yöntemler (#15 Duvar Kalınlaştırma, #16 Dressing,
+#17 Tamponad) ilk üçe girmez. Mevcut altı öğelik `recommendations` listesi GUI
+yöntem menüsü için değişmeden kalır; yeni anahtarlar eklenir. GUI aynı bloğu
+**Yöntemleri analiz et** sonrasında analiz panosunda gösterir.
+
 Sıralı yöntemler denenmeden önce otomatik yol, tespit edilen hasarın anlamsız
 kıldığı bir yöntemi atlayabilir: kopya yüzler Join (#4) yöntemini, iç yüzler
 veya bir iç bölge Transplant (#11) ve Wall Thicken (#15) yöntemlerini atlar.
@@ -232,6 +249,23 @@ otomatik davranışı korur. Dosya başına etiketlenen motorlar CLI'de
 çalıştırır).
 
 ![Dosya listesi sağ tık yöntem menüsü](../../../assets/method-menu.png)
+
+### Yöntem denetim paneli (Seçenekler → Yöntemler)
+
+GUI'de toplu bir **Yöntemler** paneli de vardır (Seçenekler → *Yöntemler* veya
+**Seçenekler**'in yanındaki **Yöntemler** düğmesi). *Otomatik* modda etkin
+onarım ilkesinden gelen derin katman sırasını gösterir; kullanıcı bir katmanı
+etkinleştirebilir veya kapatabilir. Otomatik sıra sabittir (kod sırası), bu
+yüzden orada taşıma denetimi yoktur; özel sıra için *Elle* modu kullanılır.
+*Uygula* yalnızca `~/.config/sutura/policy.toml` kullanıcı geçersiz kılmasını
+yazar (atomik, `.bak` ile); paket `default_policy.toml` dosyasına asla
+dokunmaz. En az bir derin katman etkin kalmalıdır. *Elle* mod on dokuz
+yöntemin tümünü listeler; sırayla işaretlemek mevcut dosya-başına yöntem
+etiketlerini doldurur ve CLI bu tam sırayı `--methods` olarak alır. Panel,
+elle sırayı ilkeye kaydetmez. Güvenlik kapıları, `[si_escalation]` ve katman
+kapı tabloları kilitli ve salt okunur gösterilir.
+
+![Yöntem denetim paneli: salt okunur otomatik sıra, elle sıra ve kilitli kapılar](../../../assets/methods-panel.png)
 
 ### Yinelenen öge onarımı (otomatik/elle seçici)
 
@@ -397,9 +431,20 @@ katmanlarından önce ikinci bir şans** alır.
 
 **Varsayılan olarak açıktır**: kapatmak için `--no-tamponade` (veya
 `SUTURA_TAMPONADE=0`) ya da Seçenekler → Onarım sekmesindeki **Tamponad
-(delikleri içeriden doldur)** onay kutusu. Bir tıkaç yalnızca şu durumlarda
-reddedilir, böylece katman yalnızca sonucu kesin olarak iyileştirdiğinde çıktıyı
-değiştirir:
+(delikleri içeriden doldur)** onay kutusu. Çalışmadan önce katman düzeyinde bir
+**şekil uygunluk kartı** modelin gerçek bir iç hacmi olup olmadığını denetler.
+İnce kabuk / açık yüzey (düşük kompaktlık, büyük açık sınır alanı ve ince-duvar
+oranı) *iç hacim yok; Flap'e bırakıldı* gerekçesiyle atlanır; tıkaç denenmez.
+Tek yüzeyli açık kabuklar — uç kapakları olmayan vazo/silindir veya kumaş
+benzeri yüzey — de atlanır: kapı, sınır döngüsü çevresini yüzey alanıyla
+karşılaştırır ve yüzeyin en az bir tarafının katı sarım sayısına ulaştığını
+denetler. İnce uzun açık borular ve alt kapağı kapalı bardaklar henüz atlanmaz;
+bu zararsızdır çünkü Tamponad tıkacı daha sonra reddeder. Kart ayrıca melt
+derinlik alanından normalize edilmiş en büyük iç derinliği raporlar; bu derinlik
+şimdilik yalnızca rapordur ve ancak kalibrasyondan sonra sert kapı olur. #17
+yöntemi açıkça seçilirse (`--methods 17`) uygunluk kapısı atlanır ve
+`user_forced` raporlanır. Bir tıkaç yalnızca şu durumlarda reddedilir, böylece
+katman yalnızca sonucu kesin olarak iyileştirdiğinde çıktıyı değiştirir:
 
 - **katı cismin dışına sızar** — tıkacın bir örnek noktası orijinal yüzeyden
   `clamp(köşegen/10000, 0,0125, 0,05)` mm'den daha uzakta boş uzayda yer alır ve
@@ -437,9 +482,15 @@ yoğunluk ön ayarını kesim-grid hücresi olarak izler
 (`TAMPONADE_WORK_BY_INTENSITY`; `quick` bu katmanı kapatır); prepass override'ı
 `SUTURA_TAMPONADE_PREPASS_BUDGET` aynı birimde bir sayıdır (eski saniye anlamı
 kaldırıldı). Rapor `tamponade` anahtarını taşır:
-`ran`, `adopted`, `reason`, `plugs`, `plug_faces`,
+`ran`, `adopted`, `reason`, `reason_key`, `gate`, `shape`, `plugs`, `plug_faces`,
 `melt_layers_tried`/`_accepted`/`_rolled_back`, `micro_welds_ok`/`_failed`,
-`healthy_faces_kept`, `input_faces`, `output_faces` ve `seconds`.
+`healthy_faces_kept`, `input_faces`, `output_faces` ve `seconds`. `shape`
+anahtarı `genus`, `compactness`, `open_area_ratio`, `effective_thickness_norm`,
+`thin_sample_fraction`, `interior_depth_norm`, `boundary_perimeter`,
+`perimeter_ratio`, `solid_area_fraction`, uygulanan eşikleri ve kararı taşır.
+Şekil kapısı atlamaları `gate = shape_card` kullanır; `reason_key`
+`tamponade_skip_no_interior`, `tamponade_skip_no_volume` veya
+`tamponade_skip_open_shell` olur.
 
 ### Splint (kesin katı yeniden inşa, #18)
 

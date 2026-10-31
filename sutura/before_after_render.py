@@ -31,7 +31,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from defects import detect
+from defects import defect_map_v2
 from heatmap import render, focus_frame
 from heatmap_render import load_mesh
 from viewer_common import (ORANGE, GREEN, healed_face_mask,
@@ -58,8 +58,8 @@ def main():
         return 1
 
     try:
-        orig_defects = detect(verts, tris, with_indices=True)
-        rep_defects = detect(rverts, rtris, with_indices=True)
+        orig_defects = defect_map_v2(verts, tris, with_indices=True)
+        rep_defects = defect_map_v2(rverts, rtris, with_indices=True)
 
         # Shared before/after camera (same as the interactive viewer opens
         # with): defect-facing rotation aimed at the worst ORIGINAL defect

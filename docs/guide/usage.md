@@ -32,7 +32,35 @@ sutura validate model.stl   # analyze WITHOUT repairing (read-only report)
 sutura model.stl --dry-run  # report what a repair would do, write NOTHING
 sutura a.stl b.3mf c.stl    # batch: each file gets a _fixed output
 sutura --version            # print the version and exit
+sutura model.stl --human --debug  # show a traceback for an unexpected error
 ```
+
+The first repair writes `model_fixed.stl` (or `.obj`/`.3mf`). If that name
+already exists, the CLI writes `model_fixed_2.stl`, then `_3`, and never
+overwrites the earlier file. An explicit `-o PATH` still writes exactly PATH
+and keeps its explicit-overwrite meaning.
+
+**Progress and cancel.** With `--human`, a single progress line is shown on
+stderr only when stderr is a terminal (stage, step 3/8, elapsed time);
+`--no-progress` disables it. The line is never written to pipes or captured
+stderr. With `--json`, add `--progress-json` to emit optional NDJSON progress
+events on stderr; stdout remains one JSON document and the default JSON output
+is unchanged. Each event is
+`{"event":"start|stage|end|cancel","file":…,"file_index":…,"file_total":…,
+"step_total":8,"elapsed_s":…}`; a `stage` event also carries `"stage"`,
+`"step"` (1–8) and optional `"detail"`.
+Ctrl-C cancels at stage boundaries and at the native work-counter
+checkpoints, exits 130, and leaves no partial output (`*_fixed` is written only
+after the repair completes).
+
+**Exit status.** `0` success; `1` runtime failure (per-file repair/validate/
+analyze error, malformed input, a declined budget save, or a missing
+`sutura_geom`); `2` usage error (invalid flag, combination or range); `130`
+interrupted (Ctrl-C). Unexpected errors print a short `error:` message and a
+`--debug` hint — add `--debug` (or `SUTURA_DEBUG=1`) to see the traceback.
+With `--human`, errors go to stderr; the default JSON mode keeps
+`{"error": ...}` on stdout. `--self-check` and `--self-repair` keep their
+existing 0/1 contract.
 
 OBJ note: materials/textures (`mtllib`/`usemtl`) are **not preserved** in the
 repaired output — the mesh is rebuilt (vertices + triangles only), so texture
@@ -209,9 +237,15 @@ print corpus, and each issue records `"heuristic": true` so the UI can label
 them as such. Multi-object 3MF reports carry the block per object and an
 aggregate that takes the worst object.
 
+An `Advisory:` line is added when the model has thin walls: the Rust
+diagnosis reports the fraction of the surface thinner than a small percentage
+of the model size. That fraction is unit-agnostic; absolute millimetres are
+shown only when the file is treated as millimetres (no unit warning). The
+advisory is informational and never changes the repair.
+
 `--human` prints the block as a `Print impact:` section (`Fixed:` / `Remaining:` /
-`Geometry:` / `Not assessed:`), and the GUI renders the same at the top of the
-"What changed" repair log.
+`Geometry:` / `Advisory:` / `Not assessed:`), and the GUI renders the same at
+the top of the "What changed" repair log.
 
 With multiple files, every input is repaired in turn and a summary is
 printed (`N watertight, M with warnings, K failed`), including a breakdown of
@@ -313,7 +347,8 @@ experimental passes — sit in a separate **Options** window (button next to **M
 Cmd+,) that can stay open while repairing; the button label shows how many
 options differ from their defaults, e.g. *Options (2)*. Its tabs: *General*
 (anonymous usage history), *Repair* (fTetWild fallback plus the Triage
-intensity preset/profile selector and the profile editor), *Experimental*
+intensity preset/profile selector and the profile editor), *Methods*
+(automatic deep-tier order and a manual per-file sequence), *Experimental*
 (opt-in passes), *Updates* (manual check, automatic updates, optional check
 on every start), *Changelog* (release notes from GitHub, with an offline
 fallback) and *Engines* (fTetWild install/remove and the configured

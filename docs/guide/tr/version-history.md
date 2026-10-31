@@ -6,6 +6,36 @@
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../../CHANGELOG.md).
 
+- **v0.9.8 — 2026-10-31** — En yavaş Flap onarımları hızlandı: doğrulanan
+  en yavaş iki durum yaklaşık 822 s'den 26 s'ye ve 655 s'den 12 s'ye indi;
+  155 meshli kontrol aynı onarımları korudu. Tamponad ayrıca ince kabukları,
+  açık yüzeyleri ve katı iç hacmi olmayan tek yüzeyli açık vazo/silindir/kumaşları
+  atlayıp Flap'e bırakır; ince uzun açık borular ve alt kapağı kapalı bardaklar
+  zararsız bir eksik olarak kalır. Yeni bir sonuç
+  kendi kendine kesişim kontrolü, onarım adaylarını dener ve yalnızca kesinlikle
+  daha kötü olmayan sonucu korur; mevcut adayla 155 meshli test setinde hiçbir
+  modeli değiştirmez, bu yüzden yüzeyi koruyan gelecek bir düzeltme için
+  altyapıdır. CLI terminalde aşama ilerleme satırı gösteriyor (isteğe bağlı
+  NDJSON olaylarıyla), Ctrl-C temiz iptal ediyor ve beklenmeyen hatalar
+  `--debug` olmadan iz göstermiyor. `--analyze` her nesne için tahmini güvenle
+  en fazla üç güvenli yöntem öneriyor; GUI aynı önerileri gösteriyor. GUI yoğun
+  onarım raporu yerine sade bir karar ve katlanmış ayrıntılar sunuyor,
+  Coaptation ve kendi içine geçen yüzey ayarlarını hatırlıyor, onarılan dosyayı,
+  klasörünü veya algılanan dilimleyiciyi açabiliyor. Tekrarlanan çalışma var
+  olan `_fixed` sonucunu korur ve `_fixed_2`, `_3` yazar. macOS kurulumu artık
+  Homebrew veya ikinci bir çalışma gerektirmiyor, Quick Action sürümü
+  uygulamayla eşit kalıyor ve uninstall, Sutura ortamı oluşturmadıysa veya
+  onay vermezseniz (`--remove-env`/`--purge` verilmedikçe) kullanıcı verisini,
+  yapılandırmaları ve `sutura-env`'i koruyor. Karar kuralları ve eşikler artık
+  tek bir paket ilke dosyasında (`sutura_engine/policy/default_policy.toml`)
+  yaşıyor; isteğe bağlı kullanıcı geçersiz kılması
+  `~/.config/sutura/policy.toml` dosyasındadır. Güvenlik kapıları kilitli kalır,
+  bozuk veya bilinmeyen girdiler yok sayılır ve çıktı değişmez (155/155 aynı).
+  Bir **Yöntem denetim paneli** (Seçenekler → Yöntemler veya ana pencere
+  düğmesi) otomatik derin katmanları etkinleştirip kapatır (sıra sabit kalır);
+  Elle modda seçilen sırayla `--methods` geçirir; yalnızca kullanıcı geçersiz
+  kılmasını yazar, kilitli kapıları salt okunur gösterir ve Sıfırla bozuk bir
+  dosyayı kurtarır.
 - **v0.9.7 — 2026-10-26** — Deneysel bir **son çare katı motoru** seçeneği.
   Varsayılan **fTetWild** olarak kalır; isteğe bağlı kesin bir yeniden inşa
   (**CDT**, kısıtlı dörtyüzlüleme) `--solid-engine cdt`, Seçenekler → Onarım →

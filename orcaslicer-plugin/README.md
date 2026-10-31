@@ -129,7 +129,7 @@ on stdout is parsed and mapped onto the panel protocol. Each spawn runs on a
 plugin-created worker thread, whose audit context is empty, so on OrcaSlicer 2.5
 it is not audited and raises no prompt; a denial would be reported as a clear
 panel message. The installed CLI
-exposes all 18 repair methods; the experimental **Splint (#18)** exact solid
+exposes all 19 repair methods; the experimental **Splint (#18)** exact solid
 rebuild is opt-in and off by default, so the panel presets do not enable it.
 
 ## Permissions

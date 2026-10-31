@@ -3,6 +3,11 @@
 [← Back to README](../../README.md) · [Türkçe](tr/troubleshooting.md)
 
 
+* **Uninstall kept `sutura-env`.** This is deliberate unless Sutura's installer
+  created it. The uninstaller prints the exact path, size and manual command.
+  Use `./uninstall.sh --remove-env` (or `--purge`) for an owned env;
+  `SUTURA_UNINSTALL_SKIP_CONDA=1` always keeps it. If `conda` is outside
+  `PATH`, set `SUTURA_CONDA_BIN=/path/to/conda` for the uninstaller.
 * **`python3.11` not found (fTetWild fallback runtime only).** A normal install
   with an in-range `python3` does not need Python 3.11. When the main
   interpreter is outside 3.10–3.14, `install.sh` needs a fallback runtime for
@@ -65,7 +70,7 @@ and recover the installation:
 
 * **`sutura --self-check`** verifies the installation by exercising the repair
   methods on a tiny built-in mesh and prints a summary line
-  (`Methods: N/18 OK (X failed, Y skipped)`) in a couple of seconds. A method
+  (`Methods: N/19 OK (X failed, Y skipped)`) in a couple of seconds. A method
   that cannot be loaded or that fails fails the check; an optional addon that is
   simply not installed is reported as skipped, not failed. The command exits
   non-zero if any method fails. The GUI runs the same availability check when it

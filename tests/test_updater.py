@@ -61,7 +61,7 @@ def test_check_for_update_return_contract():
         return
 
     fake_cfg = {
-        'check_for_updates': True, 'last_check': None, 'last_known_version': None,
+        'check_for_updates': True, 'last_check': None,
     }
     real_version = updater.VERSION
     orig = (updater.load_config, updater.save_config,
@@ -88,6 +88,16 @@ def test_check_for_update_return_contract():
         updater.VERSION = real_version
         (updater.load_config, updater.save_config,
          updater.should_check, updater.fetch_latest_release) = orig
+
+
+def test_default_config_has_no_orphan_keys():
+    """Persisted settings must be read somewhere; the two orphan keys are gone."""
+    import updater
+    cfg = updater.DEFAULT_CONFIG
+    assert 'last_known_version' not in cfg, cfg
+    assert 'deep_repair' not in cfg, cfg
+    assert cfg.get('coaptation') is True, cfg
+    assert cfg.get('si_mode') == 'report', cfg
 
 
 def test_should_check():
@@ -270,6 +280,37 @@ def test_perform_update_geom_failure_rolls_back():
     assert prev == '0.9.1', prev
     assert calls == ['backup', 'download', 'install', 'rollback:0.9.1'], calls
     assert 'sutura_geom' in msg, msg
+
+
+def test_perform_update_cancels_before_install():
+    """A stop request before install must leave the installed files alone."""
+    import updater
+    calls = []
+    orig = (updater.VERSION, updater.is_appimage,
+            updater.crosses_license_boundary, updater.backup_install,
+            updater.download_source, updater.install_source,
+            updater.health_check, updater.rollback)
+    updater.VERSION = '0.9.1'
+    updater.is_appimage = lambda: False
+    updater.crosses_license_boundary = lambda v, t: False
+    updater.backup_install = lambda: calls.append('backup')
+    updater.download_source = lambda tag, d: (
+        calls.append('download'), '/tmp/fake-src')[1]
+    updater.install_source = lambda src: calls.append('install')
+    updater.health_check = lambda tag: (True, 'ok')
+    updater.rollback = lambda v: calls.append('rollback:' + v)
+    try:
+        ok, msg, prev = updater.perform_update(
+            '0.9.2', should_stop=lambda: 'download' in calls)
+    finally:
+        (updater.VERSION, updater.is_appimage,
+         updater.crosses_license_boundary, updater.backup_install,
+         updater.download_source, updater.install_source,
+         updater.health_check, updater.rollback) = orig
+    assert ok is False, (ok, msg)
+    assert prev == '0.9.1', prev
+    assert calls == ['backup', 'download'], calls
+    assert 'cancelled' in msg, msg
 
 
 def _copy_python_fixture(tmp):

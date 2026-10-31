@@ -21,6 +21,8 @@ import zipfile
 import subprocess
 import importlib.util
 import time
+import traceback
+import signal
 import hashlib
 from collections import defaultdict, OrderedDict
 import numpy as np
@@ -31,7 +33,11 @@ from defects import detect as detect_defects
 from mesh_classifier import classify_mesh
 import repair_score
 import history
+from sutura_engine.progress import (
+    CancelledError, CancelToken, make_progress, progress_stage, raise_if_cancelled,
+)
 import local_exact
+from sutura_engine import policy as policy_mod
 import topology
 import triage
 import methods as method_registry
@@ -159,7 +165,30 @@ from sutura_engine.pipeline.cli import (
 )
 
 
-VERSION = "0.9.7"
+VERSION = "0.9.8"
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+EXIT_INTERRUPTED = 130
+
+
+def _unique_output_path(src):
+    """Default repaired path: *_fixed, then *_fixed_2, *_fixed_3, ...
+
+    An explicit -o keeps its explicit-overwrite meaning; this helper is only
+    for the auto-generated output path.
+    """
+    stem, ext = os.path.splitext(src)
+    base = stem + '_fixed' + ext
+    if not os.path.exists(base):
+        return base
+    n = 2
+    while True:
+        cand = stem + '_fixed_%d' % n + ext
+        if not os.path.exists(cand):
+            return cand
+        n += 1
 
 
 def process_file(src, human, mode='auto', profile=None, no_history=False,
@@ -173,12 +202,12 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  flap=False,
                  dressing=False, dressing_drain=None, dressing_defects=None,
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
-                 tamponade=False,
+                 tamponade=False, tamponade_force=False,
                  si_mode=None, dressing_force_adopt=False,
                  splint=False, splint_adaptive=None,
                  solid_engine='ftetwild',
                  coaptation=False,
-                 trace_path=None):
+                 trace_path=None, progress=None, cancel=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -216,7 +245,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
 
     stem, ext = os.path.splitext(src)
     if out is None:
-        out = stem + '_fixed' + ext
+        out = _unique_output_path(src)
 
     tmpdir = tempfile.mkdtemp(prefix='sutura-')
     tmp_out = os.path.join(tmpdir, 'out' + ext)
@@ -249,12 +278,13 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             triage_spec=triage_spec, engines=engines,
             engine_chain=engine_chain, repeat_source=repeat_source,
             repeat_target=repeat_target, wall_min_thickness=wall_min_thickness,
-            graft=graft, flap=flap,
+            graft=graft, flap=flap, progress=progress, cancel=cancel,
             dressing=dressing, dressing_drain=dressing_drain,
             dressing_defects=dressing_defects,
             dressing_rmax_scale=dressing_rmax_scale,
             dressing_sigma_scale=dressing_sigma_scale,
             tamponade=tamponade,
+            tamponade_force=tamponade_force,
             si_mode=si_mode,
             splint=splint, splint_adaptive=splint_adaptive,
             solid_engine=solid_engine,
@@ -288,6 +318,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             result['budget'] = budget
         if budget is not None and not budget['within_budget']:
             if force or _confirm_budget_save(budget):
+                raise_if_cancelled(cancel)
+                progress_stage(progress, 8, 'save')
                 os.replace(tmp_out, out)
             else:
                 # Unambiguous, machine-detectable outcome: distinct from a
@@ -305,7 +337,13 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                     result['repair_confidence_label'] = _rc['label']
                     result['repair_confidence_factors'] = _rc['factors']
         elif os.path.exists(tmp_out):
+            raise_if_cancelled(cancel)
+            progress_stage(progress, 8, 'save')
             os.replace(tmp_out, out)
+    except CancelledError:
+        result['status'] = 'cancelled'
+        result['error'] = 'cancelled'
+        raise
     except ExtremeRemovedAllError as e:
         result['error'] = str(e)
         result['extreme_removed_object'] = True
@@ -334,10 +372,48 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     _fps = history.pop_fingerprints(result)
     if not no_history:
         history.write(result, VERSION, elapsed_ms, _fps)
+    result['policy'] = policy_mod.report_block()
+    if methods is not None:
+        _mc_mode = 'manual'
+        # The CLI normalises --methods aliases to registry ints before here.
+        _mc_order = [int(n) for n in methods]
+        _mc_source = 'manual'
+        _mc_forced = True
+    else:
+        _mc_mode = 'auto'
+        _mc_order = list(policy_mod.ORDER['deep_tier_order'])
+        _mc_source = ('user_policy' if policy_mod.USER_OVERRIDE
+                      else 'default_policy')
+        _mc_forced = False
+    result['method_control'] = {
+        'mode': _mc_mode,
+        'order': _mc_order,
+        'source': _mc_source,
+        'user_forced': _mc_forced,
+        'gates': sorted(policy_mod.gate_paths()),
+    }
     return result, category
 
 
-def main():
+def _emit_error(message, human, code=EXIT_ERROR):
+    """Report a runtime error in the selected format and exit."""
+    if human:
+        print('error: %s' % message, file=sys.stderr)
+    else:
+        print(json.dumps({'error': message}, ensure_ascii=False))
+    sys.exit(code)
+
+
+def _argv_human(argv):
+    return '--human' in argv and '--json' not in argv
+
+
+def _short_error(exc):
+    text = str(exc).strip()
+    return text or exc.__class__.__name__
+
+
+def _main(argv=None):
     try:
         from sutura_engine import paths as _paths
         _data = _paths.ensure_data_dir()
@@ -364,7 +440,12 @@ def main():
     parser.add_argument('-o', '--output', metavar='OUTPUT',
                         help='output file (only valid with a single input)')
     parser.add_argument('--human', action='store_true',
-                        help='print a human-readable report')
+                        help='print a human-readable report; a progress line is '
+                             'shown on stderr when stderr is a TTY')
+    parser.add_argument('--no-progress', action='store_true',
+                        help='disable the human progress line')
+    parser.add_argument('--progress-json', action='store_true',
+                        help='with --json, emit NDJSON progress events on stderr')
     parser.add_argument('--defects', action='store_true',
                         help='with --human, also list input defects (holes / '
                              'non-manifold regions). JSON always includes defects.')
@@ -691,8 +772,11 @@ def main():
                         default=os.environ.get('SUTURA_TRACE'),
                         help='record a structured step-by-step trace of every '
                              'pipeline stage to PATH (JSON format). Env: SUTURA_TRACE')
+    parser.add_argument('--debug', action='store_true',
+                        help='show the traceback for unexpected errors '
+                             '(also SUTURA_DEBUG=1)')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # --list-intensities: print the presets and user profiles, then exit.
     if args.list_intensities:
@@ -705,6 +789,13 @@ def main():
             print(json.dumps(method_registry.methods_json(), ensure_ascii=False))
         else:
             print(method_registry.format_methods())
+            print()
+            print('Automatic deep-tier order: %s'
+                  % ', '.join(policy_mod.ORDER['deep_tier_order']))
+            print('Policy: schema %s, hash %s, %s'
+                  % (policy_mod.SCHEMA_VERSION, policy_mod.CONTENT_HASH,
+                     'user override' if policy_mod.USER_OVERRIDE
+                     else 'packaged default'))
         sys.exit(0)
 
     # --intensity accepts a built-in preset OR a user profile; argparse cannot
@@ -719,6 +810,8 @@ def main():
     files = args.files
     out = args.output
     human = args.human and not args.json
+    if args.progress_json and not args.json:
+        parser.error('--progress-json requires --json')
     show_defects = args.defects
     show_diff = args.diff
     mode = args.mode
@@ -776,30 +869,25 @@ def main():
     # subcommands, dispatched before any repair (like validate/export-history).
     if files and files[0] == 'engines':
         if out is not None or dry_run:
-            print(json.dumps({'error': 'engines takes no -o/--dry-run'}))
-            sys.exit(1)
+            parser.error('engines takes no -o/--dry-run')
         sys.exit(run_engines_cli(files[1:], human=human))
     if files and files[0] == 'ftetwild':
         if out is not None:
-            print(json.dumps({'error': 'ftetwild takes no -o'}))
-            sys.exit(1)
+            parser.error('ftetwild takes no -o')
         sys.exit(run_ftetwild_cli(files[1:], dry_run=dry_run, yes=args.yes,
                                   human=human))
 
     # Repair budgets: validate the ranges, then 0 / unset both mean "no
     # budget" (disabled), matching the GUI's 0 = no limit convention.
     if args.max_geometry_change is not None and args.max_geometry_change < 0:
-        print(json.dumps({'error': '--max-geometry-change must be >= 0'}))
-        sys.exit(1)
+        parser.error('--max-geometry-change must be >= 0')
     if args.max_risk is not None and not (0 <= args.max_risk <= 100):
-        print(json.dumps({'error': '--max-risk must be between 0 and 100'}))
-        sys.exit(1)
+        parser.error('--max-risk must be between 0 and 100')
     max_geom_change = args.max_geometry_change or None
     max_risk = args.max_risk or None
 
     if len(files) > 1 and out is not None:
-        print(json.dumps({'error': '-o cannot be used with multiple input files'}))
-        sys.exit(1)
+        parser.error('-o cannot be used with multiple input files')
 
     if getattr(args, 'no_learning_triage', False):
         os.environ[history.LEARNING_ENV] = '0'
@@ -845,8 +933,7 @@ def main():
             else:
                 print(json.dumps({'cleared': True, 'freed_bytes': freed, 'freed_human': cache._human_bytes(freed)}))
         except Exception as e:
-            print(json.dumps({'error': 'clear-cache failed: %s' % e}))
-            sys.exit(1)
+            _emit_error('clear-cache failed: %s' % e, human)
         sys.exit(0)
 
     # 'clear-learning' as the first positional argument resets the local
@@ -854,9 +941,7 @@ def main():
     # usage history.
     if files and files[0] == 'clear-learning':
         if len(files) > 1 or out is not None or dry_run or human:
-            print(json.dumps({'error': 'clear-learning takes no positional '
-                                       'arguments'}))
-            sys.exit(1)
+            parser.error('clear-learning takes no positional arguments')
         removed = history.clear_learning()
         print(json.dumps({'cleared': removed}))
         sys.exit(0)
@@ -865,10 +950,8 @@ def main():
     # usage history (summary + full JSON array) instead of repairing.
     if files and files[0] == 'export-history':
         if len(files) > 1 or out is not None or human or dry_run:
-            print(json.dumps({'error': 'export-history takes no positional '
-                                       'arguments (flags: --last N, --clear, '
-                                       '--summary-only)'}))
-            sys.exit(1)
+            parser.error('export-history takes no positional arguments '
+                         '(flags: --last N, --clear, --summary-only)')
         history.export_history(last=args.last,
                                summary_only=args.summary_only,
                                clear=args.clear)
@@ -881,31 +964,22 @@ def main():
     # by argparse before this point.
     _geom_ok, _geom_reason = method_health.check_required_geometry()
     if not _geom_ok:
-        if human:
-            print('error: %s' % _geom_reason)
-        else:
-            print(json.dumps({'error': _geom_reason}))
-        sys.exit(1)
+        _emit_error(_geom_reason, human)
 
     # 'validate' as the first positional argument switches to validate-only
     # mode: analyze the mesh(es) without repairing or writing anything.
     if files and files[0] == 'validate':
         targets = files[1:]
         if not targets:
-            print(json.dumps({'error': 'validate requires at least one input file'}))
-            sys.exit(1)
+            parser.error('validate requires at least one input file')
         if out is not None:
-            print(json.dumps({'error': '-o is not valid with validate'}))
-            sys.exit(1)
+            parser.error('-o is not valid with validate')
         if dry_run:
-            print(json.dumps({'error': '--dry-run is not valid with validate'}))
-            sys.exit(1)
+            parser.error('--dry-run is not valid with validate')
         if methods_sel is not None:
-            print(json.dumps({'error': '--methods is not valid with validate'}))
-            sys.exit(1)
+            parser.error('--methods is not valid with validate')
         if engines_sel is not None:
-            print(json.dumps({'error': '--engines is not valid with validate'}))
-            sys.exit(1)
+            parser.error('--engines is not valid with validate')
         results = [validate_file(f, engine, si_mode=si_mode) for f in targets]
         nerr = sum(1 for r in results if 'error' in r)
         if len(targets) == 1:
@@ -926,20 +1000,15 @@ def main():
     # --analyze: read-only per-object analysis + ranked method recommendations.
     if args.analyze:
         if out is not None:
-            print(json.dumps({'error': '-o is not valid with --analyze'}))
-            sys.exit(1)
+            parser.error('-o is not valid with --analyze')
         if dry_run:
-            print(json.dumps({'error': '--analyze is not valid with --dry-run'}))
-            sys.exit(1)
+            parser.error('--analyze is not valid with --dry-run')
         if methods_sel is not None:
-            print(json.dumps({'error': '--methods is not valid with --analyze'}))
-            sys.exit(1)
+            parser.error('--methods is not valid with --analyze')
         if engines_sel is not None:
-            print(json.dumps({'error': '--engines is not valid with --analyze'}))
-            sys.exit(1)
+            parser.error('--engines is not valid with --analyze')
         if not files:
-            print(json.dumps({'error': '--analyze requires at least one input file'}))
-            sys.exit(1)
+            parser.error('--analyze requires at least one input file')
         results = [method_registry.analyze_report(
             f, engine, args.experimental_edge_tiebreak) for f in files]
         nerr = sum(1 for r in results if 'error' in r)
@@ -961,14 +1030,11 @@ def main():
     # --dry-run: analyze and report the plan, write no output file at all.
     if dry_run:
         if out is not None:
-            print(json.dumps({'error': '-o is not valid with --dry-run'}))
-            sys.exit(1)
+            parser.error('-o is not valid with --dry-run')
         if methods_sel is not None:
-            print(json.dumps({'error': '--methods is not valid with --dry-run'}))
-            sys.exit(1)
+            parser.error('--methods is not valid with --dry-run')
         if engines_sel is not None:
-            print(json.dumps({'error': '--engines is not valid with --dry-run'}))
-            sys.exit(1)
+            parser.error('--engines is not valid with --dry-run')
         results = [dry_run_file(f, mode=mode, profile=args.profile, engine=engine,
                                 triage_spec=triage_spec, si_mode=si_mode,
                                 flap=resolve_flap(no_flap=args.no_flap,
@@ -1048,36 +1114,74 @@ def main():
         if _unknown:
             parser.error('argument --engines: unknown engine(s): %s '
                          '(see `sutura engines list`)' % ', '.join(_unknown))
-    results = [process_file(f, human, mode=mode, profile=args.profile,
-                            no_history=args.no_history, engine=engine,
-                            out=out, max_geom_change=max_geom_change,
-                            max_risk=max_risk, force=args.force,
-                            join_components=args.experimental_join_components,
-                            autorefine=args.experimental_autorefine,
-                            ftetwild=_ft_arg, deep_repair=_dr_mode,
-                            graft=_graft_arg, flap=_flap_arg,
-                            tamponade=_tamponade_arg,
-                            dressing=_dressing_arg,
-                            dressing_drain=_dressing_drain,
-                            dressing_defects=_dressing_defects,
-                            dressing_rmax_scale=_dressing_rmax_scale,
-                            dressing_sigma_scale=_dressing_sigma_scale,
-                            splint=_splint_arg,
-                            solid_engine=_solid_engine,
-                            coaptation=_coaptation_arg,
-                            si_mode=si_mode,
-                            dressing_force_adopt=args.dressing_force_adopt,
-                            indirect_autorefine=args.experimental_indirect_autorefine,
-                            extra_features=args.experimental_edge_tiebreak,
-                            triage_spec=triage_spec, engines=_engines,
-                            engine_chain=_engine_chain,
-                            engine_warnings=_engine_warnings,
-                            methods=methods_sel,
-                            engine_filter=engines_sel,
-                            repeat_source=repeat_source,
-                            repeat_target=repeat_target,
-                            wall_min_thickness=args.wall_min_thickness,
-                            trace_path=args.trace) for f in files]
+    results = []
+    progress_mode = None
+    if human and not args.no_progress and sys.stderr.isatty():
+        progress_mode = 'human'
+    elif args.progress_json:
+        progress_mode = 'json'
+    for file_index, f in enumerate(files, 1):
+        reporter = make_progress(f, file_index, len(files), progress_mode)
+        cancel = CancelToken()
+        old_handler = None
+        if reporter is not None or human:
+            def _sigint(_signum, _frame, _token=cancel):
+                _token.cancel()
+                raise KeyboardInterrupt
+            old_handler = signal.signal(signal.SIGINT, _sigint)
+        if reporter is not None:
+            reporter.start_file()
+        try:
+            result = process_file(
+                f, human, mode=mode, profile=args.profile,
+                no_history=args.no_history, engine=engine,
+                out=out, max_geom_change=max_geom_change,
+                max_risk=max_risk, force=args.force,
+                join_components=args.experimental_join_components,
+                autorefine=args.experimental_autorefine,
+                ftetwild=_ft_arg, deep_repair=_dr_mode,
+                graft=_graft_arg, flap=_flap_arg,
+                tamponade=_tamponade_arg,
+                dressing=_dressing_arg,
+                dressing_drain=_dressing_drain,
+                dressing_defects=_dressing_defects,
+                dressing_rmax_scale=_dressing_rmax_scale,
+                dressing_sigma_scale=_dressing_sigma_scale,
+                splint=_splint_arg,
+                solid_engine=_solid_engine,
+                coaptation=_coaptation_arg,
+                si_mode=si_mode,
+                dressing_force_adopt=args.dressing_force_adopt,
+                indirect_autorefine=args.experimental_indirect_autorefine,
+                extra_features=args.experimental_edge_tiebreak,
+                triage_spec=triage_spec, engines=_engines,
+                engine_chain=_engine_chain,
+                engine_warnings=_engine_warnings,
+                methods=methods_sel,
+                engine_filter=engines_sel,
+                repeat_source=repeat_source,
+                repeat_target=repeat_target,
+                wall_min_thickness=args.wall_min_thickness,
+                trace_path=args.trace,
+                progress=reporter, cancel=cancel)
+            results.append(result)
+            if human:
+                print(human_report(result[0], show_defects=show_defects,
+                                   show_diff=show_diff))
+                _pblock = (result[0] or {}).get('policy') or {}
+                _pline = policy_mod.human_line(_pblock)
+                if _pline:
+                    print(_pline)
+                print()
+        except CancelledError:
+            if reporter is not None:
+                reporter.cancel()
+            raise
+        finally:
+            if old_handler is not None:
+                signal.signal(signal.SIGINT, old_handler)
+            if reporter is not None:
+                reporter.end_file()
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')
@@ -1090,20 +1194,15 @@ def main():
 
     if len(files) == 1:
         result, category = results[0]
-        if human:
-            print(human_report(result, show_defects=show_defects, show_diff=show_diff))
-        else:
+        if not human:
             print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if category != 'error' else 1)
 
     if human:
-        for result, category in results:
-            print(human_report(result, show_defects=show_defects, show_diff=show_diff))
-            print()
         print('Summary: %d file(s), %d watertight, %d with warnings, %d failed.'
               % (len(files), ok, warnings, errors))
         for code, n in issue_counts.items():
-            print('  - %s: %d dosya' % (issue_label(code), n))
+            print('  - %s: %d file(s)' % (issue_label(code), n))
     else:
         payload = {
             'files': [r for r, _ in results],
@@ -1114,6 +1213,41 @@ def main():
         }
         print(json.dumps(payload, ensure_ascii=False))
     sys.exit(0 if errors == 0 else 1)
+
+
+def main(argv=None):
+    """Run the CLI and turn unexpected failures into a short error.
+
+    ``--debug`` (or ``SUTURA_DEBUG=1``) prints the traceback. SystemExit and
+    KeyboardInterrupt are not caught; the latter becomes exit 130.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    debug = '--debug' in argv or os.environ.get('SUTURA_DEBUG') == '1'
+    try:
+        _main(argv)
+    except CancelledError:
+        print('error: cancelled', file=sys.stderr)
+        sys.exit(EXIT_INTERRUPTED)
+    except KeyboardInterrupt:
+        print('error: interrupted', file=sys.stderr)
+        sys.exit(EXIT_INTERRUPTED)
+    except BrokenPipeError:
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
+        sys.exit(EXIT_OK)
+    except Exception as exc:
+        message = _short_error(exc)
+        if debug:
+            traceback.print_exc()
+        if _argv_human(argv):
+            print('error: %s' % message, file=sys.stderr)
+            print('hint: run with --debug for details', file=sys.stderr)
+        else:
+            print(json.dumps({'error': message}, ensure_ascii=False))
+            print('hint: run with --debug for details', file=sys.stderr)
+        sys.exit(EXIT_ERROR)
 
 
 if __name__ == '__main__':

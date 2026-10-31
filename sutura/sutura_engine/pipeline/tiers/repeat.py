@@ -10,6 +10,9 @@ from defects import detect as detect_defects
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.p_weld import reload_strict_holes_nm
 from sutura_engine.pipeline.utils import boundary_loop_stats
+from sutura_engine.policy import TIERS as _TIERS
+
+_REPEAT_GATES = _TIERS['repeat']['gates']
 
 
 def _clean_and_orient(verts, tris):
@@ -33,7 +36,7 @@ def _clean_and_orient(verts, tris):
 # One-sided (original -> result, outside the repaired boxes) Hausdorff guard
 # for the repeated-element transplant tier: the transplanted copy must not move
 # the untouched geometry. Mirrors methods.GENERATIVE_MAX_HAUSDORFF_REL.
-REPEAT_MAX_HAUSDORFF_OUTSIDE = 0.01
+REPEAT_MAX_HAUSDORFF_OUTSIDE = float(_REPEAT_GATES['max_hausdorff_outside'])
 
 
 def repeat_tier(cur_v, cur_t, after, stats, mode=None, source_point=None,

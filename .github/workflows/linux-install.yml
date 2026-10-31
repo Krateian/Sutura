@@ -16,10 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install system GL/Qt libraries and desktop-file-utils
+      - name: Install system GL/Qt libraries, desktop-file-utils and zsh
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopengl0 libgl1 libglu1-mesa libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3 desktop-file-utils
+          sudo apt-get install -y libopengl0 libgl1 libglu1-mesa libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3 desktop-file-utils zsh
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v7
@@ -36,19 +36,20 @@ jobs:
           mkdir -p /tmp/fresh-home
           echo "HOME=/tmp/fresh-home" >> "$GITHUB_ENV"
 
-      # The fresh HOME above hides the runner's preinstalled rustup toolchain,
-      # so install a stable one for the required sutura_geom source build.
-      - name: Set up Rust toolchain for sutura_geom
+      # Build a local abi3 wheel first: the installer must take the wheel path
+      # (the source fallback is covered by ci.yml).
+      - name: Build sutura_geom wheel
         run: |
-          rustup default stable
-          cargo --version
+          python3 -m pip install --quiet maturin==1.15.0
+          (cd rust/sutura-geom && maturin build --release --out "$GITHUB_WORKSPACE/dist")
+          WHEEL="$(ls "$GITHUB_WORKSPACE"/dist/*.whl | head -1)"
+          test -n "$WHEEL"
+          echo "SUTURA_GEOM_WHEEL=$WHEEL" >> "$GITHUB_ENV"
 
       - name: Run installer non-interactively
         env:
           SUTURA_WITH_FTETWILD: "1"
-          # sutura_geom is required. Build it from source so the install never
-          # depends on a live GitHub-release wheel download.
-          SUTURA_GEOM_FROM_SOURCE: "1"
+          SHELL: /bin/zsh
         run: ./install.sh
 
       - name: "Check a: CLI repair on broken mesh and 3 real-world samples"
@@ -198,6 +199,25 @@ jobs:
             exit 1
           fi
           grep -q "fTetWild default tests passed" /tmp/ftetwild.log
+
+      - name: "Check e: zsh login finds sutura"
+        run: |
+          HOME=/tmp/fresh-home zsh -ic 'command -v sutura' | grep -q '/.local/bin/sutura'
+
+      - name: "Check f: uninstall keeps user data and --purge removes it"
+        run: |
+          APP="$HOME/.local/share/sutura"
+          mkdir -p "$APP/data" "$HOME/.config/sutura"
+          echo keep > "$APP/data/keep"
+          echo '{}' > "$HOME/.config/sutura/config.json"
+          SUTURA_DRY_RUN=1 ./uninstall.sh | grep -q 'would remove'
+          ./uninstall.sh
+          test ! -e "$HOME/.local/bin/sutura"
+          test -f "$APP/data/keep"
+          test -f "$HOME/.config/sutura/config.json"
+          ./uninstall.sh --purge
+          test ! -e "$APP/data"
+          test ! -e "$HOME/.config/sutura"
 
   arch-install:
     name: Arch Linux Install E2E

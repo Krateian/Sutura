@@ -140,6 +140,18 @@ jobs:
       - name: "Test: method tagging GUI (offscreen)"
         run: ./venv/bin/python tests/test_methods_gui.py
 
+      - name: "Test: policy user writer"
+        run: ./venv/bin/python tests/test_policy_write.py
+
+      - name: "Test: method control panel (offscreen)"
+        run: ./venv/bin/python tests/test_control_panel_gui.py
+
+      - name: "Test: policy tier gate"
+        run: ./venv/bin/python tests/test_policy_tier_gate.py
+
+      - name: "Test: method-control report"
+        run: ./venv/bin/python tests/test_method_control_report.py
+
       - name: "Test: health-banner diagnostics export (offscreen)"
         run: ./venv/bin/python tests/test_gui_diagnostics.py
 
@@ -200,6 +212,9 @@ jobs:
       # (numpy + fakes only, no extension / pymeshlab required).
       - name: "Test: Tamponade integration (method #17)"
         run: ./venv/bin/python tests/test_tamponade_integration.py
+
+      - name: "Test: Tamponade shape gate"
+        run: ./venv/bin/python tests/test_tamponade_shape_gate.py
 
       # topology.connected_components is checked against a brute-force BFS
       # reference. Runs without the Rust extension (the rust-geom job covers

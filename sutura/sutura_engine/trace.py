@@ -278,6 +278,50 @@ class PipelineTracer:
                 "gate": gate or {},
             })
             self._step += 1
+        self.flush()
+
+    def _payload(self, final_verts: Optional[np.ndarray] = None,
+                 final_tris: Optional[np.ndarray] = None,
+                 final_report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        total_time = round(time.perf_counter() - self.t_start, 4)
+        final_summary = None
+        if final_verts is not None and final_tris is not None:
+            final_summary = measure_mesh(final_verts, final_tris)
+        elif self.records:
+            final_summary = self.records[-1].get('output')
+        return {
+            "version": 1,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "input_file": self.input_file,
+            "total_elapsed_seconds": total_time,
+            "command_args": self.command_args,
+            "stages": self.records,
+            "final_summary": final_summary,
+        }
+
+    def _write(self, data: Dict[str, Any]):
+        target = self.path
+        # If path contains %s, format with basename
+        if '%s' in target and self.input_file:
+            stem = os.path.splitext(os.path.basename(self.input_file))[0]
+            target = target % stem
+        os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
+        # Atomic replace: a killed process leaves the last complete snapshot,
+        # never a half-written JSON.
+        tmp = target + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, target)
+
+    def flush(self):
+        """Write the current trace snapshot (crash-safe incremental flush)."""
+        if not self.is_active or not self.path:
+            return
+        try:
+            self._write(self._payload())
+        except Exception as e:
+            sys.stderr.write(
+                f"[sutura trace] Warning: failed to flush trace to {self.path}: {e}\n")
 
     def stage_scope(self, stage: str, method: str,
                     v_in: Optional[np.ndarray], t_in: Optional[np.ndarray],
@@ -293,37 +337,10 @@ class PipelineTracer:
             return
 
         try:
-            total_time = round(time.perf_counter() - self.t_start, 4)
-            final_summary = None
-            if final_verts is not None and final_tris is not None:
-                final_summary = measure_mesh(final_verts, final_tris)
-            elif self.records:
-                final_summary = self.records[-1].get('output')
-
-            data = {
-                "version": 1,
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "input_file": self.input_file,
-                "total_elapsed_seconds": total_time,
-                "command_args": self.command_args,
-                "stages": self.records,
-                "final_summary": final_summary,
-            }
-
-            target = self.path
-            # If path contains %s, format with basename
-            if '%s' in target and self.input_file:
-                stem = os.path.splitext(os.path.basename(self.input_file))[0]
-                target = target % stem
-
-            os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
-            with open(target, 'w') as f:
-                json.dump(data, f, indent=2)
+            self._write(self._payload(final_verts, final_tris, final_report))
         except Exception as e:
             # File writing failure should not crash repair
             sys.stderr.write(f"[sutura trace] Warning: failed to write trace to {self.path}: {e}\n")
-
-
 # Global active tracer instance
 _CURRENT_TRACER: Optional[PipelineTracer] = None
 

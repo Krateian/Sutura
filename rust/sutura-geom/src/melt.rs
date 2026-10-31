@@ -165,7 +165,7 @@ pub struct MeltOutcome {
 /// exact Euclidean distance transform to the nearest exterior voxel, converted
 /// to physical units.  The deepest interior point is the grid argmax.  The
 /// grid is coarsened deterministically until it fits `max_cells`.
-struct DepthField {
+pub(crate) struct DepthField {
     origin: [f64; 3],
     voxel: [f64; 3],
     dims: [usize; 3],
@@ -178,7 +178,7 @@ impl DepthField {
         i + self.dims[0] * (j + self.dims[1] * k)
     }
 
-    fn build(
+    pub(crate) fn build(
         verts: &[[f64; 3]],
         bvh: &MeshBvh,
         h_min: f64,
@@ -253,7 +253,7 @@ impl DepthField {
 
     /// Deepest interior sample: `(depth, center)`; `None` when the field has
     /// no interior cell (open/flat mesh).
-    fn deepest(&self) -> Option<(f64, [f64; 3])> {
+    pub(crate) fn deepest(&self) -> Option<(f64, [f64; 3])> {
         let mut best = f32::NEG_INFINITY;
         let mut bi = 0usize;
         for (idx, &d) in self.depth.iter().enumerate() {
@@ -277,6 +277,43 @@ impl DepthField {
         ];
         Some((best as f64, c))
     }
+}
+
+/// Normalized maximum interior depth of a mesh: the deepest point of the
+/// winding-driven depth field divided by the bounding-box diagonal. `Some(0.0)`
+/// means the field built but contained no interior cell (an open sheet);
+/// `None` means the mesh was empty or the depth field could not be built.
+pub fn interior_depth_norm(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    max_cells: usize,
+) -> Option<f64> {
+    if verts.is_empty() || tris.is_empty() {
+        return None;
+    }
+    let mut mn = [f64::INFINITY; 3];
+    let mut mx = [f64::NEG_INFINITY; 3];
+    for p in verts {
+        for a in 0..3 {
+            mn[a] = mn[a].min(p[a]);
+            mx[a] = mx[a].max(p[a]);
+        }
+    }
+    let diag = ((mx[0] - mn[0]).powi(2)
+        + (mx[1] - mn[1]).powi(2)
+        + (mx[2] - mn[2]).powi(2))
+    .sqrt();
+    if !(diag > 0.0) {
+        return Some(0.0);
+    }
+    let bvh = MeshBvh::from_arrays(verts, tris);
+    let h_min = (diag / 32.0).max(1e-9);
+    let field = DepthField::build(verts, &bvh, h_min, max_cells)?;
+    let (depth, _) = match field.deepest() {
+        Some(v) => v,
+        None => return Some(0.0),
+    };
+    Some(depth / diag)
 }
 
 #[inline]
@@ -921,6 +958,27 @@ mod tests {
         // The surface sample is much shallower than the center.
         let near_face = df.sample([0.01, 0.5, 0.5]);
         assert!(near_face < d, "face {near_face} should be shallower than {d}");
+    }
+
+    #[test]
+    fn interior_depth_norm_separates_solid_from_sheet() {
+        let (verts, tris) = clean_cube();
+        let tu: Vec<[usize; 3]> = tris
+            .iter()
+            .map(|x| [x[0] as usize, x[1] as usize, x[2] as usize])
+            .collect();
+        let solid = interior_depth_norm(&verts, &tu, 32768).expect("solid depth");
+        assert!(solid > 0.2, "solid depth {solid} should be deep");
+
+        let sheet_v = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let sheet_t = vec![[0usize, 1, 2], [0, 2, 3]];
+        let sheet = interior_depth_norm(&sheet_v, &sheet_t, 32768).expect("sheet depth");
+        assert!(sheet < 0.1, "sheet depth {sheet} should be shallow");
     }
 
     #[test]

@@ -1282,6 +1282,7 @@ dependencies = [
  "cc",
  "faer",
  "kiddo",
+ "libc",
  "manifold-csg",
  "meshopt",
  "num-bigint",

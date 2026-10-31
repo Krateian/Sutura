@@ -28,3 +28,4 @@ __*.obj
 
 # graphify knowledge graph: regenerated locally by the graphify git hooks
 graphify-out/
+.venv-flap/

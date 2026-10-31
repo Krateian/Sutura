@@ -30,7 +30,11 @@ def get_shipped_file_keys(repo_or_sutura_dir: str) -> List[str]:
       - LINUX_EXTRA_FILES ('open.sh')
       - repair_score_config.json
       - LICENSE
-      - Recursive scan of sutura_engine/**/*.py (excluding __pycache__ and test files)
+      - Recursive scan of sutura_engine/ for an explicit allow-list of
+        extensions: .py modules and .toml data (policy/default_policy.toml).
+        A filesystem walk with a fixed allow-list keeps untracked build
+        artifacts (a built .so, logs, editor backups) out of the manifest.
+        __pycache__, .pyc and dotfiles are skipped.
     """
     try:
         from sutura import updater
@@ -68,7 +72,11 @@ def get_shipped_file_keys(repo_or_sutura_dir: str) -> List[str]:
         for root, dirs, files in os.walk(engine_dir):
             dirs[:] = [d for d in dirs if d != '__pycache__' and not d.startswith('.')]
             for f in files:
-                if f.endswith('.py') and not f.startswith('.'):
+                # Explicit allow-list, not "every file": the scan sees the
+                # build machine's filesystem, so a built .so, a log or an
+                # editor backup must never enter the release manifest. The only
+                # shipped non-.py file is the policy TOML.
+                if (f.endswith('.py') or f.endswith('.toml')) and not f.startswith('.'):
                     full_p = os.path.join(root, f)
                     rel_to_engine = os.path.relpath(full_p, os.path.dirname(engine_dir))
                     # Normalise to 'sutura_engine/...'

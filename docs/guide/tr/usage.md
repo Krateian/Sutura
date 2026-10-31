@@ -32,7 +32,34 @@ sutura validate model.stl   # onarmadan ANALİZ (salt-okunur rapor)
 sutura model.stl --dry-run  # onarımın ne yapacağını raporlar, HİÇBİR ŞEY yazmaz
 sutura a.stl b.3mf c.stl    # batch: her dosya bir _fixed çıktı alır
 sutura --version            # sürümü yazdırır ve çıkar
+sutura model.stl --human --debug  # beklenmeyen bir hata için izi göster
 ```
+
+İlk onarım `model_fixed.stl` (veya `.obj`/`.3mf`) yazar. Bu ad zaten varsa
+CLI `model_fixed_2.stl`, sonra `_3` yazar ve önceki dosyanın üzerine yazmaz.
+Açıkça verilen `-o YOL` ise tam olarak YOL'a yazar; bu bilinçli üzerine-yazma
+anlamını korur.
+
+**İlerleme ve iptal.** `--human` ile stderr yalnızca bir terminal olduğunda
+tek bir ilerleme satırı gösterilir (aşama, 3/8 adımı, geçen süre);
+`--no-progress` bunu kapatır. Satır borulara veya yakalanan stderr'e asla
+yazılmaz. `--json` ile isteğe bağlı NDJSON ilerleme olayları için
+`--progress-json` ekleyin; stdout tek bir JSON belgesi olarak kalır ve
+varsayılan JSON çıktısı değişmez. Her olay
+`{"event":"start|stage|end|cancel","file":…,"file_index":…,"file_total":…,
+"step_total":8,"elapsed_s":…}` biçimindedir; `stage` olayı ayrıca `"stage"`,
+`"step"` (1–8) ve isteğe bağlı `"detail"` taşır. Ctrl-C, aşama sınırlarında ve yerel iş
+sayacı kontrol noktalarında iptal eder, 130 ile çıkar ve yarım çıktı bırakmaz
+(`*_fixed` yalnızca onarım tamamlandıktan sonra yazılır).
+
+**Çıkış durumu.** `0` başarı; `1` çalışma zamanı hatası (dosya başına
+onarım/doğrulama/analiz hatası, bozuk girdi, reddedilen bütçe kaydı veya eksik
+`sutura_geom`); `2` kullanım hatası (geçersiz bayrak, kombinasyon veya aralık);
+`130` kesinti (Ctrl-C). Beklenmeyen hatalar kısa bir `error:` mesajı ve
+`--debug` ipucu yazdırır — izi görmek için `--debug` (veya `SUTURA_DEBUG=1`)
+ekleyin. `--human` ile hatalar stderr'e gider; varsayılan JSON modu stdout'ta
+`{"error": ...}` biçimini korur. `--self-check` ve `--self-repair` mevcut 0/1
+sözleşmesini korur.
 
 OBJ notu: malzemeler/dokular (`mtllib`/`usemtl`) onarılmış çıktıda **korunmaz** —
 mesh yeniden kurulur (yalnızca köşeler + üçgenler), bu yüzden doku koordinatları
@@ -208,8 +235,14 @@ bir baskı korpusuna göre kalibre edilmemiştir; her sorun `"heuristic": true`
 kaydeder ki arayüz bunları tahmin olarak etiketleyebilsin. Çok nesneli 3MF
 raporları bloğu nesne başına taşır ve en kötü nesneyi alan bir toplam taşır.
 
+Model ince duvarlara sahipse bir `Advisory:` satırı eklenir: Rust tanılaması,
+yüzeyin model boyutunun küçük bir yüzdesinden ince olan kısmını bildirir. Bu
+oran birimden bağımsızdır; mutlak milimetre yalnızca dosya milimetre olarak
+işlendiğinde (birim uyarısı yokken) gösterilir. Uyarı bilgilendiricidir ve
+onarımı hiçbir zaman değiştirmez.
+
 `--human` bloğu bir `Print impact:` bölümü olarak yazdırır (`Fixed:` / `Remaining:` /
-`Geometry:` / `Not assessed:`); GUI aynısını "Ne değişti" onarım günlüğünün
+`Geometry:` / `Advisory:` / `Not assessed:`); GUI aynısını "Ne değişti" onarım günlüğünün
 başında gösterir.
 
 Birden çok dosyada her girdi sırayla onarılır ve bir özet yazdırılır (`N
@@ -311,6 +344,7 @@ yanındaki düğme ya da Ctrl+, / Cmd+,); onarım sürerken açık kalabilir, d�
 etiketi varsayılandan farklı seçenek sayısını gösterir, örneğin *Seçenekler
 (2)*. Sekmeleri: *Genel* (anonim kullanım geçmişi), *Onarım* (fTetWild yedek
 katmanı ve Triage yoğunluk preset/profil seçicisi ile profil düzenleyicisi),
+*Yöntemler* (otomatik derin katman sırası ve elle dosya-başına sıra),
 *Deneysel* (isteğe bağlı adımlar), *Güncellemeler* (elle kontrol, otomatik
 güncelleme, isteğe bağlı her açılışta kontrol), *Değişiklikler* (GitHub'dan
 sürüm notları, çevrimdışı yedekli) ve *Motorlar* (fTetWild kur/kaldır ve

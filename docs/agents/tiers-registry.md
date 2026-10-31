@@ -13,7 +13,12 @@ Source: `origin/main:AGENTS.md` @ 5e28b78, ranges 75-103, 154-166, 220-246, 247-
   Method #13 `graft` is the morphology shell-wrap tier (`sutura_engine/graft.py`);
   #16 `dressing` is the variable-viscosity volumetric-skinning tier
   (`sutura_engine/dressing.py`, opt-in); #17 `tamponade` is the on-by-default
-  interior hole plug; #18 `splint` is the opt-in exact solid rebuild; #19
+  interior hole plug with a tier-level shape-suitability gate (thin shell /
+  open sheet and single-surface open shell with no solid interior are skipped
+  and left to Flap; slender open tubes and closed-bottom cups are not caught
+  yet; explicit `--methods 17` bypasses the gate and reports `user_forced`);
+  #18 `splint` is
+  the opt-in exact solid rebuild; #19
   `coaptation` is the on-by-default seam-weld union. #12
   `transplant_plus` retains `repeat_manual` and `transplant+` aliases.
   `--list-methods`/`--analyze`/`--methods` are the CLI

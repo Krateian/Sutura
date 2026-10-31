@@ -11,6 +11,15 @@ import numpy as np
 from sutura_engine.pipeline.tiers.engines import load_engine_run
 
 
+def _fail(msg, human, code=1):
+    """Report a subcommand error in the selected format."""
+    if human:
+        print('error: %s' % msg, file=sys.stderr)
+    else:
+        print(json.dumps({'error': msg}))
+    return code
+
+
 def _confirm_cli(action, yes):
     """Require confirmation for a destructive CLI action (install/uninstall),
     unless ``--yes``. Non-interactive without --yes refuses (never hangs)."""
@@ -30,13 +39,12 @@ def run_engines_cli(args, human=False):
     the binaries WITHOUT running anything. Returns an exit code."""
     sub = args[0] if args else 'list'
     if sub not in ('list', 'check'):
-        print(json.dumps({'error': "engines: subcommand must be 'list' or 'check'"}))
-        return 1
+        return _fail("engines: subcommand must be 'list' or 'check'",
+                     human, code=2)
     try:
         import engines as _engines
     except Exception as e:  # noqa: BLE001
-        print(json.dumps({'error': 'engines module unavailable: %s' % e}))
-        return 1
+        return _fail('engines module unavailable: %s' % e, human)
     eng, chain, warnings = load_engine_run()
     ordered = [n for n in chain if n in eng]
     ordered += [n for n in sorted(eng) if n not in ordered]
@@ -94,14 +102,12 @@ def run_ftetwild_cli(args, dry_run=False, yes=False, human=False):
     code."""
     sub = args[0] if args else 'status'
     if sub not in ('status', 'install', 'uninstall'):
-        print(json.dumps({'error': "ftetwild: subcommand must be "
-                                   "'status', 'install' or 'uninstall'"}))
-        return 1
+        return _fail("ftetwild: subcommand must be 'status', 'install' or "
+                     "'uninstall'", human, code=2)
     try:
         import ftetwild_manager as mgr
     except Exception as e:  # noqa: BLE001
-        print(json.dumps({'error': 'ftetwild manager unavailable: %s' % e}))
-        return 1
+        return _fail('ftetwild manager unavailable: %s' % e, human)
 
     if sub == 'status':
         st = mgr.status()
@@ -129,8 +135,7 @@ def run_ftetwild_cli(args, dry_run=False, yes=False, human=False):
         print('fTetWild install: download ~%s, installed ~%s'
               % (est['download_human'], est['installed_human']), file=sys.stderr)
         if not _confirm_cli('fTetWild install', yes):
-            print(json.dumps({'error': 'install cancelled (use --yes to confirm)'}))
-            return 1
+            return _fail('install cancelled (use --yes to confirm)', human)
         res = mgr.install(progress_cb=lambda s: print(s, file=sys.stderr))
         print(json.dumps({'result': res, 'estimate': est}, ensure_ascii=False))
         return 0 if res.get('ok') else 1
@@ -144,8 +149,7 @@ def run_ftetwild_cli(args, dry_run=False, yes=False, human=False):
           % (len(plan.get('packages', [])), plan.get('freed_human', '0 B')),
           file=sys.stderr)
     if not _confirm_cli('fTetWild uninstall', yes):
-        print(json.dumps({'error': 'uninstall cancelled (use --yes to confirm)'}))
-        return 1
+        return _fail('uninstall cancelled (use --yes to confirm)', human)
     res = mgr.uninstall(progress_cb=lambda s: print(s, file=sys.stderr))
     print(json.dumps({'result': res}, ensure_ascii=False))
     return 0 if res.get('ok') else 1

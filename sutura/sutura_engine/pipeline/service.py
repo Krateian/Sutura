@@ -20,6 +20,7 @@ from confidence import repair_confidence
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
 from sutura_engine import trace
+from sutura_engine.progress import progress_stage, raise_if_cancelled
 from sutura_engine.pipeline.mesh_io import (
     aggregate_triangle_attributes, obj_has_material_refs,
     parse_3mf_mesh_blocks, read_3mf_units,
@@ -56,10 +57,11 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  flap=False,
                  dressing=False, dressing_drain=None, dressing_defects=None,
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
-                 tamponade=False,
+                 tamponade=False, tamponade_force=False,
                  si_mode=None, dressing_force_adopt=False,
                  splint=False, splint_adaptive=None,
-                 solid_engine='ftetwild', coaptation=False):
+                 solid_engine='ftetwild', coaptation=False,
+                 progress=None, cancel=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     bad_coords = scan_bad_coordinates(src)
     if bad_coords:
@@ -88,11 +90,17 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         verts = np.asarray(verts, dtype=np.float32)
         tris = np.asarray(tris, dtype=np.int32)
 
+    _owns_trace = False
     if not trace.is_active() and os.environ.get('SUTURA_TRACE'):
         trace.begin_trace(trace_path=None, input_file=src,
                           command_args={'mode': mode, 'profile': profile, 'si_mode': si_mode})
+        _owns_trace = True
 
-    trace.set_context(object_id='main', attempt='primary')
+    # An outer process_file trace owns the attempt label; only the object is
+    # reset here so fallback attempts stay distinguishable in the trace.
+    trace.set_context(object_id='main')
+    raise_if_cancelled(cancel)
+    progress_stage(progress, 1, 'load')
     if trace.is_active():
         trace.record_stage('load', 'mesh_io.load_mesh', None, None, verts, tris,
                            gate={'status': 'ok', 'source': src})
@@ -124,11 +132,13 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             dressing_rmax_scale=dressing_rmax_scale,
             dressing_sigma_scale=dressing_sigma_scale,
             tamponade=run_tamponade,
+            tamponade_force=tamponade_force,
             si_mode=si_mode,
             splint=splint, splint_adaptive=splint_adaptive,
             solid_engine=solid_engine,
             coaptation=coaptation,
-            dressing_force_adopt=dressing_force_adopt)
+            dressing_force_adopt=dressing_force_adopt,
+            progress=progress, cancel=cancel)
         report['_fp'] = history.mesh_fingerprint(verts, tris)
         report['defects'] = detect_defects(verts, tris)
         if ext == '.obj':
@@ -137,6 +147,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         # Stage 2 applies to watertight results; shared helper keeps the single-
         # mesh path and per-object 3MF repair on the same code (same gate, same
         # OBJ round-trip, same explicit skip reporting).
+        raise_if_cancelled(cancel)
+        progress_stage(progress, 5, 'stage 2')
         _s2_in_v, _s2_in_t = new_v, new_t
         new_v, new_t = maybe_run_stage2(report, new_v, new_t, tmpdir)
         if trace.is_active():
@@ -155,6 +167,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         # coincidences (or, when the welded mesh is itself repairable, repair
         # it) and adopt only a strictly reload-watertight result; never make
         # the output worse.
+        raise_if_cancelled(cancel)
+        progress_stage(progress, 6, 'reload weld')
         if ext == '.stl':
             _pw_in_v, _pw_in_t = new_v, new_t
             new_v, new_t, _pwel = p_weld_final(new_v, new_t)
@@ -199,6 +213,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         # P-HONEST: the verdict must describe the mesh actually saved, not the
         # in-memory index topology. The final mesh is chosen above; judge it in
         # the save/reload-equivalent form and let that verdict win.
+        raise_if_cancelled(cancel)
+        progress_stage(progress, 7, 'validate')
         enforce_reload_verdict(report, new_v, new_t,
                                include_n2m=(ext == '.stl'))
         if trace.is_active():
@@ -238,7 +254,12 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             use_off = False
             try:
                 trace.set_context(attempt='flap_off_safety_net')
+                _t_off = time.perf_counter()
                 off_report, off_v, off_t = _run(False, run_tamponade=False)
+                # B3: the re-run is a full pipeline pass; record its own cost so
+                # the report separates it from the primary run. The rerun is
+                # kept (it decides ON vs OFF); only its timing is split out.
+                fallback['seconds'] = round(time.perf_counter() - _t_off, 3)
                 _, off_metrics = _flap_final_needs_off(
                     verts, tris, off_v, off_t, measure_si=si_rise)
                 fallback['ran'] = True
@@ -307,6 +328,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
     report['timings']['file_total'] = round(time.perf_counter() - _t_file, 3)
     report['timings']['flap_off_rerun'] = bool(
         (report.get('flap') or {}).get('final_fallback', {}).get('ran'))
+    report['timings']['flap_off_rerun_s'] = (
+        (report.get('flap') or {}).get('final_fallback') or {}).get('seconds')
     report['timings']['tamponade_off_rerun'] = bool(
         (report.get('tamponade') or {}).get('final_fallback', {}).get('ran'))
     if ext == '.3mf':
@@ -314,7 +337,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         report['triangle_attributes'] = stats[0]
     else:
         save_mesh(out, new_v, new_t)
-    if trace.is_active():
+    if _owns_trace and trace.is_active():
         trace.finish_trace(final_verts=new_v, final_tris=new_t, final_report=report)
     return report
 
@@ -329,10 +352,10 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                flap=False,
                dressing=False, dressing_drain=None, dressing_defects=None,
                dressing_rmax_scale=None, dressing_sigma_scale=None,
-               tamponade=False,
+               tamponade=False, tamponade_force=False,
                si_mode=None, dressing_force_adopt=False,
                splint=False, splint_adaptive=None, coaptation=False,
-                 solid_engine='ftetwild'):
+                 solid_engine='ftetwild', progress=None, cancel=None):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -346,9 +369,11 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
     if not blocks:
         return {'error': 'no mesh objects found in 3MF'}
 
+    _owns_trace = False
     if not trace.is_active() and os.environ.get('SUTURA_TRACE'):
         trace.begin_trace(trace_path=None, input_file=src,
                           command_args={'mode': mode, 'profile': profile, 'si_mode': si_mode})
+        _owns_trace = True
 
     units = read_3mf_units(src)
     reports = []
@@ -392,11 +417,13 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                 dressing_rmax_scale=dressing_rmax_scale,
                 dressing_sigma_scale=dressing_sigma_scale,
                 tamponade=tamponade,
+                tamponade_force=tamponade_force,
                 si_mode=si_mode,
                 splint=splint, splint_adaptive=splint_adaptive,
                 solid_engine=solid_engine,
                 coaptation=coaptation,
-                dressing_force_adopt=dressing_force_adopt)
+                dressing_force_adopt=dressing_force_adopt,
+                progress=progress, cancel=cancel)
             rep['defects'] = detect_defects(verts, tris)
             rep['_fp'] = history.mesh_fingerprint(verts, tris)
             # Per-object stage 2 first: closed objects get a watertight
@@ -493,6 +520,6 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     1 for f in _flaps
                     if (f.get('final_fallback') or {}).get('used') == 'off'),
             }
-    if trace.is_active():
+    if _owns_trace and trace.is_active():
         trace.finish_trace()
     return agg

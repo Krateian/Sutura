@@ -79,8 +79,8 @@ shared installed extension. The harness is
 skill for the exact invocation and cache).
 
 - **Sets**: the 40 tracked real-world samples + the 36-mesh oracle set
-  (quality); the 32-mesh J2 set; the 26 clean anchors (`--byte
-  --deterministic`).
+  (quality); the `core150` set (quality); the `core_clean` 100 set (`--byte
+  --deterministic`); manifests live in `~/sutura-bench/sets/`.
 - **Determinism**: 37402, 39344 and 41937 twice each with
   `--no-fallback-ftetwild`; byte-identical output is required. fTetWild is an
   external stochastic solver and is outside the guarantee; a mesh that adopts

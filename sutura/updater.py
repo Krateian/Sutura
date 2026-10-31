@@ -132,12 +132,7 @@ except ImportError:
 DEFAULT_CONFIG = {
     'check_for_updates': False,
     'last_check': None,
-    'last_known_version': None,
     'history_enabled': True,
-    # Deep-repair ladder mode read by the CLI (repair.resolve_deep_repair):
-    # 'off' / 'local' / 'full'. The CLI and the file-manager menu run it
-    # automatically; the GUI decides per run.
-    'deep_repair': 'full',
     # Triage Engine intensity preset read by the CLI (triage.resolve_intensity)
     # and used as the GUI's initial selection: quick / balanced / thorough /
     # extreme. Balanced is the historical default.
@@ -153,6 +148,11 @@ DEFAULT_CONFIG = {
     # user's change; a missing/legacy key is treated as ON, so an old config
     # saved in the opt-in era does not silently keep it off.
     'tamponade': True,
+    # Coaptation (#19, seam union): ON by default; the GUI reads this and
+    # persists a user's change, matching the CLI default.
+    'coaptation': True,
+    # Self-intersection policy used by the GUI's initial combo: report/repair/off.
+    'si_mode': 'report',
 }
 
 
@@ -309,19 +309,15 @@ def check_for_update(force=False):
     try:
         latest = fetch_latest_release()
     except Exception:
-        # transient network issue - don't nag, keep last_known_version
+        # transient network issue - don't nag; the next check retries
         cfg['last_check'] = time.time()
         save_config(cfg)
         return 'none', None, cfg
     cfg['last_check'] = time.time()
     newer = latest and is_newer(latest, VERSION)
-    if newer:
-        cfg['last_known_version'] = latest
-        if crosses_license_boundary(VERSION, latest):
-            save_config(cfg)
-            return 'license', latest, cfg
-    else:
-        cfg['last_known_version'] = None
+    if newer and crosses_license_boundary(VERSION, latest):
+        save_config(cfg)
+        return 'license', latest, cfg
     save_config(cfg)
     return ('update' if newer else 'none'), (latest if newer else None), cfg
 
@@ -718,15 +714,23 @@ def rollback(previous_version):
 
 # ---------------------------------------------------------------- top-level
 
-def perform_update(tag, progress=None):
+def perform_update(tag, progress=None, should_stop=None):
     """Backup, download, install, health-check; roll back on failure.
 
     Returns (ok, message, previous_version). progress is an optional
-    callable(status: str).
+    callable(status: str). should_stop is an optional predicate checked at
+    phase boundaries; once installation has started the update finishes
+    (verify/rollback) rather than being interrupted mid-write.
 
     Not supported for AppImage builds: the payload is a read-only squashfs,
     so the caller should point the user at the GitHub releases page instead.
     """
+    def _stop_requested():
+        return bool(should_stop and should_stop())
+
+    def _cancelled():
+        return False, 'update cancelled', VERSION
+
     if is_appimage():
         return (False,
                 'The AppImage build cannot update itself. Download the latest '
@@ -738,6 +742,8 @@ def perform_update(tag, progress=None):
                 'update will not be applied '
                 'automatically - download it manually from %s if you accept '
                 'the new terms.' % (tag, APPIMAGE_RELEASE_URL), VERSION)
+    if _stop_requested():
+        return _cancelled()
     previous = VERSION
     if progress:
         progress('backing up')
@@ -746,12 +752,16 @@ def perform_update(tag, progress=None):
         tmp = tempfile.mkdtemp(prefix='sutura-update-')
         expected_modules = None
         try:
+            if _stop_requested():
+                return _cancelled()
             if progress:
                 progress('downloading')
             src = download_source(tag, tmp)
             # Snapshot the shipped modules before the temp source is removed,
             # so the health check can prove they all landed.
             expected_modules = _source_py_modules(src)
+            if _stop_requested():
+                return _cancelled()
             if progress:
                 progress('installing')
             install_source(src)

@@ -35,6 +35,9 @@ Outputs (overwrites in assets/):
                        policy) stacked above the *Experimental* tab (Dressing
                        and its sub-controls, plus the opt-in passes), so one
                        image shows the controls added since the last refresh
+  methods-panel.png  - Options -> Methods: the current model defaults, the
+                       read-only automatic ladder, the manual sequence,
+                       locked gates, policy hash and paths
 
 The meshes used are generated into a temp dir and removed afterwards.
 """
@@ -44,7 +47,7 @@ import subprocess
 import sys
 import tempfile
 
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QLocale, QPoint, Qt, QTimer
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
@@ -52,6 +55,7 @@ from PySide6.QtWidgets import QApplication
 # locale. Qt's QLocale.system() reads the environment at app startup, so set
 # LANG before anything creates a QApplication.
 os.environ['LANG'] = 'en_US.UTF-8'
+QLocale.setDefault(QLocale(QLocale.English, QLocale.UnitedStates))
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUI_PY = os.path.join(REPO, 'sutura', 'gui.py')
@@ -60,6 +64,7 @@ ASSETS = os.path.join(REPO, 'assets')
 # sizes match the historical README screenshots
 MAIN_SIZE = (1055, 843)
 PANEL_SIZE = (780, 620)
+ANALYZE_SIZE = (780, 760)
 
 
 def load_gui():
@@ -151,6 +156,7 @@ def run_analyze(m, files, size, select_broken, out_path):
     m.apply_dark_theme(app)
     win = m.MainWindow()
     win.resize(*size)
+    win.analysis.setFixedHeight(280)
     win.show()
     for f in files:
         win._add_path(f)
@@ -319,6 +325,7 @@ def run_options_dialog(m, out_path):
     dlg = win._options_dialog
     dlg.show()
     dlg.adjustSize()
+    dlg.resize(820, 900)
     app.processEvents()
 
     grabs = []
@@ -343,6 +350,22 @@ def run_options_dialog(m, out_path):
     print('wrote', out_path)
 
 
+def run_methods_panel(m, out_path):
+    """Grab Options -> Methods with the packaged policy and no user override."""
+    app = QApplication.instance() or QApplication([])
+    m.apply_dark_theme(app)
+    win = m.MainWindow()
+    win.show()
+    dlg = win._options_dialog
+    dlg.resize(900, 1050)
+    dlg.show()
+    dlg.open_tab(m.OptionsDialog.TAB_METHODS)
+    app.processEvents()
+    dlg.method_panel.grab().save(out_path)
+    dlg.close()
+    print('wrote', out_path)
+
+
 def main():
     os.environ['SUTURA'] = _repo_cli_wrapper()
     m = load_gui()
@@ -355,13 +378,14 @@ def main():
             out_path=os.path.join(ASSETS, 'screenshot.png'))
         run(m, files, PANEL_SIZE, select_broken=True, show_heatmap=True,
             out_path=os.path.join(ASSETS, 'defect-panel.png'))
-        run_analyze(m, files, PANEL_SIZE, select_broken=True,
+        run_analyze(m, files, ANALYZE_SIZE, select_broken=True,
                     out_path=os.path.join(ASSETS, 'analyze-panel.png'))
         run_before_after(m, files, MAIN_SIZE,
                          out_path=os.path.join(ASSETS, 'before-after-panel.png'))
         run_context_menu(m, files,
                          out_path=os.path.join(ASSETS, 'method-menu.png'))
         run_options_dialog(m, os.path.join(ASSETS, 'options-dialog.png'))
+        run_methods_panel(m, os.path.join(ASSETS, 'methods-panel.png'))
     finally:
         shutil.rmtree(sample_dir, ignore_errors=True)
     print('done')

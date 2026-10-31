@@ -234,7 +234,12 @@ sınıflandırıcıyı atlar ve sayıyı `null` ("ölçülmedi") olarak bildirir
 (`--experimental-dressing`, `--experimental-fallback-ftetwild`) politikayı
 geçersiz kılar ve kalan self-intersection'lara yine de müdahale eder. Korumalı
 `si_excise_recap` geçişi her modda kendi bağımsız sayımını korur. Seçilen mod
-raporda `si_mode` (ve `deep_repair.si_mode`) olarak yer alır.
+raporda `si_mode` (ve `deep_repair.si_mode`) olarak yer alır. Otomatik
+çalışmalarda sonuç denetimi `si_escalation` bloğunda kaydedilir: `triggered`,
+`outcome`, `reason`, benimsenen `method`/`num`/`name`, `candidates` listesi
+(her adayın kararı, iş tahmini, süresi, metrikleri ve SHA-256'sı), `baseline`
+metrikleri ve `tolerance_mm`. Çalışmadıysa `triggered` false ve `reason`
+nedenini söyler. Açık `--methods` çalışmaları otomatik yükseltme yapmaz.
 
 Her katman ancak sonucu, delik ve non-manifold kenar açısından düz
 aşamalı sonuçtan kötü değilse benimsenir; yani çekirdek aşamalı yol her zaman

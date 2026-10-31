@@ -6,19 +6,21 @@
 
 Linux:
 
-* `python3` (>= 3.11), venv desteğiyle, onarım venv'i için
-* `sutura_geom` kaynaktan derlenecekse (hazır wheel yoksa): Rust >= 1.89,
-  cmake ve C++20 derleyicisi (g++/clang++). Sürüm kurulumları hazır wheel
-  indirir ve bunlara ihtiyaç duymaz.
+* `python3` (>= 3.11), venv desteğiyle, onarım venv'i için. Sistem Python'u
+  venv oluşturamıyorsa kurulum otomatik olarak taşınabilir bir Python 3.11
+  indirir.
+* `sutura_geom` doğrulanmış hazır bir wheel'den kurulur; desteklenen
+  platformlarda Rust, cmake veya C++ derleyicisi gerekmez. Kaynaktan derleme
+  yalnızca araç zinciri zaten varsa yedek yoldur.
 * Dolphin servis menüsü için KDE Plasma (isteğe bağlı; CLI ve GUI her yerde
   çalışır)
 
 macOS (Apple Silicon / Intel):
 
-* Homebrew ve Miniforge (conda). macOS, PySide6 (Qt) ve geri kalan yerel yığının
-  tutarlı biçimde kurulması için tek bir conda ortamı kullanır
-  (`install-macos.sh`); Linux'un yalnızca pip kullanan akışı yerine.
-* Python 3.11'i conda ile kurun (`install-macos.sh` bunu otomatik yapar).
+* Miniforge/conda. conda yoksa `install-macos.sh` aynı çalışmada Miniforge'u
+  (~80 MB) indirip kurar; mevcut bir conda kurulumu yeniden kullanılır.
+  Homebrew gerekmez.
+* Python 3.11, `sutura-env` conda ortamında otomatik oluşturulur.
 
 Python 3.11, fTetWild katmanı için yalnızca ana yorumlayıcı 3.10–3.14
 aralığının dışındayken yedek çalışma zamanı olarak kullanılır; güncel bir
@@ -50,6 +52,19 @@ Bu, `~/.local/share/sutura` altında ana sanal ortamı oluşturur (ana
 yorumlayıcı 3.10–3.14 aralığının dışındayken ayrıca bir `venv311` yedeği),
 CLI sarmalayıcıyı `~/.local/bin/sutura`'ya kurar, hicolor uygulama ikonlarını
 kurar ve Dolphin servis menüsünü kaydeder. Yeniden çalıştırmak güvenlidir.
+Kurulumcu `~/.local/bin` yolunu kabuğunuzun okuduğu başlangıç dosyasına ekler
+(zsh için `.zshrc`, bash için `.bashrc`/`.bash_profile`) ve geçerli terminal
+için tam `~/.local/bin/sutura` yolunu yazdırır.
+
+`./uninstall.sh` kurulu dosyaları ve PATH satırını kaldırır; kullanıcı verisi
+(`~/.local/share/sutura/data`), yapılandırmalar (`~/.config/sutura`) ve
+`sutura-env` conda ortamı korunur. Sutura, `sutura-env`'i yalnızca kurulumcusu
+oluşturduysa kaldırır: etkileşimli çalışmada tam yolu ve boyutu gösterip sorar;
+etkileşimsiz çalışmada `--remove-env` (veya `--purge`) verilmedikçe korunur.
+`SUTURA_UNINSTALL_SKIP_CONDA=1` her zaman korur. `--purge` (etkileşimliyse
+onaylı) kullanıcı verilerini, yapılandırmaları ve Sutura'nın oluşturduğu ortamı
+da kaldırır. Eski kurulumlarda işaret yoksa ortam korunur ve elle kaldırma
+komutu yazdırılır.
 
 **AppImage (isteğe bağlı).** Aşama 1, Aşama 2 ve GUI için tek bir Python 3.14
 çalışma zamanının paketlendiği tek dosyalık AppImage — sanal ortam yok,
@@ -75,20 +90,20 @@ sistem paket yöneticinize hiçbir şey dokunmaz. GUI, PySide6 (~79 MB indirme,
 800 MB'dır (fTetWild katmanı yaklaşık 6 MB ekler, aşağıya bakın).
 
 **Rust eklentisi (`sutura_geom`).** `sutura_geom` Rust eklentisi (~1 MB),
-`install.sh` ve `install-macos.sh` tarafından otomatik olarak kurulur (GitHub
-sürümünden eşleşen doğrulanmış hazır tekerlek indirilir veya Rust araç zinciri
-varsa `rust/sutura-geom` üzerinden derlenir; AppImage ve macOS .app/.dmg
-paketlerine dahildir). Yöntem #13 Graft (morfoloji kabuk sarma), Flap yüzey-delik
+`install.sh` ve `install-macos.sh` tarafından doğrulanmış hazır bir abi3
+wheel'den otomatik kurulur. Kurulumcu sürüm varlığını kısa süre yeniden dener,
+sonra en güncel uyumlu abi3 wheel'i kullanır; desteklenen platformlarda Rust
+veya cmake gerekmez. Kaynaktan derleme yalnızca wheel yoksa ve araç zinciri
+zaten varsa çalışır. AppImage ve macOS .app/.dmg paketlerine dahildir. Yöntem #13 Graft (morfoloji kabuk sarma), Flap yüzey-delik
 doldurma (`flap_fill`), Dressing kaplamasını (`dressing_coat`) ve Tamponad iç
 tıkacını (`tamponade`) hızlandırır ve kesin dolaylı predikatları taşır.
-**Eklenti zorunludur:** ne hazır tekerlek ne de kaynaktan derleme mümkünse
-kurulum, algılanan platformu ve çözümü gösteren adlandırılmış bir mesajla durur
-(<https://rustup.rs> adresinden Rust kurun veya `SUTURA_GEOM_WHEEL=<yol>`
-ayarlayın); başlangıç ve `sutura --self-check` de sessizce geri düşmek yerine
-eksik eklentiyi adıyla bildirerek hata verir. Kaynaktan derlemeye zorlamak için
-`SUTURA_GEOM_FROM_SOURCE=1` kullanılabilir. Kaynaktan derleme Rust >= 1.89
-(`kiddo` 6.3 MSRV) gerektirir. Eski `SUTURA_NO_GEOM=1` çıkış seçeneği
-kaldırılmıştır.
+**Eklenti zorunludur:** ne hazır wheel ne de mevcut bir kaynak araç zinciri
+varsa kurulum tek bir platform mesajıyla durur; başlangıç ve
+`sutura --self-check` de sessizce geri düşmek yerine eksik eklentiyi adıyla
+bildirerek hata verir. Yerel wheel için `SUTURA_GEOM_WHEEL=<yol>`, araç zinciri
+varsa kaynaktan derlemeye zorlamak için `SUTURA_GEOM_FROM_SOURCE=1` kullanılır.
+Kaynaktan derleme Rust >= 1.89 (`kiddo` 6.3 MSRV) gerektirir. Eski
+`SUTURA_NO_GEOM=1` çıkış seçeneği kaldırılmıştır.
 
 **fTetWild yedek katmanı (varsayılan olarak kurulur).** fTetWild yedek
 katmanı yalnızca `pytetwild` ister — PyVista veya VTK yok — bu yüzden kurulu
@@ -122,8 +137,9 @@ cd Sutura
 ./install-macos.sh
 ```
 
-`install-macos.sh` Homebrew'i kontrol eder, conda yoksa Homebrew üzerinden
-Miniforge kurar, `sutura-env` conda ortamını oluşturur (Python 3.11),
+`install-macos.sh` mevcut conda kurulumunu kullanır; conda yoksa Miniforge'u
+(~80 MB) otomatik indirip kurar, `sutura-env` conda ortamını oluşturur
+(Python 3.11),
 PySide6/sutura_geom'ı pip'ten kurar
 (Python 3.11 ortamında PySide6 6.11.2; Linux/Python 3.12+ kurulumları 6.12.0 kullanır ve bu sabitleme macOS 13 desteğini korur),
 import'ları doğrular, uygulama dosyalarını `~/.local/share/sutura/`'ya kopyalar
@@ -134,31 +150,33 @@ doğrudan **Spotlight**'tan açabilirsiniz (`Cmd+Space`, *Sutura* yazın, Enter)
 fTetWild yedek katmanı (kurulu halde ~6 MB, Linux bölümüne bakın) varsayılan
 olarak kurulur; `SUTURA_WITH_FTETWILD=0 ./install-macos.sh` onu atlar.
 
-Kurulumcu ayrıca Finder'a bir **Quick Action** ("Sutura — Repair") ekler:
-Finder'da bir veya daha fazla STL/3MF dosyası seçin, sağ tık → *Quick Actions*
-→ *Sutura — Repair*. Her dosya paketlenmiş CLI ile onarılır ve sonuç yerel bir
-macOS bildirimiyle raporlanır — tek dosyada `Health: X/100  Risk: Y/100
+Kurulumcu ayrıca Finder'a bir **Quick Action** ("Sutura — Repair") ekler. Her
+seçili dosya için görünür; Finder'da bir veya daha fazla STL/3MF dosyası seçin,
+sağ tık → *Quick Actions* → *Sutura — Repair*. Her dosya kurulu CLI ile onarılır (`.dmg` uygulaması paketli CLI'yi kullanabilir) ve sonuç
+yerel bir macOS bildirimiyle raporlanır — tek dosyada `Health: X/100  Risk: Y/100
 Status: <label>`, çoklu dosyada tek özet (`N/M onarıldı, K başarısız — log: ...`).
 Her çalıştırmanın log'u `~/Library/Logs/Sutura/sutura-<timestamp>.log`'a
-yazılır. STL/3MF olmayan dosyalar atlanır ve bildirilir. Quick Action,
-`/Applications` veya `~/Applications` içinde bir PyInstaller `Sutura.app`
-arar; indirilmiş (karantinalı) bir kopyaysa bildirim, önce `Sutura.app`'e sağ
-tık → Aç demenizi söyler. Quick Action paketlenmiş `sutura-cli`'yi çağırdığı
-için bu conda ortamının kurulu olması gerekmez.
+yazılır. STL/3MF olmayan dosyalar atlanır ve bildirilir. `.dmg` uygulamasında
+Quick Action paketli `sutura-cli`'yi, conda kurulumunda ise doğrudan kurulu
+`~/.local/bin/sutura` yolunu (veya conda ortamını) kullanır. Uygulama indirilmiş
+(karantinalı) bir kopyaysa bildirim, önce `Sutura.app`'e sağ tık → Aç
+demenizi söyler.
 
-**macOS kurulumunu kaldırma (elle):** macOS için ayrı bir kaldırma betiği
-yoktur — Linux `uninstall.sh` yalnızca KDE/Linux artıklarını kapsar. macOS
-kurulumunu elle kaldırmak için şunları silin:
-- `~/Applications/Sutura.app` (Spotlight sarmalayıcısı) ve/veya `/Applications`
-  içindeki `.app`
-- `~/.local/share/sutura/` (uygulama dosyaları, `macos-quick-action.sh` dahil)
-- `~/.local/bin/sutura` ve `~/.local/bin/sutura-gui`
-- `~/Library/Services/Sutura Quick Action.workflow` (Finder Quick Action'ı)
-- `~/Library/Logs/Sutura/` (onarım logları)
-- isteğe bağlı: `sutura-env` conda ortamı (`conda env remove -n sutura-env`)
+**macOS kurulumunu kaldırma:** `./uninstall.sh` artık macOS'u da kapsar.
+Uygulamayı, başlatıcıları, Quick Action'ı, logları ve ikonları kaldırır.
+`sutura-env` yalnızca kurulumcu oluşturduysa ve etkileşimli olarak onay
+verirseniz (veya `--remove-env`/`--purge` verirseniz) kaldırılır; önce tam yol
+ve boyut yazdırılır, etkileşimsiz çalışmada varsayılan olarak korunur.
+Kullanıcı verisi (`~/.local/share/sutura/data`) ve yapılandırmalar
+(`~/.config/sutura`) varsayılan olarak korunur; `--purge` (etkileşimliyse
+onaylı) bunları ve sahip olunan ortamı da kaldırır. Eski kurulumlarda işaret
+yoksa ortam korunur ve elle kaldırma komutu yazdırılır. Aynı betik
+`.zshrc`/`.zprofile`/`.bashrc`/`.bash_profile` içine eklediği PATH satırını da
+kaldırır.
 
-Not: conda etkileşimsiz başlatılabilir; betik `conda init` için terminali
-yeniden başlatmanızı isterse öyle yapın ve betiği yeniden çalıştırın.
+Kurulumcu ayrıca kabuğunuzun okuduğu başlangıç dosyasına `~/.local/bin`
+yolunu ekler (zsh için `.zshrc`, bash için `.bashrc`/`.bash_profile`) ve
+geçerli terminal için tam `~/.local/bin/sutura` yolunu yazdırır.
 
 Her etiketli sürümde ayrıca bir **macOS .dmg** de yayınlanır
 (`Sutura-vX.Y.Z.dmg`, `Build macOS .app/.dmg` workflow'uyla derlenir) —

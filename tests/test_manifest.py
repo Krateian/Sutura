@@ -25,6 +25,27 @@ def test_get_shipped_file_keys():
     assert len(engine_files) > 10
     assert 'sutura_engine/tamponade.py' in keys
     assert 'sutura_engine/methods/builtin/graft.py' in keys
+    # The policy package ships data, not only modules: the TOML must be in the
+    # manifest or the updater/self-repair would leave it behind.
+    assert 'sutura_engine/policy/__init__.py' in keys
+    assert 'sutura_engine/policy/default_policy.toml' in keys
+
+
+def test_manifest_allowlist_excludes_untracked_artifacts():
+    # The scan sees the build machine's filesystem; only .py/.toml may enter the
+    # manifest, so a built .so, a log or an editor backup is excluded.
+    with tempfile.TemporaryDirectory() as tmp:
+        eng = os.path.join(tmp, 'sutura', 'sutura_engine')
+        os.makedirs(os.path.join(eng, 'policy'))
+        for name in ('mod.py', 'policy/default_policy.toml',
+                     'lib.so', 'note.log', 'mod.py~', '.hidden.py'):
+            with open(os.path.join(eng, name), 'w') as f:
+                f.write('')
+        keys = manifest.get_shipped_file_keys(tmp)
+    assert 'sutura_engine/mod.py' in keys
+    assert 'sutura_engine/policy/default_policy.toml' in keys
+    assert not any(k.endswith(('.so', '.log', '~')) for k in keys), keys
+    assert not any(k.startswith('sutura_engine/.') for k in keys), keys
 
 
 def test_generate_manifest():

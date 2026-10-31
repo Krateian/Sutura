@@ -233,6 +233,12 @@ count as `null` ("not measured"). Explicit force flags
 policy and still act on residual self-intersections. The guarded
 `si_excise_recap` pass keeps its own independent count in every mode. The
 chosen mode lands in the report as `si_mode` (and `deep_repair.si_mode`).
+On automatic runs the final-output check is recorded in `si_escalation`:
+`triggered`, `outcome`, `reason`, the adopted `method`/`num`/`name`, the
+`candidates` list (each with its verdict, work estimate, elapsed time, metrics
+and SHA-256), the `baseline` metrics and `tolerance_mm`. When it does not run,
+`triggered` is false and `reason` says why. Explicit `--methods` runs do not
+auto-escalate.
 
 Every tier is adopted only when its result is no worse than the plain
 staged result on holes and non-manifold edges, so the core staged path always

@@ -14,6 +14,7 @@ import pkgutil
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sutura_engine.diagnosis import SCORE_TEMPLATES, to_dict, analyze_file, combine
+from sutura_engine.policy import RANKING as _RANKING
 from sutura_engine.methods.availability import (
     always_available,
     closing_available,
@@ -34,7 +35,10 @@ from sutura_engine.methods.protocol import (
     _repair_mod,
 )
 
-PREFERENCE_BOOST = 1.25
+PREFERENCE_BOOST = float(_RANKING['preference_boost'])
+
+# Default number of ranked recommendations (policy knob).
+RANKING_TOP_N = int(_RANKING['top_n'])
 
 # Compatibility aliases
 _always = always_available
@@ -364,7 +368,7 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
 
 # --- Ranking ----------------------------------------------------------------
 
-def rank_methods(analysis: Any, top_n: int = 6) -> List[Recommendation]:
+def rank_methods(analysis: Any, top_n: int = RANKING_TOP_N) -> List[Recommendation]:
     """Rank available methods for an analysis; returns ``[Recommendation]``."""
     # Learning triage (bounded): a small Bayesian bonus from the local
     # (template, method) success/time history. Loaded once per ranking; opt out
@@ -449,6 +453,154 @@ def external_engines() -> List[dict]:
     return out
 
 
+# --- Suggestions (presentation only) ---------------------------------------
+
+# Small prior from the core150-c26ed2e selector report. The table is
+# intentionally weak and only used by --analyze / the GUI analyze pane; it is
+# not a repair decision and never feeds the default path. (The "shape hard gate"
+# in that report belongs to the bench scorecard selector, not to this engine;
+# the engine's never-worse is triage._si_verdict + SI_ESCALATION_* +
+# adopt_guard.) Source: measured on the local core150 benchmark (not in the
+# repo), 2026-10-30.
+CORE150_PRIOR = {
+    'clean': {1: 0.95, 2: 0.95, 3: 0.95, 9: 0.85},
+    'holes': {18: 0.80, 3: 0.80, 1: 0.70, 2: 0.70},
+    'si': {10: 0.70, 7: 0.55, 13: 0.55},
+    'repeated': {8: 0.80, 1: 0.80, 4: 0.80, 13: 0.70},
+    'scan': {9: 0.90, 1: 0.70, 3: 0.70},
+    'duplicate': {8: 0.90, 1: 0.90, 2: 0.80, 4: 0.80},
+}
+
+SUGGESTION_REASONS = {
+    'clean': 'safe default for a closed, clean mesh',
+    'holes': 'best for holes and open edges',
+    'si': 'best for overlapping surfaces',
+    'repeated': 'best for repeated parts and copies',
+    'scan': 'best for a single-sided scan',
+    'duplicate': 'best for duplicate or degenerate faces',
+}
+
+SUGGESTION_METHOD_REASONS = {
+    1: 'quick cleanup of small defects',
+    2: 'local repair around the damage',
+    3: 'rebuilds the surface and closes holes',
+    4: 'merges separate pieces into one part',
+    5: 'refines self-intersections automatically',
+    6: 'exact self-intersection cleanup',
+    7: 'rebuilds a watertight solid',
+    9: 'closes an open scan from the back',
+    10: 'rebuilds a clean proxy surface',
+    11: 'copies a healthy repeated pattern',
+    12: 'copies a healthy pattern from picked points',
+    13: 'wraps the damaged area in a thin shell',
+    18: 'closes holes with an exact patch',
+    19: 'welds overlapping surfaces at the seams',
+}
+
+
+def _damage_class(analysis) -> str:
+    """Coarse damage class used only to pick the small suggestion prior."""
+    def ch(name):
+        d = getattr(analysis, 'diagnosis_v2', None)
+        if not isinstance(d, dict):
+            return 0
+        c = (d.get('channels') or {}).get(name) or {}
+        try:
+            return int(c.get('count') or 0)
+        except (TypeError, ValueError):
+            return 0
+    if (getattr(analysis, 'self_intersections', 0) or 0) > 0 or ch('self_intersection'):
+        return 'si'
+    if ((getattr(analysis, 'non_manifold_edges', 0) or 0) > 0
+            or (getattr(analysis, 'boundary_loops', 0) or 0) > 0
+            or ch('loops')):
+        return 'holes'
+    if (getattr(analysis, 'repetition_score', 0.0) or 0.0) >= 0.5:
+        return 'repeated'
+    if ((getattr(analysis, 'single_side_score', 0.0) or 0.0) >= 0.5
+            or (getattr(analysis, 'relief_score', 0.0) or 0.0) >= 0.5):
+        return 'scan'
+    if ch('duplicate') or ch('degenerate'):
+        return 'duplicate'
+    return 'clean'
+
+
+def _has_body_overlap(analysis) -> bool:
+    """True only when diagnosis reports touching/overlapping bodies.
+
+    Join (#4) is useful for interpenetrating bodies, but merging legitimate
+    separate parts is exactly the complaint this suggestion avoids. No
+    diagnosis evidence => never suggest Join.
+    """
+    d = getattr(analysis, 'diagnosis_v2', None)
+    if not isinstance(d, dict):
+        return False
+    ss = d.get('self_intersections') or {}
+    parts = d.get('parts') or {}
+    try:
+        if int(ss.get('inter_body') or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return bool(parts.get('overlap_edges'))
+
+
+def suggest_methods(analysis, top_n: int = 3) -> List[dict]:
+    """Top-N plain-language suggestions; presentation only.
+
+    ``rank_methods`` remains the source ranking and is not modified. The
+    core150-c26ed2e prior contributes only 15% and the result is explicitly an
+    estimate, never an adoption/rejection signal.
+    """
+    cls = _damage_class(analysis)
+    priors = CORE150_PRIOR.get(cls, {})
+    suggestions = []
+    recs = rank_methods(analysis, top_n=max(top_n, 6))
+    if not _has_body_overlap(analysis):
+        recs = [r for r in recs if r.num != 4]
+    for rec in recs:
+        prior = priors.get(rec.num)
+        conf = rec.score if prior is None else (0.85 * rec.score + 0.15 * prior)
+        # An estimate is never shown as certainty: cap at 95%. High means a
+        # clear lead over the next option (>=15 percentage points) OR a score
+        # of >=85 after the cap; otherwise Medium (Low below 40).
+        conf = min(0.95, _clamp01(conf))
+        suggestions.append({
+            'num': rec.num,
+            'id': rec.id,
+            'name': rec.name,
+            'display_name': getattr(rec, 'display_name', None) or rec.name,
+            'confidence': int(round(conf * 100)),
+            'confidence_value': round(conf, 3),
+            'reason': SUGGESTION_METHOD_REASONS.get(
+                rec.num, SUGGESTION_REASONS.get(cls,
+                                                SUGGESTION_REASONS['clean'])),
+            'reason_key': ('sugg_method_%d' % rec.num
+                           if rec.num in SUGGESTION_METHOD_REASONS
+                           else 'sugg_reason_' + cls),
+            'reason_args': [],
+            'basis': 'rank+core150-c26ed2e',
+            'estimate': True,
+        })
+    suggestions.sort(key=lambda r: (-r['confidence_value'], r['num']))
+    suggestions = suggestions[:top_n]
+    for i, item in enumerate(suggestions):
+        pct = item['confidence']
+        nxt = (suggestions[i + 1]['confidence']
+               if i + 1 < len(suggestions) else None)
+        prev = suggestions[i - 1]['confidence'] if i else None
+        next_gap = (pct - nxt) if nxt is not None else (
+            (pct - prev) if prev is not None else 0)
+        prev_gap = (pct - prev) if prev is not None else 100
+        # High needs a score of at least 85 AND a real lead over the next
+        # option (the previous one for the last item). A tie with either
+        # neighbour is never High; Medium starts at 50, Low below that.
+        item['confidence_label'] = (
+            'high' if (pct >= 85 and next_gap >= 10 and prev_gap >= 10)
+            else ('medium' if pct >= 50 else 'low'))
+    return suggestions
+
+
 # --- Formatting -------------------------------------------------------------
 
 def format_methods() -> str:
@@ -489,6 +641,17 @@ def format_recommendations(recs: List[Recommendation]) -> str:
     return '\n'.join(lines) if lines else '  (none)'
 
 
+def format_suggestions(suggestions: List[dict]) -> str:
+    lines = []
+    for i, s in enumerate(suggestions or [], 1):
+        label = (s.get('confidence_label') or 'low').capitalize()
+        lines.append('    %d. #%s %s — %d%% %s — %s' % (
+            i, s.get('num'), s.get('display_name') or s.get('name'),
+            int(s.get('confidence') or 0), label,
+            s.get('reason') or 'suggested'))
+    return '\n'.join(lines) if lines else '    (no safe suggestions)'
+
+
 def analyze_report(path: str, engine: str = 'experimental', extra_features: bool = False) -> dict:
     """CLI ``--analyze`` payload for one file: analysis + recommendations."""
     result: Dict[str, Any] = {'input': path}
@@ -500,11 +663,20 @@ def analyze_report(path: str, engine: str = 'experimental', extra_features: bool
         recs = [dict(r._asdict()) for r in rank_methods(combined_obj)]
         if len(objs) == 1:
             result['analysis'] = to_dict(objs[0])
+            result['suggestions'] = suggest_methods(objs[0])
             result['recommendations'] = recs
         else:
             result['objects'] = len(objs)
-            result['object_analyses'] = [to_dict(o) for o in objs]
+            object_analyses = []
+            for obj in objs:
+                d = to_dict(obj)
+                d['suggestions'] = suggest_methods(obj)
+                object_analyses.append(d)
+            result['object_analyses'] = object_analyses
+            result['suggestions'] = suggest_methods(combined_obj)
             result['recommendations'] = recs
+        result['suggestion_basis'] = 'rank+core150-c26ed2e'
+        result['suggestions_are_estimates'] = True
         result['external_engines'] = external_engines()
     except Exception as e:
         result['error'] = 'analysis failed: %s' % e
@@ -530,6 +702,15 @@ def format_analyze_human(result: dict) -> str:
                      'repetition_score=%s' % (
                          a.get('open_area_ratio'), a.get('largest_loop_ratio'),
                          a.get('repetition_score')))
+        sug = a.get('suggestions')
+        if sug is None and idx == 0:
+            sug = result.get('suggestions')
+        if sug:
+            lines.append('  Suggested methods (advanced, estimate):')
+            lines.append(format_suggestions(sug))
+    if len(analyses) > 1 and result.get('suggestions'):
+        lines.append('File-level suggestion (worst case):')
+        lines.append(format_suggestions(result['suggestions']))
     lines.append('Recommended methods:')
     lines.append(format_recommendations([
         Recommendation(r['num'], r['id'], r['name'], r['score'], r['reason'],

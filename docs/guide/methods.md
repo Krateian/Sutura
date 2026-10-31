@@ -206,6 +206,21 @@ per-object `method_used`). The report adds `method_used`, `methods_tried`,
 `method_reached_watertight` and, when escalation ran, `analysis` and
 `recommendations`.
 
+**Suggested methods (advanced).** `--analyze` now adds a `suggestions` list for
+each object (and a combined worst-case list for the file): the top three safe
+methods, a 0–100 **estimate** (capped at 95%), a High/Medium/Low label and a
+one-line plain reason. High requires ≥85 after the cap and a ≥10-point lead
+over the next option (the previous one for the last item); a tie is never
+High. Medium starts at 50, Low below that. Join (#4) appears only when
+diagnosis reports overlapping or touching bodies; legitimate separate parts
+are never merged by a suggestion. The ranking comes from `rank_methods` with a small 15% prior from the
+`core150-c26ed2e` selector (18 tiers, shape hard gate); this is informational
+only and never tags, auto-runs or changes the default repair path. Opt-in
+user-input methods (#15 Wall Thicken, #16 Dressing, #17 Tamponade) stay out of
+the top three. The existing top-six `recommendations` list is unchanged for the
+GUI method menu; the new keys are additive. The GUI shows the same block in the
+analysis pane after **Analyze methods**.
+
 **Learning triage (local, bounded).** When the anonymous usage history is
 enabled, each repair also records the per-`(object type, method)` outcome
 (accepted/rejected) and elapsed time into `~/.local/share/sutura/triage_learning.json`
@@ -236,6 +251,23 @@ keep the auto behaviour. Engines tagged per file are selected with the CLI
 `--engines NAME[,NAME]` (`None` runs every enabled engine as configured).
 
 ![File-list right-click method menu](../../assets/method-menu.png)
+
+### Method control panel (Options → Methods)
+
+The GUI also has a batch-wide **Methods** panel (Options → *Methods*, or the
+**Methods** button next to **Options**). In *Automatic* mode it shows the
+deep-tier order from the effective repair policy and lets the user enable or
+disable a tier. The automatic sequence itself is fixed (the code order), so
+there are no move controls there; use *Manual* for a custom order. *Apply*
+writes only the user override at `~/.config/sutura/policy.toml` (atomic, with a
+`.bak`) and never the packaged `default_policy.toml`. At least one deep tier
+must stay enabled. *Manual* mode lists all nineteen methods; checking them in order
+fills the existing per-file method tags, and the CLI receives that exact
+sequence as `--methods`. The panel does not save a manual sequence in the
+policy. Safety gates, `[si_escalation]` and tier gate tables are shown
+read-only with a lock.
+
+![Method control panel: read-only automatic ladder, manual sequence and locked gates](../../assets/methods-panel.png)
 
 ### Repeated-element repair (auto/manual picker)
 
@@ -406,8 +438,20 @@ Graft/fTetWild tiers**.
 
 It is **on by default**: disable it with `--no-tamponade` (or
 `SUTURA_TAMPONADE=0`), or the Options → Repair checkbox **Tamponade (fill holes
-from inside)**. A plug is rejected only when one of these holds, so the tier only
-changes the output when it strictly helps:
+from inside)**. Before it runs, a tier-level **shape-suitability card** checks
+whether the model has a real interior. A thin shell / open sheet (low
+compactness, a large open boundary area and a thin-wall fraction) is skipped
+with the plain-language reason *no interior volume; left to Flap* instead of
+attempting a plug. Single-surface open shells — a vase or cylinder without end
+caps, or a cloth-like sheet — are also skipped: the gate compares boundary-loop
+perimeter with surface area and checks that at least one side of the surface
+reaches a solid winding number. Slender open tubes and closed-bottom cups are
+not skipped yet; this is harmless because Tamponade then rejects the plug. The
+card also reports the normalized maximum interior depth from the melt depth
+field; that depth is report-only for now and becomes a hard gate only after
+calibration. Selecting method #17 explicitly (`--methods 17`) bypasses the
+suitability gate and reports `user_forced`. A plug is rejected only when one of
+these holds, so the tier only changes the output when it strictly helps:
 
 - it **leaks outside the solid** — a plug sample lies in empty space beyond
   `clamp(diagonal/10000, 0.0125, 0.05)` mm from the original surface and not over
@@ -445,9 +489,15 @@ and the melt pass is bounded by its layer count, not a clock. The prepass
 override `SUTURA_TAMPONADE_PREPASS_BUDGET` is a count in the same units (the
 old seconds meaning is retired). The report carries
 a `tamponade` key with
-`ran`, `adopted`, `reason`, `plugs`, `plug_faces`,
+`ran`, `adopted`, `reason`, `reason_key`, `gate`, `shape`, `plugs`, `plug_faces`,
 `melt_layers_tried`/`_accepted`/`_rolled_back`, `micro_welds_ok`/`_failed`,
-`healthy_faces_kept`, `input_faces`, `output_faces` and `seconds`.
+`healthy_faces_kept`, `input_faces`, `output_faces` and `seconds`. `shape`
+contains `genus`, `compactness`, `open_area_ratio`, `effective_thickness_norm`,
+`thin_sample_fraction`, `interior_depth_norm`, `boundary_perimeter`,
+`perimeter_ratio`, `solid_area_fraction`, the applied thresholds and the
+verdict. Shape-gate skips use `gate = shape_card`; `reason_key` is
+`tamponade_skip_no_interior`, `tamponade_skip_no_volume` or
+`tamponade_skip_open_shell`.
 
 ### Splint (exact solid rebuild, #18)
 

@@ -20,6 +20,7 @@ import tempfile
 import numpy as np
 
 from . import paths
+from .policy import RANKING as _RANKING
 
 # Classifier identity shared with the analysis cache (sutura.mesh_classifier).
 # Every (template, method) bucket is stamped with the classifier version whose
@@ -42,8 +43,8 @@ HISTORY_DIR = paths.data_dir()
 # reset from the CLI/GUI Options without touching the usage history.
 LEARNING_PATH = paths.data_file('triage_learning.json')
 LEARNING_SCHEMA_VERSION = 2
-LEARNING_MAX_BONUS = 0.05          # hard cap on the rank bonus [0..1]
-LEARNING_PRIOR = 2.0               # Beta(2, 2) prior -> 0.5 with no data
+LEARNING_MAX_BONUS = float(_RANKING['learning_max_bonus'])  # cap on the rank bonus [0..1]
+LEARNING_PRIOR = float(_RANKING['learning_prior'])          # Beta(prior, prior) -> 0.5 with no data
 LEARNING_ENV = 'SUTURA_LEARNING_TRIAGE'
 LEARNING_CONFIG_PATH = os.path.expanduser('~/.config/sutura/config.json')
 _LEARNING_CACHE = {'mtime': None, 'stats': None}

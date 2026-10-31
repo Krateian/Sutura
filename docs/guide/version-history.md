@@ -6,6 +6,35 @@
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](../../CHANGELOG.md).
 
+- **v0.9.8 — 2026-10-31** — Faster Flap repairs: the two slowest verified
+  cases dropped from about 822 s to 26 s and from about 655 s to 12 s, and the
+  155-mesh check kept the same repairs. Tamponade also skips thin shells, open
+  sheets and single-surface open vases/cylinders/cloth with no solid interior,
+  leaving them to Flap; slender open tubes and closed-bottom cups remain a
+  harmless miss. A new final-result self-intersection
+  check tries repair candidates and keeps only a strictly never-worse result;
+  with the current candidate it changes no model in the 155-mesh test set, so
+  it is groundwork for a future surface-preserving fix. The CLI shows a stage
+  progress line on a terminal (with optional NDJSON events), Ctrl-C cancels
+  cleanly, and unexpected errors are reported without a traceback unless
+  `--debug` is used. `--analyze` suggests up to three safe methods per object
+  with an estimated confidence, and the GUI shows the same suggestions. The GUI
+  replaces the dense repair report with a plain verdict and collapsed details,
+  remembers the Coaptation and self-intersection settings, and can open the
+  repaired file, its folder or a detected slicer. A repeat run keeps an
+  existing `_fixed` result and writes `_fixed_2`, `_3`, ... macOS installs no
+  longer need Homebrew or a second run, the Quick Action version stays in sync,
+  and uninstall keeps user data, configs and `sutura-env` unless Sutura created
+  the env and you confirm (or pass `--remove-env`/`--purge`). The decision rules
+  and thresholds now live in one packaged policy file
+  (`sutura_engine/policy/default_policy.toml`), with an optional user override
+  in `~/.config/sutura/policy.toml`; the safety gates stay locked, malformed or
+  unknown entries are ignored, and output is unchanged (155/155 identical). A
+  **Methods** control panel (Options → Methods, or the main-window button)
+  enables or disables automatic deep tiers (their order stays fixed) and, in
+  Manual mode, passes `--methods` in the chosen order; it writes only the user
+  override, shows the locked gates read-only, and Reset recovers a corrupt
+  file.
 - **v0.9.7 — 2026-10-26** — An experimental **last-resort solid engine**
   choice. The default stays **fTetWild**; an opt-in exact rebuild (**CDT**,
   constrained tetrahedralization) is available with `--solid-engine cdt`,

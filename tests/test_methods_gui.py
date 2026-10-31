@@ -444,7 +444,25 @@ def main():
     assert w._si_mode == 'repair'
     w.cmb_si_mode.setCurrentIndex(2)
     assert w._si_mode == 'off'
-    print('ok  SI-mode combo mapping')
+    assert gui.updater.load_config().get('si_mode') == 'off'
+    w.cmb_si_mode.setCurrentIndex(1)
+    assert w._si_mode == 'repair'
+    assert gui.updater.load_config().get('si_mode') == 'repair'
+    print('ok  SI-mode combo mapping + persistence')
+
+    # A fresh window loads the persisted settings.
+    cfg = gui.updater.load_config()
+    cfg['coaptation'] = False
+    cfg['si_mode'] = 'off'
+    gui.updater.save_config(cfg)
+    w2 = gui.MainWindow()
+    try:
+        assert w2._coaptation is False and not w2.chk_coaptation.isChecked()
+        assert w2._si_mode == 'off'
+        assert w2.cmb_si_mode.currentData() == 'off'
+    finally:
+        w2.close()
+    print('ok  persisted settings reload in a new window')
 
     # The drain combo maps indices 0..4 to None/none/half/full/deep
     w.cmb_dressing_drain.setCurrentIndex(0)
@@ -583,10 +601,12 @@ def main():
     assert w._coaptation is True and w.chk_coaptation.isChecked()
     w.chk_coaptation.setChecked(False)
     assert w._coaptation is False
+    assert gui.updater.load_config().get('coaptation') is False
     w.chk_coaptation.setChecked(True)
     assert w._coaptation is True
+    assert gui.updater.load_config().get('coaptation') is True
     assert (w.chk_coaptation, True) in w._options_defaults
-    print('ok  Coaptation checkbox + worker flag + defaults')
+    print('ok  Coaptation checkbox + worker flag + persistence + defaults')
 
     # The post-batch "Try Dressing" button appears only when a finished result
     # suggested Dressing, and clicking it force-reruns exactly those files.

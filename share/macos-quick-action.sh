@@ -37,24 +37,48 @@ notify() { # $1 = message, $2 = title (default "Sutura — Quick Action")
 log() { printf '%s\n' "$*" >> "$LOG"; }
 
 # --- locate Sutura.app -------------------------------------------------------
-APP=""
-for cand in "/Applications/Sutura.app" "$HOME/Applications/Sutura.app"; do
-    if [ -d "$cand" ]; then APP="$cand"; break; fi
-done
-
-CLI=""
-if [ -n "$APP" ]; then
-    MACOS="$APP/Contents/MacOS"
-    for cand in "$MACOS/sutura-cli/sutura-cli" "$MACOS/sutura-cli"; do
-        if [ -x "$cand" ]; then CLI="$cand"; break; fi
+if [ -n "${SUTURA_QA_APP+x}" ]; then
+    APP="$SUTURA_QA_APP"
+    [ -d "$APP" ] || APP=""
+else
+    APP=""
+    for cand in "/Applications/Sutura.app" "$HOME/Applications/Sutura.app"; do
+        if [ -d "$cand" ]; then APP="$cand"; break; fi
     done
 fi
 
-if [ -z "$APP" ] || [ -z "$CLI" ]; then
-    notify "Sutura.app not found in /Applications or ~/Applications. Install it or the bundled CLI is missing." "Sutura — Quick Action"
-    log "ERROR: no Sutura.app / sutura-cli found (APP='$APP' CLI='$CLI')"
+CLI_CMD=()
+if [ -n "$APP" ]; then
+    MACOS="$APP/Contents/MacOS"
+    for cand in "$MACOS/sutura-cli/sutura-cli" "$MACOS/sutura-cli"; do
+        if [ -x "$cand" ]; then CLI_CMD=("$cand"); break; fi
+    done
+fi
+if [ "${#CLI_CMD[@]}" -eq 0 ] && [ -x "$HOME/.local/bin/sutura" ]; then
+    # Conda install (or a normal CLI install): the .app is only a GUI wrapper.
+    CLI_CMD=("$HOME/.local/bin/sutura")
+fi
+if [ "${#CLI_CMD[@]}" -eq 0 ]; then
+    for py in "$HOME/miniforge3/envs/sutura-env/bin/python" \
+              "$HOME/miniconda3/envs/sutura-env/bin/python" \
+              "$HOME/anaconda3/envs/sutura-env/bin/python"; do
+        if [ -x "$py" ] && [ -f "$HOME/.local/share/sutura/repair.py" ]; then
+            CLI_CMD=("$py" "$HOME/.local/share/sutura/repair.py")
+            break
+        fi
+    done
+fi
+
+if [ "${#CLI_CMD[@]}" -eq 0 ]; then
+    notify "Sutura is not installed. Run the Sutura installer first." "Sutura — Quick Action"
+    log "ERROR: no bundled sutura-cli or installed CLI found (APP='$APP')"
     # Already-notified condition: exit 0 so Automator does NOT layer its own
     # "Run Shell Script encountered an error" dialog on top of our notification.
+    exit 0
+fi
+
+if [ "${SUTURA_QA_DRY_RUN:-0}" = "1" ]; then
+    printf 'CLI=%s\n' "${CLI_CMD[*]}"
     exit 0
 fi
 
@@ -63,10 +87,10 @@ fi
 # both. If either is set, the exec may be intercepted by Gatekeeper on a
 # downloaded/DMG install. We do NOT strip the attribute ourselves — the user
 # must right-click -> Open once.
-if xattr -p com.apple.quarantine "$APP" >/dev/null 2>&1 \
-   || xattr -p com.apple.quarantine "$CLI" >/dev/null 2>&1; then
+if [ -n "$APP" ] && { xattr -p com.apple.quarantine "$APP" >/dev/null 2>&1 \
+       || xattr -p com.apple.quarantine "${CLI_CMD[0]}" >/dev/null 2>&1; }; then
     notify "Sutura.app was downloaded from the internet — right-click it in Finder, choose Open once, then run the Quick Action again." "Sutura — Quick Action"
-    log "ERROR: quarantine present on $APP or $CLI — user must right-click -> Open once"
+    log "ERROR: quarantine present on $APP or ${CLI_CMD[0]} — user must right-click -> Open once"
     # Already-notified condition: exit 0 (see note above).
     exit 0
 fi
@@ -93,7 +117,7 @@ if [ "${#FILES[@]}" -eq 0 ]; then
 fi
 
 log "=== Sutura Quick Action $(date) ==="
-log "CLI: $CLI"
+log "CLI: ${CLI_CMD[*]}"
 log "files: ${#FILES[@]}"
 
 # --- repair -----------------------------------------------------------------
@@ -103,7 +127,7 @@ HEALTH_LAST=""
 for f in "${FILES[@]}"; do
     base="$(basename "$f")"
     log "--- $base ---"
-    if out="$("$CLI" "$f" --human 2>&1)"; then
+    if out="$("${CLI_CMD[@]}" "$f" --human 2>&1)"; then
         OK=$((OK + 1))
         health="$(printf '%s\n' "$out" | grep -oE 'Health: [0-9]+/100   Risk: [0-9]+/100   Status: .*' | head -1)"
         if [ -n "$health" ]; then

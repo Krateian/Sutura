@@ -30,6 +30,8 @@ except ImportError:
     from sutura.sutura_engine import chart
 cache = chart
 
+from sutura_engine.policy import TEMPLATES_CFG as _TPL
+
 # Probe face count thresholds
 SI_COUNT_MAX_FACES = 200000
 SI_SAMPLE_FACES = 200000
@@ -38,12 +40,12 @@ CLOSING_SIGNAL_MAX_FACES = 200000
 REPETITION_MAX_FACES = 500000
 
 # Template tuning thresholds
-OPEN_AREA_SCAN = 0.02
-OPEN_AREA_RELIEF = 0.08
-LARGE_LOOP_RATIO = 0.25
-MANY_LOOPS = 4
-SI_MODERATE = 20
-SI_HEAVY = 200
+OPEN_AREA_SCAN = float(_TPL['open_area_scan'])
+OPEN_AREA_RELIEF = float(_TPL['open_area_relief'])
+LARGE_LOOP_RATIO = float(_TPL['large_loop_ratio'])
+MANY_LOOPS = int(_TPL['many_loops'])
+SI_MODERATE = int(_TPL['si_moderate'])
+SI_HEAVY = int(_TPL['si_heavy'])
 
 CLASSIFIER_ENGINES = ('classic', 'experimental')
 DIAGNOSIS_V2_VERSION = 'phase3'
@@ -278,12 +280,18 @@ def _dense_scan_heavy_si_conf(a: Any) -> float:
 
 
 _BUILTIN_TEMPLATES: List[Template] = [
-    Template('mechanical', 'Mechanical part', (1, 3, 4, 5, 2), _mechanical_conf),
-    Template('organic', 'Organic surface', (1, 2, 3, 13, 7, 5), _organic_conf),
-    Template('single_side_scan', 'Single-sided scan', (8, 13, 7, 3, 2), _single_side_scan_conf),
-    Template('relief', 'Relief / shell', (9, 10, 3, 8), _relief_conf),
-    Template('repeated_pattern', 'Repeated pattern', (11, 12, 1), _repeated_pattern_conf),
-    Template('dense_scan_heavy_si', 'Dense scan / heavy self-intersections', (5, 6, 13, 7, 3), _dense_scan_heavy_si_conf),
+    Template('mechanical', 'Mechanical part',
+             tuple(_TPL['preferred']['mechanical']), _mechanical_conf),
+    Template('organic', 'Organic surface',
+             tuple(_TPL['preferred']['organic']), _organic_conf),
+    Template('single_side_scan', 'Single-sided scan',
+             tuple(_TPL['preferred']['single_side_scan']), _single_side_scan_conf),
+    Template('relief', 'Relief / shell',
+             tuple(_TPL['preferred']['relief']), _relief_conf),
+    Template('repeated_pattern', 'Repeated pattern',
+             tuple(_TPL['preferred']['repeated_pattern']), _repeated_pattern_conf),
+    Template('dense_scan_heavy_si', 'Dense scan / heavy self-intersections',
+             tuple(_TPL['preferred']['dense_scan_heavy_si']), _dense_scan_heavy_si_conf),
 ]
 
 # Registered template registry (pluggable)
@@ -333,7 +341,7 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
         return analysis
 
     # Cache lookup
-    version = '0.9.7'
+    version = '0.9.8'
     try:
         from repair import VERSION
         version = VERSION

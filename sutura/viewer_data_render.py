@@ -25,7 +25,7 @@ import numpy as np
 
 import sutura_geom
 
-from defects import detect, defect_type_colors
+from defects import (defect_map_v2, defect_masks_v2, defect_type_colors_v2)
 from heatmap_render import load_mesh
 import topology
 from viewer_common import (defect_vertex_set,
@@ -131,8 +131,10 @@ def main():
         return 1
 
     try:
-        orig_defects = detect(verts, tris, with_indices=True)
-        rep_defects = detect(rverts, rtris, with_indices=True)
+        omasks = defect_masks_v2(verts, tris)
+        rmasks = defect_masks_v2(rverts, rtris)
+        orig_defects = defect_map_v2(verts, tris, with_indices=True, masks=omasks)
+        rep_defects = defect_map_v2(rverts, rtris, with_indices=True, masks=rmasks)
 
         # healed mask on the full repaired mesh (authoritative).
         healed = healed_face_mask(rverts, rtris, orig_defects, verts,
@@ -145,8 +147,9 @@ def main():
         # on the LOD so the full-res release frame stays authoritative).
         lverts, ltris = _decimate_lod(verts, tris)
         rlverts, rltris = _decimate_lod(rverts, rtris)
-        lorig_defects = detect(lverts, ltris, with_indices=True)
-        lrep_defects = detect(rlverts, rltris, with_indices=True)
+        lmasks = defect_masks_v2(lverts, ltris)
+        lorig_defects = defect_map_v2(lverts, ltris, with_indices=True, masks=lmasks)
+        lrep_defects = defect_map_v2(rlverts, rltris, with_indices=True)
         lhealed = healed_face_mask(rlverts, rltris, orig_defects, verts,
                                    rep_defects=None)
         ldistance = _surface_distance(rlverts, rltris, verts, tris)
@@ -164,8 +167,8 @@ def main():
                  healed=healed.astype(np.bool_), lhealed=lhealed.astype(np.bool_),
                  distance=distance, ldistance=ldistance,
                  hausdorff=hausdorff,
-                 defect_colors=defect_type_colors(verts, tris),
-                 ldefect_colors=defect_type_colors(lverts, ltris),
+                 defect_colors=defect_type_colors_v2(verts, tris, masks=omasks),
+                 ldefect_colors=defect_type_colors_v2(lverts, ltris, masks=lmasks),
                  frame_center=center, frame_scale=scale,
                  initial_rotation=(R if R is not None else np.zeros((3, 3), np.float64)),
                  viewport_w=w, viewport_h=h)

@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
     QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
     QCheckBox, QDoubleSpinBox, QSpinBox, QLineEdit, QInputDialog,
-    QFormLayout, QGroupBox, QListWidget, QMenu,
+    QFormLayout, QGroupBox, QListWidget, QListWidgetItem, QMenu, QScrollArea,
     QTabWidget, QTextBrowser, QComboBox, QFrame)
 
 # the updater/repair modules live beside this file in both the repo and the
@@ -153,11 +153,11 @@ STRINGS = {
             "• X-Ray (P-HONEST): Strict post-save reload verification ensuring honest watertightness.\n"
             "• Hull: Exterior shell extraction and degenerate multi-component resolution.\n"
             "• Cast: High-performance exact geometry core in Rust (sutura_geom).\n\n"
-            "Methods #1–#18:\n"
+            "Methods #1–#19:\n"
             "Quick Clean (#1), Local Mend (#2), Full Mend (#3), Join (#4), Autorefine (#5), "
             "Exact Refine (#6), fTetWild (#7), Balloon (#8), Backplate (#9), Scaffold (#10), "
             "Transplant (#11), Transplant+ (#12), Graft (#13), Mirror Complete (#14), Wall Thicken (#15), "
-            "Dressing (#16), Tamponade (#17), Splint (#18, opt-in)."
+            "Dressing (#16), Tamponade (#17), Splint (#18, opt-in), Coaptation (#19)."
         ),
         'about_credits': (
             "Third-Party Adapters & Algorithms:\n"
@@ -223,7 +223,8 @@ STRINGS = {
         'update_confirm_title': 'Update available',
         'update_confirm_msg': ('Update to v%s? The current version will be '
                                'backed up and a rollback guarantee provided.'),
-        'updating': 'Updating…', 'no_update': 'Already up to date',
+        'updating': 'Updating…', 'update_finishing': 'Finishing update…',
+        'no_update': 'Already up to date',
         'update_success': 'Updated to %s', 'update_failed': 'Update failed',
         'rollback_notice': 'rollback', 'issue_prompt': 'You can open an issue with the log.',
         'update_check_failed': 'Update check failed',
@@ -292,7 +293,48 @@ STRINGS = {
         'print_fixed_orientation_corrected': 'orientation corrected',
         'print_geometry': 'Geometry: %s',
         'print_not_assessed': 'Not assessed: %s',
+        'print_advisory': 'Advisory: %s',
+        'print_advisory_thin_wall': ('thin walls: ~%s%% of the surface is '
+                                     'thinner than %s%% of the model size'),
+        'print_advisory_thin_wall_mm': ' (thinnest ≈ %s mm)',
+        'print_advisory_estimated': ' [estimated]',
         'print_na': 'n/a',
+        'brief_ready': 'Ready to print',
+        'brief_notes': 'Repaired with notes',
+        'brief_failed': 'Could not fully repair',
+        'brief_holes': 'Holes closed: %d',
+        'brief_orientation_corrected': 'Orientation: corrected',
+        'brief_orientation_ok': 'Orientation: already correct',
+        'brief_parts_kept': 'Parts: %d kept',
+        'brief_parts_removed': 'Parts: %d -> %d (%d removed)',
+        'brief_parts_added': 'Parts: %d -> %d (%d added)',
+        'brief_shape': 'Shape change: %.2f%%',
+        'brief_shape_volume': 'Shape change: %.2f%% (volume)',
+        'brief_details': 'Details',
+        'brief_no_report': 'Repair a file to see the verdict.',
+        'brief_note_stage2_skipped': 'The final solid check was skipped; the closed model was kept.',
+        'brief_note_stage2_error': 'The final solid check could not confirm the model.',
+        'brief_note_shape_changed': 'The shape changed; check it in the slicer.',
+        'brief_note_volume': 'The volume changed; check it in the slicer.',
+        'brief_note_graft': 'The surface was smoothed, so fine detail may be reduced.',
+        'brief_note_dressing': 'The surface was coated, so it may sit slightly outside the original.',
+        'brief_note_reload_nm': 'The saved file reopens with a topology problem.',
+        'brief_note_unit': 'The model may not be in millimetres.',
+        'brief_note_material': 'OBJ material references were not preserved.',
+        'brief_note_budget': 'The result was not saved because the repair went over its size or risk limit.',
+        'brief_note_thin_wall': ('Some walls are thin: ~%s%% of the surface is '
+                                 'thinner than %s%% of the model size'),
+        'brief_note_thin_wall_mm': ' (thinnest ≈ %s mm)',
+        'brief_note_estimated': ' [estimated]',
+        'brief_note_si_adopted': 'Overlapping surfaces were fixed with a stronger repair method.',
+        'brief_note_si_unfixed': 'Overlapping surfaces remain; the safer repair was kept.',
+        'brief_note_holes_remaining': '%d hole(s) remain.',
+        'brief_note_not_closed': 'The model is still not closed.',
+        'open_result_btn': 'Open result',
+        'show_folder_btn': 'Show in folder',
+        'open_in_slicer': 'Open in slicer',
+        'open_result_missing': 'The repaired file is no longer there.',
+        'slicer_failed': 'Could not open the slicer: %s',
         'defects_header': 'Input defects (selected file):',
         'repair_log_header': 'What changed (repair log):',
         'repair_log_empty': 'Repair a file to see the operations applied.',
@@ -330,6 +372,13 @@ STRINGS = {
         'repair_log_coaptation_not': 'Coaptation (seam union): not adopted (%s)',
         'repair_log_tamponade': 'Tamponade (interior plug): %s plugs, %s faces, holes %s->%s',
         'repair_log_tamponade_not': 'Tamponade: not adopted (%s)',
+        'repair_log_tamponade_skip': 'Tamponade: skipped \u2014 %s',
+        'tamponade_skip_no_interior': ('thin shell / no interior volume; '
+                                       'left to Flap'),
+        'tamponade_skip_no_volume': ('open sheet / no interior volume; '
+                                     'left to Flap'),
+        'tamponade_skip_open_shell': ('open shell / no solid interior; '
+                                      'left to Flap'),
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d faces (not adopted)',
         'repair_log_objects': '3MF: %d/%d object(s) watertight',
@@ -595,6 +644,64 @@ STRINGS = {
         'options_title': 'Sutura options',
         'opt_tab_general': 'General',
         'opt_tab_repair': 'Repair',
+        'opt_tab_methods': 'Methods',
+        'methods_btn': 'Methods',
+        'methods_btn_tip': 'Choose the automatic method order or a manual '
+                           'sequence for the selected files.',
+        'method_panel_title': 'Method control',
+        'method_panel_mode_auto': 'Automatic (policy order)',
+        'method_panel_mode_manual': 'Manual (exact order)',
+        'method_panel_auto_ladder': 'Automatic ladder',
+        'method_panel_manual_sequence': 'Manual sequence',
+        'method_panel_auto_hint': 'The automatic order is fixed. Check a tier '
+                                  'to run it; use Manual mode for a custom order.',
+        'method_panel_manual_hint': 'Checked methods become the file tags; the '
+                                    'CLI receives them as --methods.',
+        'method_panel_fixed_stages': 'Fixed stages (not reorderable)',
+        'method_panel_stage1': 'Stage 1: mode/profile thresholds (fixed)',
+        'method_panel_locked_gates': 'Safety gates (locked)',
+        'method_panel_locked_help': 'Locked by the release policy; they cannot '
+                                    'be overridden.',
+        'method_panel_graft_ftetwild_locked': 'Graft must run before fTetWild; '
+                                              'their relative order is locked.',
+        'method_panel_default_policy': 'Packaged default policy (read-only)',
+        'method_panel_user_policy': 'User override',
+        'method_panel_never_default': 'The packaged default file is never '
+                                      'modified.',
+        'method_panel_user_path_hint': 'The panel writes only this file.',
+        'method_panel_manual_note': 'Manual mode passes --methods in this exact '
+                                    'order.',
+        'method_panel_no_tier': 'At least one automatic deep tier must stay '
+                                'enabled.',
+        'method_panel_apply': 'Apply',
+        'method_panel_reset': 'Reset to default',
+        'method_panel_open_policy': 'Open policy file',
+        'method_panel_up': 'Up',
+        'method_panel_down': 'Down',
+        'method_panel_saved': 'Saved. The next repair uses this order.',
+        'method_panel_manual_applied': 'Manual sequence applied to %d file(s).',
+        'method_panel_policy_error': 'The user policy could not be read; the '
+                                     'packaged default is in use.',
+        'method_panel_key_error': 'The policy entry %s cannot be used; reset '
+                                  'or edit the policy file.',
+        'method_panel_noncanonical': 'This order is not canonical. Use Reset to '
+                                     'default, then enable/disable tiers.',
+        'method_panel_reset_recovered': 'The unreadable user policy was moved to '
+                                        'policy.toml.bak and reset.',
+        'method_panel_policy_missing': 'The packaged default policy is missing; '
+                                       'the panel is read-only.',
+        'method_panel_hash': 'Policy hash: %s',
+        'method_panel_source_default': 'Source: packaged default',
+        'method_panel_source_user': 'Source: user override',
+        'method_panel_tier_off_suffix': '(off — enable in Experimental)',
+        'method_panel_tier_off_tip': 'This tier is in the policy order, but its '
+                                    'enable setting is off in the Experimental '
+                                    'tab; it will not run until enabled.',
+        'method_panel_select_files': 'Select at least one file (or add files '
+                                     'first).',
+        'method_panel_manual_empty': 'Select at least one method.',
+        'method_panel_gates_note': 'Values are read-only; the packaged policy '
+                                   'changes only through a release.',
         'opt_tab_experimental': 'Experimental',
         'opt_tab_updates': 'Updates',
         'opt_tab_changelog': 'Changelog',
@@ -758,6 +865,34 @@ STRINGS = {
         'field_hausdorff_tip': 'Sample count for the shape guard; never below '
                                '%d.',
         'sug_title': 'Suggestions:',
+        'sugg_title': 'Suggested methods (advanced, estimate):',
+        'sugg_object': 'Object: %s',
+        'sugg_file_worst': 'File (worst case):',
+        'sugg_line': '%d. #%d %s — %d%% %s — %s',
+        'sugg_high': 'High',
+        'sugg_medium': 'Medium',
+        'sugg_low': 'Low',
+        'sugg_reason_clean': 'safe default for a closed, clean mesh',
+        'sugg_reason_holes': 'best for holes and open edges',
+        'sugg_reason_si': 'best for overlapping surfaces',
+        'sugg_reason_repeated': 'best for repeated parts and copies',
+        'sugg_reason_scan': 'best for a single-sided scan',
+        'sugg_reason_duplicate': 'best for duplicate or degenerate faces',
+        'sugg_method_1': 'quick cleanup of small defects',
+        'sugg_method_2': 'local repair around the damage',
+        'sugg_method_3': 'rebuilds the surface and closes holes',
+        'sugg_method_4': 'merges separate pieces into one part',
+        'sugg_method_5': 'refines self-intersections automatically',
+        'sugg_method_6': 'exact self-intersection cleanup',
+        'sugg_method_7': 'rebuilds a watertight solid',
+        'sugg_method_9': 'closes an open scan from the back',
+        'sugg_method_10': 'rebuilds a clean proxy surface',
+        'sugg_method_11': 'copies a healthy repeated pattern',
+        'sugg_method_12': 'copies a healthy pattern from picked points',
+        'sugg_method_13': 'wraps the damaged area in a thin shell',
+        'sugg_method_18': 'closes holes with an exact patch',
+        'sugg_method_19': 'welds overlapping surfaces at the seams',
+        'sugg_no_result': 'Run Analyze methods to see suggestions.',
         'sug_si_many': "Extreme mode's extra cleanup passes may help with these self-intersections.",
         'sug_si_few': 'Extreme mode also tries to clean these up.',
         'sug_holes_many': 'Probably scan-derived; Aggressive/Extreme close large holes more easily.',
@@ -802,7 +937,7 @@ STRINGS = {
         'method_name_local_mend': 'Yerel Onarım',
         'method_name_full_mend': 'Tam Onarım',
         'method_name_join': 'Birleştir',
-        'method_name_autorefine': 'Kendini Onarım (SI)',
+        'method_name_autorefine': 'Otomatik İyileştirme (SI)',
         'method_name_exact_refine': 'Kesin Onarım (SI)',
         'method_name_ftetwild': 'fTetWild',
         'method_name_balloon': 'Balon (native örtük kapatma)',
@@ -867,11 +1002,11 @@ STRINGS = {
             "• X-Ray (P-HONEST): Kayıt sonrası yeniden yüklemeyle doğrulanan dürüst su geçirmezlik.\n"
             "• Hull (Kabuk): Çok bileşenli montajlarda dış yüzey kabuğu çıkarımı.\n"
             "• Cast (Döküm): Rust tabanlı yüksek başarımlı kesin geometri çekirdeği (sutura_geom).\n\n"
-            "Onarım Yöntemleri #1–#18:\n"
-            "Hızlı Temizlik (#1), Yerel Onarım (#2), Tam Onarım (#3), Birleştir (#4), Kendini Onarım (#5), "
+            "Onarım Yöntemleri #1–#19:\n"
+            "Hızlı Temizlik (#1), Yerel Onarım (#2), Tam Onarım (#3), Birleştir (#4), Otomatik İyileştirme (#5), "
             "Kesin Onarım (#6), fTetWild (#7), Balon (#8), Arka Plaka (#9), İskelet (#10), "
             "Nakil (#11), Nakil+ (#12), Graft (#13), Aynalı Tamamlama (#14), Duvar Kalınlaştır (#15), "
-            "Pansuman (Dressing) (#16), Tamponad (#17), Splint (#18, isteğe bağlı)."
+            "Pansuman (Dressing) (#16), Tamponad (#17), Splint (#18, isteğe bağlı), Coaptation (#19)."
         ),
         'about_credits': (
             "Üçüncü Taraf Uyarlayıcılar ve Algoritmalar:\n"
@@ -937,7 +1072,8 @@ STRINGS = {
         'update_confirm_title': 'Güncelleme var',
         'update_confirm_msg': ('v%s sürümüne güncellensin mi? Mevcut sürüm '
                                'yedeklenip geri dönüş garantisi sağlanacak.'),
-        'updating': 'Güncelleniyor…', 'no_update': 'Zaten güncel',
+        'updating': 'Güncelleniyor…', 'update_finishing': 'Güncelleme bitiriliyor…',
+        'no_update': 'Zaten güncel',
         'update_success': 'v%s sürümüne güncellendi', 'update_failed': 'Güncelleme başarısız',
         'rollback_notice': 'geri dönüldü', 'issue_prompt': 'Log ile issue açabilirsin.',
         'update_check_failed': 'Güncelleme kontrolü başarısız',
@@ -1006,7 +1142,48 @@ STRINGS = {
         'print_fixed_orientation_corrected': 'yön düzeltildi',
         'print_geometry': 'Geometri: %s',
         'print_not_assessed': 'Değerlendirilmedi: %s',
+        'print_advisory': 'Uyarı: %s',
+        'print_advisory_thin_wall': ('ince duvarlar: yüzeyin ~%s%% kadarı, '
+                                     'model boyutunun %s%% değerinden ince'),
+        'print_advisory_thin_wall_mm': ' (en ince ≈ %s mm)',
+        'print_advisory_estimated': ' [tahmini]',
         'print_na': 'yok',
+        'brief_ready': 'Baskıya hazır',
+        'brief_notes': 'Notlarla onarıldı',
+        'brief_failed': 'Tamamen onarılamadı',
+        'brief_holes': 'Kapatılan delikler: %d',
+        'brief_orientation_corrected': 'Yön: düzeltildi',
+        'brief_orientation_ok': 'Yön: zaten doğru',
+        'brief_parts_kept': 'Parçalar: %d korundu',
+        'brief_parts_removed': 'Parçalar: %d -> %d (%d kaldırıldı)',
+        'brief_parts_added': 'Parçalar: %d -> %d (%d eklendi)',
+        'brief_shape': 'Şekil değişimi: %.2f%%',
+        'brief_shape_volume': 'Şekil değişimi: %.2f%% (hacim)',
+        'brief_details': 'Ayrıntılar',
+        'brief_no_report': 'Kararı görmek için bir dosya onarın.',
+        'brief_note_stage2_skipped': 'Son katı kontrolü atlandı; kapalı model korundu.',
+        'brief_note_stage2_error': 'Son katı kontrolü modeli doğrulayamadı.',
+        'brief_note_shape_changed': 'Şekil değişti; dilimleyicide kontrol edin.',
+        'brief_note_volume': 'Hacim değişti; dilimleyicide kontrol edin.',
+        'brief_note_graft': 'Yüzey yumuşatıldığı için ince ayrıntılar azalmış olabilir.',
+        'brief_note_dressing': 'Yüzey kaplandığı için özgün yüzeyin biraz dışında kalabilir.',
+        'brief_note_reload_nm': 'Kaydedilen dosyada yeniden açılışta bir yapı sorunu var.',
+        'brief_note_unit': 'Model milimetre cinsinde olmayabilir.',
+        'brief_note_material': 'OBJ malzeme referansları korunmadı.',
+        'brief_note_budget': 'Onarım boyut veya risk sınırını aştığı için sonuç kaydedilmedi.',
+        'brief_note_thin_wall': ('Yüzeyin ~%s%% kadarı model boyutunun %s%% '
+                                 'değerinden ince'),
+        'brief_note_thin_wall_mm': ' (en ince ≈ %s mm)',
+        'brief_note_estimated': ' [tahmini]',
+        'brief_note_si_adopted': 'Kendi içine geçen yüzeyler daha güçlü bir onarım yöntemiyle düzeltildi.',
+        'brief_note_si_unfixed': 'Kendi içine geçen yüzeyler kaldı; daha güvenli onarım korundu.',
+        'brief_note_holes_remaining': '%d delik kaldı.',
+        'brief_note_not_closed': 'Model hâlâ kapalı değil.',
+        'open_result_btn': 'Sonucu aç',
+        'show_folder_btn': 'Klasörde göster',
+        'open_in_slicer': 'Dilimleyicide aç',
+        'open_result_missing': 'Onarılan dosya artık burada değil.',
+        'slicer_failed': 'Dilimleyici açılamadı: %s',
         'defects_header': 'Girdi kusurları (seçili dosya):',
         'repair_log_header': 'Ne değişti (onarım günlüğü):',
         'repair_log_empty': 'Uygulanan işlemleri görmek için bir dosya onarın.',
@@ -1044,6 +1221,14 @@ STRINGS = {
         'repair_log_coaptation_not': 'Coaptation (dikiş birleştirme): benimsenmedi (%s)',
         'repair_log_tamponade': 'Tampon (içeriden tıkaç): %s tıkaç, %s yüz, delik %s->%s',
         'repair_log_tamponade_not': 'Tampon: benimsenmedi (%s)',
+        'repair_log_tamponade_skip': 'Tampon: atland\u0131 \u2014 %s',
+        'tamponade_skip_no_interior': ('ince kabuk / dolduracak i\u00e7 hacim '
+                                       'yok; Flap\u2019e b\u0131rak\u0131ld\u0131'),
+        'tamponade_skip_no_volume': ('a\u00e7\u0131k y\u00fczey / dolduracak '
+                                     'i\u00e7 hacim yok; Flap\u2019e '
+                                     'b\u0131rak\u0131ld\u0131'),
+        'tamponade_skip_open_shell': ('a\u00e7\u0131k kabuk / kat\u0131 i\u00e7 '
+                                      'hacim yok; Flap\u2019e b\u0131rak\u0131ld\u0131'),
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
         'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
@@ -1316,6 +1501,64 @@ STRINGS = {
         'options_title': 'Sutura seçenekleri',
         'opt_tab_general': 'Genel',
         'opt_tab_repair': 'Onarım',
+        'opt_tab_methods': 'Yöntemler',
+        'methods_btn': 'Yöntemler',
+        'methods_btn_tip': 'Seçili dosyalar için otomatik yöntem sırasını veya '
+                           'elle bir sıra seç.',
+        'method_panel_title': 'Yöntem denetimi',
+        'method_panel_mode_auto': 'Otomatik (ilke sırası)',
+        'method_panel_mode_manual': 'Elle (tam sıra)',
+        'method_panel_auto_ladder': 'Otomatik sıra',
+        'method_panel_manual_sequence': 'Elle yöntem sırası',
+        'method_panel_auto_hint': 'Otomatik sıra sabittir. Çalışması için bir '
+                                  'katmanı işaretleyin; özel sıra için Elle modu.',
+        'method_panel_manual_hint': 'İşaretli yöntemler dosya etiketlerine '
+                                    'dönüşür; CLI bunları --methods olarak alır.',
+        'method_panel_fixed_stages': 'Sabit aşamalar (yeniden sıralanamaz)',
+        'method_panel_stage1': 'Aşama 1: mod/profil eşikleri (sabit)',
+        'method_panel_locked_gates': 'Güvenlik kapıları (kilitli)',
+        'method_panel_locked_help': 'Sürüm ilkesince kilitli; kullanıcı '
+                                    'değiştiremez.',
+        'method_panel_graft_ftetwild_locked': ("Graft, fTetWild'den önce "
+                                              'çalışmalıdır; göreli sıra '
+                                              'kilitlidir.'),
+        'method_panel_default_policy': 'Paket varsayılan ilkesi (salt okunur)',
+        'method_panel_user_policy': 'Kullanıcı geçersiz kılması',
+        'method_panel_never_default': 'Paket varsayılan dosyası hiç değiştirilmez.',
+        'method_panel_user_path_hint': 'Panel yalnızca bu dosyaya yazar.',
+        'method_panel_manual_note': 'Elle modu --methods listesini tam bu sırayla '
+                                    'geçirir.',
+        'method_panel_no_tier': 'En az bir otomatik derin katman etkin kalmalıdır.',
+        'method_panel_apply': 'Uygula',
+        'method_panel_reset': 'Varsayılana dön',
+        'method_panel_open_policy': 'İlke dosyasını aç',
+        'method_panel_up': 'Yukarı',
+        'method_panel_down': 'Aşağı',
+        'method_panel_saved': 'Kaydedildi. Sonraki onarım bu sırayı kullanır.',
+        'method_panel_manual_applied': 'Elle sıra %d dosyaya uygulandı.',
+        'method_panel_policy_error': 'Kullanıcı ilkesi okunamadı; paket '
+                                     'varsayılanı kullanılıyor.',
+        'method_panel_key_error': 'İlke girdisi %s kullanılamıyor; sıfırlayın '
+                                  'veya ilke dosyasını düzenleyin.',
+        'method_panel_noncanonical': 'Bu sıra kanonik değil. Varsayılana dönüp '
+                                     'katmanları açıp kapatın.',
+        'method_panel_reset_recovered': 'Okunamayan kullanıcı ilkesi '
+                                        'policy.toml.bak konumuna taşındı ve '
+                                        'sıfırlandı.',
+        'method_panel_policy_missing': 'Paket varsayılan ilkesi eksik; panel '
+                                       'salt okunur.',
+        'method_panel_hash': 'İlke karması: %s',
+        'method_panel_source_default': 'Kaynak: paket varsayılanı',
+        'method_panel_source_user': 'Kaynak: kullanıcı geçersiz kılması',
+        'method_panel_tier_off_suffix': '(kapalı — Deneysel sekmesinden açın)',
+        'method_panel_tier_off_tip': 'Bu katman ilke sırasında, ancak Deneysel '
+                                    'sekmesindeki etkinleştirme ayarı kapalı; '
+                                    'açılana kadar çalışmaz.',
+        'method_panel_select_files': 'En az bir dosya seçin (veya önce dosya '
+                                     'ekleyin).',
+        'method_panel_manual_empty': 'En az bir yöntem seçin.',
+        'method_panel_gates_note': 'Değerler salt okunurdur; paket ilkesi '
+                                   'yalnızca bir sürümle değişir.',
         'opt_tab_experimental': 'Deneysel',
         'opt_tab_updates': 'Güncellemeler',
         'opt_tab_changelog': 'Değişiklikler',
@@ -1479,6 +1722,34 @@ STRINGS = {
         'field_hausdorff_tip': 'Şekil koruması için örnek sayısı; hiçbir zaman '
                                '%d altına inemez.',
         'sug_title': 'Öneriler:',
+        'sugg_title': 'Önerilen yöntemler (gelişmiş, tahmini):',
+        'sugg_object': 'Nesne: %s',
+        'sugg_file_worst': 'Dosya (en kötü durum):',
+        'sugg_line': '%d. #%d %s — %d%% %s — %s',
+        'sugg_high': 'Yüksek',
+        'sugg_medium': 'Orta',
+        'sugg_low': 'Düşük',
+        'sugg_reason_clean': 'kapalı ve temiz mesh için güvenli varsayılan',
+        'sugg_reason_holes': 'delikler ve açık kenarlar için en iyi',
+        'sugg_reason_si': 'üst üste binen yüzeyler için en iyi',
+        'sugg_reason_repeated': 'yinelenen parçalar ve kopyalar için en iyi',
+        'sugg_reason_scan': 'tek taraflı tarama için en iyi',
+        'sugg_reason_duplicate': 'yinelenen veya dejenere yüzeyler için en iyi',
+        'sugg_method_1': 'küçük kusurların hızlı temizliği',
+        'sugg_method_2': 'hasarın çevresinde yerel onarım',
+        'sugg_method_3': 'yüzeyi yeniden kurar ve delikleri kapatır',
+        'sugg_method_4': 'ayrı parçaları tek parçada birleştirir',
+        'sugg_method_5': 'kendi içine geçen yüzeyleri otomatik iyileştirir',
+        'sugg_method_6': 'kendi içine geçen yüzeylerin kesin temizliği',
+        'sugg_method_7': 'su geçirmez bir katı yeniden kurar',
+        'sugg_method_9': 'açık bir taramayı arkadan kapatır',
+        'sugg_method_10': 'temiz bir vekil yüzey yeniden kurar',
+        'sugg_method_11': 'sağlıklı bir yinelenen deseni kopyalar',
+        'sugg_method_12': 'seçilen noktalardan sağlıklı desen kopyalar',
+        'sugg_method_13': 'hasarlı bölgeyi ince bir kabukla sarar',
+        'sugg_method_18': 'delikleri kesin bir yama ile kapatır',
+        'sugg_method_19': 'üst üste binen yüzeyleri dikişlerde kaynaştırır',
+        'sugg_no_result': 'Önerileri görmek için Yöntemleri analiz et çalıştırın.',
         'sug_si_many': "Extreme modun ekstra temizleme adımları bu self-intersection'lara işe yarayabilir.",
         'sug_si_few': 'Extreme mod bunları ayrıca temizlemeyi dener.',
         'sug_holes_many': 'Muhtemelen tarama kaynaklı; Aggressive/Extreme büyük delikleri daha rahat kapatır.',
@@ -1557,6 +1828,20 @@ def _print_impact_lines(pr):
         seg.append(_t('print_issue_shape_deviation', g['deviation_max_pct']))
     if seg:
         lines.append(_t('print_geometry', ', '.join(seg)))
+    parts = []
+    for a in pr.get('advisories') or []:
+        if a.get('code') != 'thin_wall':
+            continue
+        name = _t('print_advisory_thin_wall',
+                  round(100.0 * (a.get('thin_ratio') or 0.0), 1),
+                  round(100.0 * (a.get('threshold_norm') or 0.0), 1))
+        if a.get('min_mm') is not None:
+            name += _t('print_advisory_thin_wall_mm', a.get('min_mm'))
+        if a.get('estimated'):
+            name += _t('print_advisory_estimated')
+        parts.append(name)
+    if parts:
+        lines.append(_t('print_advisory', ', '.join(parts)))
     na = pr.get('not_assessed') or []
     if na:
         lines.append(_t('print_not_assessed', ', '.join(na)))
@@ -1678,6 +1963,33 @@ def _find_sutura_cmd():
 
 
 SUTURA_CMD = _find_sutura_cmd()
+
+
+def _cancel_and_wait(worker, timeout_ms=6000, terminate_last=True):
+    """Stop a parented QThread before the window is destroyed.
+
+    Cooperative cancel first, then a bounded wait. ``terminate()`` is a last
+    resort for a worker that is already idle in Python; leaving it running
+    would make Qt abort the process on teardown.
+    """
+    if worker is None or not hasattr(worker, 'isRunning'):
+        return True
+    if not worker.isRunning():
+        return True
+    cancel = getattr(worker, 'cancel', None)
+    if callable(cancel):
+        try:
+            cancel()
+        except Exception:  # noqa: BLE001 - shutdown must never raise
+            pass
+    else:
+        worker.requestInterruption()
+    if worker.wait(timeout_ms):
+        return True
+    if terminate_last:
+        worker.terminate()
+        return worker.wait(2000)
+    return not worker.isRunning()
 
 # Qt platform plugins without a real window system: modal dialogs cannot be
 # answered there (headless CI runs the GUI tests with QT_QPA_PLATFORM=offscreen).
@@ -1888,6 +2200,45 @@ def format_report(data):
     return '\n'.join(lines)
 
 
+def _detect_slicers():
+    """Detected slicer commands (label, argv-prefix), never guessed.
+
+    ORCA_BIN is the existing explicit override; the rest is standard
+    executable/app detection. Windows is not a supported platform.
+    """
+    found = []
+    seen = set()
+
+    def add(label, cmd):
+        if label in seen or not cmd:
+            return
+        seen.add(label)
+        found.append((label, list(cmd)))
+
+    env = os.environ.get('ORCA_BIN', '').strip()
+    if env:
+        path = env if os.path.isabs(env) else shutil.which(env)
+        if path and os.path.exists(path):
+            add('OrcaSlicer', [path])
+    for label, names in (
+            ('OrcaSlicer', ('orca-slicer',)),
+            ('Bambu Studio', ('bambu-studio', 'BambuStudio')),
+            ('PrusaSlicer', ('prusa-slicer', 'PrusaSlicer'))):
+        for name in names:
+            path = shutil.which(name)
+            if path:
+                add(label, [path])
+                break
+    if sys.platform == 'darwin':
+        for root in ('/Applications', os.path.expanduser('~/Applications')):
+            for label, app in (('OrcaSlicer', 'OrcaSlicer.app'),
+                               ('Bambu Studio', 'BambuStudio.app'),
+                               ('PrusaSlicer', 'PrusaSlicer.app')):
+                if os.path.isdir(os.path.join(root, app)):
+                    add(label, ['open', '-a', app[:-4]])
+    return found
+
+
 class UpdateCheckWorker(QThread):
     """Background check for a newer release. Emits found((status, tag))."""
 
@@ -1918,9 +2269,16 @@ class UpdateWorker(QThread):
     def __init__(self, tag, parent=None):
         super().__init__(parent)
         self.tag = tag
+        self._stop = threading.Event()
+
+    def cancel(self):
+        """Ask perform_update to stop at the next safe phase boundary."""
+        self._stop.set()
 
     def run(self):
-        ok, msg, _prev = updater.perform_update(self.tag, progress=self.progress_msg.emit)
+        ok, msg, _prev = updater.perform_update(
+            self.tag, progress=self.progress_msg.emit,
+            should_stop=self._stop.is_set)
         self.finished_update.emit(ok, msg)
 
 
@@ -2255,7 +2613,60 @@ class MethodAnalyzeWorker(QThread):
         return parse_cli_output(out, err)
 
 
-class HeatmapWorker(QThread):
+class _CancelableSubprocessWorker(QThread):
+    """Run one helper subprocess with a cooperative cancel path.
+
+    ``subprocess.run`` cannot be interrupted; the render workers use this
+    small wrapper so ``cancel()`` can terminate their child process before the
+    window is destroyed. The timeout and the temp-file cleanup stay in the
+    concrete worker.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._proc = None
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+
+    def _run_cmd(self, cmd, timeout):
+        """Return (returncode, stdout, stderr, timed_out).
+
+        returncode is None on OSError/timeout/cancel; the caller emits its
+        existing failure text in those cases.
+        """
+        try:
+            self._proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                out, err = self._proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    self._proc.kill()
+                except OSError:
+                    pass
+                try:
+                    out, err = self._proc.communicate()
+                except OSError:
+                    out, err = b'', b''
+                return None, out, err, True
+            if self._cancelled:
+                return None, out, err, False
+            return self._proc.returncode, out, err, False
+        except OSError:
+            return None, b'', b'', False
+        finally:
+            self._proc = None
+
+
+class HeatmapWorker(_CancelableSubprocessWorker):
     """Renders a mesh heatmap off the GUI thread and off the GUI process.
 
     The render (mesh load + defect detect + rasterise) runs as a
@@ -2285,17 +2696,17 @@ class HeatmapWorker(QThread):
         outfile = tmp.name
         tmp.close()
         try:
-            proc = subprocess.run(
+            rc, _out, _err, _timed_out = self._run_cmd(
                 [*_script_cmd('heatmap-render', renderer), self._path, outfile,
-                 str(self._w), str(self._h)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                timeout=300)
-            if proc.returncode != 0 or not os.path.getsize(outfile):
+                 str(self._w), str(self._h)], 300)
+            if self._cancelled:
+                return
+            if rc != 0 or not os.path.getsize(outfile):
                 self.failed.emit(self._path, _t('heatmap_failed'))
                 return
             with open(outfile, 'rb') as f:
                 png = f.read()
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             self.failed.emit(self._path, _t('heatmap_failed'))
             return
         finally:
@@ -2306,7 +2717,7 @@ class HeatmapWorker(QThread):
         self.done.emit(self._path, self._size_key, png)
 
 
-class BeforeAfterWorker(QThread):
+class BeforeAfterWorker(_CancelableSubprocessWorker):
     """Renders the original vs repaired comparison in a subprocess.
 
     Same isolation rule as ``HeatmapWorker``: the mesh-loading stack stays
@@ -2337,12 +2748,13 @@ class BeforeAfterWorker(QThread):
         dbefore_file = prefix + '_detail_before.png'
         dafter_file = prefix + '_detail_after.png'
         try:
-            proc = subprocess.run(
+            rc, _out, _err, _timed_out = self._run_cmd(
                 [*_script_cmd('before-after-render', renderer), self._path,
                  self._repaired, before_file, after_file, dbefore_file,
-                 dafter_file, str(self._w), str(self._h)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
-            if (proc.returncode != 0 or not os.path.getsize(before_file)
+                 dafter_file, str(self._w), str(self._h)], 600)
+            if self._cancelled:
+                return
+            if (rc != 0 or not os.path.getsize(before_file)
                     or not os.path.getsize(after_file)
                     or not os.path.getsize(dbefore_file)
                     or not os.path.getsize(dafter_file)):
@@ -2356,7 +2768,7 @@ class BeforeAfterWorker(QThread):
                 dbefore = f.read()
             with open(dafter_file, 'rb') as f:
                 dafter = f.read()
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             self.failed.emit(self._path, _t('before_after_failed'))
             return
         finally:
@@ -2371,7 +2783,7 @@ class BeforeAfterWorker(QThread):
         self.done.emit(self._path, self._repaired, before, after, dbefore, dafter)
 
 
-class ViewerDataWorker(QThread):
+class ViewerDataWorker(_CancelableSubprocessWorker):
     """Builds the interactive-viewer dataset (.npz) in a subprocess.
 
     Same isolation rule as ``HeatmapWorker``/``BeforeAfterWorker``: the
@@ -2399,16 +2811,17 @@ class ViewerDataWorker(QThread):
         tmpdir = tempfile.mkdtemp(prefix='sutura-vd-')
         outfile = os.path.join(tmpdir, 'viewer.npz')
         try:
-            proc = subprocess.run(
+            rc, _out, _err, _timed_out = self._run_cmd(
                 [*_script_cmd('viewer-data-render', renderer), self._path,
-                 self._repaired, outfile, str(self._w), str(self._h)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=900)
-            if proc.returncode != 0 or not os.path.getsize(outfile):
+                 self._repaired, outfile, str(self._w), str(self._h)], 900)
+            if self._cancelled:
+                return
+            if rc != 0 or not os.path.getsize(outfile):
                 self.failed.emit(self._path, _t('viewer_ready_failed'))
                 return
             with np.load(outfile) as d:
                 data = {k: d[k] for k in d.files}
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             self.failed.emit(self._path, _t('viewer_ready_failed'))
             return
         finally:
@@ -2419,7 +2832,7 @@ class ViewerDataWorker(QThread):
         self.done.emit(self._path, data)
 
 
-class RepeatPickerWorker(QThread):
+class RepeatPickerWorker(_CancelableSubprocessWorker):
     """Loads the method-12 picker mesh (npz) in a subprocess.
 
     Same isolation rule as the other workers: the mesh-loading stack stays
@@ -2440,16 +2853,17 @@ class RepeatPickerWorker(QThread):
         tmpdir = tempfile.mkdtemp(prefix='sutura-rp-')
         outfile = os.path.join(tmpdir, 'picker.npz')
         try:
-            proc = subprocess.run(
+            rc, _out, _err, _timed_out = self._run_cmd(
                 [*_script_cmd('repeat-picker-render', renderer), self._path,
-                 outfile],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
-            if proc.returncode != 0 or not os.path.getsize(outfile):
+                 outfile], 600)
+            if self._cancelled:
+                return
+            if rc != 0 or not os.path.getsize(outfile):
                 self.failed.emit(self._path, _t('repeat_pick_failed'))
                 return
             with np.load(outfile) as d:
                 data = {k: d[k] for k in d.files}
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             self.failed.emit(self._path, _t('repeat_pick_failed'))
             return
         finally:
@@ -3315,6 +3729,431 @@ class AboutDialog(QDialog):
         layout.addLayout(btn_box)
 
 
+class MethodControlPanel(QWidget):
+    """Read/write the user policy for the automatic deep-tier order, and a
+    manual per-file method sequence for the selected files.
+    """
+
+    def __init__(self, main, parent=None):
+        super().__init__(parent)
+        self.main = main
+        self._policy_mod = None
+        self._effective = None
+        self._load_error = None
+        self._user_written = False
+        self._auto_items = {}
+        self._manual_items = {}
+        self.setObjectName('methodControlPanel')
+        self._load_policy()
+        self._build()
+        self.reload()
+
+    def _load_policy(self):
+        try:
+            from sutura_engine import policy as policy_mod
+            self._policy_mod = policy_mod
+            self._effective = policy_mod.load_policy()
+            self._user_written = bool(policy_mod.USER_OVERRIDE)
+        except Exception as exc:  # missing bundled policy, malformed TOML, ...
+            self._load_error = str(exc)
+
+    def _default_order(self):
+        try:
+            data = self._policy_mod._read_toml(
+                self._policy_mod.DEFAULT_POLICY_PATH)
+            return list(data['order']['deep_tier_order'])
+        except Exception:
+            return []
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        title = QLabel(_t('method_panel_title'))
+        f = title.font()
+        f.setBold(True)
+        title.setFont(f)
+        root.addWidget(title)
+
+        mode_row = QHBoxLayout()
+        self.rb_auto = QRadioButton(_t('method_panel_mode_auto'))
+        self.rb_manual = QRadioButton(_t('method_panel_mode_manual'))
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.addButton(self.rb_auto)
+        self._mode_group.addButton(self.rb_manual)
+        self.rb_auto.setChecked(True)
+        self.rb_auto.toggled.connect(self._sync_mode)
+        mode_row.addWidget(self.rb_auto)
+        mode_row.addWidget(self.rb_manual)
+        mode_row.addStretch(1)
+        root.addLayout(mode_row)
+
+        self.auto_box = QGroupBox(_t('method_panel_auto_ladder'))
+        a = QVBoxLayout(self.auto_box)
+        self.auto_hint = QLabel(_t('method_panel_auto_hint'))
+        self.auto_hint.setWordWrap(True)
+        a.addWidget(self.auto_hint)
+        self.lst_auto = QListWidget()
+        self.lst_auto.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.lst_auto.itemChanged.connect(lambda _i: self._update_apply())
+        a.addWidget(self.lst_auto)
+        self.auto_warn = QLabel(_t('method_panel_no_tier'))
+        self.auto_warn.setWordWrap(True)
+        self.auto_warn.setVisible(False)
+        a.addWidget(self.auto_warn)
+        root.addWidget(self.auto_box)
+
+        self.manual_box = QGroupBox(_t('method_panel_manual_sequence'))
+        m = QVBoxLayout(self.manual_box)
+        self.manual_hint = QLabel(_t('method_panel_manual_hint'))
+        self.manual_hint.setWordWrap(True)
+        m.addWidget(self.manual_hint)
+        self.lst_manual = QListWidget()
+        self.lst_manual.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.lst_manual.itemChanged.connect(self._on_manual_item_changed)
+        m.addWidget(self.lst_manual)
+        mrow = QHBoxLayout()
+        self.btn_manual_up = QPushButton(_t('method_panel_up'))
+        self.btn_manual_down = QPushButton(_t('method_panel_down'))
+        self.btn_manual_up.clicked.connect(
+            lambda: self._move(self.lst_manual, -1))
+        self.btn_manual_down.clicked.connect(
+            lambda: self._move(self.lst_manual, 1))
+        mrow.addWidget(self.btn_manual_up)
+        mrow.addWidget(self.btn_manual_down)
+        mrow.addStretch(1)
+        m.addLayout(mrow)
+        self.manual_note = QLabel(_t('method_panel_manual_note'))
+        self.manual_note.setWordWrap(True)
+        m.addWidget(self.manual_note)
+        root.addWidget(self.manual_box)
+
+        fixed = QLabel(_t('method_panel_fixed_stages') + ': ' +
+                       _t('method_panel_stage1'))
+        fixed.setWordWrap(True)
+        root.addWidget(fixed)
+
+        lock = QGroupBox(_t('method_panel_locked_gates'))
+        lv = QVBoxLayout(lock)
+        self.lst_gates = QListWidget()
+        self.lst_gates.setSelectionMode(QAbstractItemView.NoSelection)
+        self.lst_gates.setWordWrap(True)
+        self.lst_gates.setTextElideMode(Qt.ElideNone)
+        self.lst_gates.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.lst_gates.setToolTip(_t('method_panel_locked_help'))
+        lv.addWidget(self.lst_gates)
+        note = QLabel(_t('method_panel_gates_note'))
+        note.setWordWrap(True)
+        lv.addWidget(note)
+        root.addWidget(lock)
+
+        self.lbl_default = QLabel()
+        self.lbl_default.setWordWrap(True)
+        self.lbl_user = QLabel()
+        self.lbl_user.setWordWrap(True)
+        self.lbl_hash = QLabel()
+        self.lbl_source = QLabel()
+        self.btn_open = QPushButton(_t('method_panel_open_policy'))
+        self.btn_open.clicked.connect(self._open_policy)
+        prow = QHBoxLayout()
+        prow.addWidget(self.lbl_user, 1)
+        prow.addWidget(self.btn_open)
+        root.addWidget(self.lbl_default)
+        root.addLayout(prow)
+        root.addWidget(self.lbl_hash)
+        root.addWidget(self.lbl_source)
+        never = QLabel(_t('method_panel_never_default'))
+        never.setWordWrap(True)
+        root.addWidget(never)
+
+        root.addStretch(1)
+        self.warn = QLabel()
+        self.warn.setWordWrap(True)
+        root.addWidget(self.warn)
+        brow = QHBoxLayout()
+        self.btn_reset = QPushButton(_t('method_panel_reset'))
+        self.btn_reset.clicked.connect(self.reset_defaults)
+        self.btn_apply = QPushButton(_t('method_panel_apply'))
+        self.btn_apply.setObjectName('methodApplyBtn')
+        self.btn_apply.clicked.connect(self.apply)
+        brow.addWidget(self.btn_reset)
+        brow.addStretch(1)
+        brow.addWidget(self.btn_apply)
+        root.addLayout(brow)
+        self._sync_mode()
+
+    def _add_item(self, lst, key, text, checked, enabled=True, tooltip=''):
+        item = QListWidgetItem(text)
+        item.setData(Qt.UserRole, key)
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Checked if (checked and enabled) else Qt.Unchecked)
+        if not enabled:
+            item.setData(Qt.UserRole + 1, 'blocked')
+        if tooltip:
+            item.setToolTip(tooltip)
+        lst.addItem(item)
+        return item
+
+    def _on_manual_item_changed(self, item):
+        if (item.data(Qt.UserRole + 1) == 'blocked'
+                and item.checkState() == Qt.Checked):
+            self.lst_manual.blockSignals(True)
+            item.setCheckState(Qt.Unchecked)
+            self.lst_manual.blockSignals(False)
+        self._update_apply()
+
+    def _tier_enabled(self, tier):
+        names = {'dressing': 'chk_dressing', 'splint': 'chk_splint',
+                 'coaptation': 'chk_coaptation',
+                 'ftetwild': 'chk_fallback_ftetwild'}
+        widget = getattr(self.main, names.get(tier, ''), None)
+        return True if widget is None else bool(widget.isChecked())
+
+    def reload(self):
+        self.lst_auto.clear()
+        self._auto_items = {}
+        order = []
+        if self._effective:
+            order = list(self._effective['order']['deep_tier_order'])
+            method_num = self._effective['order']['deep_tier_method_num']
+        else:
+            method_num = {}
+        known = list(method_num)
+        shown = order + [t for t in known if t not in order]
+        for tier in shown:
+            num = method_num.get(tier)
+            text = ('#%s %s' % (num, _method_name(num))
+                    if num is not None else tier)
+            enabled = self._tier_enabled(tier)
+            tooltip = ''
+            if not enabled:
+                text += ' ' + _t('method_panel_tier_off_suffix')
+                tooltip = _t('method_panel_tier_off_tip')
+            elif tier in ('graft', 'ftetwild'):
+                tooltip = _t('method_panel_graft_ftetwild_locked')
+            self._auto_items[tier] = self._add_item(
+                self.lst_auto, tier, text, tier in order, tooltip=tooltip)
+
+        self.lst_manual.clear()
+        self._manual_items = {}
+        seed = self._seed_manual()
+        for method in methods.all_methods():
+            ok, reason = method.available()
+            text = '#%d %s' % (method.num, _method_name(method.num))
+            item = self._add_item(
+                self.lst_manual, method.num, text, False,
+                enabled=ok, tooltip=(reason or '') if not ok else '')
+            self._manual_items[method.num] = item
+            if method.num in seed and ok:
+                item.setCheckState(Qt.Checked)
+
+        self._refresh_status()
+        self._refresh_gates()
+        self._sync_mode()
+
+    def _seed_manual(self):
+        paths = self._selected_paths()
+        if not paths:
+            return []
+        tag_sets = []
+        for path in paths:
+            tags = self.main._method_tags_by_path.get(path) or []
+            tag_sets.append(tuple(n for kind, n in tags if kind == 'method'))
+        if tag_sets and all(t == tag_sets[0] for t in tag_sets):
+            return list(tag_sets[0])
+        return []
+
+    def _selected_paths(self):
+        paths = [it.text(0) for it in self.main.tree.selectedItems()
+                 if it.text(0) in self.main._item_by_path]
+        if not paths:
+            cur = self.main.tree.currentItem()
+            if cur is not None and cur.text(0) in self.main._item_by_path:
+                paths = [cur.text(0)]
+        if not paths:
+            paths = list(getattr(self.main, 'files', []))
+        return paths
+
+    def _refresh_status(self):
+        if self._policy_mod is None:
+            self.lbl_default.setText(_t('method_panel_policy_missing'))
+            self.lbl_user.setText('')
+            self.lbl_hash.setText('')
+            self.lbl_source.setText(self._load_error or '')
+            self.warn.setText(_t('method_panel_policy_missing'))
+            self.btn_apply.setEnabled(False)
+            return
+        mod = self._policy_mod
+        user_path = os.environ.get(mod.USER_POLICY_ENV) or mod.USER_POLICY_PATH
+        self.lbl_default.setText(_t('method_panel_default_policy'))
+        self.lbl_default.setToolTip(mod.DEFAULT_POLICY_PATH)
+        home = os.path.expanduser('~')
+        shown_path = ('~' + user_path[len(home):]
+                      if home and user_path.startswith(home + os.sep)
+                      else user_path)
+        self.lbl_user.setText(_t('method_panel_user_policy') + ': ' + shown_path)
+        self.lbl_user.setToolTip(_t('method_panel_user_path_hint'))
+        if self._effective is not None:
+            self.lbl_hash.setText(_t('method_panel_hash',
+                                     mod.policy_hash(self._effective)))
+        self.lbl_source.setText(
+            _t('method_panel_source_user') if self._user_written
+            else _t('method_panel_source_default'))
+        if mod.POLICY_ERROR:
+            self.warn.setText(_t('method_panel_policy_error') + ' ' +
+                              str(mod.POLICY_ERROR))
+        elif not self.warn.text():
+            self.warn.setText('')
+
+    @classmethod
+    def _format_gate_value(cls, value):
+        if isinstance(value, bool):
+            return 'true' if value else 'false'
+        if isinstance(value, float):
+            return format(value, 'g')
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return '[' + ', '.join(cls._format_gate_value(v)
+                                   for v in value) + ']'
+        if isinstance(value, dict):
+            return '{' + ', '.join(
+                '%s=%s' % (k, cls._format_gate_value(v))
+                for k, v in sorted(value.items())) + '}'
+        return str(value)
+
+    def _refresh_gates(self):
+        self.lst_gates.clear()
+        if self._policy_mod is None or self._effective is None:
+            return
+        mod = self._policy_mod
+        for path in sorted(mod.gate_paths()):
+            value = self._lookup(self._effective, path)
+            text = '\U0001f512 %s = %s' % (
+                path, self._format_gate_value(value))
+            item = QListWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+            item.setToolTip(text)
+            self.lst_gates.addItem(item)
+
+    @staticmethod
+    def _lookup(data, dotted):
+        cur = data
+        for part in dotted.split('.'):
+            if not isinstance(cur, dict) or part not in cur:
+                return 'locked'
+            cur = cur[part]
+        return cur
+
+    def _move(self, lst, delta):
+        row = lst.currentRow()
+        if row < 0:
+            return
+        target = row + delta
+        if target < 0 or target >= lst.count():
+            return
+        item = lst.takeItem(row)
+        lst.insertItem(target, item)
+        lst.setCurrentItem(item)
+
+    def _checked_auto(self):
+        out = []
+        for i in range(self.lst_auto.count()):
+            item = self.lst_auto.item(i)
+            if item.checkState() == Qt.Checked:
+                out.append(item.data(Qt.UserRole))
+        return out
+
+    def _checked_manual(self):
+        out = []
+        for i in range(self.lst_manual.count()):
+            item = self.lst_manual.item(i)
+            if item.checkState() == Qt.Checked:
+                out.append(item.data(Qt.UserRole))
+        return out
+
+    def _sync_mode(self, *_):
+        auto = self.rb_auto.isChecked()
+        self.auto_box.setEnabled(auto)
+        self.manual_box.setEnabled(not auto)
+        self._update_apply()
+
+    def _update_apply(self):
+        if self._policy_mod is None:
+            self.btn_apply.setEnabled(False)
+            return
+        if self.rb_auto.isChecked():
+            ok = bool(self._checked_auto())
+            self.auto_warn.setVisible(not ok)
+            self.btn_apply.setEnabled(ok)
+        else:
+            self.auto_warn.setVisible(False)
+            self.btn_apply.setEnabled(bool(self._checked_manual()))
+
+    def _show_write_error(self, exc):
+        key = getattr(exc, 'policy_key', None)
+        kind = getattr(exc, 'policy_kind', None)
+        if kind == 'canonical' or 'canonical order' in str(exc):
+            self.warn.setText(_t('method_panel_noncanonical'))
+        elif key:
+            self.warn.setText(_t('method_panel_key_error', key))
+        else:
+            self.warn.setText(str(exc))
+
+    def apply(self):
+        if self._policy_mod is None:
+            self.warn.setText(_t('method_panel_policy_missing'))
+            return
+        if self.rb_auto.isChecked():
+            tiers = self._checked_auto()
+            if not tiers:
+                self.warn.setText(_t('method_panel_no_tier'))
+                return
+            try:
+                self._effective = self._policy_mod.write_user_policy(
+                    {'order': {'deep_tier_order': tiers}})
+                self._user_written = True
+                self.warn.setText(_t('method_panel_saved'))
+                self._refresh_status()
+            except Exception as exc:
+                self._show_write_error(exc)
+            return
+        nums = self._checked_manual()
+        if not nums:
+            self.warn.setText(_t('method_panel_manual_empty'))
+            return
+        paths = self._selected_paths()
+        if not paths:
+            self.warn.setText(_t('method_panel_select_files'))
+            return
+        self.main._set_method_tags(paths, nums)
+        self.warn.setText(_t('method_panel_manual_applied', len(paths)))
+
+    def reset_defaults(self):
+        if self._policy_mod is None:
+            return
+        try:
+            self._effective = self._policy_mod.write_user_policy(reset=True)
+            self._user_written = False
+        except Exception as exc:
+            self._show_write_error(exc)
+            return
+        self.reload()
+        if getattr(self._policy_mod, 'LAST_WRITE_WARNING', None):
+            self.warn.setText(_t('method_panel_reset_recovered'))
+        else:
+            self.warn.setText('')
+
+    def _open_policy(self):
+        if self._policy_mod is None:
+            return
+        user_path = (os.environ.get(self._policy_mod.USER_POLICY_ENV)
+                     or self._policy_mod.USER_POLICY_PATH)
+        target = user_path if os.path.exists(user_path) else os.path.dirname(
+            user_path)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(target))
+
+
 class OptionsDialog(QDialog):
     """Non-modal, tabbed Options window.
 
@@ -3324,8 +4163,8 @@ class OptionsDialog(QDialog):
     that are not per batch (usage history, update checks) are written to
     config.json immediately."""
 
-    (TAB_GENERAL, TAB_REPAIR, TAB_EXPERIMENTAL, TAB_UPDATES, TAB_CHANGELOG,
-     TAB_ENGINES) = range(6)
+    (TAB_GENERAL, TAB_REPAIR, TAB_METHODS, TAB_EXPERIMENTAL, TAB_UPDATES,
+     TAB_CHANGELOG, TAB_ENGINES) = range(7)
 
     def __init__(self, main):
         super().__init__(main)
@@ -3496,6 +4335,13 @@ class OptionsDialog(QDialog):
         r.addLayout(flap_tamp_row)
         r.addStretch(1)
         self.tabs.addTab(repair, _t('opt_tab_repair'))
+
+        # Method control (automatic deep-tier order / manual sequence)
+        self.method_panel = MethodControlPanel(main, self)
+        method_scroll = QScrollArea()
+        method_scroll.setWidgetResizable(True)
+        method_scroll.setWidget(self.method_panel)
+        self.tabs.addTab(method_scroll, _t('opt_tab_methods'))
 
         # Experimental
         exp = QWidget()
@@ -3930,6 +4776,7 @@ class MainWindow(QMainWindow):
         self._heatmap_zoom = None
         self.before_after_worker = None
         self._before_after_zoom = None
+        self._viewer_worker = None
         self._repair_mode = 'auto'    # batch-wide repair mode (not per file)
         self._repair_profile = None   # batch-wide repair profile (not per file)
         self._profiles = triage.load_profiles()  # named user profiles
@@ -3960,7 +4807,8 @@ class MainWindow(QMainWindow):
         self._dressing_rmax_scale = None    # None = 1.0
         self._dressing_sigma_scale = None   # None = 1.0
         self._dressing_force_adopt = False  # batch-wide: skip Dressing shape gates
-        self._si_mode = 'report'      # self-intersection policy: repair/report/off
+        _si = updater.load_config().get('si_mode', 'report')
+        self._si_mode = _si if _si in ('report', 'repair', 'off') else 'report'
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
@@ -4140,8 +4988,7 @@ class MainWindow(QMainWindow):
         self.chk_coaptation = QCheckBox(_t('coaptation_label'))
         self.chk_coaptation.setToolTip(_t('coaptation_tip'))
         self.chk_coaptation.setChecked(self._coaptation)
-        self.chk_coaptation.toggled.connect(
-            lambda on: setattr(self, '_coaptation', on))
+        self.chk_coaptation.toggled.connect(self._on_coaptation_toggled)
         # Drain (healthy-region erode-back) override for Dressing; the empty
         # entry means "use the intensity preset default".
         self.cmb_dressing_drain = QComboBox()
@@ -4184,6 +5031,9 @@ class MainWindow(QMainWindow):
                          ('si_mode_repair', 'repair'),
                          ('si_mode_off', 'off')):
             self.cmb_si_mode.addItem(_t(key), val)
+        _idx = self.cmb_si_mode.findData(self._si_mode)
+        if _idx >= 0:
+            self.cmb_si_mode.setCurrentIndex(_idx)
         self.cmb_si_mode.currentIndexChanged.connect(self._on_si_mode_changed)
         # Last-resort solid engine (batch-wide, saved setting).
         self.cmb_solid_engine = QComboBox()
@@ -4198,6 +5048,8 @@ class MainWindow(QMainWindow):
         # window (OptionsDialog) instead of a row of checkboxes: each QCheckBox
         # is re-parented there unchanged, so every chk_* attribute keeps its
         # behaviour; the button shows how many differ from their defaults.
+        self.btn_methods = QPushButton(_t('methods_btn'))
+        self.btn_methods.setToolTip(_t('methods_btn_tip'))
         self.btn_options = QPushButton(_t('options_btn'))
         self.btn_options.setToolTip(_t('options_tip'))
         self._options_defaults = (
@@ -4217,6 +5069,8 @@ class MainWindow(QMainWindow):
         )
         self._options_dialog = OptionsDialog(self)
         self._sync_intensity_checkboxes()
+        self.btn_methods.clicked.connect(
+            lambda: self._show_options(OptionsDialog.TAB_METHODS))
         self.btn_options.clicked.connect(
             lambda: self._show_options(OptionsDialog.TAB_REPAIR))
         self._options_shortcut = QShortcut(QKeySequence.Preferences, self)
@@ -4228,6 +5082,7 @@ class MainWindow(QMainWindow):
         for chk, _default in self._options_defaults:
             chk.toggled.connect(self._update_options_label)
         self._update_options_label()
+        actions.addWidget(self.btn_methods)
         actions.addWidget(self.btn_options)
         # update badge next to Options: opens the Updates tab
         actions.addWidget(self.update_btn)
@@ -4273,6 +5128,18 @@ class MainWindow(QMainWindow):
         self.summary.setVisible(False)
         layout.addWidget(self.summary)
 
+        open_row = QHBoxLayout()
+        self.btn_open_result = QPushButton(_t('open_result_btn'))
+        self.btn_open_result.setVisible(False)
+        self.btn_open_result.clicked.connect(lambda: self._open_result())
+        open_row.addWidget(self.btn_open_result, 0, Qt.AlignTop)
+        self.btn_show_folder = QPushButton(_t('show_folder_btn'))
+        self.btn_show_folder.setVisible(False)
+        self.btn_show_folder.clicked.connect(lambda: self._show_output_folder())
+        open_row.addWidget(self.btn_show_folder, 0, Qt.AlignTop)
+        open_row.addStretch(1)
+        layout.addLayout(open_row)
+
         # Post-batch opt-in suggestion row: shown only when at least one file
         # finished non-watertight and the CLI offered Dressing (a method that
         # makes it watertight but may deform the shape). Non-blocking — it is
@@ -4282,6 +5149,37 @@ class MainWindow(QMainWindow):
         self.btn_try_dressing.setVisible(False)
         self.btn_try_dressing.clicked.connect(self._on_try_dressing)
         layout.addWidget(self.btn_try_dressing)
+
+        # compact per-file verdict; the full report stays behind Details
+        report_row = QHBoxLayout()
+        self.report_verdict = QLabel(_t('brief_no_report'))
+        f = self.report_verdict.font()
+        f.setBold(True)
+        self.report_verdict.setFont(f)
+        self.report_verdict.setWordWrap(True)
+        report_row.addWidget(self.report_verdict, 1)
+        self.btn_report_details = QToolButton()
+        self.btn_report_details.setText(_t('brief_details'))
+        self.btn_report_details.setCheckable(True)
+        self.btn_report_details.setVisible(False)
+        self.btn_report_details.toggled.connect(
+            lambda on: self.report_details.setVisible(bool(on)))
+        report_row.addWidget(self.btn_report_details, 0, Qt.AlignTop)
+        layout.addLayout(report_row)
+        self.report_counts = QLabel('')
+        self.report_counts.setWordWrap(True)
+        self.report_counts.setVisible(False)
+        layout.addWidget(self.report_counts)
+        self.report_notes = QLabel('')
+        self.report_notes.setWordWrap(True)
+        self.report_notes.setVisible(False)
+        layout.addWidget(self.report_notes)
+        self.report_details = QPlainTextEdit()
+        self.report_details.setReadOnly(True)
+        self.report_details.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.report_details.setFixedHeight(160)
+        self.report_details.setVisible(False)
+        layout.addWidget(self.report_details)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -4436,21 +5334,38 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def closeEvent(self, event):
-        """Wait for background threads so none is still running when the
-        interpreter exits (a running QThread at exit aborts the process)."""
+        """Stop every parented worker before the window is destroyed.
+
+        Cancel cooperatively first, then wait with a bound. A running QThread
+        destroyed at teardown aborts the process, so terminate() is only the
+        last resort for a worker that is already idle in Python."""
         self._options_dialog.stop_workers()
-        if self._method_worker is not None and self._method_worker.isRunning():
-            self._method_worker.cancel()
-            self._method_worker.wait(6000)
-        if (self._repeat_picker_worker is not None
-                and self._repeat_picker_worker.isRunning()):
-            self._repeat_picker_worker.wait(6000)
+        for worker in (
+                self.worker, self._method_worker, self._repeat_picker_worker,
+                self.heatmap_worker, self.before_after_worker,
+                self._viewer_worker):
+            _cancel_and_wait(worker, timeout_ms=6000, terminate_last=True)
+        update = self.update_worker
+        if update is not None and update.isRunning():
+            update.cancel()
+            if not update.wait(30000):
+                # Never abort an install mid-write; finish it first.
+                self.status.setText(_t('update_finishing'))
+                event.ignore()
+                return
         self._stop_update_check()
         super().closeEvent(event)
 
     def _on_si_mode_changed(self, index):
-        """Store the batch-wide self-intersection policy."""
-        self._si_mode = self.cmb_si_mode.itemData(index) or 'report'
+        """Store and persist the batch-wide self-intersection policy."""
+        val = self.cmb_si_mode.itemData(index)
+        self._si_mode = val if val in ('report', 'repair', 'off') else 'report'
+        try:
+            cfg = updater.load_config()
+            cfg['si_mode'] = self._si_mode
+            updater.save_config(cfg)
+        except Exception:  # noqa: BLE001 - persisting never blocks the combo
+            pass
 
     def _on_solid_engine_changed(self, index):
         """Store and persist the last-resort solid engine setting."""
@@ -4463,6 +5378,16 @@ class MainWindow(QMainWindow):
             cfg['solid_engine'] = val
             updater.save_config(cfg)
         except Exception:  # noqa: BLE001 - persisting never blocks the combo
+            pass
+
+    def _on_coaptation_toggled(self, on):
+        """Store and persist the batch-wide Coaptation switch (ON by default)."""
+        self._coaptation = bool(on)
+        try:
+            cfg = updater.load_config()
+            cfg['coaptation'] = bool(on)
+            updater.save_config(cfg)
+        except Exception:  # noqa: BLE001 - persisting never blocks the toggle
             pass
 
     def _on_tamponade_toggled(self, on):
@@ -4946,6 +5871,12 @@ class MainWindow(QMainWindow):
     def _show_analysis(self, path):
         """Render the selected file's pre-repair analysis into its pane."""
         a = self._analysis_by_path.get(path)
+        method_data = self._method_analysis_by_path.get(path)
+        if a is None and method_data:
+            self.analyze_label.setText(_t('analyze_header'))
+            self.analysis.setPlainText(
+                '\n'.join(self._suggestion_lines(method_data)))
+            return
         if a is None:
             self.analysis.clear()
             self.analyze_label.setText(_t('analyze_empty'))
@@ -4983,11 +5914,52 @@ class MainWindow(QMainWindow):
             lines.append(_t('sug_title'))
             for key in sugs:
                 lines.append('  \u2022 %s' % _t(key))
+        method_data = self._method_analysis_by_path.get(path)
+        if method_data:
+            block = self._suggestion_lines(method_data)
+            if block:
+                lines.append('')
+                lines.extend(block)
         self.analysis.setPlainText('\n'.join(lines))
 
     def _analysis_suggestions(self, a):
         """Mode suggestions for an analysis result; see mode_suggestion_keys."""
         return mode_suggestion_keys(a)
+
+    def _suggestion_lines(self, data):
+        """Render per-object suggested methods from the advanced --analyze data."""
+        lines = []
+        objects = data.get('object_analyses') or []
+        if objects:
+            for obj in objects:
+                sug = obj.get('suggestions') or []
+                if not sug:
+                    continue
+                lines.append(_t('sugg_object', obj.get('model') or '?'))
+                lines.extend(self._suggestion_block(sug, prefix='  '))
+            combined = data.get('suggestions') or []
+            if combined and len(objects) > 1:
+                lines.append(_t('sugg_file_worst'))
+                lines.extend(self._suggestion_block(combined, prefix='  '))
+        else:
+            lines.extend(self._suggestion_block(
+                data.get('suggestions') or [], prefix='  '))
+        if lines:
+            lines.insert(0, _t('sugg_title'))
+        return lines
+
+    def _suggestion_block(self, suggestions, prefix=''):
+        lines = []
+        for i, s in enumerate(suggestions[:3], 1):
+            num = s.get('num')
+            name = _method_name(num) if num is not None else (
+                s.get('display_name') or s.get('name') or '?')
+            label = _t('sugg_' + (s.get('confidence_label') or 'low'))
+            reason = _t(s.get('reason_key') or 'sugg_reason_clean')
+            lines.append(prefix + _t('sugg_line', i, num or 0, name,
+                                     int(s.get('confidence') or 0), label,
+                                     reason))
+        return lines
 
     def stop(self):
         if self.worker is not None:
@@ -5186,6 +6158,135 @@ class MainWindow(QMainWindow):
             self.btn_mode.setText(
                 _t('mode_btn', _t('mode_name_' + self._repair_mode)))
 
+    def _brief_note_lines(self, brief):
+        """Localized plain notes for the compact report."""
+        out = []
+        for note in brief.get('notes') or []:
+            code = note.get('code')
+            a = note.get('args') or {}
+            if code == 'stage2_skipped':
+                out.append(_t('brief_note_stage2_skipped'))
+            elif code == 'stage2_error':
+                out.append(_t('brief_note_stage2_error'))
+            elif code == 'shape_changed':
+                out.append(_t('brief_note_shape_changed'))
+            elif code == 'volume_warning':
+                out.append(_t('brief_note_volume'))
+            elif code == 'graft_detail_loss':
+                out.append(_t('brief_note_graft'))
+            elif code == 'dressing_detail_loss':
+                out.append(_t('brief_note_dressing'))
+            elif code == 'reload_non_manifold_vertices':
+                out.append(_t('brief_note_reload_nm'))
+            elif code == 'unit_warning':
+                out.append(_t('brief_note_unit'))
+            elif code == 'material_discarded':
+                out.append(_t('brief_note_material'))
+            elif code == 'budget':
+                out.append(_t('brief_note_budget'))
+            elif code == 'thin_wall':
+                line = _t('brief_note_thin_wall',
+                          round(100.0 * (a.get('ratio') or 0.0), 1),
+                          round(100.0 * (a.get('threshold') or 0.0), 1))
+                if a.get('min_mm') is not None:
+                    line += _t('brief_note_thin_wall_mm', a.get('min_mm'))
+                if a.get('estimated'):
+                    line += _t('brief_note_estimated')
+                out.append(line)
+            elif code == 'holes_remaining':
+                out.append(_t('brief_note_holes_remaining', a.get('count', 0)))
+            elif code == 'not_closed':
+                out.append(_t('brief_note_not_closed'))
+            elif code == 'si_escalation':
+                outcome = a.get('outcome')
+                if outcome == 'adopted':
+                    out.append(_t('brief_note_si_adopted'))
+                else:
+                    out.append(_t('brief_note_si_unfixed'))
+        return out
+
+    def _render_report_brief(self, path, data, details=None):
+        """Show the one-line verdict + counts; keep the full report collapsed."""
+        if not data:
+            self.report_verdict.setText(_t('brief_no_report'))
+            self.report_counts.clear()
+            self.report_counts.setVisible(False)
+            self.report_notes.clear()
+            self.report_notes.setVisible(False)
+            self.btn_report_details.setVisible(False)
+            self.btn_report_details.setChecked(False)
+            self.report_details.clear()
+            self.report_details.setVisible(False)
+            return
+        b = classification.brief(data)
+        symbol = {'ready': '✓', 'notes': '⚠', 'failed': '✗'}.get(
+            b['verdict'], '')
+        self.report_verdict.setText(
+            '%s %s' % (symbol, _t('brief_' + b['verdict'])))
+        parts = [_t('brief_holes', b.get('holes_closed', 0)),
+                 _t('brief_orientation_corrected'
+                    if b.get('orientation_corrected')
+                    else 'brief_orientation_ok')]
+        pb, pa = b.get('parts_before'), b.get('parts_after')
+        if pb is not None and pa is not None:
+            if pa < pb:
+                parts.append(_t('brief_parts_removed', pb, pa, pb - pa))
+            elif pa > pb:
+                parts.append(_t('brief_parts_added', pb, pa, pa - pb))
+            else:
+                parts.append(_t('brief_parts_kept', pa))
+        if b.get('shape_change_pct') is not None:
+            key = ('brief_shape_volume'
+                   if b.get('shape_source') == 'volume' else 'brief_shape')
+            parts.append(_t(key, b['shape_change_pct']))
+        self.report_counts.setText(' · '.join(parts))
+        self.report_counts.setVisible(True)
+        notes = self._brief_note_lines(b)
+        if b['verdict'] == 'failed' and b.get('error'):
+            notes.append(b['error'])
+        self.report_notes.setText('\n'.join(notes))
+        self.report_notes.setVisible(bool(notes))
+        if details is None:
+            details = format_report(data)
+        self.report_details.setPlainText(details or '')
+        self.btn_report_details.setVisible(True)
+
+    def _repair_output(self, path=None):
+        path = path or self._current_path()
+        out = self._output_by_path.get(path) if path else None
+        return path, (out if out and os.path.isfile(out) else None)
+
+    def _refresh_open_buttons(self, path=None):
+        _path, out = self._repair_output(path)
+        visible = bool(out)
+        self.btn_open_result.setVisible(visible)
+        self.btn_show_folder.setVisible(visible)
+
+    def _open_result(self, path=None):
+        _path, out = self._repair_output(path)
+        if not out:
+            self.status.setText(_t('open_result_missing'))
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(out)):
+            self.status.setText(_t('open_result_missing'))
+
+    def _show_output_folder(self, path=None):
+        _path, out = self._repair_output(path)
+        if not out:
+            self.status.setText(_t('open_result_missing'))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(out)))
+
+    def _open_in_slicer(self, label, cmd, path=None):
+        _path, out = self._repair_output(path)
+        if not out:
+            self.status.setText(_t('open_result_missing'))
+            return
+        try:
+            subprocess.Popen([*cmd, out])
+        except OSError as e:
+            self.status.setText(_t('slicer_failed', str(e)))
+
     def _on_file_done(self, path, summary, report, data):
         item = self._item_by_path.get(path)
         if item is not None:
@@ -5217,8 +6318,8 @@ class MainWindow(QMainWindow):
                 self._show_defects(path)
                 self._render_repair_log(path, data)
                 self._refresh_before_after_btn(path)
-        if report:
-            self._log('%s\n%s' % (path, report))
+                self._refresh_open_buttons(path)
+        self._render_report_brief(path, data, report)
 
     def _on_progress(self, current, total):
         self.progress.setValue(current)
@@ -5229,15 +6330,20 @@ class MainWindow(QMainWindow):
             self._show_analysis(current.text(0))
             self._show_defects(current.text(0))
             self._render_repair_log(current.text(0))
+            self._render_report_brief(
+                current.text(0), self._repair_log_by_path.get(current.text(0)))
             self._refresh_heatmap_thumb(current.text(0))
             self._refresh_before_after_btn(current.text(0))
+            self._refresh_open_buttons(current.text(0))
         else:
             self.analysis.clear()
             self.analyze_label.setText(_t('analyze_empty'))
             self.defects.clear()
             self.repair_log.clear()
+            self._render_report_brief(None, None)
             self._set_heatmap_thumb(None)
             self.btn_before_after.setEnabled(False)
+            self._refresh_open_buttons(None)
 
     def _show_defects(self, path):
         """Render the selected file's input defects into the defect panel."""
@@ -5409,12 +6515,15 @@ class MainWindow(QMainWindow):
                                 cp_r.get('reject_reason')
                                 or cp_r.get('reason') or '?'))
         tp_r = data.get('tamponade')
-        if tp_r and tp_r.get('ran'):
+        if tp_r and (tp_r.get('ran') or tp_r.get('gate') == 'shape_card'):
             if tp_r.get('adopted'):
                 lines.append(_t('repair_log_tamponade', tp_r.get('plugs', 0),
                                 tp_r.get('plug_faces', 0),
                                 tp_r.get('baseline_holes'),
                                 tp_r.get('candidate_holes')))
+            elif tp_r.get('gate') == 'shape_card':
+                key = tp_r.get('reason_key') or 'tamponade_skip_no_interior'
+                lines.append(_t('repair_log_tamponade_skip', _t(key)))
             else:
                 lines.append(_t('repair_log_tamponade_not',
                                 tp_r.get('reason') or '?'))
@@ -5515,6 +6624,20 @@ class MainWindow(QMainWindow):
     def _clear_tags(self, paths):
         for path in paths:
             self._method_tags_by_path.pop(path, None)
+            self._refresh_method_cell(path)
+
+    def _set_method_tags(self, paths, nums):
+        """Set an exact method sequence while keeping engine tags."""
+        for path in paths:
+            tags = [('method', int(n)) for n in nums]
+            tags.extend(t for t in (self._method_tags_by_path.get(path) or [])
+                        if t[0] == 'engine')
+            if tags:
+                self._method_tags_by_path[path] = tags
+            else:
+                self._method_tags_by_path.pop(path, None)
+            if 12 not in nums:
+                self._repeat_points_by_path.pop(path, None)
             self._refresh_method_cell(path)
 
     def _on_tag_toggle(self, paths, kind, ref):
@@ -5682,6 +6805,27 @@ class MainWindow(QMainWindow):
         primary = paths[0]
         menu = QMenu(self.tree)
         menu.setToolTipsVisible(True)
+        _p, _out = self._repair_output(primary)
+        if _out:
+            act_open = menu.addAction(_t('open_result_btn'))
+            act_open.triggered.connect(lambda: self._open_result(primary))
+            act_folder = menu.addAction(_t('show_folder_btn'))
+            act_folder.triggered.connect(
+                lambda: self._show_output_folder(primary))
+            slicers = _detect_slicers()
+            if len(slicers) == 1:
+                label, cmd = slicers[0]
+                act_slicer = menu.addAction(_t('open_in_slicer') + ' — ' + label)
+                act_slicer.triggered.connect(
+                    lambda: self._open_in_slicer(label, cmd, primary))
+            elif len(slicers) > 1:
+                sub = menu.addMenu(_t('open_in_slicer'))
+                for label, cmd in slicers:
+                    act_slicer = sub.addAction(label)
+                    act_slicer.triggered.connect(
+                        lambda _c=False, l=label, c=cmd: self._open_in_slicer(
+                            l, c, primary))
+            menu.addSeparator()
         act = menu.addAction(_t('menu_analyze'))
         act.triggered.connect(lambda: self._analyze_methods(paths))
         menu.addSeparator()
@@ -5730,6 +6874,8 @@ class MainWindow(QMainWindow):
         elif data and data.get('error'):
             self._log(_t('method_analysis_failed', data['error']))
         self._refresh_method_cell(path)
+        if self._item_by_path.get(path) is self.tree.currentItem():
+            self._show_analysis(path)
 
     def _on_method_analysis_progress(self, current, total):
         self.progress.setValue(current)
@@ -5989,7 +7135,8 @@ class MainWindow(QMainWindow):
                 if viewer['data'] is None:
                     if viewer['worker'] is None:
                         viewer['worker'] = ViewerDataWorker(
-                            path, repaired, 720, 540, dlg)
+                            path, repaired, 720, 540, self)
+                        self._viewer_worker = viewer['worker']
                         viewer['worker'].done.connect(_on_viewer_done)
                         viewer['worker'].failed.connect(_on_viewer_failed)
                         viewer['worker'].start()
@@ -6018,6 +7165,7 @@ class MainWindow(QMainWindow):
 
         def _on_viewer_done(_p, data):
             viewer['worker'] = None
+            self._viewer_worker = None
             viewer['data'] = data
             status_lab.setText('')
             viewport.set_data(data)
@@ -6025,6 +7173,7 @@ class MainWindow(QMainWindow):
 
         def _on_viewer_failed(_p, msg):
             viewer['worker'] = None
+            self._viewer_worker = None
             status_lab.setText(msg)
             rad_static.setChecked(True)
             _show_mode()
@@ -6037,9 +7186,16 @@ class MainWindow(QMainWindow):
         dev_group.buttonClicked.connect(lambda _b: _apply_inter_state())
         mode_group.buttonClicked.connect(lambda _b: _show_mode())
 
+        def _stop_viewer(*_args):
+            worker = self._viewer_worker
+            self._viewer_worker = None
+            _cancel_and_wait(worker, timeout_ms=6000, terminate_last=True)
+
         dlg.resize(before.width() + 24, before.height() + 150)
         self._before_after_zoom = dlg
+        dlg.finished.connect(_stop_viewer)
         dlg.exec()
+        _stop_viewer()
         viewport.shutdown()
 
     def _on_all_done(self, cancelled):

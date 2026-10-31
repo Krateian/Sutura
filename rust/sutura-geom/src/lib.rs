@@ -19,6 +19,7 @@ pub mod arrangement;
 pub mod cdt2d;
 pub mod cdt3d;
 mod budget;
+mod cancel;
 pub mod cluster;
 pub mod decimate;
 pub mod diagnosis;
@@ -501,88 +502,6 @@ fn cdt3d_solid_py<'py>(
     st.set_item("hausdorff", r.stage_ms.hausdorff)?;
     st.set_item("total", r.stage_ms.total)?;
     d.set_item("stage_ms", st)?;
-    Ok((verts_np, tris_np, d))
-}
-
-#[pyfunction]
-#[pyo3(signature = (verts, tris))]
-fn cdt3d_plc<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
-) -> PyResult<(
-    Bound<'py, numpy::PyArray2<f64>>,
-    Bound<'py, numpy::PyArray2<i32>>,
-    Bound<'py, PyDict>,
-)> {
-    let vv = verts.as_array();
-    let tt = tris.as_array();
-    let n = vv.nrows();
-    let m = tt.nrows();
-    if vv.ncols() != 3 || tt.ncols() != 3 {
-        return Err(PyValueError::new_err(
-            "verts must be Nx3 and tris must be Mx3",
-        ));
-    }
-    let mut rust_verts: Vec<[f64; 3]> = Vec::with_capacity(n);
-    for i in 0..n {
-        rust_verts.push([vv[[i, 0]], vv[[i, 1]], vv[[i, 2]]]);
-    }
-    let mut rust_tris: Vec<[usize; 3]> = Vec::with_capacity(m);
-    for i in 0..m {
-        let a = tt[[i, 0]];
-        let b = tt[[i, 1]];
-        let c = tt[[i, 2]];
-        if a < 0 || b < 0 || c < 0 || a as usize >= n || b as usize >= n || c as usize >= n {
-            return Err(PyValueError::new_err("triangle index out of range"));
-        }
-        rust_tris.push([a as usize, b as usize, c as usize]);
-    }
-
-    let plc = cdt3d::build_plc(&rust_verts, &rust_tris, &cdt3d::PlcOptions::default())
-        .map_err(PyValueError::new_err)?;
-
-    let out_verts: Vec<Vec<f64>> = plc.verts.iter().map(|p| p.to_vec()).collect();
-    let out_tris: Vec<Vec<i32>> = plc
-        .tris
-        .iter()
-        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
-        .collect();
-    let verts_np = numpy::PyArray2::from_vec2(py, &out_verts)?;
-    let tris_np = numpy::PyArray2::from_vec2(py, &out_tris)?;
-
-    let d = PyDict::new(py);
-    let r = &plc.report;
-    d.set_item("input_vertices", r.input_vertices)?;
-    d.set_item("input_faces", r.input_faces)?;
-    d.set_item("canonical_vertices", r.canonical_vertices)?;
-    d.set_item("canonical_faces", r.canonical_faces)?;
-    d.set_item("dropped_degenerate_faces", r.dropped_degenerate_faces)?;
-    d.set_item("dropped_duplicate_faces", r.dropped_duplicate_faces)?;
-    d.set_item("coplanar_positive_before", r.coplanar_positive_before)?;
-    d.set_item("coplanar_positive_after", r.coplanar_positive_after)?;
-    d.set_item("perturbed_vertices", r.perturbed_vertices)?;
-    d.set_item("perturbed_faces", r.perturbed_faces)?;
-    d.set_item("passes", r.passes)?;
-    d.set_item("converged", r.converged)?;
-    d.set_item("output_vertices", r.output_vertices)?;
-    d.set_item("output_faces", r.output_faces)?;
-    d.set_item("proper_si", r.proper_si)?;
-    d.set_item("t_junctions", r.t_junctions)?;
-    d.set_item("touch_points", r.touch_points)?;
-    d.set_item("duplicate_faces", r.duplicate_faces)?;
-    d.set_item("degenerate_faces", r.degenerate_faces)?;
-    d.set_item("rounded_duplicate_vertices", r.rounded_duplicate_vertices)?;
-    d.set_item("nonmanifold_edges", r.nonmanifold_edges)?;
-    d.set_item("boundary_edges", r.boundary_edges)?;
-    d.set_item("boundary_components", r.boundary_components)?;
-    d.set_item("components", r.components)?;
-    d.set_item("input_area", r.input_area)?;
-    d.set_item("output_area", r.output_area)?;
-    d.set_item("area_ratio", r.area_ratio)?;
-    d.set_item("plc_valid", r.plc_valid)?;
-    d.set_item("hash", r.hash)?;
-
     Ok((verts_np, tris_np, d))
 }
 
@@ -1224,9 +1143,16 @@ fn tamponade_py<'py>(
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false),
     };
+    let _cancel_guard = cancel::SignalGuard::install();
+    cancel::reset();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tamponade::tamponade_repair(&rv, &rt, &config)
     }));
+    let _cancelled = cancel::is_cancelled();
+    drop(_cancel_guard);
+    if _cancelled {
+        return Err(pyo3::exceptions::PyKeyboardInterrupt::new_err("cancelled"));
+    }
     let (ov, ot, info) = match outcome {
         Ok(v) => v,
         Err(_) => {
@@ -2456,12 +2382,24 @@ fn diagnose<'py>(
     diagnosis::report_to_pydict(py, &report, detail, masks, start.elapsed().as_secs_f64())
 }
 
+/// Normalized maximum interior depth (deepest winding-occupancy cell / bbox
+/// diagonal). Reuses the Tamponade melt depth field at a fixed 32^3 budget.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, max_cells = 32768))]
+fn interior_depth(
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+    max_cells: usize,
+) -> PyResult<Option<f64>> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    Ok(melt::interior_depth_norm(&rv, &rt, max_cells))
+}
+
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
     m.add_function(wrap_pyfunction!(insphere, m)?)?;
     m.add_function(wrap_pyfunction!(arrangement_lite, m)?)?;
-    m.add_function(wrap_pyfunction!(cdt3d_plc, m)?)?;
     m.add_function(wrap_pyfunction!(cdt3d_solid_py, m)?)?;
     m.add_function(wrap_pyfunction!(manifold::stage2_rebuild, m)?)?;
     m.add_function(wrap_pyfunction!(manifold::watertight_check, m)?)?;
@@ -2502,12 +2440,12 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(topology::compute_normal_per_face, m)?)?;
     m.add_function(wrap_pyfunction!(topology::compute_normal_per_vertex, m)?)?;
     m.add_function(wrap_pyfunction!(diagnose, m)?)?;
+    m.add_function(wrap_pyfunction!(interior_depth, m)?)?;
     m.add_function(wrap_pyfunction!(hole::close_holes, m)?)?;
     m.add_function(wrap_pyfunction!(cluster::cluster_decimate, m)?)?;
     m.add_function(wrap_pyfunction!(decimate::decimate_qem, m)?)?;
     m.add_function(wrap_pyfunction!(resample::resample_uniform, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
-    m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;
     m.add_function(wrap_pyfunction!(shell_analyze_py, m)?)?;
     m.add_function(wrap_pyfunction!(splint_cut_py, m)?)?;

@@ -3,6 +3,11 @@
 [← README'ye dön](../../../README.tr.md) · [English](../troubleshooting.md)
 
 
+* **Kaldırma `sutura-env`'i korudu.** Sutura kurulumcusu oluşturmadıysa bu
+  bilinçlidir. Kaldırıcı tam yolu, boyutu ve elle kaldırma komutunu yazdırır.
+  Sahip olunan ortam için `./uninstall.sh --remove-env` (veya `--purge`)
+  kullanın; `SUTURA_UNINSTALL_SKIP_CONDA=1` her zaman korur. `conda` `PATH`
+  dışındaysa kaldırıcı için `SUTURA_CONDA_BIN=/conda/yolu` ayarlayın.
 * **`python3.11` bulunamadı (yalnızca fTetWild yedek çalışma zamanı).**
   Aralık içinde bir `python3` ile normal kurulum Python 3.11 gerektirmez. Ana
   yorumlayıcı 3.10–3.14 aralığının dışındaysa `install.sh`, fTetWild katmanı
@@ -67,7 +72,7 @@ kurulumu tanılamaya ve kurtarmaya yardımcı olur:
 
 * **`sutura --self-check`** kurulumu, onarım yöntemlerini küçük gömülü bir mesh
   üzerinde çalıştırarak doğrular ve birkaç saniye içinde bir özet satırı
-  yazdırır (`Methods: N/18 OK (X failed, Y skipped)`). Yüklenemeyen veya
+  yazdırır (`Methods: N/19 OK (X failed, Y skipped)`). Yüklenemeyen veya
   başarısız olan bir yöntem kontrolü başarısız kılar; yalnızca kurulu olmayan
   isteğe bağlı bir ek, başarısız değil atlanmış olarak bildirilir. Komut,
   herhangi bir yöntem başarısız olursa sıfırdan farklı bir kodla çıkar. GUI,

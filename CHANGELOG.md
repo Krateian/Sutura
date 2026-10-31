@@ -2,6 +2,119 @@
 
 All notable changes to this project are documented here.
 
+## [0.9.8] - 2026-10-31
+
+### Added
+
+- **One policy file for the repair rules.** The decision rules and thresholds
+  (tier order, escalation budgets, SI tolerances, tier and ranking knobs) now
+  live in `sutura_engine/policy/default_policy.toml` instead of scattered
+  constants. A user can override the tunable values in
+  `~/.config/sutura/policy.toml`; the safety gates are locked, and any locked or
+  unknown key is ignored with a warning. A malformed file falls back to the
+  packaged default. The report carries a `policy` block (schema version,
+  effective-policy hash, whether a user override was used, and the ignored
+  keys). No output changes: the 155-mesh check is 155/155 identical.
+- **A Methods control panel.** Options → *Methods* (and a **Methods** button in
+  the main window) shows the automatic deep-tier order and lets the user enable
+  or disable a deep tier; the order itself is fixed, so a custom order goes
+  through Manual mode, which passes any of the nineteen methods with `--methods`
+  in the chosen order for the selected files. Changes are written only to the
+  user override (`~/.config/sutura/policy.toml`); the locked safety gates are
+  shown read-only, and Reset recovers a corrupt or stale user file. No output
+  changes when no override exists.
+- **A final-result self-intersection check (groundwork).** When the saved
+  result is watertight but still has self-intersections, Sutura tries the
+  configured repair candidates and keeps a result only if it is strictly
+  never-worse on every checked measure: fewer self-intersections; no more
+  holes, non-manifold edges or parts; two-sided surface distance within the
+  verification tolerance; and signed volume within 0.5% of the saved result.
+  Any trade-off is rejected. The current candidate (Scaffold) changes no model
+  in the 155-mesh test set, so this is groundwork for a future
+  surface-preserving self-intersection fix, not a promise that residual
+  self-intersections are removed. It is on by default; `--si-mode off` or
+  disabling auto escalation turns it off, and the report says what was checked
+  and decided. The decision is recorded in the top-level `si_escalation` block
+  (triggered/outcome/reason, candidate, baseline, tolerance and candidate hash).
+- **`--debug` for unexpected CLI errors.** A normal run now prints a short
+  `error:` message and a hint to re-run with `--debug`; the flag (or
+  `SUTURA_DEBUG=1`) prints the traceback. The exit status is documented:
+  0 success, 1 runtime failure, 2 usage error, 130 interrupted.
+- **More diagnostic overlays and a thin-wall note.** The heatmap overlays use
+  the v2 defect masks, and a thin-wall advisory appears in the report only
+  (it never changes the repaired mesh).
+- **CLI progress and clean Ctrl-C.** `--human` shows a single stderr progress
+  line on a terminal; `--json --progress-json` emits optional NDJSON events.
+  Ctrl-C exits 130, stops at stage/work-counter checkpoints, and leaves no
+  partial output.
+- **Per-object suggested methods.** `--analyze` and the GUI analysis pane show
+  the top three safe methods per object with an estimated confidence and a
+  plain reason. The suggestions are informational and never change the
+  default repair path.
+
+### Changed
+
+- **Tamponade skips models with no interior.** Before the interior plug runs,
+  a shape-suitability card checks compactness, open-boundary area, effective
+  thickness and the existing thin-wall score. Open sheets, thin shells and
+  flower/vase-like surfaces with no interior are skipped with a plain-language
+  reason and left to Flap; solid models and every known adopted Tamponade case
+  still run. The card reports the normalized maximum interior depth for future
+  calibration but does not gate on it yet. Selecting method #17 explicitly
+  (`--methods 17`) bypasses the gate and reports `user_forced`.
+- **Open shells are left to Flap.** Single-surface vases, cylinders and cloth
+  with no solid interior are now skipped by boundary-loop perimeter versus
+  surface area plus a two-sided winding check, independent of signed volume.
+  Slender open tubes and closed-bottom cups are not skipped yet; this is
+  harmless because Tamponade rejects the plug.
+- **Fallback work is counted, not timed.** The automatic fallback now uses a
+  deterministic work budget, so a busy machine cannot change the result or
+  trigger long repeated runs.
+- **Flap is much faster on the slow cases.** The surface-hole pass now stops
+  after the work it needs instead of exploring every alternative: the two
+  slowest verified cases dropped from about 822 s to 26 s and from about 655 s
+  to 12 s, and the 155-mesh check kept the same repairs. Other meshes are
+  unchanged. The Flap budget is now a work limit, not an adoption veto: the
+  extra `patch_faces > 0` guard is gone, and only alternative candidates that
+  would exceed the existing blow-up allowance are declined before their
+  exact-SI check.
+- **The result summary is plain and actionable.** The report and GUI lead with
+  a short verdict and the handful of counts that matter; the GUI shows a
+  compact verdict with buttons to open the repaired file, its folder or a
+  detected slicer. A repair that could not finish now says why, and a failed
+  verdict states the remaining holes.
+- **The GUI remembers more of your choices.** The Coaptation switch and the
+  self-intersection policy survive a restart.
+- **macOS installs no longer need Homebrew or a second run.** If conda is
+  missing, the installer downloads and installs Miniforge (~80 MB) in the same
+  run. `sutura_geom` comes from a verified prebuilt wheel first; Rust/cmake are
+  no longer requested for supported platforms.
+- **Uninstall keeps your data and conda environment by default.**
+  `./uninstall.sh` removes the app, launchers and Quick Action, but keeps
+  `~/.local/share/sutura/data`, `~/.config/sutura` and `sutura-env`. The env is
+  removed only when Sutura's installer created it: interactive runs print its
+  exact path and size and ask first; non-interactive runs keep it unless
+  `--remove-env` (or `--purge`) is given, and `SUTURA_UNINSTALL_SKIP_CONDA=1`
+  always wins. Older installs without the ownership marker keep the env and the
+  uninstaller prints the manual removal command. Use `./uninstall.sh --purge`
+  to remove user data, configs and the owned env.
+
+### Fixed
+
+- **An existing `_fixed` result is no longer overwritten.** A repeat run writes
+  `model_fixed_2.stl` (then `_3`, ...) and keeps the earlier result. An
+  explicit `-o PATH` still writes exactly PATH.
+- **Closing during a repair no longer crashes.** The window cancels and waits
+  for repair, analysis, preview and update workers before it exits.
+- **Method counts and names are current.** About and the docs say 19 methods,
+  and the Turkish name for Autorefine is corrected.
+- **The macOS Quick Action version stays in sync with the app**, and its docs
+  match how it filters selected files.
+- **The installer finds the right PATH file for zsh/bash** and prints the
+  absolute working `sutura` path for the current terminal.
+- **The macOS Quick Action works on a conda install** by using the installed
+  CLI instead of expecting a bundled `sutura-cli`.
+
 ## [0.9.7] - 2026-10-26
 
 ### Added

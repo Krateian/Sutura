@@ -6,7 +6,7 @@
 //! `int64`.
 
 use numpy::{AllowTypeChange, PyArray2, PyArrayLike2};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyKeyboardInterrupt, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
@@ -149,7 +149,14 @@ pub fn flap_fill_py<'py>(
         work_budget,
     };
 
+    let _guard = crate::cancel::SignalGuard::install();
+    crate::cancel::reset();
     let (out_v, out_t, report) = flap_fill(&rv, &rt, &prm);
+    let cancelled = crate::cancel::is_cancelled();
+    drop(_guard);
+    if cancelled {
+        return Err(PyKeyboardInterrupt::new_err("cancelled"));
+    }
 
     let verts_np = if out_v.is_empty() {
         PyArray2::<f64>::zeros(py, [0, 3], false)

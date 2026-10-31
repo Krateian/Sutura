@@ -6,18 +6,20 @@
 
 Linux:
 
-* `python3` (>= 3.11) with venv support, for the repair venv
-* For a source build of `sutura_geom` (when no prebuilt wheel is available):
-  Rust >= 1.89, cmake and a C++20 compiler (g++/clang++). Release installs
-  download a prebuilt wheel and need none of these.
+* `python3` (>= 3.11) with venv support, for the repair venv. If the system
+  Python cannot create a venv, the installer downloads a standalone Python
+  3.11 automatically.
+* `sutura_geom` is installed from a verified prebuilt wheel, so no Rust,
+  cmake or C++ compiler is needed on supported platforms. A source build is
+  only a fallback when the toolchain is already present.
 * KDE Plasma for the Dolphin service menu (optional; CLI and GUI work anywhere)
 
 macOS (Apple Silicon / Intel):
 
-* Homebrew and Miniforge (conda). macOS uses a single conda environment
-  (`install-macos.sh`) so PySide6 (Qt) and the rest of the native stack are
-  installed consistently, rather than the Linux pip-only flow.
-* Install Python 3.11 via conda (`install-macos.sh` does this automatically).
+* Miniforge/conda. If conda is missing, `install-macos.sh` downloads and
+  installs Miniforge (~80 MB) automatically, in the same run; an existing
+  conda installation is reused. Homebrew is not required.
+* Python 3.11 is created in the `sutura-env` conda environment automatically.
 
 Python 3.11 is used as a fallback runtime for the fTetWild tier only when the
 main interpreter is outside 3.10–3.14; a normal install with a recent
@@ -48,7 +50,20 @@ cd Sutura
 This creates the main virtualenv under `~/.local/share/sutura` (plus a
 `venv311` fallback only when the main interpreter is outside 3.10–3.14),
 installs the CLI wrapper at `~/.local/bin/sutura`, installs the hicolor app
-icons, and registers the Dolphin service menu. Re-running is safe.
+icons, and registers the Dolphin service menu. Re-running is safe. The
+installer adds `~/.local/bin` to the startup file your shell reads (`.zshrc`
+for zsh, `.bashrc`/`.bash_profile` for bash) and prints the absolute
+`~/.local/bin/sutura` path for the current terminal.
+
+`./uninstall.sh` removes the installed files and PATH line; user data
+(`~/.local/share/sutura/data`), configs (`~/.config/sutura`) and the
+`sutura-env` conda environment are kept. Sutura removes `sutura-env` only when
+its installer created it: interactive runs print the exact path and size and
+ask first; non-interactive runs keep it unless `--remove-env` (or `--purge`) is
+given. `SUTURA_UNINSTALL_SKIP_CONDA=1` always keeps it. `--purge` (with
+confirmation when interactive) also removes user data, configs and the
+Sutura-created env. Older installs without the ownership marker keep the env;
+the uninstaller prints the manual removal command.
 
 **AppImage (optional).** A self-contained AppImage with a single Python 3.14
 runtime bundled for Stage 1, Stage 2 and the GUI — no virtualenvs and no
@@ -75,19 +90,21 @@ the main virtualenv is roughly 800 MB (the fTetWild tier adds about 6 MB,
 see below).
 
 **Rust extension (`sutura_geom`).** The Rust extension `sutura_geom` (~1 MB)
-is installed automatically by `install.sh` and `install-macos.sh` (which download
-and verify a matching prebuilt abi3 wheel from GitHub releases, or compile from
-`rust/sutura-geom` when a Rust toolchain is present; AppImage and macOS .app/.dmg
-bundles include it). It accelerates Method #13 Graft (morphology shell wrap),
+is installed automatically by `install.sh` and `install-macos.sh` from a
+verified prebuilt abi3 wheel. The installer retries the release asset briefly
+and then uses the latest compatible abi3 wheel; no Rust or cmake is needed on
+supported platforms. A source build from `rust/sutura-geom` runs only when no
+wheel is available and the toolchain is already present. AppImage and macOS
+.app/.dmg bundles include the extension. It accelerates Method #13 Graft (morphology shell wrap),
 the Flap surface-hole fill (`flap_fill`), the Dressing coat
 (`dressing_coat`) and the Tamponade interior plug (`tamponade`), and carries the
 exact indirect predicates. **The extension is required:** when neither a
-prebuilt wheel nor a source build is available the installer stops with a named
-message that shows the detected platform and the fix (install Rust from
-<https://rustup.rs>, or set `SUTURA_GEOM_WHEEL=<path>`); startup and
-`sutura --self-check` likewise fail hard and name the missing extension instead
-of degrading silently. Use `SUTURA_GEOM_FROM_SOURCE=1` to force compilation
-from source. Source builds require Rust >= 1.89 (the `kiddo` 6.3 MSRV).
+prebuilt wheel nor an existing source toolchain is available, the installer
+stops with one named platform message; startup and `sutura --self-check`
+likewise fail hard and name the missing extension instead of degrading
+silently. Use `SUTURA_GEOM_WHEEL=<path>` for a local wheel, or
+`SUTURA_GEOM_FROM_SOURCE=1` to force compilation when the toolchain exists.
+Source builds require Rust >= 1.89 (the `kiddo` 6.3 MSRV).
 The former `SUTURA_NO_GEOM=1` opt-out has been removed.
 
 **fTetWild fallback tier (installed by default).** The fTetWild fallback
@@ -121,8 +138,9 @@ cd Sutura
 ./install-macos.sh
 ```
 
-`install-macos.sh` checks for Homebrew, installs Miniforge via Homebrew if
-conda is missing, creates a `sutura-env` conda environment (Python 3.11),
+`install-macos.sh` reuses an existing conda installation, or downloads and
+installs Miniforge (~80 MB) automatically when conda is missing; it then
+creates a `sutura-env` conda environment (Python 3.11),
 installs PySide6/sutura_geom from pip
 (PySide6 6.11.2 on the Python 3.11 environment; Linux/Python 3.12+ installs use 6.12.0, and this pin keeps macOS 13 support),
 verifies the imports, copies the app files to `~/.local/share/sutura/`, and
@@ -133,32 +151,34 @@ no terminal needed. It is macOS-only and re-runnable. The fTetWild fallback
 tier (~6 MB installed, see the Linux section) is installed by default;
 `SUTURA_WITH_FTETWILD=0 ./install-macos.sh` skips it.
 
-The installer also adds a Finder **Quick Action** ("Sutura — Repair"): select
-one or more STL/3MF files in Finder, right-click → *Quick Actions* → *Sutura —
-Repair*. Each file is repaired with the bundled CLI and a native macOS
+The installer also adds a Finder **Quick Action** ("Sutura — Repair"). It
+appears for any selected file; select one or more STL/3MF files, right-click →
+*Quick Actions* → *Sutura — Repair*. Each file is repaired with the installed
+CLI (the `.dmg` app can use its bundled CLI) and a native macOS
 notification reports the result — a single file shows `Health: X/100  Risk:
 Y/100  Status: <label>`, a batch shows one summary (`N/M repaired, K failed —
 see log`). The log for each run is written to
 `~/Library/Logs/Sutura/sutura-<timestamp>.log`. Non-STL/3MF files are skipped
-and reported. The Quick Action locates a PyInstaller `Sutura.app` in
-`/Applications` or `~/Applications`; if it is a downloaded (quarantined) copy,
-the notification tells you to right-click → Open `Sutura.app` once first.
-Because the Quick Action calls the bundled `sutura-cli`, it does not need this
-conda environment to be installed.
+and reported. For a `.dmg` app the Quick Action uses the bundled
+`sutura-cli`; on a conda install it uses the installed `~/.local/bin/sutura`
+(or the conda environment) directly. If the app is a downloaded
+(quarantined) copy, the notification tells you to right-click → Open
+`Sutura.app` once first.
 
-**Removing a macOS install (manual):** there is no macOS uninstall script —
-the Linux `uninstall.sh` only covers the KDE/Linux artifacts. To remove a macOS
-installation manually, delete:
-- `~/Applications/Sutura.app` (the Spotlight wrapper) and/or the `.app` in
-  `/Applications`
-- `~/.local/share/sutura/` (app files, including `macos-quick-action.sh`)
-- `~/.local/bin/sutura` and `~/.local/bin/sutura-gui`
-- `~/Library/Services/Sutura Quick Action.workflow` (the Finder Quick Action)
-- `~/Library/Logs/Sutura/` (repair logs)
-- optionally the `sutura-env` conda environment (`conda env remove -n sutura-env`)
+**Removing a macOS install:** `./uninstall.sh` now handles macOS too. It removes
+the app, launchers, Quick Action, logs and icons. `sutura-env` is kept unless
+Sutura's installer created it and you confirm interactively (or pass
+`--remove-env`/`--purge`); the exact env path and size are printed before
+asking, and non-interactive runs keep it by default. User data
+(`~/.local/share/sutura/data`) and configs (`~/.config/sutura`) are kept by
+default; `--purge` (with confirmation when interactive) also removes them and
+the owned env. Older installs without the ownership marker keep the env and
+the uninstaller prints the manual removal command. The same script removes the
+PATH line it added to `.zshrc`/`.zprofile`/`.bashrc`/`.bash_profile`.
 
-Note: conda can be initialized non-interactively; if the script asks you to
-restart the terminal for `conda init` to take effect, do so and re-run it.
+The installer also writes `~/.local/bin` to the startup file your shell reads
+(`.zshrc` for zsh, `.bashrc`/`.bash_profile` for bash), and prints the absolute
+working path (`~/.local/bin/sutura`) for the current terminal.
 
 Each tagged release also ships a **macOS .dmg** (`Sutura-vX.Y.Z.dmg`, built
 by the `Build macOS .app/.dmg` workflow) — a self-contained

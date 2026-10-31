@@ -1,10 +1,11 @@
 # Copyright (C) 2026 Sutura Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Single source of truth for the deep-repair TIER ORDER (P1b).
+"""Deep-repair TIER ORDER — a thin reader of the repair policy (step 1).
 
-The last-resort tiers of the deep-repair ladder and the auto-escalation policy
-used to restate their relative order (and the Graft / fTetWild method numbers)
-as bare literals in several places. This module gathers them:
+The data-like values (tier order, method numbers, final-tier precedence) now
+live in ``sutura_engine/policy/default_policy.toml`` and are loaded by
+``sutura_engine.policy``. This module keeps the historical public names so
+existing imports do not break and adds no data of its own:
 
 - ``DEEP_TIER_ORDER`` is the order in which the ladder tries the tiers that can
   produce the final mesh: local re-mesh, then Graft, then Dressing, then
@@ -22,35 +23,28 @@ as bare literals in several places. This module gathers them:
   The coverage argument is used by the ladder only; the triage auto paths have
   no coverage concept and always keep Graft when a deviation is unknown.
 
-This module is a stdlib-only leaf (no numpy / pymeshlab / third-party import)
-so ``triage`` can import it without pulling anything in.
+This module stays a stdlib-only leaf (``sutura_engine.policy`` imports only
+``tomllib`` and stdlib) so ``triage`` can import it without pulling numpy /
+pymeshlab / third-party code.
 """
+from sutura_engine.policy import CONTENT_HASH, ORDER, SCHEMA_VERSION  # noqa: F401
 
 # Run order of the deep-repair tiers (local re-mesh first, fTetWild last;
 # Splint sits after Dressing; Coaptation after Splint and before fTetWild).
-DEEP_TIER_ORDER = ('local', 'graft', 'dressing', 'splint', 'coaptation',
-                   'ftetwild')
+DEEP_TIER_ORDER = tuple(ORDER['deep_tier_order'])
 
 # Registry method number for each tier.
-DEEP_TIER_METHOD_NUM = {
-    'local': 2,       # Local Mend
-    'graft': 13,      # Graft
-    'dressing': 16,   # Dressing
-    'splint': 18,     # Splint
-    'coaptation': 19,  # Coaptation
-    'ftetwild': 7,    # fTetWild
-}
+DEEP_TIER_METHOD_NUM = dict(ORDER['deep_tier_method_num'])
 
 # Precedence used by ``_deep_repair_offer`` when naming the reported final
 # tier. Kept separate from DEEP_TIER_ORDER because the reporting precedence is
 # not the run order (fTetWild is named first, not last).
-FINAL_TIER_PRECEDENCE = ('ftetwild', 'cdt', 'graft', 'dressing', 'splint',
-                         'coaptation', 'local')
+FINAL_TIER_PRECEDENCE = tuple(ORDER['final_tier_precedence'])
 
 # Convenience aliases for the two tiers whose relative order the auto policy
 # guarantees explicitly.
-GRAFT = 'graft'
-FTETWILD = 'ftetwild'
+GRAFT = ORDER['graft']
+FTETWILD = ORDER['ftetwild']
 GRAFT_METHOD_NUM = DEEP_TIER_METHOD_NUM[GRAFT]
 FTETWILD_METHOD_NUM = DEEP_TIER_METHOD_NUM[FTETWILD]
 

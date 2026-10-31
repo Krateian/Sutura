@@ -113,28 +113,26 @@ def detect_holes(verts, tris, with_indices=False):
     return holes
 
 
-def detect_non_manifold(verts, tris, with_indices=False):
-    """Return a list of non-manifold region dicts, clustered by face
-    connectivity. Each region: {centroid:[x,y,z], faces:int}.
+def _cluster_face_regions(verts, tris, face_bool, with_indices=False, inv=None):
+    """Cluster a per-face boolean defect mask into connected regions.
 
-    With ``with_indices=True`` each region also carries ``verts_idx`` (the
-    region's vertex indices) and ``faces_idx`` (the region's face indices) so
-    a renderer can highlight the region. The default (False) keeps the CLI
-    JSON contract unchanged."""
+    Faces are joined when they share an edge (``topology.edge_table``'s
+    half-edge array is block-stacked: [all (v0,v1), then (v1,v2), then
+    (v2,v0)], so half-edge ``h`` belongs to face ``h % F`` -- ``np.tile``, NOT
+    ``np.repeat``). Returns the legacy ``detect_non_manifold`` region shape:
+    ``{centroid, faces[, verts_idx, faces_idx]}``, canonically ordered by each
+    region's sorted vertex ids so the output is permutation-invariant.
+    ``inv`` is the (optional) ``topology.edge_table`` half-edge map, passed in
+    by a caller that already built it to avoid a second table build."""
     tris = np.asarray(tris, dtype=np.int64)
     F = len(tris)
-    if F == 0:
+    face_bool = np.asarray(face_bool, dtype=bool)
+    nm_faces = np.nonzero(face_bool)[0].tolist()
+    if F == 0 or not nm_faces:
         return []
-    _edges, counts, inv = topology.edge_table(tris)
-    nm_ids = np.nonzero(counts > 2)[0]
-    if len(nm_ids) == 0:
-        return []
-    # faces adjacent to any non-manifold edge.  ``edge_table``'s half-edge
-    # array is block-stacked ([all (v0,v1), then (v1,v2), then (v2,v0)]), so
-    # half-edge ``h`` belongs to face ``h % F`` -- ``np.tile``, NOT
-    # ``np.repeat`` (which is face-major, ``h // 3``).
+    if inv is None:
+        _edges, _counts, inv = topology.edge_table(tris)
     face_of = np.tile(np.arange(F), 3)
-    nm_faces = np.unique(face_of[counts[inv] > 2]).tolist()
     fmap = {f: i for i, f in enumerate(nm_faces)}
     parent = list(range(len(nm_faces)))
 
@@ -150,11 +148,8 @@ def detect_non_manifold(verts, tris, with_indices=False):
             parent[ra] = rb
 
     # union faces sharing any edge (not just non-manifold ones) so touching
-    # regions merge; only non-manifold faces can be unioned, so restrict to them
-    nm_face_bool = np.zeros(F, dtype=bool)
-    nm_face_bool[nm_faces] = True
-    # same block-stacked layout as ``face_of`` above
-    sel = np.nonzero(np.tile(nm_face_bool, 3))[0]
+    # regions merge; only masked faces can be unioned, so restrict to them
+    sel = np.nonzero(np.tile(face_bool, 3))[0]
     if len(sel):
         s_inv = inv[sel]
         s_face = face_of[sel]
@@ -179,7 +174,7 @@ def detect_non_manifold(verts, tris, with_indices=False):
     regions = []
     for g in groups.values():
         region_verts = np.unique(tris[g].reshape(-1))
-        centroid = verts[region_verts].mean(axis=0).tolist()
+        centroid = np.asarray(verts)[region_verts].mean(axis=0).tolist()
         region = {'centroid': centroid, 'faces': len(g)}
         if with_indices:
             region['verts_idx'] = [int(i) for i in region_verts]
@@ -187,6 +182,31 @@ def detect_non_manifold(verts, tris, with_indices=False):
         regions.append((region_verts, region))
     regions.sort(key=lambda kv: kv[0].tolist())
     return [region for _, region in regions]
+
+
+def detect_non_manifold(verts, tris, with_indices=False):
+    """Return a list of non-manifold region dicts, clustered by face
+    connectivity. Each region: {centroid:[x,y,z], faces:int}.
+
+    With ``with_indices=True`` each region also carries ``verts_idx`` (the
+    region's vertex indices) and ``faces_idx`` (the region's face indices) so
+    a renderer can highlight the region. The default (False) keeps the CLI
+    JSON contract unchanged."""
+    tris = np.asarray(tris, dtype=np.int64)
+    F = len(tris)
+    if F == 0:
+        return []
+    _edges, counts, inv = topology.edge_table(tris)
+    nm_ids = np.nonzero(counts > 2)[0]
+    if len(nm_ids) == 0:
+        return []
+    # faces adjacent to any non-manifold edge (block-stacked half-edge layout).
+    face_of = np.tile(np.arange(F), 3)
+    nm_faces = np.unique(face_of[counts[inv] > 2]).tolist()
+    face_bool = np.zeros(F, dtype=bool)
+    face_bool[nm_faces] = True
+    return _cluster_face_regions(verts, tris, face_bool,
+                                 with_indices=with_indices, inv=inv)
 
 
 def detect(verts, tris, with_indices=False):
@@ -200,10 +220,89 @@ def detect(verts, tris, with_indices=False):
                                                 with_indices=with_indices)}
 
 
-# Defect-type colours used by the GUI's color-coded mesh view (FAZ11).
-_COLOR_DEGENERATE = (250, 210, 60)   # yellow  : degenerate / zero-area face
-_COLOR_NON_MANIFOLD = (235, 60, 70)  # red     : non-manifold edge
-_COLOR_FLIPPED = (255, 140, 60)      # orange  : flipped (inverted) winding
+# Shared per-face defect-type palette: the SINGLE source of truth for both the
+# legacy analytic classifier (``defect_type_colors``) and the diagnosis_v2 mask
+# map (``defect_type_colors_v2``), so the two can never drift. The three
+# historical kinds keep their exact colours; the remaining kinds are
+# diagnosis_v2-only overlays. Consumed by the GUI's color-coded mesh view
+# (FAZ11). A face keeps its most severe class; (0,0,0) means no defect colour.
+DEFECT_COLORS = {
+    'degenerate':        (250, 210, 60),   # yellow : zero-area / repeated index
+    'non_manifold':      (235, 60, 70),    # red    : non-manifold edge/vertex
+    'flipped':           (255, 140, 60),   # orange : flipped (inverted) winding
+    'self_intersection': (200, 60, 200),   # magenta: self-intersecting faces
+    'duplicate':         (40, 180, 200),   # cyan   : duplicate faces
+    'noise':             (140, 140, 140),  # grey   : noise / micro faces
+    'interior':          (110, 80, 200),   # indigo : interior faces
+    'thin_wall':         (245, 120, 180),  # pink   : thin-wall faces
+}
+
+# Historical aliases (the legacy classifier body reads these).
+_COLOR_DEGENERATE = DEFECT_COLORS['degenerate']
+_COLOR_NON_MANIFOLD = DEFECT_COLORS['non_manifold']
+_COLOR_FLIPPED = DEFECT_COLORS['flipped']
+
+# diagnosis_v2 mask bits (rust/sutura-geom/src/diagnosis/mod.rs, thin.rs).
+# NOTE: face bit 2 marks faces touching a non-manifold VERTEX only; a classic
+# non-manifold EDGE (3+ faces on one edge) is reported by v2 as
+# orientation/loops, so the legacy edge detector stays authoritative for it.
+_V2_FACE_BITS = {'non_manifold': 2, 'duplicate': 4, 'degenerate': 8,
+                 'self_intersection': 16, 'noise': 32, 'interior': 64,
+                 'thin_wall': 128, 'orientation': 1}
+_V2_VERTEX_BITS = {'non_manifold': 2, 'duplicate': 4, 'loops': 32, 'noise': 64}
+
+
+def _decode_rle(rle, length):
+    """Decode a diagnosis_v2 RLE mask dict into a ``(length,)`` uint8 array.
+
+    The mask arrives as ``{encoding:'rle', length:N, runs:[(start,len,byte),…],
+    omitted:bool}``. A missing/omitted mask, an unknown encoding or a malformed
+    run decodes to all-zero (never raises)."""
+    out = np.zeros(int(length), dtype=np.uint8)
+    if not rle or rle.get('omitted') or rle.get('encoding') != 'rle':
+        return out
+    for run in (rle.get('runs') or []):
+        try:
+            start, count, value = int(run[0]), int(run[1]), int(run[2])
+        except (TypeError, IndexError, ValueError):
+            continue
+        if count <= 0 or start < 0:
+            continue
+        out[start:start + count] = value & 0xFF
+    return out
+
+
+def defect_masks_v2(verts, tris):
+    """Per-bit defect masks from ``sutura_geom.diagnose`` (render-only).
+
+    Returns ``{'face': {kind: bool_array}, 'vertex': {kind: bool_array}}``
+    using the kind names in ``_V2_FACE_BITS``/``_V2_VERTEX_BITS``, or ``None``
+    when ``sutura_geom`` is unavailable, ``diagnose`` raises, or either mask
+    was omitted (too large). Never raises; the caller falls back to the legacy
+    detectors on ``None``."""
+    if len(tris) == 0 or len(verts) == 0:
+        return None
+    try:
+        import sutura_geom
+    except Exception:  # noqa: BLE001 - render paths must never crash on this
+        return None
+    if not hasattr(sutura_geom, 'diagnose'):
+        return None
+    try:
+        diag = sutura_geom.diagnose(np.asarray(verts, dtype=np.float32),
+                                    np.asarray(tris, dtype=np.int32),
+                                    detail='fast', masks=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(diag, dict):
+        return None
+    fm, vm = diag.get('face_mask'), diag.get('vertex_mask')
+    if not fm or not vm or fm.get('omitted') or vm.get('omitted'):
+        return None
+    face = _decode_rle(fm, len(tris))
+    vertex = _decode_rle(vm, len(verts))
+    return {'face': {k: (face & b) != 0 for k, b in _V2_FACE_BITS.items()},
+            'vertex': {k: (vertex & b) != 0 for k, b in _V2_VERTEX_BITS.items()}}
 
 
 def defect_type_colors(verts, tris):
@@ -287,4 +386,94 @@ def defect_type_colors(verts, tris):
     colors[degenerate] = _COLOR_DEGENERATE
     colors[nm_face & ~degenerate] = _COLOR_NON_MANIFOLD
     colors[flipped] = _COLOR_FLIPPED
+    return colors
+
+
+# --- diagnosis_v2 render bridge (additive; legacy fallback) -----------------
+#
+# The render entry points (heatmap_render.py / before_after_render.py /
+# viewer_data_render.py) prefer the sutura_geom.diagnose() masks because they
+# see defects the legacy analytic detectors cannot (non-manifold VERTICES,
+# self-intersections, duplicate/noise/interior faces, thin walls). They are
+# strictly ADDITIVE though: the legacy detectors stay authoritative for hole
+# diameter markers and non-manifold EDGE markers (v2 has neither), so a pure-v2
+# swap would regress the classic red edge overlay. Both helpers below fall back
+# to the legacy result when v2 is unavailable.
+
+
+def defect_map_v2(verts, tris, with_indices=True, masks=None):
+    """Defect report for the render paths: legacy markers UNIONED with v2.
+
+    Starts from the legacy ``detect`` report (authoritative for hole diameter
+    and non-manifold edge markers) and ADDS the diagnosis_v2 non-manifold
+    vertex regions the edge-based legacy detector cannot see. Falls back to
+    plain ``detect`` when v2 is unavailable. Requires ``with_indices=True``
+    (the union needs per-face indices)."""
+    tris = np.asarray(tris, dtype=np.int64)
+    base = detect(verts, tris, with_indices=with_indices)
+    if not with_indices:
+        return base
+    if masks is None:
+        masks = defect_masks_v2(verts, tris)
+    if masks is None:
+        return base
+    nm_face = np.zeros(len(tris), dtype=bool)
+    for d in (base.get('non_manifold') or []):
+        fi = d.get('faces_idx')
+        if fi:
+            nm_face[np.asarray(fi, dtype=np.int64)] = True
+    v2_nm_face = np.asarray(masks['face'].get('non_manifold'), dtype=bool)
+    if v2_nm_face.size == len(tris):
+        nm_face |= v2_nm_face
+    nm_vertex = np.asarray(masks['vertex'].get('non_manifold'), dtype=bool)
+    if nm_vertex.size == len(verts) and nm_vertex.any():
+        nm_face |= nm_vertex[tris].any(axis=1)
+    return {'holes': base.get('holes') or [],
+            'non_manifold': _cluster_face_regions(verts, tris, nm_face,
+                                                  with_indices=True)}
+
+
+def defect_type_colors_v2(verts, tris, masks=None):
+    """Per-face defect-type colour array (M,3) uint8, v2-enhanced.
+
+    Same contract as ``defect_type_colors`` (render-only; ``(0,0,0)`` means
+    "no defect colour"). Starts from the legacy colour map (authoritative for
+    the shared kinds -- degenerate / non-manifold edge / flipped) and ADDS the
+    diagnosis_v2-only kinds (non-manifold vertices, self-intersections,
+    duplicate / noise / interior / thin-wall faces) for faces the legacy map
+    left uncoloured, using the shared ``DEFECT_COLORS`` palette. Falls back to
+    plain ``defect_type_colors`` when v2 is unavailable. More severe kinds win:
+    non-manifold > self-intersection > duplicate > noise > interior > thin-wall."""
+    colors = defect_type_colors(verts, tris)
+    if masks is None:
+        masks = defect_masks_v2(verts, tris)
+    if masks is None:
+        return colors
+    t = np.asarray(tris, dtype=np.int64)
+    F = len(t)
+    if F == 0 or len(colors) != F:
+        return colors
+    face, vertex = masks['face'], masks['vertex']
+    uncolored = ~colors.any(axis=1)
+
+    def _bit(src, key):
+        m = np.asarray(src.get(key), dtype=bool)
+        return m if m.size == F else None
+
+    nmv = np.asarray(vertex.get('non_manifold'), dtype=bool)
+    nmv_face = (nmv[t].any(axis=1) if nmv.size == len(verts)
+                else np.zeros(F, dtype=bool))
+    priority = [('non_manifold', nmv_face),
+                ('self_intersection', _bit(face, 'self_intersection')),
+                ('duplicate', _bit(face, 'duplicate')),
+                ('noise', _bit(face, 'noise')),
+                ('interior', _bit(face, 'interior')),
+                ('thin_wall', _bit(face, 'thin_wall'))]
+    for name, m in priority:
+        if m is None:
+            continue
+        sel = m & uncolored
+        if sel.any():
+            colors[sel] = DEFECT_COLORS[name]
+        uncolored = uncolored & ~m
     return colors

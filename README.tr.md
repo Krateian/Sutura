@@ -103,7 +103,7 @@ sutura a.stl b.stl c.3mf         # toplu onarım
 
 - **GUI:** *Sutura*'yı uygulama menüsünden ya da Spotlight'tan açın, dosyaları
   ekleyin (veya sürükleyip bırakın) ve **Onar**'a basın.
-- **KDE Dolphin:** modele sağ tık → **Repair with Sutura**.
+- **KDE Dolphin:** modele sağ tık → **Sutura ile Onar**.
 - **macOS Finder:** sağ tık → *Hızlı Eylemler* → **Sutura — Repair**.
 - **Son çare katı motoru (deneysel):** `--solid-engine cdt|ftetwild` her şey
   başarısız olduğunda kullanılacak yeniden inşayı seçer (Seçenekler → Onarım
@@ -124,7 +124,10 @@ Bozuk bir model hasarlı bir deri gibi ele alınır: onarım yaraya odaklanır,
 sağlam deriye dokunmaz. Kısaca:
 
 1. **Delik kapatma**, delikleri içeriden tıkar (*Tamponade*) ya da çevredeki
-   yüzeyi takip ederek kapatır (*Flap*).
+   yüzeyi takip ederek kapatır (*Flap*). Tamponad, dolduracak iç hacmi olmayan
+   ince kabuklarda ve açık yüzeylerde atlanır; bunları Flap kapatır. İnce uzun
+   açık borular ve alt kapağı kapalı bardaklar henüz yakalanmaz; tıkaç zararsız
+   biçimde reddedilir.
 2. **Temizlik (Aşama 1)**, yüzeyin bağlantılarını düzeltir — duplike ve
    dejenere üçgenler, yanlış birleşmiş kenarlar, ters yüzler — ve kalan
    delikleri kapatır.
@@ -143,6 +146,7 @@ Ayrıntılı anlatım [Sutura nasıl çalışır](docs/guide/tr/how-it-works.md)
 |---|---|---|
 | Sutura adım adım nasıl çalışır | [Nasıl çalışır](docs/guide/tr/how-it-works.md) | [How it works](docs/guide/how-it-works.md) |
 | Onarım yöntemleri, yoğunluk presetleri ve harici motorlar | [Yöntemler](docs/guide/tr/methods.md) | [Methods](docs/guide/methods.md) |
+| Politika dosyası: ayarlanabilir bölümler ve kilitli güvenlik kapıları | [Politika](docs/guide/tr/policy.md) | [Policy](docs/guide/policy.md) |
 | Kurulum, gereksinimler, güncelleme ve kaldırma | [Kurulum](docs/guide/tr/install.md) | [Install](docs/guide/install.md) |
 | CLI, GUI, raporlar, Dolphin, Quick Action, OrcaSlicer | [Kullanım](docs/guide/tr/usage.md) | [Usage](docs/guide/usage.md) |
 | Sık karşılaşılan sorunlar ve çözümleri | [Sorun giderme](docs/guide/tr/troubleshooting.md) | [Troubleshooting](docs/guide/troubleshooting.md) |

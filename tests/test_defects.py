@@ -90,6 +90,105 @@ def test_non_manifold_face_pairing_block_stacked():
     assert regions == [[0, 1, 3, 5, 7], [2]], regions
 
 
+def _nm_vertex_pair():
+    # two tetrahedra sharing ONLY vertex 0: no edge is shared by > 2 faces, so
+    # the legacy edge detector sees nothing while diagnosis_v2 reports a
+    # non-manifold vertex.
+    v = np.array([[0, 0, 0],
+                  [1, 0, 0], [0, 1, 0], [0, 0, 1],
+                  [-1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float64)
+    t = np.array([[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 2, 3],
+                  [0, 4, 5], [0, 5, 6], [0, 6, 4], [4, 5, 6]], dtype=np.int64)
+    return v, t
+
+
+def test_decode_rle_roundtrip():
+    import defects
+    rle = {'encoding': 'rle', 'length': 6, 'omitted': False,
+           'runs': [(0, 2, 1), (3, 3, 4)]}
+    assert defects._decode_rle(rle, 6).tolist() == [1, 1, 0, 4, 4, 4]
+    # omitted / unknown encoding / missing mask -> zeros, never a crash
+    for bad in (None, {},
+                {'encoding': 'rle', 'length': 4, 'omitted': True,
+                 'runs': [(0, 4, 7)]},
+                {'encoding': 'raw', 'length': 4, 'omitted': False,
+                 'runs': [(0, 4, 7)]}):
+        assert defects._decode_rle(bad, 4).tolist() == [0, 0, 0, 0], bad
+
+
+def test_colour_palette_is_shared():
+    import defects
+    assert defects._COLOR_DEGENERATE == defects.DEFECT_COLORS['degenerate']
+    assert defects._COLOR_NON_MANIFOLD == defects.DEFECT_COLORS['non_manifold']
+    assert defects._COLOR_FLIPPED == defects.DEFECT_COLORS['flipped']
+    # the v2-only kinds must be distinct from the shared three and each other
+    shared = {defects.DEFECT_COLORS[k]
+              for k in ('degenerate', 'non_manifold', 'flipped')}
+    new = {defects.DEFECT_COLORS[k] for k in
+           ('self_intersection', 'duplicate', 'noise', 'interior', 'thin_wall')}
+    assert not (shared & new), shared & new
+    assert len(new) == 5, new
+
+
+def test_defect_map_v2_falls_back_without_sutura_geom():
+    import defects
+    import sys
+    import builtins
+    v, t = _clean_cube()
+    saved = sys.modules.pop('sutura_geom', None)
+    real_import = builtins.__import__
+
+    def _blocked(name, *a, **k):
+        if name == 'sutura_geom':
+            raise ImportError('blocked for fallback test')
+        return real_import(name, *a, **k)
+
+    builtins.__import__ = _blocked
+    try:
+        got = defects.defect_map_v2(v, t, with_indices=True)
+        cols = defects.defect_type_colors_v2(v, t)
+        assert defects.defect_masks_v2(v, t) is None
+    finally:
+        builtins.__import__ = real_import
+        if saved is not None:
+            sys.modules['sutura_geom'] = saved
+    assert got == defects.detect(v, t, with_indices=True)
+    assert cols.tolist() == defects.defect_type_colors(v, t).tolist()
+
+
+def test_defect_map_v2_adds_non_manifold_vertices():
+    import defects
+    v, t = _nm_vertex_pair()
+    if defects.defect_masks_v2(v, t) is None:
+        return  # sutura_geom unavailable: fallback path, nothing v2 to add
+    legacy = defects.detect(v, t, with_indices=True)
+    merged = defects.defect_map_v2(v, t, with_indices=True)
+    assert legacy['non_manifold'] == [], legacy['non_manifold']
+    assert len(merged['non_manifold']) >= 1, merged['non_manifold']
+    dv = set()
+    for r in merged['non_manifold']:
+        dv.update(r['verts_idx'])
+    assert 0 in dv, dv  # the shared vertex must be reported
+    # the legacy hole list is preserved verbatim
+    assert merged['holes'] == legacy['holes']
+
+
+def test_v2_colours_never_lose_legacy_kinds():
+    import defects
+    # a classic non-manifold EDGE: v2 cannot see it, the legacy map can, so the
+    # merged colour map must still paint those faces red.
+    v = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1],
+                  [0, -1, 0]], dtype=np.float64)
+    t = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]], dtype=np.int64)
+    red = defects.DEFECT_COLORS['non_manifold']
+    legacy = defects.defect_type_colors(v, t)
+    merged = defects.defect_type_colors_v2(v, t)
+    for f in range(len(t)):
+        if tuple(legacy[f]) != (0, 0, 0):
+            assert tuple(merged[f]) == tuple(legacy[f]), (f, legacy[f], merged[f])
+    assert int((merged == red).all(axis=1).sum()) == int((legacy == red).all(axis=1).sum())
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):

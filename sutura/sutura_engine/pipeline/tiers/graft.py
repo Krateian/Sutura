@@ -63,6 +63,9 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
            'low_memory': False, 'aborted': False,
            'grid_fallback': None,
            'budget_limited_by': None, 'work_budget': None,
+           'grid_work_units': None, 'grid_work_raw': None,
+           'hole_work_factor': None, 'fallback_work_budget': None,
+           'grid_cells': None,
            'reject_reason': None,
            'input_faces': None, 'input_vertices': None,
            'candidate_faces': None, 'candidate_vertices': None,
@@ -99,6 +102,24 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
         rec['budget_exceeded'] = bool(grec.get('budget_exceeded'))
         rec['budget_limited_by'] = grec.get('budget_limited_by')
         rec['work_budget'] = grec.get('work_budget')
+        rec['grid_work_units'] = grec.get('fallback_work_units')
+        rec['grid_work_raw'] = grec.get('grid_work_raw')
+        rec['hole_work_factor'] = grec.get('hole_work_factor')
+        rec['fallback_work_budget'] = grec.get('fallback_work_budget')
+        rec['grid_cells'] = grec.get('grid_cells')
+        rec['budget_reason'] = grec.get('reason')
+        if grec.get('precheck_skipped'):
+            # The deterministic pre-gate ran before the first morph_close:
+            # no grid was allocated and there is no candidate to inspect.
+            rec['skipped_budget'] = True
+            rec['reject_reason'] = 'budget'
+            rec['reason'] = grec.get('reason')
+            rec['warnings'] = list(grec.get('warnings') or [])
+            rec['holes'] = (stats.get('stage1') or {}).get('holes_remaining')
+            rec['non_manifold'] = (stats.get('stage1') or {}).get(
+                'non_manifold_edges_remaining')
+            stats['graft'] = rec
+            return v, t, after
         rec['grid_fallback'] = grec.get('grid_fallback')
         if grec.get('aborted'):
             # Outer wall-clock abort: Graft was stopped for time and the
@@ -191,10 +212,10 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
                     'holes_remaining')
                 rec['non_manifold'] = (stats.get('stage1') or {}).get(
                     'non_manifold_edges_remaining')
-            rec['reason'] = ('Graft hit its deterministic work budget (%s '
-                             'cell-attempts) before a watertight candidate; '
-                             'stage-1 result kept'
-                             % (rec.get('work_budget') or '?'))
+            rec['reason'] = rec.get('budget_reason') or (
+                'Graft hit its deterministic work budget (%s cell-attempts) '
+                'before a watertight candidate; stage-1 result kept'
+                % (rec.get('work_budget') or '?'))
     if _g.error is not None:
         # PyO3 surfaces a Rust panic as pyo3_runtime.PanicException, which
         # subclasses BaseException (not Exception); a tier must degrade to its

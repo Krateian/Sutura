@@ -2,10 +2,10 @@
 # Sutura macOS installer (Apple Silicon / Intel, conda).
 #
 # The Linux installer uses a pip-only flow. macOS keeps a single conda
-# environment (Homebrew provides the Miniforge/conda toolchain it builds on)
-# so the pinned PySide6 and the fTetWild extra install reproducibly. The
-# repair engine is native; PyMeshLab is not installed at runtime. This script
-# automates that setup.
+# environment so the pinned PySide6 and the fTetWild extra install
+# reproducibly. An existing conda is reused; if it is missing, Miniforge
+# (~80 MB) is downloaded and installed in the same run. The repair engine is
+# native; PyMeshLab is not installed at runtime.
 set -euo pipefail
 
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -14,6 +14,8 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" && pwd)"
+# shellcheck source=scripts/install_owner.sh
+. "$REPO_DIR/scripts/install_owner.sh"
 APP_DIR="$HOME/.local/share/sutura"
 BIN_DIR="$HOME/.local/bin"
 ENV_NAME="sutura-env"
@@ -21,41 +23,76 @@ PY_VERSION="3.11"
 
 die() { echo "error: $*" >&2; exit 1; }
 
-# 1) Homebrew ---------------------------------------------------------------
-if ! command -v brew >/dev/null 2>&1; then
-    echo "Homebrew is not installed."
-    echo "Install it from the official site: https://brew.sh"
-    echo "(it may prompt for sudo), then run this script again."
-    exit 1
+if [ "${SUTURA_DRY_RUN:-0}" = "1" ]; then
+    echo "dry-run: would install Sutura under $APP_DIR and $BIN_DIR"
+    echo "dry-run: would reuse conda or download Miniforge (~80 MB)"
+    echo "dry-run: no download, conda env or file change performed"
+    exit 0
 fi
 
-# 2) Miniforge / conda ------------------------------------------------------
-if ! command -v conda >/dev/null 2>&1; then
-    echo "conda not found - installing Miniforge via Homebrew..."
-    brew install miniforge
-    echo "Miniforge installed. Restart your terminal (or run 'conda init' first),"
-    echo "then run this script again."
-    exit 1
+# 1) conda / Miniforge ------------------------------------------------------
+# No Homebrew requirement and no "run this script again": if conda is absent,
+# download the official Miniforge installer for this architecture, verify its
+# published SHA-256 and install it under ~/miniforge3 in the same run.
+CONDA_BIN=""
+CONDA_BASE=""
+if command -v conda >/dev/null 2>&1; then
+    CONDA_BIN="$(command -v conda)"
+    CONDA_BASE="$("$CONDA_BIN" info --base 2>/dev/null || true)"
 fi
-
-# 3) conda init must let us activate in a non-interactive shell --------------
-if ! conda activate "$ENV_NAME" >/dev/null 2>&1; then
-    # try init if not done yet
-    if ! command -v conda >/dev/null 2>&1 || ! conda shell.bash hook >/dev/null 2>&1; then
-        echo "conda is not initialized for this shell."
-        echo "Run:  conda init \"\$(basename \"\$SHELL\")\""
-        echo "then close and reopen your terminal, and run this script again."
-        exit 1
+if [ -z "$CONDA_BASE" ] || [ ! -x "$CONDA_BASE/bin/conda" ]; then
+    CONDA_BASE="$HOME/miniforge3"
+    if [ ! -x "$CONDA_BASE/bin/conda" ]; then
+        case "$(uname -m)" in
+            arm64) MF_ARCH="arm64" ;;
+            x86_64) MF_ARCH="x86_64" ;;
+            *) die "unsupported macOS architecture: $(uname -m)" ;;
+        esac
+        MF_NAME="Miniforge3-MacOSX-${MF_ARCH}.sh"
+        MF_URL="https://github.com/conda-forge/miniforge/releases/latest/download/$MF_NAME"
+        echo "==> downloading Miniforge (~80 MB) into $CONDA_BASE"
+        MF_TMP="$(mktemp -d "${TMPDIR:-/tmp}/sutura-miniforge.XXXXXX")"
+        trap 'rm -rf "$MF_TMP"' EXIT
+        curl -fL --retry 3 -o "$MF_TMP/$MF_NAME" "$MF_URL" || die "could not download Miniforge"
+        curl -fL --retry 3 -o "$MF_TMP/$MF_NAME.sha256" "$MF_URL.sha256" || die "could not download the Miniforge checksum"
+        (cd "$MF_TMP" && shasum -a 256 -c "$MF_NAME.sha256") || die "Miniforge SHA-256 verification failed"
+        bash "$MF_TMP/$MF_NAME" -b -p "$CONDA_BASE" || die "Miniforge installation failed"
+        rm -rf "$MF_TMP"; trap - EXIT
     fi
-    eval "$(conda shell.bash hook)"
+    CONDA_BIN="$CONDA_BASE/bin/conda"
+fi
+[ -x "$CONDA_BIN" ] || die "conda is not usable (expected $CONDA_BIN)"
+if [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+    . "$CONDA_BASE/etc/profile.d/conda.sh"
+else
+    eval "$("$CONDA_BIN" shell.bash hook)"
 fi
 
 # 4) create the environment (idempotent) ------------------------------------
-if ! conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
+ENV_PATH="$CONDA_BASE/envs/$ENV_NAME"
+CONDA_ENV_CREATED=0
+if ! "$CONDA_BIN" env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
     echo "==> creating conda env $ENV_NAME (python $PY_VERSION)"
-    conda create -y -n "$ENV_NAME" python="$PY_VERSION"
+    "$CONDA_BIN" create -y -n "$ENV_NAME" python="$PY_VERSION"
+    CONDA_ENV_CREATED=1
 else
-    echo "==> conda env $ENV_NAME already exists"
+    ENV_PY_CHECK="$ENV_PATH/bin/python"
+    if ! "$ENV_PY_CHECK" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 11) else 1)' >/dev/null 2>&1; then
+        echo "==> recreating $ENV_NAME (its Python is not $PY_VERSION)"
+        "$CONDA_BIN" env remove -y -n "$ENV_NAME"
+        "$CONDA_BIN" create -y -n "$ENV_NAME" python="$PY_VERSION"
+        CONDA_ENV_CREATED=1
+    else
+        echo "==> conda env $ENV_NAME already exists"
+        OWNER_FILE="$(sutura_owner_file "$APP_DIR")"
+        if [ -f "$OWNER_FILE" ]; then
+            _owner_created="$(sutura_owner_get "$OWNER_FILE" conda_env_created || true)"
+            _owner_path="$(sutura_owner_get "$OWNER_FILE" conda_env_path || true)"
+            if [ "$_owner_created" = "1" ] && [ "$_owner_path" = "$ENV_PATH" ]; then
+                CONDA_ENV_CREATED=1
+            fi
+        fi
+    fi
 fi
 
 # 5) install dependencies ---------------------------------------------------
@@ -76,19 +113,19 @@ fi
 # Darwin prebuilt wheel is universal2. ENV_PY is resolved here so the helper
 # runs before the verify step. The extension is REQUIRED: a failure aborts the
 # install with a named, actionable message from the helper.
-ENV_PY="$(conda run -n "$ENV_NAME" which python)"
+ENV_PY="$CONDA_BASE/envs/$ENV_NAME/bin/python"
 echo "==> required: sutura_geom Rust extension (Graft #13, ~0.7 MB)"
 [ -f "$REPO_DIR/scripts/install_sutura_geom.sh" ] \
     || die "scripts/install_sutura_geom.sh is missing; sutura_geom is required"
 bash "$REPO_DIR/scripts/install_sutura_geom.sh" "$ENV_PY" "$REPO_DIR"
 
 # 6) verify ----------------------------------------------------------------
-if ! conda run -n "$ENV_NAME" python -c \
+if ! "$ENV_PY" -c \
     "import numpy, sutura_geom; from PySide6 import QtWidgets; print('OK')"; then
     die "import check failed - dependencies not usable in $ENV_NAME"
 fi
-if ! conda run -n "$ENV_NAME" python -c 'import sutura_geom' >/dev/null 2>&1; then
-    die "sutura_geom import failed - the extension is required; install Rust (https://rustup.rs) or set SUTURA_GEOM_WHEEL and re-run"
+if ! "$ENV_PY" -c 'import sutura_geom' >/dev/null 2>&1; then
+    die "sutura_geom import failed - the required extension is not usable in $ENV_NAME"
 fi
 echo "    sutura_geom: import OK (Graft #13 + Exact Refine available)"
 # Qt plugin path must be pinned to PySide6's OWN Qt6 plugins. The conda env
@@ -98,7 +135,7 @@ echo "    sutura_geom: import OK (Graft #13 + Exact Refine available)"
 # Qt5 directory, fail to load its cocoa plugin ("Could not find the Qt platform
 # plugin cocoa") and abort. Terminal launches work only because PySide6 happens
 # to find its own path first. Pin it so the .app and sutura-gui work everywhere.
-QT_PLUGIN_PATH="$(conda run -n "$ENV_NAME" python -c \
+QT_PLUGIN_PATH="$("$ENV_PY" -c \
     'from PySide6.QtCore import QLibraryInfo; \
      print(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath))')"
 
@@ -129,7 +166,7 @@ fi
 # 8) CLI wrapper ------------------------------------------------------------
 cat > "$BIN_DIR/sutura" <<EOF
 #!/bin/bash
-exec "$ENV_PY" "$APP_DIR/repair.py" "\$@"
+exec "$CONDA_BIN" run -n "$ENV_NAME" python "$APP_DIR/repair.py" "\$@"
 EOF
 chmod 0755 "$BIN_DIR/sutura"
 
@@ -137,7 +174,7 @@ chmod 0755 "$BIN_DIR/sutura"
 cat > "$BIN_DIR/sutura-gui" <<EOF
 #!/bin/bash
 export QT_PLUGIN_PATH="$QT_PLUGIN_PATH"
-exec "$ENV_PY" "$APP_DIR/gui.py" "\$@"
+exec "$CONDA_BIN" run -n "$ENV_NAME" python "$APP_DIR/gui.py" "\$@"
 EOF
 chmod 0755 "$BIN_DIR/sutura-gui"
 
@@ -177,8 +214,8 @@ mdimport "$APP" 2>/dev/null || true
 # 9c) Finder Quick Action (Dolphin ServiceMenu eşdeğeri) --------------------
 # A Finder right-click integration equivalent to the KDE Dolphin ServiceMenu:
 # an Automator .workflow installed into ~/Library/Services that appears under
-# Finder's "Quick Actions" and calls the BUNDLED sutura-cli inside a
-# PyInstaller Sutura.app (independent of this conda dev environment). The
+# Finder's "Quick Actions" and uses a bundled sutura-cli (.dmg app) or the
+# installed ~/.local/bin/sutura (conda install). The
 # helper script lives in $APP_DIR (like open.sh) so it can be updated without
 # re-installing the workflow; the workflow only points at it. Idempotent:
 # re-running removes and re-copies the workflow and refreshes LaunchServices.
@@ -187,6 +224,13 @@ SERVICES_DIR="$HOME/Library/Services"
 mkdir -p "$SERVICES_DIR"
 rm -rf "$SERVICES_DIR/Sutura Quick Action.workflow"
 cp -R "$REPO_DIR/share/Sutura Quick Action.workflow" "$SERVICES_DIR/"
+# Keep the installed workflow version in sync with the app (the source plist
+# is a template; a new release must not leave a stale Quick Action version).
+WF_PLIST="$SERVICES_DIR/Sutura Quick Action.workflow/Contents/Info.plist"
+WF_VER="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$REPO_DIR/sutura/repair.py" | head -1)"
+if [ -n "$WF_VER" ] && [ -f "$WF_PLIST" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $WF_VER" "$WF_PLIST" 2>/dev/null || true
+fi
 # Automator workflow bundles are NOT applications: lsregister refuses them
 # (kLSNotAnApplicationErr, -10811) and registers nothing. The Services menu
 # is owned by the pbs agent; pbs -update rescans changed Services and applies
@@ -195,39 +239,36 @@ cp -R "$REPO_DIR/share/Sutura Quick Action.workflow" "$SERVICES_DIR/"
 
 # 10) summary ---------------------------------------------------------------
 # --- make sure ~/.local/bin is on PATH -------------------------------------
-# Many desktops (some Fedora/Ubuntu setups, macOS) do not put
-# ~/.local/bin on PATH, so a fresh `sutura` would be "command not found".
+# Write the marker to the file the user's shell actually reads. The current
+# installer process cannot change the parent shell's PATH, so also print the
+# absolute working path below.
 PATH_NOTE=""
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *)
-        PATH_LINE='export PATH="$HOME/.local/bin:$PATH"  # added by Sutura installer'
-        added=""
-        for rc in "$HOME/.zshrc" "$HOME/.bash_profile"; do
-            [ -f "$rc" ] || continue
-            if ! grep -qF "# added by Sutura installer" "$rc"; then
-                [ -n "$(tail -c1 "$rc")" ] && echo >> "$rc"
-                printf '%s\n' "$PATH_LINE" >> "$rc"
-            fi
-            added="$added $rc"
-        done
-        if [ -z "$added" ]; then
-            printf '%s\n' "$PATH_LINE" >> "$HOME/.zshrc"
-            added=" $HOME/.zshrc"
-        fi
+        # shellcheck source=scripts/install_path.sh
+        . "$REPO_DIR/scripts/install_path.sh"
+        added="$(add_sutura_path)"
         if command -v fish >/dev/null 2>&1; then
             fish -c 'fish_add_path -U $HOME/.local/bin' >/dev/null 2>&1 || true
         fi
-        PATH_NOTE="Added ~/.local/bin to PATH in:$added - open a new terminal to use 'sutura'."
+        if [ -n "$added" ]; then
+            PATH_NOTE="Added ~/.local/bin to PATH in:$added"
+        fi
         ;;
 esac
+
+if ! write_sutura_owner "$APP_DIR" "install-macos.sh" "$CONDA_ENV_CREATED" \
+        "$ENV_NAME" "$ENV_PATH" "$CONDA_BASE"; then
+    echo "warning: could not write the install ownership marker under $APP_DIR/data" >&2
+fi
 
 echo
 echo "Installed."
 echo "  conda env : $ENV_NAME (python $PY_VERSION)"
 echo "  python    : $ENV_PY"
 echo "  files     : $APP_DIR/"
-echo "  CLI       : $BIN_DIR/sutura <file.stl|file.3mf>"
+echo "  CLI       : $BIN_DIR/sutura <file.stl|file.3mf>   (works now)"
 echo "  GUI       : $BIN_DIR/sutura-gui"
 echo "  macOS app : $APP  (Spotlight: press Cmd+Space and type Sutura)"
 echo
@@ -235,4 +276,11 @@ echo "Usage:"
 echo "  sutura model.stl --human"
 echo "  sutura-gui"
 
-if [ -n "$PATH_NOTE" ]; then echo; echo "$PATH_NOTE"; fi
+if [ -n "$PATH_NOTE" ]; then
+    echo
+    echo "$PATH_NOTE"
+    echo "Current shell: $BIN_DIR/sutura"
+else
+    echo
+    echo "Current shell: $BIN_DIR/sutura"
+fi

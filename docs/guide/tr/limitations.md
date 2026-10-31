@@ -24,9 +24,9 @@ güvenilir şekilde algılayabilir.
 * **macOS'ta sağ tık, Dolphin tarzı menü değil Quick Action gerektirir.**
   macOS'ta ServiceMenu karşılığı yoktur; kurulumcu bunun yerine
   `~/Library/Services/` içine bir Finder **Quick Action** ("Sutura — Repair")
-  ekler ve seçili STL/3MF dosyaları için sağ tık → Quick Actions altında
-  kullanılabilir. Quick Action, bir PyInstaller `Sutura.app` içindeki paketli
-  `sutura-cli`'yi çağırır; bu yüzden yalnızca böyle bir uygulama mevcutsa
+  ekler; sağ tık → Quick Actions altında her seçili dosya için görünür, yalnızca
+  STL/3MF dosyaları onarılır, diğer seçimler bildirimle atlanır. Quick Action,
+  bir PyInstaller `Sutura.app` içindeki paketli `sutura-cli`'yi çağırır; bu yüzden yalnızca böyle bir uygulama mevcutsa
   (`/Applications` veya `~/Applications` içinde) onarım yapar — dev kurulum
   sarmalayıcı uygulaması tek başına paketli CLI içermez. İndirilmiş (karantinalı)
   bir `Sutura.app`, Quick Action onu çalıştırmadan önce bir kez sağ tık → Aç

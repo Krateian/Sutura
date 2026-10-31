@@ -112,11 +112,12 @@ def wall_available() -> Tuple[bool, Optional[str]]:
 
 
 def repeat_available() -> Tuple[bool, Optional[str]]:
-    """Registry methods 11/12 need repeat_repair + its deps."""
+    """Registry methods 11/12 need sutura_engine.methods.repeat, numpy and
+    sutura_geom."""
     try:
         if (importlib.util.find_spec('sutura_engine.methods.repeat') is None and
                 importlib.util.find_spec('repeat_repair') is None):
-            return False, 'repeat_repair is not available'
+            return False, 'sutura_engine.methods.repeat is not available'
         for mod in ('numpy', 'sutura_geom'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod

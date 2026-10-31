@@ -21,6 +21,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import classification
 from sutura_engine import health as method_health
+from sutura_engine.policy import AUTO as _AUTO
+from sutura_engine.policy import GATES as _GATES
+from sutura_engine.policy import INTENSITY as _INTENSITY_CFG
+from sutura_engine.policy import SI_ESCALATION as _SI
 
 
 def _repair_mod():
@@ -47,7 +51,7 @@ def _analysis_mod():
 
 # --- Execution policy constants ---------------------------------------------
 
-AUTO_MAX_ATTEMPTS = 3
+AUTO_MAX_ATTEMPTS = int(_AUTO['max_attempts'])
 # The fallback ladder is COUNT-budgeted: at most AUTO_MAX_ATTEMPTS candidate
 # methods are tried, each with its own deterministic tier budget.  The former
 # elapsed-time budget (min/max seconds scaled by the baseline duration) decided
@@ -55,14 +59,29 @@ AUTO_MAX_ATTEMPTS = 3
 # A very high wall-clock watchdog survives only as a batch safety net: when it
 # trips it is reported explicitly, never silently treated as a normal ladder
 # stop.  On an unloaded machine it is never reached.
-AUTO_FALLBACK_WATCHDOG_S = 3600.0
+AUTO_FALLBACK_WATCHDOG_S = float(_AUTO['fallback_watchdog_s'])
 # Backward-compatible aliases (older configs/tests imported these names); they
 # no longer influence method selection.
-AUTO_FALLBACK_BUDGET_FACTOR = 2.0
-AUTO_FALLBACK_MIN_S = 30.0
-AUTO_FALLBACK_MAX_S = 120.0
-AUTO_INVENT_MIN_SCORE = 0.8
-GENERATIVE_MAX_HAUSDORFF_REL = 0.01
+AUTO_FALLBACK_BUDGET_FACTOR = float(_AUTO['fallback_budget_factor'])
+AUTO_FALLBACK_MIN_S = float(_AUTO['fallback_min_s'])
+AUTO_FALLBACK_MAX_S = float(_AUTO['fallback_max_s'])
+AUTO_INVENT_MIN_SCORE = float(_AUTO['invent_min_score'])
+GENERATIVE_MAX_HAUSDORFF_REL = float(_AUTO['generative_max_hausdorff_rel'])
+# SI escalation (auto path): after the final output is saved, when that file is
+# reload-watertight but keeps residual self-intersections, try the configured
+# candidate methods in order and keep the first result that is never-worse on
+# the file-measured shape facts: SI strictly lower; holes, non-manifold and
+# parts not higher; two-sided max/p95 within the sutura-verify tolerance.
+# The work branch reuses the existing 120M graft/grid ceiling, not the generic
+# 6M fallback cap, and no wall-clock limit.  A future surface-preserving SI
+# candidate is selected by adding its method number to SI_ESCALATION_CANDIDATES
+# (or ctx['si_escalation_methods']); the trigger and verdict stay unchanged.
+SI_ESCALATION_METHOD_NUM = int(_SI['method_num'])
+SI_ESCALATION_CANDIDATES = (SI_ESCALATION_METHOD_NUM,)
+SI_ESCALATION_VOL_REL_TOL = float(_SI['vol_rel_tol'])
+SI_ESCALATION_DIST_TOL_MIN_MM = float(_SI['dist_tol_min_mm'])
+SI_ESCALATION_DIST_TOL_MAX_MM = float(_SI['dist_tol_max_mm'])
+SI_ESCALATION_DIST_TOL_DIV = float(_SI['dist_tol_div'])
 
 # Damage-channel pruning: skip fallback candidates that the J2 method
 # scorecard proves futile for the diagnosed damage. ON by default; opt out
@@ -74,12 +93,12 @@ AUTO_PRUNE_ENV = 'SUTURA_TRIAGE_PRUNE'
 LadderEntry = Union[float, str]
 
 INTENSITIES = ('quick', 'balanced', 'thorough', 'extreme')
-DEFAULT_INTENSITY = 'balanced'
+DEFAULT_INTENSITY = _INTENSITY_CFG['default']
 INTENSITY_ENV = 'SUTURA_INTENSITY'
 INTENSITY_CONFIG = os.path.expanduser('~/.config/sutura/config.json')
 PROFILES_CONFIG = os.path.expanduser('~/.config/sutura/profiles.json')
 PROFILES_SCHEMA_VERSION = 1
-HAUSDORFF_FLOOR = 200000
+HAUSDORFF_FLOOR = int(_GATES['tuning']['hausdorff_floor'])
 DEEP_REPAIR_MODES = ('off', 'local', 'full')
 
 _INVALID = object()
@@ -104,36 +123,24 @@ class IntensitySpec:
     overrides: dict = dataclasses.field(default_factory=dict, compare=False)
 
 
-PRESETS = {
-    'quick': IntensitySpec(
-        name='quick',
-        ftetwild_enabled=False,
-        ftetwild_max_faces=None,
-        ftetwild_timeout=180.0,
-        deep_repair='off',
-        dense_target_ladder=(),
-    ),
-    'balanced': IntensitySpec(name='balanced'),
-    'thorough': IntensitySpec(
-        name='thorough',
-        ftetwild_timeout=600.0,
-        # Graft's own tier budget mirrors fTetWild's per-preset budget so a
-        # hard mesh fails over to fTetWild instead of running unbounded.
-        graft_timeout=900.0,
-        dense_target_ladder=(1.5, 3.0, 'threshold'),
-        ftetwild_hausdorff_samples=400000,
-    ),
-    'extreme': IntensitySpec(
-        name='extreme',
-        ftetwild_max_faces=None,
-        ftetwild_timeout=1800.0,
-        graft_max_faces=None,
-        graft_timeout=1800.0,
-        ftetwild_optimize_retry_on_dense_fail=True,
-        dense_target_ladder=(1.5, 3.0, 'threshold'),
-        ftetwild_hausdorff_samples=1000000,
-    ),
-}
+def _preset_from_policy(name):
+    """Build one preset from the IntensitySpec schema defaults plus the policy
+    overrides for ``name`` (a nullable cap uses the strict "none" sentinel)."""
+    raw = dict(_INTENSITY_CFG.get(name) or {})
+    for cap in ('ftetwild_max_faces', 'graft_max_faces'):
+        if raw.get(cap) == 'none':
+            raw[cap] = None
+    if 'dense_target_ladder' in raw:
+        raw['dense_target_ladder'] = tuple(raw['dense_target_ladder'])
+    return dataclasses.replace(IntensitySpec(name=name), **raw)
+
+
+_POLICY_PRESET_NAMES = tuple(k for k in _INTENSITY_CFG if k != 'default')
+if _POLICY_PRESET_NAMES != INTENSITIES:
+    raise ValueError('policy [intensity] presets %r != %r'
+                     % (_POLICY_PRESET_NAMES, INTENSITIES))
+
+PRESETS = {name: _preset_from_policy(name) for name in INTENSITIES}
 
 _PROFILE_FIELDS = tuple(f.name for f in dataclasses.fields(IntensitySpec)
                         if f.name not in ('name', 'base', 'overrides'))
@@ -595,21 +602,85 @@ def _adopt_guard_for_method(result, in_objs, out_objs, method,
                           'scope': 'object'}
                 return adopt_guard.GuardResult(False, reason, fields)
     base_si = cand_si = None
+    si_over_budget = False
+    si_units = None
+    si_budget = None
     try:
-        base_values = [adopt_guard.exact_si_count(iv, it)
-                       for _n, iv, it in in_objs]
+        from sutura_engine.pipeline import work_estimate as _we
+        si_budget = _we.si_work_budget()
+        si_units = _si_pair_work_units(in_objs) + _si_pair_work_units(out_objs)
+        si_over_budget = not _we.fits_budget(si_units, si_budget)
+    except Exception:  # noqa: BLE001 - an estimate must never block repair
+        si_over_budget = False
+    # The cap applies to the FINAL stage-1 scan (pipeline.py), never to the
+    # adopt judge: a single candidate check is affordable and accepting an
+    # unmeasured candidate could silently raise the self-intersection count.
+    # Only the input baseline is memoised, so the per-candidate cost stays one
+    # exact scan of the candidate.
+    try:
+        base_si = _base_si_count(in_objs, adopt_guard)
         cand_values = [adopt_guard.exact_si_count(ov, ot)
                        for _n, ov, ot in out_objs]
-        if all(v is not None for v in base_values):
-            base_si = sum(int(v) for v in base_values)
         if all(v is not None for v in cand_values):
             cand_si = sum(int(v) for v in cand_values)
     except Exception:
         base_si = cand_si = None
-    return adopt_guard.check_candidate(
+    guard = adopt_guard.check_candidate(
         in_faces, in_vertices, out_faces, out_vertices,
         slack_units=slack_units, base_si=base_si, candidate_si=cand_si,
         measure_si=False, improved_topology=improved, policy=policy)
+    guard.fields['si_checked'] = (base_si is not None and cand_si is not None)
+    if si_over_budget:
+        guard.fields.update({
+            'si_work_units': int(si_units),
+            'si_work_budget': (None if si_budget is None else int(si_budget)),
+            'si_candidate_over_budget': True,
+        })
+    return guard
+
+
+# The input self-intersection count does not depend on the candidate, and the
+# exact classifier is the expensive part.  Keep one entry per live object list
+# (identity-checked, so a recycled ``id()`` can never reuse a stale count).
+_BASE_SI_CACHE = {}
+
+
+def _base_si_count(in_objs, adopt_guard):
+    """Exact input SI count, memoised for the current object list."""
+    key = id(in_objs)
+    hit = _BASE_SI_CACHE.get(key)
+    if hit is not None and hit[0] is in_objs:
+        return hit[1]
+    try:
+        values = [adopt_guard.exact_si_count(iv, it)
+                  for _n, iv, it in in_objs]
+        count = (sum(int(v) for v in values)
+                 if all(v is not None for v in values) else None)
+    except Exception:  # noqa: BLE001 - unmeasurable SI is reported, not fatal
+        count = None
+    _BASE_SI_CACHE.clear()
+    _BASE_SI_CACHE[key] = (in_objs, count)
+    return count
+
+
+def _si_pair_work_units(objs):
+    """Deterministic exact-SI pair-work estimate for a list of meshes."""
+    from sutura_engine.pipeline import work_estimate as _we
+    from sutura_engine.pipeline.utils import boundary_loop_stats
+    import topology
+    total = 0
+    for _name, verts, tris in objs or []:
+        if len(tris) == 0:
+            continue
+        try:
+            top = topology.mesh_topology(verts, tris)
+            nm_e = int(top.get('non_two_manifold_edges', 0) or 0)
+            nm_v = int(top.get('non_two_manifold_vertices', 0) or 0)
+            holes = int(boundary_loop_stats(verts, tris)[0] or 0)
+        except Exception:  # noqa: BLE001
+            nm_e = nm_v = holes = 0
+        total += _we.si_pair_work(len(tris), nm_e, nm_v, holes)
+    return int(total)
 
 
 def _evaluate(result, path, multi, in_objs, method):
@@ -1000,7 +1071,20 @@ def repair_with_methods(src: str, out: str, tmpdir: str, methods: Optional[list]
              and sum(len(v) for v in
                      _repair_mod().parse_3mf_meshes(src).values()) > 1)
     if methods is None:
-        return _auto(src, out, tmpdir, ctx, multi, ext, bool(auto_escalation))
+        result = _auto(src, out, tmpdir, ctx, multi, ext,
+                       bool(auto_escalation))
+        if (auto_escalation and _auto_escalation_allowed(ctx)
+                and ctx.get('si_mode') != 'off'):
+            result = _si_escalate_final(
+                src, out, tmpdir, ctx, multi, result, ext)
+        elif isinstance(result, dict) and 'error' not in result:
+            result['si_escalation'] = {
+                'triggered': False, 'method': None, 'num': None,
+                'name': None, 'candidates': [],
+                'reason': 'disabled by user settings',
+                'baseline': _si_metrics(result),
+            }
+        return result
     return _explicit(src, out, tmpdir, ctx, multi, ext, list(methods))
 
 
@@ -1060,6 +1144,498 @@ def _prune_avoid_nums(analysis) -> set:
     return avoid
 
 
+def _fallback_input_work(in_objs):
+    """Deterministic damage counters of the original input (one pass).
+
+    Returns ``{'faces', 'nm_edges', 'nm_vertices', 'holes'}``; a topology
+    failure yields zeros and the caller's estimate falls back to the face
+    count only.
+    """
+    counts = {'faces': 0, 'nm_edges': 0, 'nm_vertices': 0, 'holes': 0}
+    for _name, verts, tris in in_objs or []:
+        counts['faces'] += int(len(tris))
+    try:
+        import topology
+        from sutura_engine.pipeline.utils import boundary_loop_stats
+        for _name, verts, tris in in_objs or []:
+            if len(tris) == 0:
+                continue
+            top = topology.mesh_topology(verts, tris)
+            counts['nm_edges'] += int(
+                top.get('non_two_manifold_edges', 0) or 0)
+            counts['nm_vertices'] += int(
+                top.get('non_two_manifold_vertices', 0) or 0)
+            counts['holes'] += int(boundary_loop_stats(verts, tris)[0] or 0)
+    except Exception:  # noqa: BLE001 - an estimate must never block repair
+        pass
+    return counts
+
+
+def _fallback_grid_work(in_objs, ctx):
+    """Graft grid work estimate summed over every input object, or 0.
+
+    The damage counters already sum all objects; the grid estimate must use
+    the same scope or a multi-object 3MF can be skipped on the first object's
+    cost alone.
+    """
+    if not in_objs:
+        return 0
+    try:
+        from sutura_engine import graft as _graft
+        from sutura_engine.pipeline import work_estimate as _we
+        intensity = (getattr(ctx.get('triage_spec'), 'base', None)
+                     or ctx.get('intensity'))
+        total = 0
+        for _name, verts, tris in in_objs:
+            if len(tris) == 0:
+                continue
+            cells, _voxel = _graft.estimate_grid_cells(
+                verts, tris, intensity=intensity)
+            counts = _fallback_input_work([(None, verts, tris)])
+            total += int(_we.grid_work_with_holes(
+                len(tris), cells, counts.get('holes', 0)))
+        return total
+    except Exception:  # noqa: BLE001 - estimate only
+        return 0
+
+
+def _attach_fallback_budget(result, work_budget, work_units, skipped):
+    """Expose the deterministic fallback budget on the method report."""
+    if not isinstance(result, dict):
+        return
+    mu = result.setdefault('method_used', {})
+    mu['fallback_work_budget'] = (None if work_budget is None
+                                  else int(work_budget))
+    mu['fallback_work_units'] = int(work_units)
+    if skipped:
+        mu['fallback_skipped_budget'] = [dict(s) for s in skipped]
+
+
+def _si_metrics(result):
+    """Runtime SI/parts/deviation metrics from one repair report.
+
+    Deviation is the existing pipeline/report measure:
+    ``print_report.geometry.deviation_max_pct`` (pipeline/report.py
+    ``_deviation_pct``, Rust BVH, 150k-face cap).  Volume is the same report's
+    ``geometry.volume_change_pct`` (stage-1 percentage).
+    """
+    s1 = (result or {}).get('stage1') or {}
+    geom = (((result or {}).get('print_report') or {}).get('geometry') or {})
+
+    def _num(v):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    vol = _num(geom.get('volume_change_pct'))
+    if vol is None:
+        vol = _num(s1.get('volume_change_percent'))
+    return {
+        'si': _num(s1.get('self_intersections_remaining')),
+        'holes': _num(s1.get('holes_remaining')),
+        'nm': _num(s1.get('non_manifold_edges_remaining')),
+        'parts': _num(s1.get('components')),
+        'dev_pct': _num(geom.get('deviation_max_pct')),
+        'vol_pct': vol,
+    }
+
+
+def _exact_si_path(path):
+    """Exact output SI count (the scorecard measure), or None.
+
+    Uses the existing adopt-guard exact classifier; an unmeasurable count
+    (None) means "do not trigger and keep the baseline".
+    """
+    try:
+        from sutura_engine.pipeline import adopt_guard
+        objs = _load_objects(path)
+        vals = [adopt_guard.exact_si_count(v, t) for _n, v, t in objs]
+        if not vals or any(v is None for v in vals):
+            return None
+        return int(sum(int(v) for v in vals))
+    except Exception:  # noqa: BLE001 - unmeasurable => no trigger
+        return None
+
+
+def _si_candidate_nums(ctx):
+    """Ordered SI-escalation candidate method numbers (default: Scaffold)."""
+    raw = (ctx or {}).get('si_escalation_methods')
+    if raw is None:
+        return list(SI_ESCALATION_CANDIDATES)
+    if isinstance(raw, (int, str)):
+        raw = [raw]
+    nums = []
+    try:
+        for item in raw:
+            try:
+                nums.append(int(item))
+            except (TypeError, ValueError):
+                continue
+    except TypeError:
+        return list(SI_ESCALATION_CANDIDATES)
+    return nums or list(SI_ESCALATION_CANDIDATES)
+
+
+def _si_tolerance_mm(in_objs):
+    """The sutura-verify tolerance: clamp(bbox_diag/10000, 0.0125, 0.05) mm."""
+    try:
+        import numpy as np
+        diag = 0.0
+        for _name, verts, _tris in in_objs or []:
+            v = np.asarray(verts, dtype=np.float64)
+            if len(v):
+                diag = max(diag, float(np.linalg.norm(v.max(0) - v.min(0))))
+        if not (diag > 0.0):
+            return None
+        return min(max(diag / SI_ESCALATION_DIST_TOL_DIV,
+                       SI_ESCALATION_DIST_TOL_MIN_MM),
+                   SI_ESCALATION_DIST_TOL_MAX_MM)
+    except Exception:  # noqa: BLE001 - unmeasurable => no adoption
+        return None
+
+
+def _si_two_sided_shape(in_objs, out_objs):
+    """(max, p95) symmetric vertex-to-surface distance (mm), or None."""
+    if not in_objs or not out_objs or len(in_objs) != len(out_objs):
+        return None
+    try:
+        import numpy as np
+        import sutura_geom
+    except Exception:  # noqa: BLE001 - unmeasurable => no adoption
+        return None
+    vals = []
+    max_d = 0.0
+    try:
+        for (_n, vi, ti), (_m, vo, to) in zip(in_objs, out_objs):
+            if not (len(vi) and len(ti) and len(vo) and len(to)):
+                return None
+            vi = np.asarray(vi, dtype=np.float64)
+            ti = np.asarray(ti, dtype=np.int32)
+            vo = np.asarray(vo, dtype=np.float64)
+            to = np.asarray(to, dtype=np.int32)
+            _x, d_o2i, _f = sutura_geom.closest_points(vi, ti, vo)
+            _x, d_i2o, _f = sutura_geom.closest_points(vo, to, vi)
+            d_o2i = np.asarray(d_o2i, dtype=np.float64)
+            d_i2o = np.asarray(d_i2o, dtype=np.float64)
+            if len(d_o2i) == 0 or len(d_i2o) == 0:
+                return None
+            vals.append(d_o2i)
+            vals.append(d_i2o)
+            max_d = max(max_d, float(d_o2i.max()), float(d_i2o.max()))
+        all_d = np.concatenate(vals)
+        return (round(max_d, 4),
+                round(float(np.percentile(all_d, 95)), 4))
+    except Exception:  # noqa: BLE001 - unmeasurable => no adoption
+        return None
+
+
+def _si_file_facts(path, in_objs):
+    """Reload-honest topology + input-relative shape facts for one output."""
+    try:
+        from defects import detect
+        import topology
+    except Exception:  # noqa: BLE001 - unmeasurable => no adoption
+        return None
+    try:
+        out_objs = _load_objects(path)
+    except Exception:  # noqa: BLE001 - unreadable => no adoption
+        return None
+    if not out_objs:
+        return None
+    holes = 0
+    nm = 0
+    parts = 0
+    volume = 0.0
+    have_volume = True
+    try:
+        for _name, verts, tris in out_objs:
+            found = detect(verts, tris)
+            holes += len(found['holes'])
+            nm += len(found['non_manifold'])
+            topo = topology.mesh_topology(verts, tris)
+            parts += int(topo.get('connected_components_number') or 0)
+            geom = topology.mesh_geometric_measures(verts, tris)
+            vol = geom.get('mesh_volume')
+            if isinstance(vol, (int, float)) and not isinstance(vol, bool):
+                volume += float(vol)
+            else:
+                have_volume = False
+    except Exception:  # noqa: BLE001 - unmeasurable => no adoption
+        return None
+    shape = _si_two_sided_shape(in_objs, out_objs)
+    if shape is None:
+        return None
+    return {'holes': int(holes), 'nm': int(nm), 'parts': int(parts),
+            'volume_mm3': round(volume, 6) if have_volume else None,
+            'shape_max_mm': shape[0], 'shape_p95_mm': shape[1]}
+
+
+def _si_verdict(base, cand, tol):
+    """Never-worse SI-escalation rule; returns (ok, reason).
+
+    ``tol`` is the sutura-verify distance tolerance in mm.  Both the two-sided
+    max and p95 must stay within ``baseline + tol``; every other measure must
+    be non-increasing, and SI must be strictly lower.
+    """
+    if base.get('si') is None:
+        return False, 'baseline SI unmeasurable'
+    if base['si'] <= 0:
+        return False, 'baseline SI is zero'
+    if cand.get('si') is None:
+        return False, 'candidate SI unmeasurable'
+    if cand['si'] >= base['si']:
+        return False, 'SI not strictly lower'
+    for key, label in (('holes', 'holes'), ('nm', 'non-manifold'),
+                       ('parts', 'parts')):
+        b, c = base.get(key), cand.get(key)
+        if b is None:
+            return False, 'baseline %s unmeasurable' % label
+        if c is None:
+            return False, 'candidate %s unmeasurable' % label
+        if c > b:
+            return False, '%s worse (%s -> %s)' % (label, b, c)
+    if tol is None:
+        return False, 'shape tolerance unmeasurable'
+    for key, label in (('shape_max_mm', 'two-sided max'),
+                       ('shape_p95_mm', 'two-sided p95')):
+        b, c = base.get(key), cand.get(key)
+        if b is None:
+            return False, 'baseline %s unmeasurable' % label
+        if c is None:
+            return False, 'candidate %s unmeasurable' % label
+        if c > b + tol:
+            return False, '%s worse (%.4f -> %.4f mm > %.4f + %.4f)' % (
+                label, b, c, b, tol)
+    bv, cv = base.get('volume_mm3'), cand.get('volume_mm3')
+    if bv is None or cv is None:
+        # Both outputs are closed at this point; without their signed volumes
+        # the never-worse claim cannot be made (the external harness may still
+        # see a regression), so keep the baseline.
+        return False, 'volume unmeasurable'
+    if abs(bv) <= 1e-12:
+        return False, 'baseline volume is zero'
+    rel = abs(cv - bv) / abs(bv)
+    if rel > SI_ESCALATION_VOL_REL_TOL:
+        return False, 'volume change %.3f%% > %.2f%% (%.3f -> %.3f mm3)' % (
+            rel * 100.0, SI_ESCALATION_VOL_REL_TOL * 100.0, bv, cv)
+    return True, ('never-worse under the two-sided SI-escalation rule '
+                  '(tol %.4f mm)' % tol)
+
+
+def _si_escalation(src, out, tmpdir, ctx, multi, base_result, tried,
+                   attempt_fn, eval_fn, ext, trial_src=None):
+    """Try the SI candidates in order on the final saved output.
+
+    Returns the adopted trial dict, or None with
+    ``base_result['si_escalation']`` set to the audited outcome.  The trigger
+    is the final reload-watertight output with exact SI > 0; the first
+    candidate that passes the never-worse verdict wins.  Never raises into the
+    repair path.
+    """
+    base = _si_metrics(base_result)
+    base['si_stage1'] = base.get('si')
+    field = {'triggered': False, 'method': None, 'num': None, 'name': None,
+             'candidates': [], 'si_source': 'exact_output', 'baseline': base}
+    if multi:
+        field['reason'] = 'multi_object'
+        base_result['si_escalation'] = field
+        return None
+    base['si'] = _exact_si_path(out)
+    if base.get('si') is None:
+        field['reason'] = 'baseline SI unmeasurable'
+        base_result['si_escalation'] = field
+        return None
+    if base['si'] <= 0:
+        field['reason'] = 'baseline SI is zero'
+        base_result['si_escalation'] = field
+        return None
+
+    in_objs = _safe_load(src)
+    tol = _si_tolerance_mm(in_objs)
+    field['tolerance_mm'] = tol
+    facts = _si_file_facts(out, in_objs)
+    if facts is None:
+        field['reason'] = 'final output unreadable or shape unmeasurable'
+        base_result['si_escalation'] = field
+        return None
+    base.update(facts)
+    if base.get('holes') or base.get('nm'):
+        field['reason'] = 'baseline not watertight (holes=%s, nm=%s)' % (
+            base.get('holes'), base.get('nm'))
+        base_result['si_escalation'] = field
+        return None
+    if tol is None:
+        field['reason'] = 'shape tolerance unmeasurable'
+        base_result['si_escalation'] = field
+        return None
+
+    field['triggered'] = True
+    field['reason'] = 'final output watertight with SI > 0'
+    trial_src = src if trial_src is None else trial_src
+    try:
+        from sutura_engine.pipeline import work_estimate as _we
+        counts = _fallback_input_work(in_objs)
+        damage_units = _we.damage_work(
+            counts['faces'], counts['nm_edges'], counts['nm_vertices'],
+            counts['holes'])
+        grid_units = _fallback_grid_work(in_objs, ctx)
+        budget = _we.graft_grid_work_budget()
+        field['work_budget'] = None if budget is None else int(budget)
+        field['budget_scope'] = 'si_escalation_120m'
+    except Exception as exc:  # noqa: BLE001 - estimate only
+        field['outcome'] = 'error'
+        field['reason'] = 'estimate: %s: %s' % (type(exc).__name__, exc)
+        base_result['si_escalation'] = field
+        return None
+
+    for num in _si_candidate_nums(ctx):
+        cand_field = {'num': num, 'id': None, 'name': None,
+                      'outcome': None, 'reason': None}
+        field['candidates'].append(cand_field)
+        method = _methods_mod().get_method(num)
+        if method is None:
+            cand_field['reason'] = 'candidate method unavailable'
+            continue
+        cand_field['id'] = method.id
+        cand_field['name'] = method.name
+        ok, why = method.available()
+        if not ok:
+            cand_field['reason'] = 'candidate unavailable: %s' % why
+            continue
+
+        try:
+            work_units = _we.candidate_work(
+                method.id, damage=damage_units, grid=grid_units,
+                faces=int(counts['faces']))
+        except Exception as exc:  # noqa: BLE001 - estimate only
+            cand_field['outcome'] = 'error'
+            cand_field['reason'] = 'estimate: %s: %s' % (
+                type(exc).__name__, exc)
+            continue
+        cand_field['work_units'] = int(work_units)
+        cand_field['work_budget'] = (None if budget is None
+                                     else int(budget))
+        if budget is not None and not _we.fits_budget(work_units, budget):
+            cand_field['outcome'] = 'skipped_budget'
+            cand_field['reason'] = (
+                'estimated %s work %d (budget %d) is above the '
+                'SI-escalation cap' % (_we.work_class(method.id),
+                                       int(work_units), int(budget)))
+            continue
+
+        trial_out = os.path.join(tmpdir, 'si_escalation_m%d%s' % (
+            method.num, ext))
+        _t0 = time.monotonic()
+        try:
+            trial = attempt_fn(trial_src, trial_out, tmpdir,
+                               {**ctx, **method.kwargs}, multi)
+            # Use method=None here: the generic generative d_in gate is not
+            # part of the SI-escalation rule; this checks topology only.
+            evaluation = eval_fn(trial, trial_out, multi, _safe_load(src),
+                                 None)
+            tried.append(_record(
+                method, evaluation,
+                'accepted' if evaluation.get('watertight') else 'rejected',
+                elapsed_ms=(time.monotonic() - _t0) * 1000))
+        except Exception as exc:  # noqa: BLE001 - the escalation never crashes
+            cand_field['outcome'] = 'error'
+            cand_field['reason'] = '%s: %s' % (type(exc).__name__, exc)
+            cand_field['elapsed_ms'] = int((time.monotonic() - _t0) * 1000)
+            continue
+
+        cand = _si_metrics(trial)
+        cand['si_stage1'] = cand.get('si')
+        cand['si'] = _exact_si_path(trial_out)
+        cand_facts = _si_file_facts(trial_out, in_objs)
+        if cand_facts is not None:
+            cand.update(cand_facts)
+        cand_field['candidate'] = cand
+        try:
+            import hashlib
+            with open(trial_out, 'rb') as _f:
+                cand_field['candidate_sha256'] = hashlib.sha256(
+                    _f.read()).hexdigest()
+        except Exception:  # noqa: BLE001 - audit field only
+            cand_field['candidate_sha256'] = None
+        cand_field['elapsed_ms'] = int((time.monotonic() - _t0) * 1000)
+        if not evaluation.get('watertight'):
+            cand_field['outcome'] = 'rejected'
+            cand_field['reason'] = 'candidate rejected: %s' % (
+                evaluation.get('reason') or 'not watertight')
+            continue
+        ok, why = _si_verdict(base, cand, tol)
+        if not ok:
+            cand_field['outcome'] = 'rejected'
+            cand_field['reason'] = why
+            continue
+
+        shutil.copyfile(trial_out, out)
+        cand_field['outcome'] = 'adopted'
+        cand_field['reason'] = why
+        field.update({'method': method.id, 'num': method.num,
+                      'name': method.name, 'outcome': 'adopted',
+                      'reason': why})
+        trial['si_escalation'] = field
+        _attach(trial, method, tried, None, None, note='SI escalation',
+                source='auto_si_escalated', reached=True)
+        return trial
+
+    field['outcome'] = 'rejected'
+    last = next((c for c in reversed(field['candidates'])
+                 if c.get('candidate') is not None), None)
+    if last is None and field['candidates']:
+        last = field['candidates'][-1]
+    if last is not None:
+        field['method'] = last.get('id')
+        field['num'] = last.get('num')
+        field['name'] = last.get('name')
+        field['reason'] = last.get('reason') or 'no candidate adopted'
+        field['candidate'] = last.get('candidate')
+        field['candidate_sha256'] = last.get('candidate_sha256')
+        field['elapsed_ms'] = last.get('elapsed_ms')
+    base_result['si_escalation'] = field
+    return None
+
+
+def _si_escalate_final(src, out, tmpdir, ctx, multi, result, ext):
+    """Run the SI-escalation checkpoint once on the final saved output."""
+    if not isinstance(result, dict):
+        return result
+    if 'error' in result:
+        result.setdefault('si_escalation', {
+            'triggered': False, 'method': None, 'num': None, 'name': None,
+            'candidates': [], 'reason': 'baseline error',
+            'baseline': _si_metrics(result),
+        })
+        return result
+    if not os.path.exists(out):
+        result.setdefault('si_escalation', {
+            'triggered': False, 'method': None, 'num': None, 'name': None,
+            'candidates': [], 'reason': 'final output missing',
+            'baseline': _si_metrics(result),
+        })
+        return result
+    tried = result.get('methods_tried')
+    if not isinstance(tried, list):
+        tried = []
+    trial = _si_escalation(
+        src, out, tmpdir, ctx, multi, result, tried,
+        _resolve_fn('_attempt', _attempt),
+        _resolve_fn('_evaluate', _evaluate), ext)
+    if trial is None:
+        return result
+    for key in ('fallback_work_budget', 'fallback_grid_work_budget',
+                'fallback_work_input', 'fallback_work_estimate'):
+        if key in result and key not in trial:
+            trial[key] = result[key]
+    if 'fallback_skipped_budget' in result \
+            and 'fallback_skipped_budget' not in trial:
+        trial['fallback_skipped_budget'] = result['fallback_skipped_budget']
+    mu = trial.setdefault('method_used', {})
+    for key, value in (result.get('method_used') or {}).items():
+        if key.startswith('fallback_') and key not in mu:
+            mu[key] = value
+    return trial
+
+
 def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
           allow_escalation: bool = True) -> dict:
     attempt_fn = _resolve_fn('_attempt', _attempt)
@@ -1082,6 +1658,14 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                      if evaluation['watertight'] else 'rejected',
                      elapsed_ms=baseline_s * 1000)]
     if evaluation['watertight'] or (isinstance(result, dict) and 'error' in result):
+        if isinstance(result, dict) and 'si_escalation' not in result:
+            result['si_escalation'] = {
+                'triggered': False, 'method': 'scaffold',
+                'num': SI_ESCALATION_METHOD_NUM,
+                'reason': ('baseline error' if isinstance(result, dict)
+                           and 'error' in result else 'not applicable'),
+                'baseline': _si_metrics(result),
+            }
         _attach(result, base_method, tried, None, None, source='auto_baseline',
                 reached=evaluation['watertight'])
         if multi and isinstance(result, dict) and 'object_reports' in result:
@@ -1126,6 +1710,32 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
     # even without a template match (the tier order lives in pipeline.order).
     recs = order_graft_before_ftetwild(recs)
     avoid = _prune_avoid_nums(combined) if _triage_prune_enabled() else set()
+    # Deterministic fallback work budget (no wall clock): the same input and
+    # preset always produce the same skip/adopt decision.  ``SUTURA_FALLBACK_BUDGET=0``
+    # disables the gate and restores the unbounded ladder.
+    from sutura_engine.pipeline import work_estimate as _we
+    from sutura_engine import trace as _trace
+    work_budget = _we.fallback_work_budget()
+    # Graft's whole-mesh morphology has its own calibrated cap (the explicit
+    # Graft path uses the same value in ``graft.shell_wrap``); comparing it
+    # with the generic 6 M fallback cap would disable the fallback tier above
+    # a few thousand faces even when the explicit tier is allowed to run.
+    grid_budget = _we.graft_grid_work_budget()
+    _counts = _fallback_input_work(in_objs)
+    damage_units = _we.damage_work(
+        _counts['faces'], _counts['nm_edges'], _counts['nm_vertices'],
+        _counts['holes'])
+    grid_units = _fallback_grid_work(in_objs, ctx)
+    budget_skips = []
+    result['fallback_work_budget'] = (None if work_budget is None
+                                      else int(work_budget))
+    result['fallback_grid_work_budget'] = (None if grid_budget is None
+                                           else int(grid_budget))
+    result['fallback_work_input'] = {k: int(v) for k, v in _counts.items()}
+    result['fallback_work_estimate'] = {
+        'damage_units': int(damage_units),
+        'grid_units': int(grid_units),
+    }
     attempts = 0
     fallback_start = time.monotonic()
     watchdog_reached = False
@@ -1143,6 +1753,40 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
             continue
         if attempts >= auto_max_attempts:
             break
+        work_units = _we.candidate_work(
+            getattr(method, 'id', ''), damage=damage_units, grid=grid_units,
+            faces=int(_counts['faces']))
+        work_cls = _we.work_class(getattr(method, 'id', ''))
+        method_budget = work_budget
+        budget_scope = 'fallback'
+        if work_cls == 'grid' and work_budget is not None:
+            method_budget = grid_budget
+            budget_scope = 'grid'
+        if work_budget is not None and not _we.fits_budget(work_units,
+                                                           method_budget):
+            reason = ('estimated %s work %d (budget %d) is above the cap; '
+                      'method not started, stage-1 result kept'
+                      % (work_cls, int(work_units), int(method_budget)))
+            budget_skips.append({
+                'num': method.num, 'id': method.id, 'name': method.name,
+                'outcome': 'skipped_budget', 'reason': reason,
+                'work_class': work_cls,
+                'work_units': int(work_units),
+                'work_budget': int(method_budget),
+                'budget_scope': budget_scope,
+                'template': rec.template,
+            })
+            tried.append(budget_skips[-1])
+            _trace.set_context(attempt='method_%d' % method.num)
+            _trace.record_stage(
+                stage='fallback_estimate', method='triage._auto', v_in=None,
+                t_in=None, v_out=None, t_out=None,
+                gate={'num': method.num, 'id': method.id,
+                      'score': rec.score, 'work_class': work_cls,
+                      'work_units': int(work_units),
+                      'work_budget': int(method_budget),
+                      'skipped_budget': True})
+            continue
         # Very high out-of-band safety net only; the ladder itself is bounded
         # by the candidate count above.  A trip is surfaced explicitly.
         if (auto_watchdog_s and
@@ -1152,6 +1796,15 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
         attempts += 1
         _t0 = time.monotonic()
         trial_out = os.path.join(tmpdir, 'method_%d%s' % (method.num, ext))
+        _trace.set_context(attempt='method_%d' % method.num)
+        _trace.record_stage(
+            stage='fallback_estimate', method='triage._auto', v_in=None,
+            t_in=None, v_out=None, t_out=None,
+            gate={'num': method.num, 'id': method.id, 'score': rec.score,
+                  'work_units': int(work_units),
+                  'work_budget': (None if work_budget is None
+                                  else int(work_budget)),
+                  'skipped_budget': False})
         trial = attempt_fn(src, trial_out, tmpdir, {**ctx, **method.kwargs},
                            multi)
         evaluation = eval_fn(trial, trial_out, multi, in_objs, method)
@@ -1159,6 +1812,16 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                              if evaluation['watertight'] else 'rejected',
                              template=rec.template,
                              elapsed_ms=(time.monotonic() - _t0) * 1000))
+        _trace.record_stage(
+            stage='fallback_attempt', method='triage._auto', v_in=None,
+            t_in=None, v_out=None, t_out=None,
+            gate={'num': method.num, 'id': method.id,
+                  'watertight': bool(evaluation['watertight']),
+                  'holes': evaluation['holes'],
+                  'non_manifold': evaluation['non_manifold'],
+                  'work_units': int(work_units),
+                  'work_budget': (None if work_budget is None
+                                  else int(work_budget))})
         if evaluation['watertight']:
             fav, hdev, cov = _graft_fidelity(trial)
             cov_failed = cov is False
@@ -1179,6 +1842,8 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                     if method.invents_geometry else _multi_note(multi))
             _attach(trial, method, tried, analysis_objects, recs,
                     note=note, source='auto_escalated', reached=True)
+            _attach_fallback_budget(trial, work_budget, damage_units,
+                                    budget_skips)
             return trial
 
     if deferred_graft is not None:
@@ -1204,6 +1869,8 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                     _attach(ft_trial, ft, tried, analysis_objects, recs,
                             note='lower healthy deviation than Graft',
                             source='auto_escalated', reached=True)
+                    _attach_fallback_budget(ft_trial, work_budget,
+                                            damage_units, budget_skips)
                     return ft_trial
         if cov_failed:
             # A Graft that failed the input-coverage gate no longer reproduces
@@ -1231,11 +1898,15 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
             _attach(result, base_method, tried, analysis_objects, recs,
                     note='Graft rejected: %s' % reason,
                     source='auto_baseline', reached=False)
+            _attach_fallback_budget(result, work_budget, damage_units,
+                                    budget_skips)
             return result
         shutil.copyfile(trial_out, out)
         _attach(trial, method, tried, analysis_objects, recs,
                 note='back surface was estimated',
                 source='auto_escalated', reached=True)
+        _attach_fallback_budget(trial, work_budget, damage_units,
+                                budget_skips)
         return trial
 
     if watchdog_reached:
@@ -1244,10 +1915,14 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
     elif attempts >= auto_max_attempts:
         note = ('fallback attempts exhausted (%d); no further method was tried'
                 % int(auto_max_attempts))
+    elif budget_skips:
+        note = ('fallback work budget skipped %d candidate(s); stage-1 result '
+                'kept' % len(budget_skips))
     else:
         note = _multi_note(multi)
     _attach(result, base_method, tried, analysis_objects, recs,
             note=note, source='auto_baseline', reached=False)
+    _attach_fallback_budget(result, work_budget, damage_units, budget_skips)
     if watchdog_reached:
         result['method_used']['fallback_watchdog'] = True
         result['method_used']['fallback_watchdog_s'] = float(auto_watchdog_s)

@@ -28,6 +28,32 @@ const FAIR_LARGE: f64 = 3.0;
 const FAIR_RAMP: f64 = 30.0;
 const ZERO_VOL_FRAC: f64 = 1e-3;
 
+// Deterministic work charges for the phases the profiled "FLAP TAIL" case
+// spends its time in. The exact-SI safety check (`patch_safety`) dominates
+// (broken_38558: 594 s for 4_556_806 charged units) and used to be free;
+// charging it makes the preset `work_budget` a real bound. Every charge is a
+// pure function of the input and the preset, and a step that cannot pay its
+// charge is skipped *before* it runs -- there is no wall-clock anywhere.
+const SI_LOCAL_WEIGHT: u64 = 4096;  // units per face of the patch_safety local mesh
+const COPLANAR_WEIGHT: u64 = 64;    // units per face of the coplanar guard patch
+const FAIR_WEIGHT: u64 = 64;        // units per patch vertex per fairing solve
+
+/// Charge for the exact self-intersection check over a local mesh of
+/// `local_faces` faces (`patch_safety` -> `self_intersections_subset_core`).
+fn si_local_charge(local_faces: usize) -> u64 {
+    SI_LOCAL_WEIGHT.saturating_mul(local_faces as u64)
+}
+
+/// Charge for the coplanar-collision guard over a patch of `faces` faces.
+fn coplanar_charge(faces: usize) -> u64 {
+    COPLANAR_WEIGHT.saturating_mul((faces as u64).min(guard::COPLANAR_INTRA_MAX as u64))
+}
+
+/// Charge for one `fair_patch_energy` solve over `verts` patch vertices.
+fn fair_charge(verts: usize, iters: u64) -> u64 {
+    FAIR_WEIGHT.saturating_mul(verts as u64).saturating_mul(iters.max(1))
+}
+
 #[inline]
 pub fn ekey(a: u32, b: u32) -> (u32, u32) {
     if a < b {
@@ -192,6 +218,8 @@ fn patch_safety(
     add_v: &[V3],
     patch: &[T3],
     rim_edges: &[(u32, u32)],
+    work_cell: &std::cell::Cell<u64>,
+    work_limit: Option<u64>,
 ) -> (bool, &'static str) {
     if patch.is_empty() {
         return (true, "");
@@ -245,6 +273,19 @@ fn patch_safety(
         let c = remap(t[2], &mut lmap, &mut lv);
         lt.push([a, b, c]);
     }
+
+    // Charge the exact-SI check before running it: the local mesh (near band +
+    // patch) drives `self_intersections_subset_core`. A step that cannot pay is
+    // skipped before the scan; the caller reads "work" as "do not commit this
+    // candidate" (same outcome as the SI failing, so no decision can flip the
+    // other way).
+    let si_cost = si_local_charge(lt.len());
+    if let Some(limit) = work_limit {
+        if work_cell.get().saturating_add(si_cost) > limit {
+            return (false, "work");
+        }
+    }
+    work_cell.set(work_cell.get().saturating_add(si_cost));
 
     // (a) exact self-intersection involving a patch face, on the local mesh.
     {
@@ -646,6 +687,9 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
     // built; a step that does not fit is skipped.  No clock is read, so the
     // output is independent of CPU speed and machine load.
     let mut work_used: u64 = 0;
+    // Cell so the candidate-safety closure below can charge work without a
+    // mutable borrow that would conflict with the surrounding loop state.
+    let work_cell = std::cell::Cell::new(0u64);
     fn work_fits(used: u64, cost: u64, limit: Option<u64>) -> bool {
         match limit {
             Some(b) => used.saturating_add(cost) <= b,
@@ -711,6 +755,18 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
     report.loops_found = loops.len() + skipped;
     report.loops_skipped = skipped;
     report.non_simple_reported = skipped;
+
+    // B2b deterministic growth bound, used to decline an oversized ALTERNATIVE
+    // candidate before its exact-SI check. A candidate above this allowance is
+    // one the caller's blow-up guard rejects anyway (`adopt_guard.blowup_reason`
+    // with the flap GuardPolicy defaults: FACE_RATIO=4, MIN_SLACK=256,
+    // LOOP_FACE_SLACK=16), so declining it cannot flip the decision -- it only
+    // skips the cost. The primary candidate is NOT capped here: if it is chosen
+    // the final guard still rejects it exactly as before.
+    let input_faces = tris.len() as u64;
+    let loop_vertices: u64 = loops.iter().map(|l| l.len() as u64).sum();
+    let allowed_faces = (4u64 * input_faces)
+        .max(input_faces + 256 + 16 * loop_vertices);
 
     let mut out_v: Vec<V3> = v2.clone();
     let mut out_t: Vec<T3> = t2.clone();
@@ -799,6 +855,9 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
     };
 
     for loop_v in &loops {
+        if crate::cancel::is_cancelled() {
+            break;
+        }
         let loop_arr = loop_v;
         let m = loop_arr.len();
         if m > prm.max_loop {
@@ -1038,6 +1097,10 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
             // no longer makes the dense interior overshoot and fold the patch
             // over itself (the thin-plate order-2 solve, the default, can).
             // Gated by SUTURA_FLAP_MEMBRANE so the default path is byte-identical.
+            // Charge the fairing solve(s) before running them (the local-mesh
+            // exact-SI check that follows is charged inside `patch_safety`).
+            work_used = work_used.saturating_add(
+                fair_charge(p_pts.len().saturating_sub(m), if ref_on { 3 } else { 1 }));
             if ref_on {
                 let built = adj_ref.as_ref().and_then(|adj| {
                     crate::tamponade::build_reference(&v2, &t2, loop_arr, target, adj)
@@ -1124,6 +1187,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         // A loop no candidate can fill safely, or one the wall-clock budget
         // reaches, falls to Stage-1.
         if select && p_prefair.is_some() {
+            work_cell.set(work_used);
             let cand_ok = |p: &[V3], fc: &[[u32; 3]], gf: &[T3], primary: bool| -> bool {
                 if let Some(fi) = fi_opt {
                     let comp = stats.lab[fi as usize] as usize;
@@ -1143,20 +1207,31 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                         }
                     }
                 }
-                if prm.avoid_coplanar
-                    && guard::coplanar_collides(
+                if prm.avoid_coplanar {
+                    work_cell.set(work_cell.get()
+                        .saturating_add(coplanar_charge(fc.len())));
+                    if guard::coplanar_collides(
                         p,
                         fc,
                         &[],
                         &extra_ref,
                         prm.coplanar_frac,
                         prm.coplanar_cos,
-                    )
-                {
-                    return false;
+                    ) {
+                        return false;
+                    }
                 }
                 if !primary {
-                    let (safe, _why) = patch_safety(&out_v, &out_t, &p[m..], gf, &rim_edges);
+                    // Decline an alternative that would push the candidate past
+                    // the growth allowance: the caller's blow-up guard rejects
+                    // it regardless, so skip the exact-SI check (and the budget
+                    // it would consume) without changing the decision.
+                    if out_t.len() as u64 + fc.len() as u64 > allowed_faces {
+                        return false;
+                    }
+                    let (safe, _why) = patch_safety(
+                        &out_v, &out_t, &p[m..], gf, &rim_edges,
+                        &work_cell, prm.work_budget);
                     if !safe {
                         return false;
                     }
@@ -1171,10 +1246,11 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                 .saturating_add(1);
             // Primary: no alternative is built unless this is rejected.
             let mut chosen = cand_ok(&p_pts, &faces, &gfaces, true);
-            if !chosen && work_fits(work_used, alt_cost, prm.work_budget) {
+            if !chosen && work_fits(work_cell.get(), alt_cost, prm.work_budget) {
                 let base = p_prefair.as_ref().unwrap();
                 // 1) Membrane (order-1) fairing of the refined patch.
-                work_used = work_used.saturating_add(alt_cost);
+                work_cell.set(work_cell.get().saturating_add(alt_cost)
+                    .saturating_add(fair_charge(base.len().saturating_sub(m), 1)));
                 {
                     let mut c = base.clone();
                     fair::fair_patch_energy(&mut c, &faces, m, &ghost, 1, None, 0.0);
@@ -1185,8 +1261,9 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                 }
                 // 2) Reference fairing (opt-in via SUTURA_FLAP_REF).
                 if !chosen && ref_on
-                    && work_fits(work_used, alt_cost, prm.work_budget) {
-                    work_used = work_used.saturating_add(alt_cost);
+                    && work_fits(work_cell.get(), alt_cost, prm.work_budget) {
+                    work_cell.set(work_cell.get().saturating_add(alt_cost)
+                        .saturating_add(fair_charge(base.len().saturating_sub(m), 3)));
                     if let Some(adj) = adj_ref.as_ref() {
                         if let Some(refs) =
                             crate::tamponade::build_reference(&v2, &t2, loop_arr, target, adj)
@@ -1207,16 +1284,16 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                     }
                 }
                 // 3) Unfaired refined patch.
-                if !chosen && work_fits(work_used, alt_cost, prm.work_budget) {
-                    work_used = work_used.saturating_add(alt_cost);
+                if !chosen && work_fits(work_cell.get(), alt_cost, prm.work_budget) {
+                    work_cell.set(work_cell.get().saturating_add(alt_cost));
                     if cand_ok(base, &faces, &gfaces, false) {
                         p_pts = base.clone();
                         chosen = true;
                     }
                 }
                 // 4) Projected SI-free patch (independent ear-clipped faces).
-                if !chosen && work_fits(work_used, alt_cost, prm.work_budget) {
-                    work_used = work_used.saturating_add(alt_cost);
+                if !chosen && work_fits(work_cell.get(), alt_cost, prm.work_budget) {
+                    work_cell.set(work_cell.get().saturating_add(alt_cost));
                     if let Some((pp, pf)) =
                         projected_patch(&v2, &t2, loop_arr, target, adj_ref.as_ref(), &forb)
                     {
@@ -1243,6 +1320,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                     }
                 }
             }
+            work_used = work_cell.get();
             if !chosen {
                 report.loops_skipped_coplanar += 1;
                 log.action = Some("coplanar".to_string());
@@ -1295,6 +1373,9 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
             continue;
         }
 
+        if prm.avoid_coplanar {
+            work_used = work_used.saturating_add(coplanar_charge(faces.len()));
+        }
         if prm.avoid_coplanar
             && guard::coplanar_collides(
                 &p_pts,
@@ -1338,11 +1419,19 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         // self-intersects or leaves a reload-non-manifold seam; drop it and
         // leave the hole for a later tier instead.
         if (membrane || ref_on) && !select {
-            let (safe, why) = patch_safety(&out_v, &out_t, &p_pts[m..], &gfaces, &rim_edges);
+            work_cell.set(work_used);
+            let (safe, why) = patch_safety(&out_v, &out_t, &p_pts[m..], &gfaces, &rim_edges,
+                                           &work_cell, prm.work_budget);
+            work_used = work_cell.get();
             if !safe {
-                report.loops_skipped_safety += 1;
-                report.safety_rejections.push((m, why.to_string()));
-                log.action = Some("safety".to_string());
+                if why == "work" {
+                    report.loops_skipped_work += 1;
+                    log.action = Some("work".to_string());
+                } else {
+                    report.loops_skipped_safety += 1;
+                    report.safety_rejections.push((m, why.to_string()));
+                    log.action = Some("safety".to_string());
+                }
                 report.loop_log.push(log);
                 continue;
             }

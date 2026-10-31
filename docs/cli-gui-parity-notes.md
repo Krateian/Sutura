@@ -13,6 +13,9 @@ omission must be documented here. This file records the current parity gaps
 | `--classifier-engine classic/experimental` | Engine selection (experimental is the default; classic is a power-user escape hatch). Not in the GUI yet — an accepted gap, engine choice is a deep option. |
 | `-o/--output` | GUI always writes the default `_fixed` file in place; a custom output path is a scripting need. |
 | `--human`, `--defects`, `--diff` | Text-report presentation flags; the GUI renders the same data graphically (defect panel, repair log, before/after). |
+| `--debug` | CLI-only diagnostic flag (prints the traceback for an unexpected error); the GUI reports the same failures in its status/log panes. |
+| `--analyze` per-object `suggestions` | Both surfaces show the top-3 estimate; the GUI renders it in the analysis pane after *Analyze methods*. Informational only; no default-path change. |
+| `--progress-json`, `--no-progress` | CLI presentation flags. The GUI has its own per-file progress bar and Stop button; neither flag changes the JSON report. |
 | `export-history` (`--last`/`--clear`/`--summary-only`) | Usage-history is an anonymous CLI/telemetry feature; no GUI viewer yet. |
 | `--self-check` | The GUI runs the same availability check at startup and shows a dismissible banner when a method is unavailable, but it does not expose the full fixture-exercising command. An accepted gap until the banner grows a "run full check" action. |
 | `--self-repair` | Installation-integrity maintenance for deployed installs (verify, back up, replace, roll back). The GUI never modifies installed files, so this stays a CLI/installer action. |
@@ -54,6 +57,12 @@ lists #11 *Transplant* and #12 *Transplant+*; picking #12 opens
 a CPU-rasterised picker dialog where the user clicks the healthy source and the
 damaged target element; the two 3D points are stored with the file's tags and
 passed as the CLI flags) ·
+`[order].deep_tier_order` user policy / `--list-methods` / `--methods`
+(GUI **Options → Methods** and the main-window **Methods** button: automatic
+deep-tier order is read from the effective policy and written only to
+`~/.config/sutura/policy.toml`; manual selection fills the same per-file tags
+and is passed as `--methods`; `--list-methods` prints the effective order,
+hash and source; locked gates are read-only) ·
 `--list-methods` / `--analyze` / `--methods` (GUI right-click menu: *Analyze*
 runs `--analyze`; *Recommended methods* and *Use method* tag methods in order;
 the new **Method** column shows *Auto* / the top recommendation / the tag
@@ -100,12 +109,11 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 - **FAZ14:** added the `--experimental-join-components` GUI checkbox (was
   CLI-only), closing the one small parity gap; documented the remaining
   CLI-only / GUI-only items above.
-- **Deep-repair ladder:** `--deep-repair {off,local,full}` (config key
-  `deep_repair`) is CLI-only for now — an open, documented gap. The GUI
-  side (first run without deep repair, a pop-up with the
-  `deep_repair.available` estimate, an *Options* setting that writes the
-  config key) is scheduled separately; until then the GUI keeps its fTetWild
-  checkboxes, which map onto `off`/`full`.
+- **Deep-repair ladder:** `--deep-repair {off,local,full}` (or the
+  `SUTURA_DEEP_REPAIR` env var / `deep_repair` key in `config.json`) is a
+  manual power-user path; the GUI owns the same ladder through the intensity
+  profile editor instead of a separate global control. The key is therefore
+  intentionally not written by the GUI.
 - **External engines / fTetWild manager:** the `engines` and `ftetwild`
   subcommands and the GUI *Engines* tab were added together, so the parity
   rule holds. The engine *configuration* (the TOML files) is edited outside
@@ -210,7 +218,13 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   Its prepass/seal budget is deterministic cut-grid-cell work
   (`TAMPONADE_PREPASS_WORK_BY_INTENSITY`); the env override
   `SUTURA_TAMPONADE_PREPASS_BUDGET` is now interpreted in work units (the former
-  seconds meaning is retired).
+  seconds meaning is retired). A tier-level shape-suitability gate skips
+  thin-shell/no-interior and single-surface open-shell models in auto/full
+  repair; the CLI report and the GUI repair log show the same plain-language
+  reason (EN/TR), and there is no separate CLI flag. Slender open tubes and
+  closed-bottom cups are a documented miss; they reach Tamponade and are
+  rejected harmlessly. Explicit `--methods 17` bypasses the gate and reports
+  `user_forced`; `SUTURA_TAMPONADE_SHAPE_GATE=0` is a debug-only env opt-out.
 - **Stent (Tamponade's inflate-from-inside plug, v0.9.0):** a per-loop plug
   candidate inside Tamponade that runs when the reference plug is rejected for
   that loop. It rides INSIDE the Tamponade tier (it only runs when Tamponade runs
@@ -260,7 +274,7 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 - **Method health + `--self-check` / `--diagnostics` / `--self-repair` (P0, unreleased):**
   the per-method error isolation and the `method_health` / `method_errors` report
   keys are automatic pipeline behaviour (both CLI and GUI consume them, so parity
-  is automatic; the `--human` `Methods: N/17 OK` line and the GUI repair-log
+  is automatic; the `--human` `Methods: N/19 OK` line and the GUI repair-log
   `repair_log_methods` string render the same data). The three new commands are
   CLI-only surfaces and are documented as such in the table above: the GUI shows
   the startup availability banner (the `--self-check` availability half) but not

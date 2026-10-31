@@ -864,8 +864,9 @@ def test_cli_engines_validation(tmp):
     assert 'unknown engine' in r.stderr, r.stderr
     # read-only modes reject --engines like they reject --methods
     r2 = _run(['--engines', 'x', 'validate', path], env=env)
-    assert r2.returncode != 0, r2.stdout
-    assert 'not valid with validate' in r2.stdout, r2.stdout
+    assert r2.returncode == 2, (r2.returncode, r2.stdout, r2.stderr)
+    assert r2.stdout.strip() == '', r2.stdout
+    assert 'not valid with validate' in r2.stderr, r2.stderr
 
 
 def main():

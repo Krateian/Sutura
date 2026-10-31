@@ -20,7 +20,7 @@
 # SUTURA_NO_GEOM is no longer supported: the extension is mandatory, so setting
 # it is an error. SUTURA_GEOM_REQUIRED is accepted for compatibility; a failure
 # is always fatal.
-set -uo pipefail
+set -euo pipefail
 
 PY="${1:?usage: install_sutura_geom.sh <python> [<repo-src-dir>]}"
 SRC="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -32,10 +32,9 @@ note() { echo "    sutura_geom: $*"; }
 finish_fail() {
     echo "error: sutura_geom is required but could not be installed ($*)." >&2
     echo "       Platform: $(uname -s)/$(uname -m)" >&2
-    echo "       Install Rust >= 1.89 (https://rustup.rs), cmake and a C++20 compiler" >&2
-    echo "       (g++/clang++) so the extension can be built from source, or set" >&2
-    echo "       SUTURA_GEOM_WHEEL=<path> to a compatible wheel, then re-run the" >&2
-    echo "       installer. The Manifold kernel is compiled from C++." >&2
+    echo "       No compatible prebuilt wheel is available for this platform," >&2
+    echo "       and the automatic source fallback cannot run here. The installer" >&2
+    echo "       cannot continue without sutura_geom." >&2
     exit 1
 }
 
@@ -84,7 +83,7 @@ try_wheel() {
     if ! curl -fsSL --retry 2 -o "$sums" "$base/$SUMS_NAME" 2>/dev/null; then
         rm -rf "$dl"; return 1
     fi
-    line="$(grep -E "$pat" "$sums" | head -1)"
+    line="$(grep -E "$pat" "$sums" | head -1 || true)"
     [ -n "$line" ] || { rm -rf "$dl"; return 1; }
     want="$(echo "$line" | awk '{print $1}')"
     name="$(echo "$line" | awk '{print $2}' | sed 's/^\*//')"
@@ -103,13 +102,24 @@ try_wheel() {
     rm -rf "$dl"; return 1
 }
 
+try_wheel_retry() {
+    local base="$1" attempt
+    for attempt in 1 2 3 4 5; do
+        if try_wheel "$base"; then
+            return 0
+        fi
+        [ "$attempt" -lt 5 ] && sleep 8
+    done
+    return 1
+}
+
 if [ "${SUTURA_GEOM_FROM_SOURCE:-0}" != "1" ]; then
     version="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$SRC/sutura/repair.py" 2>/dev/null | head -1)"
-    if [ -n "$version" ] && try_wheel "$RELEASE_BASE/download/v$version"; then
+    if [ -n "$version" ] && try_wheel_retry "$RELEASE_BASE/download/v$version"; then
         note "installed prebuilt wheel (v$version)"
         exit 0
     fi
-    if try_wheel "$RELEASE_BASE/latest/download"; then
+    if try_wheel_retry "$RELEASE_BASE/latest/download"; then
         note "installed prebuilt wheel (latest release)"
         exit 0
     fi
@@ -131,7 +141,7 @@ if [ -f "$SRC/rust/sutura-geom/pyproject.toml" ] && command -v cargo >/dev/null 
     if ! cargo --version >/dev/null 2>&1; then
         case "$cargo_probe" in
             *[Nn]o\ default*|*could\ not\ choose*|*no\ toolchain*|*not\ installed*)
-                finish_fail "cargo is present but rustup has no default toolchain; run 'rustup default stable' and re-run" ;;
+                finish_fail "cargo has no default toolchain; source fallback unavailable" ;;
             *)
                 finish_fail "cargo is not usable: $cargo_probe" ;;
         esac

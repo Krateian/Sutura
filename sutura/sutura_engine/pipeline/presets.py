@@ -14,6 +14,29 @@ import numpy as np
 
 import triage
 from mesh_classifier import classify_mesh
+from sutura_engine.policy import TIERS as _TIERS
+from sutura_engine.policy import GATES as _GATES
+from sutura_engine.policy import (
+    MODES as _MODES, STAGE1_PROFILES as _STAGE1_PROFILES,
+    STAGE1_TUNING as _STAGE1_TUNING, STAGE1_TYPES as _STAGE1_TYPES,
+)
+
+_TUNING_GATES = _GATES['tuning']
+
+_DRESSING = _TIERS['dressing']
+_DRESSING_GATES = _DRESSING['gates']
+_SPLINT = _TIERS['splint']
+_COAPTATION = _TIERS['coaptation']
+
+
+def _thresholds(table):
+    return {name: {'mincomponentsize': int(v['mincomponentsize']),
+                   'maxholesize': int(v['maxholesize'])}
+            for name, v in table.items()}
+
+
+def _work_table(table):
+    return {name: int(v) for name, v in table.items()}
 
 
 # The Balanced intensity preset is the pre-triage behaviour; the module
@@ -109,10 +132,10 @@ class ExtremeRemovedAllError(ValueError):
 # gates sit just above the corresponding worst correct prediction, so the
 # single most-ambiguous organic (a 24k-tri smooth capsule, 0.693) stays on
 # defaults as a safety margin while everything else tunes.
-MECH_TUNE_GATE = 0.75
+MECH_TUNE_GATE = float(_STAGE1_TUNING['mech_gate'])
 
 
-ORG_TUNE_GATE = 0.70
+ORG_TUNE_GATE = float(_STAGE1_TUNING['org_gate'])
 
 
 def tuning_applied_for(mesh_type, confidence):
@@ -135,12 +158,7 @@ def tuning_applied_for(mesh_type, confidence):
 # (mincomponentsize=8, maxholesize=1000). mincomponentsize stays >= 8 so
 # small/degenerate meshes never survive the debris cutoff (CI regression
 # risk if lowered, see the _type_params comment).
-MODE_PARAMS = {
-    'low': {'mincomponentsize': 8, 'maxholesize': 200},
-    'medium': {'mincomponentsize': 8, 'maxholesize': 1000},
-    'aggressive': {'mincomponentsize': 12, 'maxholesize': 3000},
-    'extreme': {'mincomponentsize': 20, 'maxholesize': 10000},
-}
+MODE_PARAMS = _thresholds(_MODES)
 
 
 REPAIR_MODES = ('low', 'medium', 'auto', 'aggressive', 'extreme')
@@ -160,13 +178,7 @@ REPAIR_MODES = ('low', 'medium', 'auto', 'aggressive', 'extreme')
 #   miniature  : keep tiny parts (mincomponentsize=1, an explicit opt-in --
 #                the default path deliberately keeps >= 8).
 #   fast       : quick pass, small holes only.
-PROFILES = {
-    'mechanical': {'mincomponentsize': 8, 'maxholesize': 300},
-    'organic': {'mincomponentsize': 12, 'maxholesize': 1000},
-    'scan': {'mincomponentsize': 4, 'maxholesize': 10000},
-    'miniature': {'mincomponentsize': 1, 'maxholesize': 50},
-    'fast': {'mincomponentsize': 8, 'maxholesize': 200},
-}
+PROFILES = _thresholds(_STAGE1_PROFILES)
 
 
 REPAIR_PROFILES = tuple(PROFILES)
@@ -189,11 +201,7 @@ REPAIR_PROFILES = tuple(PROFILES)
 #   organic   : aggressively drop scan debris (higher cutoff, 12) and
 #               close large open regions (1000, same as default).
 #   unknown   : fall back to the historical defaults (8, 1000).
-_TYPE_PARAMS = {
-    'mechanical': {'mincomponentsize': 8, 'maxholesize': 300},
-    'organic': {'mincomponentsize': 12, 'maxholesize': 1000},
-    'unknown': {'mincomponentsize': 8, 'maxholesize': 1000},
-}
+_TYPE_PARAMS = _thresholds(_STAGE1_TYPES)
 
 
 def resolve_mode_params(mode, mesh_type, confidence, profile=None):
@@ -246,7 +254,7 @@ FTETWILD_TIMEOUT = _BALANCED_INTENSITY.ftetwild_timeout
 # thingi10k_1038441 (40 samples / corpus), 1.7 % on 1038439, 1.1 % on
 # 224108, 5 % on 1017012. Rejecting them instead cost 3 of the 40 samples
 # and 4 corpus meshes. Provisional value.
-FTETWILD_MAX_HAUSDORFF_REL = 0.01
+FTETWILD_MAX_HAUSDORFF_REL = float(_TUNING_GATES['ftetwild_max_hausdorff_rel'])
 
 
 # Second fTetWild attempt: when the default (optimize=False) boundary fails
@@ -317,16 +325,15 @@ GRAFT_TIMEOUT = _BALANCED_INTENSITY.graft_timeout
 # timeout was a post-hoc rejection; the mesh now depends only on the input,
 # preset and tet count.  SPLINT_DEFAULT_ENABLED is the single switch and stays
 # OFF until the 40-mesh corpus decision proves Splint no worse on every mesh.
-SPLINT_RES = 128
+SPLINT_RES = int(_SPLINT['res'])
 
 SPLINT_MAX_FACES = _BALANCED_INTENSITY.ftetwild_max_faces
 
-SPLINT_WORK_BY_INTENSITY = {'quick': 0, 'balanced': 4_000_000,
-                            'thorough': 8_000_000, 'extreme': 16_000_000}
+SPLINT_WORK_BY_INTENSITY = _work_table(_SPLINT['work_by_intensity'])
 
-SPLINT_DEFAULT_WORK = 4_000_000
+SPLINT_DEFAULT_WORK = int(_SPLINT['default_work'])
 
-SPLINT_DEFAULT_ENABLED = False
+SPLINT_DEFAULT_ENABLED = bool(_SPLINT['default_enabled'])
 
 SPLINT_ENV = 'SUTURA_SPLINT'
 
@@ -340,16 +347,15 @@ SPLINT_ENV = 'SUTURA_SPLINT'
 # ladder currently holds (so a mesh that does not benefit is byte-identical).
 # COAPTATION_MAX_FACES is a hard input cap; COAPTATION_WORK_BY_INTENSITY is a
 # DETERMINISTIC work budget in total body faces closed/merged by the tier.
-COAPTATION_SEAM_ULP_K = 1
+COAPTATION_SEAM_ULP_K = int(_COAPTATION['seam_ulp_k'])
 
 COAPTATION_MAX_FACES = _BALANCED_INTENSITY.ftetwild_max_faces
 
-COAPTATION_WORK_BY_INTENSITY = {'quick': 0, 'balanced': 1_000_000,
-                                'thorough': 2_000_000, 'extreme': 4_000_000}
+COAPTATION_WORK_BY_INTENSITY = _work_table(_COAPTATION['work_by_intensity'])
 
-COAPTATION_DEFAULT_WORK = 1_000_000
+COAPTATION_DEFAULT_WORK = int(_COAPTATION['default_work'])
 
-COAPTATION_DEFAULT_ENABLED = True
+COAPTATION_DEFAULT_ENABLED = bool(_COAPTATION['default_enabled'])
 
 COAPTATION_ENV = 'SUTURA_COAPTATION'
 
@@ -424,7 +430,7 @@ DENSE_QUALITY = 0.3
 # (relative to the input bbox diagonal) is at most the raw fTetWild boundary's
 # own distance plus this margin: decimation may not make the shape measurably
 # worse than fTetWild already did. 0.5 % of the diagonal.
-DECIMATE_HD_MARGIN = 0.005
+DECIMATE_HD_MARGIN = float(_TUNING_GATES['decimate_hd_margin'])
 
 
 # Fixed Hausdorff sample count, independent of the output face count, so a
@@ -514,7 +520,7 @@ FLAP_ENV = 'SUTURA_FLAP'
 # CLI honours --no-flap to disable it per run; the library default in
 # ``repair_mesh_from_arrays`` stays ``False`` so direct library calls keep
 # their pre-Flap behaviour.
-FLAP_DEFAULT_ENABLED = True
+FLAP_DEFAULT_ENABLED = bool(_TIERS['flap']['default_enabled'])
 
 
 def _flap_default_enabled():
@@ -592,7 +598,7 @@ TAMPONADE_ENV = 'SUTURA_TAMPONADE'
 # library calls keep their pre-Tamponade behaviour -- every user-facing path
 # (CLI, GUI, file-manager menu, Orca plugin) passes the flag explicitly or
 # inherits this CLI default.
-TAMPONADE_DEFAULT_ENABLED = True
+TAMPONADE_DEFAULT_ENABLED = bool(_TIERS['tamponade']['default_enabled'])
 
 
 def _tamponade_default_enabled():
@@ -654,6 +660,8 @@ def resolve_dressing_drain(cli_value=None, environ=None):
 
 
 # Dressing defect-mask sets (must match sutura_engine.dressing.DEFECT_SETS).
+# Structural enum, not policy data: it must mirror the runtime DEFECT_SETS, so a
+# user override could desync the two. Stays in code.
 DRESSING_DEFECT_SETS = ('all', 'holes_nm')
 
 
@@ -665,17 +673,17 @@ DRESSING_DEFECT_SETS = ('all', 'holes_nm')
 # the module constant below, or the SUTURA_DRESSING_DEFAULT env var.  When on,
 # the deep-repair 'full' ladder tries Dressing after Graft whenever the current
 # result still has holes, non-manifold edges or exact self-intersections.
-DRESSING_DEFAULT_ENABLED = False
+DRESSING_DEFAULT_ENABLED = bool(_DRESSING['default_enabled'])
 
 
 # Adoption-gate bounds for the auto fallback (the explicit --experimental-
 # dressing path uses the same gate).  The volume is compared to the mesh the
 # ladder held just before Dressing (the best available reference; the raw input
 # signed volume is meaningless when it is itself damaged/open).
-DRESSING_MAX_VOLUME_DELTA = 0.10     # |dV| / |V_before|
+DRESSING_MAX_VOLUME_DELTA = float(_DRESSING_GATES['max_volume_delta'])     # |dV| / |V_before|
 
 
-DRESSING_MAX_PARTS_SLACK = 1         # candidate components <= before + slack
+DRESSING_MAX_PARTS_SLACK = int(_DRESSING_GATES['max_parts_slack'])         # candidate components <= before + slack
 
 
 # Healthy-region coat-vs-input normal agreement; a voxel staircase / fluting
@@ -684,12 +692,12 @@ DRESSING_MAX_PARTS_SLACK = 1         # candidate components <= before + slack
 # 12-36 deg on the accepted coats and 82-88 deg on ornate-frame / 100281 /
 # 1038439 / 1038441 / 145065 (the staircased, detail-lost ones).  The calibrated
 # detector will replace it.
-DRESSING_MAX_NORMAL_ANGLE_P95 = 30.0  # degrees
+DRESSING_MAX_NORMAL_ANGLE_P95 = float(_DRESSING_GATES['max_normal_angle_p95'])  # degrees
 
 
 # CAD-likeness placeholder threshold (the calibrated detector supplies the real
 # value).
-CAD_LIKENESS_THRESHOLD = 0.5
+CAD_LIKENESS_THRESHOLD = float(_DRESSING_GATES['cad_likeness_threshold'])
 
 
 def _dressing_default_enabled():

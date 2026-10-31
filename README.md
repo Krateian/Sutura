@@ -123,7 +123,10 @@ A broken model is treated like damaged skin: the repair works on the wound and
 leaves healthy skin alone. In short:
 
 1. **Hole closing** plugs holes from the inside (*Tamponade*) or follows the
-   surrounding surface across them (*Flap*).
+   surrounding surface across them (*Flap*). Tamponade is skipped on thin
+   shells and open sheets that have no interior to fill; Flap handles those.
+   Slender open tubes and closed-bottom cups are not caught yet; the plug is
+   rejected harmlessly.
 2. **Clean-up (Stage 1)** fixes the wiring of the surface — duplicate and
    degenerate triangles, wrongly joined edges, flipped faces — and closes what
    is left.
@@ -141,6 +144,7 @@ The full walk-through is in [How Sutura works](docs/guide/how-it-works.md).
 |---|---|---|
 | How Sutura works, step by step | [How it works](docs/guide/how-it-works.md) | [Nasıl çalışır](docs/guide/tr/how-it-works.md) |
 | Repair methods, intensity presets and external engines | [Methods](docs/guide/methods.md) | [Yöntemler](docs/guide/tr/methods.md) |
+| Policy file: tunable sections and locked safety gates | [Policy](docs/guide/policy.md) | [Politika](docs/guide/tr/policy.md) |
 | Install, requirements, updates and removal | [Install](docs/guide/install.md) | [Kurulum](docs/guide/tr/install.md) |
 | CLI, GUI, reports, Dolphin, Quick Action, OrcaSlicer | [Usage](docs/guide/usage.md) | [Kullanım](docs/guide/tr/usage.md) |
 | Common problems and fixes | [Troubleshooting](docs/guide/troubleshooting.md) | [Sorun giderme](docs/guide/tr/troubleshooting.md) |

@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 
-from defects import detect
+from defects import defect_map_v2
 from heatmap import render
 
 
@@ -47,7 +47,7 @@ def main():
         print('heatmap: could not load mesh %s' % path, file=sys.stderr)
         return 1
     try:
-        report = detect(verts, tris, with_indices=True)
+        report = defect_map_v2(verts, tris, with_indices=True)
         img = render(verts, tris, report['holes'], report['non_manifold'], w=w, h=h)
     except Exception as e:  # noqa: BLE001
         print('heatmap: render failed: %s' % e, file=sys.stderr)
