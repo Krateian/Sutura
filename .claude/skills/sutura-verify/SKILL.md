@@ -24,6 +24,13 @@ This skill is how an agent that did NOT write the change checks the claim.
   farther than the tolerance.
 - tolerance = `clamp(bbox_diag / 10000, 0.0125, 0.05)` mm (the Tamponade plug
   gate; keep the same formula so numbers are comparable across tiers).
+- surface metrics (`surface_metrics.py`, reported by
+  `verify_default_vs_optout.py --quality` as `recall` / `fill` / `removed`,
+  budget `--surface-budget sweep|gate`): exterior-only feature-edge recall
+  (sharp input edges, length-weighted, nearest output sharp edge within the
+  detail tolerance and dihedral within 15°) and healthy fill / removed volume
+  in mm³ (outside the input on healthy regions). Identity must give recall 1.0
+  and fill 0; lower recall or higher fill is worse.
 - visual QA: 12-camera spherical rig comparison via `verify_visual_qa.py` (default
   on with `--quality`; opt out with `--no-visual`). Requires only `numpy`,
   `PySide6` and (for the V2 channels) `sutura_geom` (zero external dependencies:
