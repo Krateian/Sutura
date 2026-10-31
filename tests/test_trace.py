@@ -8,6 +8,8 @@ import sys
 import tempfile
 import time
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (os.path.join(REPO, 'sutura'), REPO):
     if _p not in sys.path:
@@ -191,3 +193,7 @@ def test_trace_diff_identifies_ftetwild_divergence(tmp_path):
     assert res.returncode == 1
     assert "FIRST DIVERGING STAGE: Step 12 ['ftetwild']" in res.stdout
     assert "Verdict: Runs first diverged at Step 12 ['ftetwild']." in res.stdout
+
+
+if __name__ == '__main__':
+    raise SystemExit(pytest.main([os.path.abspath(__file__), '-q']))
