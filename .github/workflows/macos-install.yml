@@ -44,6 +44,8 @@ jobs:
       # (the source fallback is covered by ci.yml).
       - name: Build sutura_geom wheel
         run: |
+          rustup default stable
+          cargo --version
           python3 -m pip install --quiet maturin==1.15.0
           (cd rust/sutura-geom && maturin build --release --out "$GITHUB_WORKSPACE/dist")
           WHEEL="$(ls "$GITHUB_WORKSPACE"/dist/*.whl | head -1)"
