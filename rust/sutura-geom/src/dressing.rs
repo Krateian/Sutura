@@ -68,6 +68,20 @@ impl Default for DressingParams {
     }
 }
 
+/// Exact-grid correction field for the closed-loop adaptive drain: a row-major
+/// `values` array of length `dims[0]*dims[1]*dims[2]` on the grid the previous
+/// iteration reported.  It is applied elementwise on band cells (`band_mask !=
+/// 0`) after the drain term, before extraction.  The caller must hand back the
+/// exact `(origin, dims, voxel)` of the previous coat; on any mismatch the
+/// correction is ignored and `DressingInfo::correction_applied` stays false.
+#[derive(Clone, Debug)]
+pub struct CorrectionGrid {
+    pub origin: [f64; 3],
+    pub dims: [usize; 3],
+    pub voxel: f64,
+    pub values: Vec<f32>,
+}
+
 /// Bookkeeping reported back to the caller.
 #[derive(Clone, Debug)]
 pub struct DressingInfo {
@@ -87,6 +101,7 @@ pub struct DressingInfo {
     pub coarsened: bool,
     pub fallback: bool,
     pub manifold: bool,
+    pub correction_applied: bool,
     pub seconds: f64,
     pub band_seconds: f64,
     pub field_seconds: f64,
@@ -465,6 +480,7 @@ pub fn dressing_coat(
     tris: &[[usize; 3]],
     defect_pts: &[[f64; 3]],
     params: &DressingParams,
+    corr: Option<&CorrectionGrid>,
 ) -> DressingMesh {
     let t_start = std::time::Instant::now();
     let empty = |dims: [usize; 3], origin: [f64; 3], voxel: f64| DressingMesh {
@@ -487,6 +503,7 @@ pub fn dressing_coat(
             coarsened: false,
             fallback: false,
             manifold: false,
+            correction_applied: false,
             seconds: t_start.elapsed().as_secs_f64(),
             band_seconds: 0.0,
             field_seconds: 0.0,
@@ -537,6 +554,23 @@ pub fn dressing_coat(
     let r_base32 = r_base as f32;
     let r_max32 = r_max as f32;
     let sigma32 = sigma as f32;
+
+    // Closed-loop adaptive drain: accept the caller's exact-grid correction
+    // field only when it matches this plan (same dims/voxel/origin and length);
+    // otherwise ignore it transparently so a grid mismatch degrades to the
+    // plain constant drain instead of silently mis-applying the correction.
+    let corr_values: Option<&[f32]> = match corr {
+        Some(c)
+            if c.dims == dims
+                && c.values.len() == n
+                && (c.voxel - voxel).abs() <= 1e-12 * voxel.abs().max(1.0)
+                && (0..3)
+                    .all(|i| (c.origin[i] - origin[i]).abs() <= 1e-9 * voxel.abs().max(1.0)) =>
+        {
+            Some(c.values.as_slice())
+        }
+        _ => None,
+    };
 
     let use_antipodal = crate::antipodal::antipodal_enabled_by_default();
     let (bvh_owned, antipodal_gwn) = if use_antipodal {
@@ -602,6 +636,14 @@ pub fn dressing_coat(
             (1.0 - (r_dense[idx] - r_base32) * inv_dr).clamp(0.0, 1.0)
         }
     };
+    // The `u <= r` "certainly inside" shortcut makes `F` a V-field (slope -1
+    // inside, +1 outside), so a constant correction added to both bracketing
+    // cells is attenuated by ~h/(2r).  When a correction is present, push the
+    // certainty edge down by one-and-a-half cells so the cells bracketing the
+    // isosurface take the true winding sign and `F` is a smooth signed distance
+    // across the surface; the correction then shifts it linearly.  Without a
+    // correction the field is byte-identical to before.
+    let corr_guard = if corr_values.is_some() { voxel32 * 1.5 } else { 0.0 };
 
     // Scalar field F = s - r, with the winding sign evaluated only for band
     // cells whose sign is not already forced negative by u < r.
@@ -634,7 +676,7 @@ pub fn dressing_coat(
                         // (`drain == 0` keeps the historical `u <= r`).  In the
                         // shell between `r - drain` and `r` the sign is needed:
                         // an outside cell there is already drained.
-                        if uu <= (r - drain32).max(0.0) {
+                        if uu <= (r - drain32 - corr_guard).max(0.0) {
                             val = -uu - r;
                         } else {
                             let x = origin[0] + voxel * i as f64;
@@ -664,6 +706,11 @@ pub fn dressing_coat(
                     if do_drain {
                         val += drain32 * healthy_at(idx);
                     }
+                    if let Some(cv) = corr_values {
+                        if band_mask[idx] != 0 {
+                            val += cv[idx];
+                        }
+                    }
                     frow[row + i] = val;
                 }
             }
@@ -671,7 +718,28 @@ pub fn dressing_coat(
 
     let field_seconds = t_field.elapsed().as_secs_f64();
     let t_extract = std::time::Instant::now();
-    let dc = marching_tets_mesh(&field, dims, origin, voxel);
+    let dc = if crate::hermite::enabled_by_default() {
+        // Exact crossings on the same marching-tetrahedra topology: the offset
+        // `c = r - drain * healthy - corr` is the smooth part of `F = s - c`
+        // (the band-cell adaptive-drain correction is added to the field above).
+        let cfield: Vec<f32> = (0..n)
+            .map(|i| {
+                r_dense[i]
+                    - if do_drain { drain32 * healthy_at(i) } else { 0.0 }
+                    - match corr_values {
+                        Some(cv) if band_mask[i] != 0 => cv[i],
+                        _ => 0.0,
+                    }
+            })
+            .collect();
+        let inside = |p: [f64; 3]| match antipodal_gwn {
+            Some(ref g) => g.inside_with_fallback(p).0,
+            None => bvh.winding_at(p) > 0.5,
+        };
+        crate::hermite::exact_coat_mesh(bvh, &field, &cfield, dims, origin, voxel, &inside).0
+    } else {
+        marching_tets_mesh(&field, dims, origin, voxel)
+    };
     let (out_verts, mut out_tris) = weld_and_clean(&dc.verts, &dc.tris, voxel);
     orient_consistently(&mut out_tris);
     let manifold = mesh_is_manifold(&out_verts, &out_tris);
@@ -709,6 +777,7 @@ pub fn dressing_coat(
         coarsened,
         fallback: dc.fallback,
         manifold,
+        correction_applied: corr_values.is_some(),
         seconds: t_start.elapsed().as_secs_f64(),
         band_seconds,
         field_seconds,
@@ -799,6 +868,11 @@ mod tests {
             .collect()
     }
 
+    fn nearest_distances(m: &DressingMesh, verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Vec<f64> {
+        let bvh = MeshBvh::from_arrays(verts, tris);
+        m.verts.iter().map(|p| bvh.closest_point(*p).1).collect()
+    }
+
     fn report_stats(tag: &str, offs: &[f64], voxel: f64) {
         let mut s = offs.to_vec();
         s.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -826,7 +900,7 @@ mod tests {
             sigma: Some(1.0),
             ..Default::default()
         };
-        let sm = dressing_coat(&sv, &sf, &[], &p);
+        let sm = dressing_coat(&sv, &sf, &[], &p, None);
         let so = signed_offsets(&sm, &sv, &sf);
         report_stats("sphere", &so, 0.04);
         let mean = so.iter().sum::<f64>() / so.len() as f64;
@@ -843,7 +917,7 @@ mod tests {
             sigma: Some(1.0),
             ..Default::default()
         };
-        let cm = dressing_coat(&cv, &cf, &[], &pc);
+        let cm = dressing_coat(&cv, &cf, &[], &pc, None);
         let co = signed_offsets(&cm, &cv, &cf);
         report_stats("cube", &co, 0.1);
         let mean = co.iter().sum::<f64>() / co.len() as f64;
@@ -866,8 +940,8 @@ mod tests {
 
         // No defect: the healthy weight is 1 everywhere, so the whole coat
         // shifts inward by the drain amount.
-        let clean0 = dressing_coat(&v, &f, &[], &base);
-        let clean1 = dressing_coat(&v, &f, &[], &drained);
+        let clean0 = dressing_coat(&v, &f, &[], &base, None);
+        let clean1 = dressing_coat(&v, &f, &[], &drained, None);
         let o0 = signed_offsets(&clean0, &v, &f);
         let o1 = signed_offsets(&clean1, &v, &f);
         let m0 = o0.iter().sum::<f64>() / o0.len() as f64;
@@ -881,8 +955,8 @@ mod tests {
         // Defect on the +Z face: that face keeps its coverage, the far (-Z)
         // healthy face drains.
         let def = [[0.0, 0.0, 5.0]];
-        let d0 = dressing_coat(&v, &f, &def, &base);
-        let d1 = dressing_coat(&v, &f, &def, &drained);
+        let d0 = dressing_coat(&v, &f, &def, &base, None);
+        let d1 = dressing_coat(&v, &f, &def, &drained, None);
         let od0 = signed_offsets(&d0, &v, &f);
         let od1 = signed_offsets(&d1, &v, &f);
         let region_mean = |m: &DressingMesh, o: &[f64], near: bool| {
@@ -921,7 +995,7 @@ mod tests {
             sigma: Some(1.0),
             ..Default::default()
         };
-        let m = dressing_coat(&v, &f, &[], &p);
+        let m = dressing_coat(&v, &f, &[], &p, None);
         assert!(!m.tris.is_empty(), "coat should have faces");
         assert!(m.info.manifold, "coat should be two-manifold");
         assert!(m.info.gwn_cells > 0, "some sign cells are expected");
@@ -939,8 +1013,8 @@ mod tests {
             sigma: Some(1.0),
             ..Default::default()
         };
-        let with = dressing_coat(&v, &f, &[[0.0, 0.0, 5.0]], &p);
-        let without = dressing_coat(&v, &f, &[], &p);
+        let with = dressing_coat(&v, &f, &[[0.0, 0.0, 5.0]], &p, None);
+        let without = dressing_coat(&v, &f, &[], &p, None);
         assert!(with.tris.len() > without.tris.len());
     }
 
@@ -949,5 +1023,78 @@ mod tests {
         let (v, f) = cube(2.0);
         let me = median_edge_length(&v, &f);
         assert!((me - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn correction_grid_shifts_healthy_coat() {
+        let (v, f) = cube(10.0);
+        let p = DressingParams {
+            voxel: Some(0.5),
+            r_base: Some(1.0),
+            r_max: Some(1.0),
+            sigma: Some(1.0),
+            ..Default::default()
+        };
+        // A correction is present in both legs so both use the smooth field;
+        // the *difference* then isolates the grid delta (a constant added to the
+        // kinked corr=None field would be attenuated by ~h/2r).
+        let zero = dressing_coat(&v, &f, &[], &p, None);
+        let n = zero.info.dims[0] * zero.info.dims[1] * zero.info.dims[2];
+        let corr0 = CorrectionGrid {
+            origin: zero.info.origin,
+            dims: zero.info.dims,
+            voxel: zero.info.voxel,
+            values: vec![0.0f32; n],
+        };
+        let base = dressing_coat(&v, &f, &[], &p, Some(&corr0));
+        assert!(base.info.correction_applied, "correction must apply");
+        // A uniform positive field correction moves the isosurface inward.
+        let delta = 0.2f32;
+        let corr = CorrectionGrid {
+            origin: base.info.origin,
+            dims: base.info.dims,
+            voxel: base.info.voxel,
+            values: vec![delta; n],
+        };
+        let shifted = dressing_coat(&v, &f, &[], &p, Some(&corr));
+        assert!(shifted.info.correction_applied, "correction must apply");
+        // Unsigned nearest distance (exactly `r` on the offset surface) is the
+        // correct shift metric; the signed face-normal projection undercounts
+        // near the rounded edges/corners of a cube.
+        let o0 = nearest_distances(&base, &v, &f);
+        let o1 = nearest_distances(&shifted, &v, &f);
+        let m0 = o0.iter().sum::<f64>() / o0.len() as f64;
+        let m1 = o1.iter().sum::<f64>() / o1.len() as f64;
+        assert!(
+            (m0 - m1 - delta as f64).abs() < 0.05,
+            "correction shift {m0:.3} -> {m1:.3} (want ~-{delta})"
+        );
+    }
+
+    #[test]
+    fn correction_grid_mismatch_ignored() {
+        let (v, f) = cube(10.0);
+        let p = DressingParams {
+            voxel: Some(0.5),
+            r_base: Some(1.0),
+            r_max: Some(1.0),
+            sigma: Some(1.0),
+            ..Default::default()
+        };
+        let base = dressing_coat(&v, &f, &[], &p, None);
+        let n = base.info.dims[0] * base.info.dims[1] * base.info.dims[2];
+        // A mismatch in the reported grid is ignored, never misapplied.
+        let bad = CorrectionGrid {
+            origin: [base.info.origin[0] + 1.0, base.info.origin[1], base.info.origin[2]],
+            dims: base.info.dims,
+            voxel: base.info.voxel,
+            values: vec![0.2f32; n],
+        };
+        let ignored = dressing_coat(&v, &f, &[], &p, Some(&bad));
+        assert!(
+            !ignored.info.correction_applied,
+            "mismatched grid must be ignored"
+        );
+        assert_eq!(ignored.tris.len(), base.tris.len());
     }
 }
