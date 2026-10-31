@@ -85,6 +85,34 @@ test ! -e "$H/.local/share/sutura/data"
 test ! -e "$H/.config/sutura"
 echo "ok  uninstall keeps data/config, --purge removes them"
 
+# Uninstall with an rc file that holds only the installer marker, and a
+# symlinked rc, must succeed and remove the marker without replacing the link.
+H="$TMP/uninstall-rc"
+mkdir -p "$H/.local/share/sutura/data" "$H/.config/sutura" "$H/dotfiles"
+echo keep > "$H/.local/share/sutura/data/keep"
+echo '{}' > "$H/.config/sutura/config.json"
+printf 'export PATH="$HOME/.local/bin:$PATH"  # added by Sutura installer\n' > "$H/dotfiles/zshrc"
+chmod 640 "$H/dotfiles/zshrc"
+ln -s "$H/dotfiles/zshrc" "$H/.zshrc"
+printf 'export PATH="$HOME/.local/bin:$PATH"  # added by Sutura installer\n' > "$H/.bashrc"
+HOME="$H" PATH="/usr/bin:/bin:/usr/sbin:/sbin" SUTURA_UNINSTALL_SKIP_CONDA=1 "$REPO/uninstall.sh"
+test -L "$H/.zshrc"
+test ! -s "$H/dotfiles/zshrc"
+! grep -qF "# added by Sutura installer" "$H/.zshrc"
+test ! -s "$H/.bashrc"
+test -f "$H/.local/share/sutura/data/keep"
+test -f "$H/.config/sutura/config.json"
+mode="$(stat -f '%Lp' "$H/dotfiles/zshrc" 2>/dev/null || stat -c '%a' "$H/dotfiles/zshrc" 2>/dev/null || true)"
+[ -z "$mode" ] || test "$mode" = "640"
+echo "ok  only-marker rc and symlinked rc are cleaned safely"
+
+# A dry-run piped to grep -q closes stdout early; the producer must still exit 0.
+H="$TMP/dry-pipe"
+mkdir -p "$H/.local/share/sutura/data" "$H/.config/sutura"
+HOME="$H" PATH="/usr/bin:/bin:/usr/sbin:/sbin" SUTURA_UNINSTALL_SKIP_CONDA=1 SUTURA_DRY_RUN=1 \
+    "$REPO/uninstall.sh" | grep -q 'would remove'
+echo "ok  uninstall dry-run survives a closed stdout"
+
 # Install-ownership marker helper.
 H="$TMP/owner"
 mkdir -p "$H"
