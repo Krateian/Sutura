@@ -91,7 +91,9 @@ skill for the exact invocation and cache).
   exception.
 - **T0**: the full CI list, `cargo test --release` and `--features cdt-check`,
   `check_docs.py`, `--version`, `--self-check`, `--list-methods` and the
-  offscreen GUI import.
+  offscreen GUI import. Install E2E: push the release branch and run the Linux
+  and macOS Install E2E workflows on it (workflow_dispatch or a draft PR)
+  before the squash; all jobs green.
 - **Acceptance**: no measured mesh is worse; an intended trade is recorded
   with its measured numbers and approved by the lead. A baseline timeout with
   a candidate result is UNBLOCKED, not worse. The summary must say PASS.
@@ -223,6 +225,7 @@ existing tools; do not install a new scanner for a release.
   `git switch -c release/vX.Y.Z-squash origin/main`, `git merge --squash
   release/vX.Y.Z`, commit `release: x.y.z`, then confirm
   `git diff --stat release/vX.Y.Z` is empty (the tree must match).
+- Do not push to main until the Install E2E runs on the release branch are green.
 - **One push.** The token never appears in the URL or the output: use the
   oauth2 credential helper.
 
