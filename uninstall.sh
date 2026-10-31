@@ -4,6 +4,9 @@
 # --remove-env removes sutura-env only when this installer created it;
 # --purge (with confirmation) also removes user data and configs.
 set -euo pipefail
+# Write errors on a closed stdout must not kill the shell (SIGPIPE); the
+# best-effort output helpers below turn them into ignored failures.
+trap '' PIPE
 
 APP_DIR="$HOME/.local/share/sutura"
 BIN_DIR="$HOME/.local/bin"
@@ -22,21 +25,25 @@ for arg in "$@"; do
         --purge) PURGE=1; REMOVE_ENV=1 ;;
         --remove-env) REMOVE_ENV=1 ;;
         -h|--help)
-            echo "Usage: uninstall.sh [--remove-env] [--purge]"
-            echo "  --remove-env  remove sutura-env only if this installer created it"
-            echo "  --purge       also remove user data ($APP_DIR/data), configs ($CONFIG_DIR)"
-            echo "                and the Sutura-created sutura-env"
-            echo "  Default: application files are removed; data, configs and sutura-env are kept."
-            echo "  SUTURA_UNINSTALL_SKIP_CONDA=1 always keeps sutura-env."
-            echo "  SUTURA_DRY_RUN=1 prints the actions without removing anything."
+            say "Usage: uninstall.sh [--remove-env] [--purge]"
+            say "  --remove-env  remove sutura-env only if this installer created it"
+            say "  --purge       also remove user data ($APP_DIR/data), configs ($CONFIG_DIR)"
+            say "                and the Sutura-created sutura-env"
+            say "  Default: application files are removed; data, configs and sutura-env are kept."
+            say "  SUTURA_UNINSTALL_SKIP_CONDA=1 always keeps sutura-env."
+            say "  SUTURA_DRY_RUN=1 prints the actions without removing anything."
             exit 0 ;;
         *) echo "uninstall.sh: unknown option: $arg" >&2; exit 2 ;;
     esac
 done
 
+# Informational output is best-effort: a closed stdout (e.g. `uninstall.sh | head`,
+# or the dry-run piped to `grep -q`) must not abort the run.
+say() { printf '%s\n' "$*" 2>/dev/null || true; }
+
 remove_path() {
     if [ "$DRY_RUN" = "1" ]; then
-        echo "dry-run: would remove $*"
+        say "dry-run: would remove $*"
         return 0
     fi
     rm -rf "$@"
@@ -51,7 +58,7 @@ if [ "$PURGE" -eq 1 ] && [ "$DRY_RUN" != "1" ] && [ -t 0 ]; then
     esac
 fi
 
-echo "==> removing Sutura application files"
+say "==> removing Sutura application files"
 remove_path "$BIN_DIR/sutura" "$BIN_DIR/sutura-gui"
 remove_path "$BACKUP_DIR"
 remove_path "$APPLICATIONS_DIR/Sutura.app"
@@ -141,9 +148,9 @@ manual_remove_hint() {
     local path="$1"
     if [ -n "$path" ]; then
         printf '  To remove it manually: conda env remove -p %q  (or rm -rf %q)\n' \
-            "$path" "$path"
+            "$path" "$path" 2>/dev/null || true
     else
-        printf '  To remove it manually: conda env remove -n sutura-env\n'
+        say "  To remove it manually: conda env remove -n sutura-env"
     fi
 }
 
@@ -161,13 +168,13 @@ remove_owned_env() {
         return 1
     fi
     rm -f "$OWNER_FILE" 2>/dev/null || true
-    echo "Removed conda env $path"
+    say "Removed conda env $path"
     return 0
 }
 
 CONDA_BIN="$(find_conda || true)"
 if [ "${SUTURA_UNINSTALL_SKIP_CONDA:-0}" = "1" ]; then
-    echo "==> keeping conda env sutura-env (SUTURA_UNINSTALL_SKIP_CONDA=1)"
+    say "==> keeping conda env sutura-env (SUTURA_UNINSTALL_SKIP_CONDA=1)"
 else
     OWNER_CREATED=""
     OWNER_NAME=""
@@ -185,7 +192,7 @@ else
     fi
     if [ "$OWNER_CREATED" = "1" ] && [ -n "$OWNER_PATH" ] \
             && [ ! -e "$OWNER_PATH" ]; then
-        echo "==> conda env already absent ($OWNER_PATH)"
+        say "==> conda env already absent ($OWNER_PATH)"
         rm -f "$OWNER_FILE" 2>/dev/null || true
     elif valid_owned_env "$ENV_PATH" "$OWNER_NAME" "$OWNER_CREATED" \
             "$OWNER_BASE"; then
@@ -193,9 +200,9 @@ else
         [ -n "$SIZE" ] || SIZE="unknown"
         if [ "$DRY_RUN" = "1" ]; then
             if [ "$REMOVE_ENV" -eq 1 ]; then
-                echo "dry-run: would remove conda env $ENV_PATH ($SIZE)"
+                say "dry-run: would remove conda env $ENV_PATH ($SIZE)"
             else
-                echo "dry-run: would keep conda env $ENV_PATH ($SIZE); use --remove-env"
+                say "dry-run: would keep conda env $ENV_PATH ($SIZE); use --remove-env"
             fi
         elif [ "$REMOVE_ENV" -eq 1 ]; then
             remove_owned_env "$ENV_PATH" || true
@@ -206,10 +213,10 @@ else
             if ! read -r reply; then reply=""; fi
             case "$reply" in
                 [yY]|[yY][eE][sS]) remove_owned_env "$ENV_PATH" || true ;;
-                *) echo "Keeping conda env $ENV_PATH." ;;
+                *) say "Keeping conda env $ENV_PATH." ;;
             esac
         else
-            echo "==> keeping conda env $ENV_PATH ($SIZE); use --remove-env to remove it"
+            say "==> keeping conda env $ENV_PATH ($SIZE); use --remove-env to remove it"
         fi
     else
         HINT_PATH=""
@@ -232,10 +239,10 @@ else
         if [ -n "$HINT_PATH" ]; then
             SIZE="$(du -sh "$HINT_PATH" 2>/dev/null | awk 'NR==1{print $1}')"
             [ -n "$SIZE" ] || SIZE="unknown"
-            echo "==> keeping conda env sutura-env at $HINT_PATH ($SIZE) (ownership not confirmed)"
+            say "==> keeping conda env sutura-env at $HINT_PATH ($SIZE) (ownership not confirmed)"
             manual_remove_hint "$HINT_PATH"
         else
-            echo "==> keeping conda env sutura-env (ownership not confirmed)"
+            say "==> keeping conda env sutura-env (ownership not confirmed)"
             manual_remove_hint ""
         fi
     fi
@@ -244,7 +251,7 @@ fi
 if [ "$PURGE" -eq 1 ]; then
     remove_path "$APP_DIR" "$CONFIG_DIR"
 else
-    echo "==> removing $APP_DIR (keeping user data)"
+    say "==> removing $APP_DIR (keeping user data)"
     if [ -d "$APP_DIR" ] && [ "$DRY_RUN" != "1" ]; then
         shopt -s dotglob nullglob
         for entry in "$APP_DIR"/*; do
@@ -254,11 +261,11 @@ else
         done
         shopt -u dotglob nullglob
     elif [ "$DRY_RUN" = "1" ]; then
-        echo "dry-run: would remove $APP_DIR except data/"
+        say "dry-run: would remove $APP_DIR except data/"
     fi
     remove_path "$APP_DIR/venv311" "$APP_DIR/python311"
     if [ -d "$APP_DIR/data" ]; then
-        echo "User data kept at $APP_DIR/data (use --purge to remove it)"
+        say "User data kept at $APP_DIR/data (use --purge to remove it)"
     else
         [ "$DRY_RUN" = "1" ] || rmdir "$APP_DIR" 2>/dev/null || true
     fi
@@ -270,13 +277,27 @@ for rc in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bashrc" \
     [ -f "$rc" ] || continue
     grep -qF "# added by Sutura installer" "$rc" || continue
     if [ "$DRY_RUN" = "1" ]; then
-        echo "dry-run: would remove the Sutura PATH line from $rc"
+        say "dry-run: would remove the Sutura PATH line from $rc"
         continue
     fi
     tmp="$rc.sutura-tmp.$$"
-    grep -vF "# added by Sutura installer" "$rc" > "$tmp"
-    mv "$tmp" "$rc"
-    echo "Removed the Sutura PATH line from $rc"
+    if grep -vF "# added by Sutura installer" "$rc" > "$tmp"; then
+        :
+    else
+        status=$?
+        if [ "$status" -eq 1 ]; then
+            # Every line was the installer marker; the cleaned file is empty.
+            :
+        else
+            echo "warning: could not read $rc; leaving its PATH line in place" >&2
+            rm -f "$tmp"
+            continue
+        fi
+    fi
+    # Write through the existing path so a symlinked rc (dotfiles repo) stays a
+    # symlink and keeps its permissions.
+    cat "$tmp" > "$rc" && rm -f "$tmp"
+    say "Removed the Sutura PATH line from $rc"
 done
 
 if [ "$DRY_RUN" != "1" ]; then
@@ -289,9 +310,9 @@ if [ "$DRY_RUN" != "1" ]; then
 fi
 
 if [ "$PURGE" -eq 1 ]; then
-    echo "Removed application files, user data and configs."
+    say "Removed application files, user data and configs."
 else
-    echo "Removed application files. User data and configs were kept:"
-    echo "  $APP_DIR/data"
-    echo "  $CONFIG_DIR"
+    say "Removed application files. User data and configs were kept:"
+    say "  $APP_DIR/data"
+    say "  $CONFIG_DIR"
 fi

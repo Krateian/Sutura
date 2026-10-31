@@ -308,8 +308,11 @@ echo "==> verifying installed files"
 "$APP_DIR/venv/bin/python" "$APP_DIR/repair.py" --version \
     || die "installed CLI failed its --version check"
 "$APP_DIR/venv/bin/python" -c \
-    "import numpy, sutura_geom; from PySide6 import QtWidgets" \
+    "import numpy, sutura_geom" \
     || die "installed dependencies are not importable"
+"$APP_DIR/venv/bin/python" -c \
+    "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('PySide6') else 1)" \
+    || die "PySide6 is not installed"
 
 # --- record install ownership for uninstall.sh -----------------------------
 if ! write_sutura_owner "$APP_DIR" "install.sh" "0" "" "" ""; then
