@@ -132,6 +132,9 @@ jobs:
       - name: "Test: deep-repair tier order (P1b characterization)"
         run: ./venv/bin/python tests/test_pipeline_order.py
 
+      - name: "Test: pipeline debug trace"
+        run: ./venv/bin/python tests/test_trace.py
+
       # Error-isolation wrapper + Health section: parity of the output (health
       # ON vs SUTURA_METHOD_HEALTH=0) and fault-injection isolation.
       - name: "Test: method health / error isolation"
