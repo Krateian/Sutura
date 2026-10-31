@@ -378,15 +378,11 @@ pub fn si_report(
         return (out, Vec::new());
     }
 
-    let owned;
-    let bvh = match bvh {
-        Some(b) => b,
-        None => {
-            owned = MeshBvh::from_arrays(verts, tris);
-            &owned
-        }
-    };
-    let candidates = bvh.candidate_pairs(verts, tris);
+    // Single definition: use the crate's `scan_si` broad phase so the SI face
+    // bit cannot drift from `melt::scan_si` (the BVH broad phase returned a
+    // different pair set and flagged extra faces).
+    let _ = bvh;
+    let candidates = crate::arrangement::broad_phase_candidates(verts, tris);
     out.candidate_pairs = candidates.len();
     let use_exact = detail == "deep";
 
@@ -478,8 +474,15 @@ pub fn si_report(
         if kind == PairKind::Touch {
             continue;
         }
-        face_mask[i] |= FACE_MASK_BIT;
-        face_mask[j] |= FACE_MASK_BIT;
+        // The SI face bit is the crate's single self-intersection definition
+        // (`melt::scan_si`): a face properly crossing a non-adjacent face.
+        // Coplanar overlaps are a separate defect (the duplicate/coplanar
+        // channel, `out.coplanar`) and must not set the SI bit, or the
+        // diagnosis mask and `scan_si` disagree.
+        if kind != PairKind::Coplanar {
+            face_mask[i] |= FACE_MASK_BIT;
+            face_mask[j] |= FACE_MASK_BIT;
+        }
         ds.union(i, j);
         if kind == PairKind::Inter {
             let (a, b) = (comp[i], comp[j]);
@@ -839,5 +842,39 @@ mod tests {
             "TOTAL: pairs={grand_pairs} rejected={grand_rejected} kept={}",
             grand_pairs - grand_rejected
         );
+    }
+
+    #[test]
+    fn si_face_mask_matches_scan_si_proper_crossings() {
+        // Face 0 in z=0, face 1 pierces it (proper crossing), face 2 is a
+        // coplanar overlap of face 0 away from face 1's footprint.  The SI bit
+        // must flag the proper-crossing pair only, matching `melt::scan_si`;
+        // the coplanar overlap stays in the coplanar channel and does NOT set
+        // the SI bit.
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.5, 0.5, -1.0],
+            [1.0, 0.5, 1.0],
+            [0.5, 1.0, 1.0],
+            [1.4, 0.3, 0.0],
+            [1.6, 0.3, 0.0],
+            [1.4, 0.5, 0.0],
+        ];
+        let tris = vec![[0usize, 1, 2], [3, 4, 5], [6, 7, 8]];
+        let comp = vec![0usize; 3];
+        let mut mask = vec![0u8; 3];
+        let mut regions = Vec::new();
+        let (out, _) = si_report(&verts, &tris, &comp, "fast", &mut mask, &mut regions, None);
+        assert!(out.coplanar.unwrap_or(0) >= 1, "coplanar pair must be seen");
+        let si: Vec<bool> = mask.iter().map(|m| m & FACE_MASK_BIT != 0).collect();
+        let tu: Vec<[u32; 3]> = tris
+            .iter()
+            .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+            .collect();
+        let scan = crate::melt::scan_si(&verts, &tu);
+        assert_eq!(si, scan.mask, "diagnosis SI bit must equal scan_si");
+        assert_eq!(si, vec![true, true, false]);
     }
 }

@@ -1738,6 +1738,29 @@ fn rasterize<'py>(
     ))
 }
 
+/// The crate's single self-intersection definition (`melt::scan_si`).
+///
+/// A face is flagged when it properly crosses a non-adjacent face, using the
+/// exact `triangle_intersection` classifier and `arrangement` broad phase.
+/// Coplanar overlaps are a separate defect and are NOT flagged.  This is the
+/// authoritative SI mask: the diagnosis `self_intersection` face bit (16) is
+/// derived from it.  Returns `(mask, count)`; `count = -1` when skipped.
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+fn si_faces_exact<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray1<bool>>, i64)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let rt_u32: Vec<[u32; 3]> = rt
+        .iter()
+        .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+        .collect();
+    let s = melt::scan_si(&rv, &rt_u32);
+    Ok((PyArray1::from_vec(py, s.mask), s.count))
+}
+
 /// Faces involved in a self-intersection.
 ///
 /// Runs a spatial-hash broad phase and the exact triangle-triangle classifier;
@@ -2417,6 +2440,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(closest_points, m)?)?;
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
+    m.add_function(wrap_pyfunction!(si_faces_exact, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_grid, m)?)?;
