@@ -34,7 +34,9 @@ versions are skipped). Full detail in [CHANGELOG.md](../../CHANGELOG.md).
   enables or disables automatic deep tiers (their order stays fixed) and, in
   Manual mode, passes `--methods` in the chosen order; it writes only the user
   override, shows the locked gates read-only, and Reset recovers a corrupt
-  file.
+  file. When you opt in to Dressing, it can now refine its coat so it sits
+  closer to the original surface in healthy areas; it stays opt-in, and
+  `SUTURA_DRESSING_ADAPTIVE_DRAIN=0` turns the refinement off.
 - **v0.9.7 — 2026-10-26** — An experimental **last-resort solid engine**
   choice. The default stays **fTetWild**; an opt-in exact rebuild (**CDT**,
   constrained tetrahedralization) is available with `--solid-engine cdt`,
