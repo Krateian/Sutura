@@ -222,6 +222,151 @@ def test_drain_reduces_healthy_growth_field_level():
         assert rep['si_after'] in (0, None), rep
 
 
+def test_adaptive_correction_shifts_both_engines_linearly():
+    """A uniform grid correction moves the coat inward by ~delta on both the
+    numpy and the Rust engine.
+
+    Both legs pass a correction grid (zero vs ``+delta``) so both build the
+    smooth near-surface field; the difference isolates the correction and proves
+    the closed loop's ``F_{k+1} = F_k + delta`` means the same thing on either
+    engine (the old Rust ``u <= r`` kink attenuated a constant delta by ~h/2r)."""
+    V = np.array(TET_V, float)
+    T = np.array(TET_T, np.int64)
+    voxel, r_base, r_max, sigma = 0.5, 1.0, 1.0, 1.0
+    defect = np.zeros(0, np.int64)
+    margin = r_max + 3.0 * voxel
+    box = np.vstack([V.min(0) - margin, V.max(0) + margin])
+    delta = 0.2
+
+    def mean_dist(co):
+        d = sutura_geom.closest_points(V, T, np.asarray(co, float))[1]
+        return float(np.mean(d))
+
+    shifts = {}
+    for name, fn in (('numpy', dressing._numpy_coat),
+                     ('rust', dressing._rust_dressing_coat)):
+        probe = fn(V, T, voxel, r_base, r_max, sigma, defect, box, 0.0)
+        if probe is None:
+            continue
+        origin = np.asarray(probe[2]['origin'], float)
+        dims = tuple(int(x) for x in probe[2]['dims'])
+        gvox = float(probe[2]['voxel'])
+        ncell = int(np.prod(dims))
+        zero = fn(V, T, voxel, r_base, r_max, sigma, defect, box, 0.0,
+                  corr=(origin, dims, gvox, np.zeros(ncell, np.float32)))
+        plus = fn(V, T, voxel, r_base, r_max, sigma, defect, box, 0.0,
+                  corr=(origin, dims, gvox, np.full(ncell, delta, np.float32)))
+        assert zero[2].get('correction_applied') is True, (name, zero[2])
+        assert plus[2].get('correction_applied') is True, (name, plus[2])
+        shift = mean_dist(plus[0]) - mean_dist(zero[0])
+        assert abs(shift + delta) < 0.06, (name, shift)
+        shifts[name] = shift
+    if len(shifts) == 2:
+        assert abs(shifts['rust'] - shifts['numpy']) < 0.06, shifts
+
+
+def test_adaptive_drain_iteration0_wins_ties():
+    """The closed loop keeps iteration 0 whenever a corrected re-extraction is
+    not strictly better (deterministic tie-break)."""
+    from unittest import mock
+    V = np.array(TET_V, float)
+    T = np.array(TET_T, np.int64)
+    voxel, r_base, r_max, sigma = 0.5, 1.0, 1.0, 1.0
+    defect = np.zeros(0, np.int64)
+    margin = r_max + 3.0 * voxel
+    box = np.vstack([V.min(0) - margin, V.max(0) + margin])
+    real = dressing._extract_iteration
+
+    def fake(v0, t0, voxel, r_base, r_max, sigma, defect_idx, box, drain,
+             corr=None):
+        cv, ct, meta, eng = real(v0, t0, voxel, r_base, r_max, sigma,
+                                 defect_idx, box, drain, corr=None)
+        if corr is not None:
+            meta = dict(meta)
+            meta['correction_applied'] = True
+        return cv, ct, meta, eng
+
+    with mock.patch.object(dressing, '_extract_iteration', side_effect=fake):
+        cv, ct, _meta, loop = dressing._adaptive_coat(
+            V, T, voxel, r_base, r_max, sigma, defect, box, r_base)
+    assert loop['chosen_iteration'] == 0, loop
+    assert loop['correction_applied'] is False, loop
+    v0, t0, _m0, _e0 = real(V, T, voxel, r_base, r_max, sigma, defect, box,
+                            r_base)
+    assert np.array_equal(np.asarray(cv), np.asarray(v0))
+    assert np.array_equal(np.asarray(ct), np.asarray(t0))
+
+
+def test_adaptive_drain_early_exit_skips_second_extraction():
+    """A negligible predicted correction must not trigger a second extraction.
+
+    The pre-loop selector returns iteration 0 when the predicted level-set
+    shift cannot move a crossing, so a no-gain mesh pays for one extraction
+    only (the loop is otherwise a full extra Rust build)."""
+    from unittest import mock
+    V = np.array(TET_V, float)
+    T = np.array(TET_T, np.int64)
+    voxel, r_base, r_max, sigma = 0.5, 1.0, 1.0, 1.0
+    defect = np.zeros(0, np.int64)
+    margin = r_max + 3.0 * voxel
+    box = np.vstack([V.min(0) - margin, V.max(0) + margin])
+    real = dressing._extract_iteration
+    calls = {'n': 0}
+
+    def counting(*a, **k):
+        calls['n'] += 1
+        return real(*a, **k)
+
+    # Force past the "target met at iteration 0" trigger so the negligible
+    # correction predictor is the one under test.
+    big = {'n': 100, 'median': 1.0, 'p95': 5.0, 'mean_abs': 1.0}
+    zeros = np.zeros((1, 1, 1), np.float32)
+    with mock.patch.object(dressing, '_extract_iteration',
+                           side_effect=counting), \
+            mock.patch.object(dressing, '_build_correction',
+                              return_value=zeros), \
+            mock.patch.object(dressing, '_iteration_stats',
+                              return_value=big):
+        cv, ct, _meta, loop = dressing._adaptive_coat(
+            V, T, voxel, r_base, r_max, sigma, defect, box, r_base)
+    assert calls['n'] == 1, calls
+    assert loop['chosen_iteration'] == 0, loop
+    assert loop['correction_applied'] is False, loop
+    v0, t0, _m0, _e0 = real(V, T, voxel, r_base, r_max, sigma, defect, box,
+                            r_base)
+    assert np.array_equal(np.asarray(cv), np.asarray(v0))
+    assert np.array_equal(np.asarray(ct), np.asarray(t0))
+
+
+def test_adaptive_drain_material_correction_still_runs_loop():
+    """A material predicted correction must still enter the drain loop."""
+    from unittest import mock
+    V = np.array(TET_V, float)
+    T = np.array(TET_T, np.int64)
+    voxel, r_base, r_max, sigma = 0.5, 1.0, 1.0, 1.0
+    defect = np.zeros(0, np.int64)
+    margin = r_max + 3.0 * voxel
+    box = np.vstack([V.min(0) - margin, V.max(0) + margin])
+    real = dressing._extract_iteration
+    calls = {'n': 0}
+
+    def counting(*a, **k):
+        calls['n'] += 1
+        return real(*a, **k)
+
+    big = {'n': 100, 'median': 1.0, 'p95': 5.0, 'mean_abs': 1.0}
+    material = np.full((1, 1, 1), float(voxel), np.float32)
+    with mock.patch.object(dressing, '_extract_iteration',
+                           side_effect=counting), \
+            mock.patch.object(dressing, '_build_correction',
+                              return_value=material), \
+            mock.patch.object(dressing, '_iteration_stats',
+                              return_value=big):
+        dressing._adaptive_coat(V, T, voxel, r_base, r_max, sigma, defect,
+                                box, r_base)
+    assert calls['n'] >= 2, calls
+
+
 def test_registry_method_16_and_opt_in():
     m = get_method('16')
     assert m is not None and m.id == 'dressing'

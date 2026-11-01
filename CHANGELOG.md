@@ -51,6 +51,10 @@ All notable changes to this project are documented here.
   the top three safe methods per object with an estimated confidence and a
   plain reason. The suggestions are informational and never change the
   default repair path.
+- **Dressing refines its coat.** When you opt in to Dressing, it can now refine
+  the coat so it sits closer to the original surface in healthy areas, while
+  keeping the result free of new holes, non-manifold edges and extra parts; it
+  stays opt-in, and `SUTURA_DRESSING_ADAPTIVE_DRAIN=0` turns the refinement off.
 
 ### Changed
 

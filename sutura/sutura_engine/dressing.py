@@ -31,6 +31,7 @@ passed; without it the raw (well-formed) coat is returned unchanged.
 """
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
@@ -115,6 +116,36 @@ DRESSING_GRID_BUDGET = {
 
 SI_MAX_FACES = int(getattr(sutura_geom, "SI_MAX_FACES", 150_000))
 _ROUNDS = 1_000_000
+
+# --- closed-loop adaptive drain (healthy-surface bias compensation) -------
+# The constant drain re-centres the healthy isosurface on the input, but the
+# extractor's own discretization leaves a residual healthy-surface bias of a
+# fraction of a voxel.  The closed loop measures the healthy signed deviation
+# (closest input point + face-normal sign, generalized-winding fallback on
+# grazing samples), splats it into the SAME grid iteration 0 reported as a
+# smooth correction field and re-extracts.  Iteration 0 (the constant drain) is
+# always a candidate and wins ties, so a mesh that does not improve is
+# byte-identical to the pre-loop output.  Damped (``ALPHA``) and clamped
+# (``K_CAP`` voxels) fixed point; everything is deterministic, no wall clock.
+# Default ON; ``SUTURA_DRESSING_ADAPTIVE_DRAIN=0`` opts out (env only).
+ADAPTIVE_DRAIN_ENV = 'SUTURA_DRESSING_ADAPTIVE_DRAIN'
+ADAPTIVE_DRAIN_ALPHA = 0.5
+ADAPTIVE_DRAIN_K_CAP = 2.0
+ADAPTIVE_DRAIN_SIGMA_VOX = 1.5
+ADAPTIVE_DRAIN_MAX_ITERS = 3
+ADAPTIVE_DRAIN_G_ZERO = 0.5
+ADAPTIVE_DRAIN_IMPROVE_EPS = 1e-3
+ADAPTIVE_DRAIN_TANGENT_EPS = 0.05
+ADAPTIVE_DRAIN_BAND_VOXELS = 2.0
+# Pre-loop selector (no-gain meshes must not pay a second extraction):
+# skip the loop when iteration 0's healthy p95 is already within this many
+# voxels of the target, or when the predicted level-set shift is below this
+# fraction of a voxel (too small to move an isosurface crossing).
+ADAPTIVE_DRAIN_TARGET_VOXELS = 0.5
+ADAPTIVE_DRAIN_MIN_SHIFT_FRAC = 0.25
+# Iteration 0 wins ties; a candidate with more pieces than iteration 0 is
+# rejected outright (strict, so the loop can never fragment the coat).
+ADAPTIVE_DRAIN_PARTS_SLACK = 0
 
 # --- post-coat component cleanup ------------------------------------------
 # The extracted level set is a triangle soup; marching-tets also leaves tiny
@@ -485,19 +516,44 @@ def _rust_signature_has_drain(fn):
         return False
 
 
+def _rust_signature_has_correction(fn):
+    """True when the installed ``sutura_geom.dressing_coat`` accepts the
+    ``corr_values`` keyword (grid correction).  Same probe strategy as
+    :func:`_rust_signature_has_drain`."""
+    try:
+        import inspect
+        params = inspect.signature(fn).parameters
+        if params:
+            return 'corr_values' in params
+    except (TypeError, ValueError):
+        pass
+    probe = np.zeros((0, 3), dtype=np.float64)
+    try:
+        fn(probe, np.zeros((0, 3), dtype=np.int32),
+           corr_values=np.zeros(0, dtype=np.float32))
+        return True
+    except TypeError as e:
+        return 'corr_values' not in str(e)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _rust_dressing_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
-                        drain_delta=0.0):
+                        drain_delta=0.0, corr=None):
     """Delegate to ``sutura_geom.dressing_coat`` when the installed extension
     provides it.  Returns ``(verts, tris, info)`` or ``None``.
 
     The current binding signature is ``dressing_coat(verts, tris,
     defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None,
-    band_voxels=2.0, margin_voxels=3.0, drain=0.0)`` where ``defect_pts`` is an
-    Nx3 point array (not vertex indices).  The older c2f2116 build has no
+    band_voxels=2.0, margin_voxels=3.0, drain=0.0, corr_origin=None,
+    corr_dims=None, corr_voxel=None, corr_values=None)`` where ``defect_pts`` is
+    an Nx3 point array (not vertex indices).  The older c2f2116 build has no
     ``drain`` parameter, so when a positive drain is requested and the build
     cannot take it, this returns ``None`` and the caller uses the numpy path
-    (which applies the drain in the level set).  Any signature mismatch or
-    runtime error falls back to numpy (never raises).
+    (which applies the drain in the level set).  ``corr`` is
+    ``(origin, dims, voxel, values)``; when given but the build has no
+    correction support this returns ``None`` so the caller falls back.  Any
+    signature mismatch or runtime error falls back to numpy (never raises).
     """
     fn = getattr(sutura_geom, 'dressing_coat', None)
     if fn is None:
@@ -512,6 +568,14 @@ def _rust_dressing_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
                   r_base=float(r_base), r_max=float(r_max), sigma=float(sigma))
     if fn_takes_drain:
         kwargs['drain'] = float(drain_delta)
+    if corr is not None:
+        if not _rust_signature_has_correction(fn):
+            return None
+        c_origin, c_dims, c_voxel, c_values = corr
+        kwargs['corr_origin'] = [float(x) for x in c_origin]
+        kwargs['corr_dims'] = [int(x) for x in c_dims]
+        kwargs['corr_voxel'] = float(c_voxel)
+        kwargs['corr_values'] = np.ascontiguousarray(c_values, dtype=np.float32)
     try:
         out = fn(v, t, **kwargs)
     except Exception:  # noqa: BLE001
@@ -526,14 +590,18 @@ def _rust_dressing_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
 
 
 def _numpy_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
-                drain_delta=0.0):
+                drain_delta=0.0, corr=None):
     """Numpy prototype path: GWN signed field -> variable radius -> MT.
 
     ``drain_delta`` is the healthy-region erode-back in mm, applied to the
     level set exactly like the Rust core: ``F = s - r + drain * (1 - g)`` where
     ``g`` is the defect influence.  Healthy cells (``g ~ 0``) get the full
     drain (their isosurface re-centres on the input boundary); defect cells
-    (``g ~ 1``) keep their coverage (offset report §1)."""
+    (``g ~ 1``) keep their coverage (offset report §1).  ``corr`` is the
+    closed-loop correction ``(origin, dims, voxel, values)``; it is applied on
+    band cells only and ONLY when its grid matches the grid built here (the
+    exact-grid contract), otherwise it is ignored (``correction_applied``
+    false) rather than misapplied."""
     w, u, s, info = sutura_geom.sdf_grid(v, t, voxel=voxel, box=box)
     voxel = float(info['voxel'])
     origin = np.asarray(info['origin'], dtype=np.float64)
@@ -544,6 +612,18 @@ def _numpy_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
     if drain_delta:
         F += np.float32(drain_delta) * (np.float32(1.0) - g)
     del s, r_grid, g
+    corr_applied = False
+    if corr is not None:
+        c_origin, c_dims, c_voxel, c_values = corr
+        tol = 1e-9 * max(abs(voxel), 1.0)
+        if (tuple(int(x) for x in c_dims) == dims
+                and abs(float(c_voxel) - voxel) <= tol
+                and np.allclose(np.asarray(c_origin, np.float64), origin,
+                                atol=tol)):
+            band = np.float32(r_max + ADAPTIVE_DRAIN_BAND_VOXELS * voxel)
+            cvals = np.asarray(c_values, np.float32).reshape(dims)
+            F = np.where(u < band, F + cvals, F)
+            corr_applied = True
     cv, ct = _marching_tets(F, origin, voxel, slab=8)
     del F
     meta = {
@@ -552,8 +632,357 @@ def _numpy_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
         'voxel': voxel,
         'voxels': int(np.prod(dims)),
         'coarsened': bool(info.get('caps_coarsened', False)),
+        'r_base': float(r_base),
+        'r_max': float(r_max),
+        'sigma': float(sigma),
+        'correction_applied': bool(corr_applied),
     }
     return cv, ct, meta
+
+
+# ---------------------------------------------------------------------------
+# closed-loop adaptive drain
+# ---------------------------------------------------------------------------
+def adaptive_drain_enabled(value=None):
+    """Whether the closed-loop adaptive drain runs (default ON).
+
+    ``value`` overrides the ``SUTURA_DRESSING_ADAPTIVE_DRAIN`` environment
+    variable when given; otherwise the env var is read (unset / empty => ON).
+    Any of ``0/false/no/off`` (case-insensitive) disables it.  There is no CLI
+    or GUI flag by design: the loop is deterministic and iteration 0 wins ties,
+    so the feature can only preserve or improve the constant-drain output."""
+    if value is None:
+        value = os.environ.get(ADAPTIVE_DRAIN_ENV)
+    if value is None:
+        return True
+    return str(value).strip().lower() not in ('0', 'false', 'no', 'off')
+
+
+def _extract_iteration(v0, t0, voxel, r_base, r_max, sigma, defect_idx, box,
+                       drain_delta, corr=None):
+    """One field build + extraction at the constant-drain baseline plus an
+    optional grid correction.  Returns ``(cv, ct, meta, engine)`` with the raw
+    (pre-cleanup) coat."""
+    rust = _rust_dressing_coat(v0, t0, voxel, r_base, r_max, sigma, defect_idx,
+                               box, drain_delta, corr=corr)
+    if rust is not None:
+        cv, ct, meta = rust
+        return cv, ct, meta, 'rust'
+    cv, ct, meta = _numpy_coat(v0, t0, voxel, r_base, r_max, sigma, defect_idx,
+                               box, drain_delta, corr=corr)
+    return cv, ct, meta, 'numpy'
+
+
+def _face_normals(v, t):
+    a, b, c = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
+    n = np.cross(b - a, c - a)
+    ln = np.linalg.norm(n, axis=1)
+    ln[ln == 0] = 1.0
+    return n / ln[:, None]
+
+
+def _healthy_signed_deviation(v0, t0, cv, ct, defect_idx, bvh=None):
+    """Signed healthy deviation of each coat vertex versus the input surface.
+
+    ``+dev`` = the coat sits OUTSIDE the input.  The sign comes from the input
+    face normal at the closest point; samples that are near-tangent to that
+    face (``|cos| < ADAPTIVE_DRAIN_TANGENT_EPS``) use the generalized-winding
+    sign (inside when winding > 0.5) instead, which is robust where the
+    nearest-face normal is ambiguous.  Returns ``(dev, healthy)`` where
+    ``    healthy`` marks coat vertices whose closest input face touches no defect
+    vertex.  Returns ``(dev, healthy, dist)`` where ``dist`` is the unsigned
+    closest distance (used to tell real coats from interior debris shells)."""
+    cv = _as_f64(cv)
+    if len(cv) == 0 or len(t0) == 0:
+        return (np.zeros(0, np.float64), np.zeros(0, bool),
+                np.zeros(0, np.float64))
+    q, dist, fid = sutura_geom.closest_points(_as_f64(v0), _as_i64(t0), cv)
+    q = np.asarray(q, np.float64)
+    dist = np.asarray(dist, np.float64)
+    fid = np.asarray(fid, np.int64)
+    fn = _face_normals(_as_f64(v0), _as_i64(t0))
+    good = (fid >= 0) & (fid < len(fn))
+    fi = np.where(good, fid, 0)
+    dvec = cv - q
+    dots = np.einsum('ij,ij->i', dvec, fn[fi])
+    sign = np.where(dots >= 0.0, 1.0, -1.0)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cos = np.where(dist > 0.0, dots / np.maximum(dist, 1e-30), 0.0)
+    amb = np.abs(cos) < ADAPTIVE_DRAIN_TANGENT_EPS
+    if amb.any() and bvh is not None:
+        w = np.asarray(bvh.winding_points(cv[amb]), np.float64)
+        sign[amb] = np.where(w > 0.5, -1.0, 1.0)
+    dev = sign * dist
+    if len(defect_idx):
+        v0f = _as_f64(v0)
+        dset = np.zeros(len(v0f), bool)
+        dset[np.asarray(defect_idx, np.int64)] = True
+        face_defect = dset[_as_i64(t0)].any(axis=1)
+        healthy = good & ~face_defect[fi]
+    else:
+        healthy = good
+    return dev, healthy, dist
+
+
+def _gaussian_kernel(sigma):
+    r = max(1, int(round(3.0 * sigma)))
+    x = np.arange(-r, r + 1, dtype=np.float64)
+    k = np.exp(-0.5 * (x / sigma) ** 2)
+    return (k / k.sum()).astype(np.float32)
+
+
+def _blur_axis(a, k, axis):
+    r = len(k) // 2
+    pad = [(0, 0), (0, 0), (0, 0)]
+    pad[axis] = (r, r)
+    ap = np.pad(a, pad, mode='constant')
+    out = np.zeros_like(a)
+    for tap, w in enumerate(k):
+        sl = [slice(None)] * 3
+        sl[axis] = slice(tap, tap + a.shape[axis])
+        out = out + np.float32(w) * ap[tuple(sl)]
+    return out
+
+
+def _gaussian_blur3(a, sigma):
+    """Separable Gaussian blur (pure numpy; ``sutura/`` may not use scipy)."""
+    k = _gaussian_kernel(sigma)
+    for axis in range(3):
+        a = _blur_axis(a, k, axis)
+    return a
+
+
+def _build_correction(dev, healthy, cv, origin, dims, voxel, g,
+                      alpha=ADAPTIVE_DRAIN_ALPHA, k_cap=ADAPTIVE_DRAIN_K_CAP,
+                      sigma_vox=ADAPTIVE_DRAIN_SIGMA_VOX):
+    """Splat the healthy signed deviation into a smooth grid correction.
+
+    Returns a float32 ``dims``-shaped grid (delta added to the level set on
+    band cells).  Nearest-cell scatter of ``mean(dev)`` per cell, separable
+    Gaussian smoothing at ``sigma_vox`` voxels, damped by ``alpha`` and clamped
+    to ``+/- k_cap * voxel``.  The defect influence mask (``g >
+    ADAPTIVE_DRAIN_G_ZERO``) is zeroed so the correction never touches
+    damage-covered surface."""
+    dx, dy, dz = int(dims[0]), int(dims[1]), int(dims[2])
+    out = np.zeros((dx, dy, dz), np.float32)
+    if len(cv) == 0:
+        return out
+    sel = np.asarray(healthy, bool) & (np.abs(dev) > 0.0)
+    if not sel.any():
+        return out
+    pts = _as_f64(cv)[sel]
+    vals = np.asarray(dev, np.float64)[sel].astype(np.float32)
+    idx = np.round((pts - origin) / voxel).astype(np.int64)
+    inside = ((idx[:, 0] >= 0) & (idx[:, 0] < dx)
+              & (idx[:, 1] >= 0) & (idx[:, 1] < dy)
+              & (idx[:, 2] >= 0) & (idx[:, 2] < dz))
+    if not inside.any():
+        return out
+    idx = idx[inside]
+    vals = vals[inside]
+    flat = idx[:, 0] + dx * (idx[:, 1] + dy * idx[:, 2])
+    num = np.zeros(dx * dy * dz, np.float32)
+    cnt = np.zeros(dx * dy * dz, np.float32)
+    np.add.at(num, flat, vals)
+    np.add.at(cnt, flat, np.float32(1.0))
+    num = _gaussian_blur3(num.reshape(dx, dy, dz), sigma_vox)
+    cnt = _gaussian_blur3(cnt.reshape(dx, dy, dz), sigma_vox)
+    delta = np.where(cnt > 1e-6, num / np.maximum(cnt, 1e-6), 0.0).astype(np.float32)
+    delta = (delta * np.float32(alpha)).astype(np.float32)
+    cap = np.float32(k_cap * voxel)
+    delta = np.clip(delta, -cap, cap)
+    if g is not None:
+        delta = np.where(np.asarray(g) > ADAPTIVE_DRAIN_G_ZERO,
+                         np.zeros_like(delta), delta).astype(np.float32)
+    return out + delta
+
+
+def _iteration_stats(dev, healthy):
+    vals = np.abs(np.asarray(dev, np.float64)[np.asarray(healthy, bool)])
+    if len(vals) == 0:
+        return {'n': 0, 'median': None, 'p95': None, 'mean_abs': None}
+    return {
+        'n': int(len(vals)),
+        'median': float(np.median(vals)),
+        'p95': float(np.percentile(vals, 95)),
+        'mean_abs': float(np.mean(vals)),
+    }
+
+
+def _objective(stats, holes, nm, parts):
+    inf = float('inf')
+    return (
+        stats['p95'] if stats['p95'] is not None else inf,
+        stats['median'] if stats['median'] is not None else inf,
+        int(holes or 0) + int(nm or 0),
+        int(parts or 0),
+    )
+
+
+def _loop_report(adaptive, detail, chosen, correction_applied, engine):
+    return {
+        'adaptive': bool(adaptive),
+        'iterations': len(detail),
+        'chosen_iteration': int(chosen),
+        'correction_applied': bool(correction_applied),
+        'alpha': ADAPTIVE_DRAIN_ALPHA,
+        'k_cap': ADAPTIVE_DRAIN_K_CAP,
+        'sigma_voxels': ADAPTIVE_DRAIN_SIGMA_VOX,
+        'engine': engine,
+        'iterations_detail': detail,
+    }
+
+
+def _nearest_grid_values(grid, pts, origin, voxel, dims):
+    """Nearest-cell lookup of ``grid`` at ``pts`` (clamped to the grid)."""
+    dx, dy, dz = (int(dims[0]), int(dims[1]), int(dims[2]))
+    idx = np.round((_as_f64(pts) - origin) / voxel).astype(np.int64)
+    idx[:, 0] = np.clip(idx[:, 0], 0, dx - 1)
+    idx[:, 1] = np.clip(idx[:, 1], 0, dy - 1)
+    idx[:, 2] = np.clip(idx[:, 2], 0, dz - 1)
+    return np.asarray(grid)[idx[:, 0], idx[:, 1], idx[:, 2]]
+
+
+def _adaptive_coat(v0, t0, voxel, r_base, r_max, sigma, defect_idx, box,
+                   drain_delta):
+    """Closed-loop adaptive drain: iteration 0 (constant drain) plus up to
+    ``ADAPTIVE_DRAIN_MAX_ITERS`` corrected re-extractions on iteration 0's
+    exact grid.  Returns ``(cv, ct, meta, loop_report)``; the winner is chosen
+    by ``(p95|dev|, median|dev|, holes+nm, parts)`` and ties go to iteration 0."""
+    bvh = None
+    if hasattr(sutura_geom, 'PyMeshBvh'):
+        try:
+            bvh = sutura_geom.PyMeshBvh(_as_f64(v0), _as_i64(t0))
+        except Exception:  # noqa: BLE001
+            bvh = None
+
+    cv0, ct0, meta0, engine0 = _extract_iteration(
+        v0, t0, voxel, r_base, r_max, sigma, defect_idx, box, drain_delta)
+
+    dims = tuple(int(x) for x in (meta0.get('dims') or []))
+    origin = np.asarray(meta0.get('origin', []), np.float64)
+    g0 = None
+    g_voxel = None
+    if len(dims) == 3 and origin.shape == (3,):
+        g_voxel = float(meta0.get('voxel', voxel))
+        try:
+            _r0, g0 = _variable_radius(
+                dims, origin, g_voxel, defect_idx, _as_f64(v0),
+                float(meta0.get('r_base', r_base)),
+                float(meta0.get('r_max', r_max)),
+                float(meta0.get('sigma', sigma)))
+        except Exception:  # noqa: BLE001
+            g0 = None
+
+    def measure(cv, ct):
+        dev, healthy, dist = _healthy_signed_deviation(v0, t0, cv, ct,
+                                                       defect_idx, bvh)
+        # Restrict to real coat shells: marching-tets leaves interior/debris
+        # shells far from the input whose deviation would otherwise dominate
+        # the objective.  A shell is kept when it has a vertex within
+        # ~2 voxels of its healthy isosurface radius, so multi-body parts keep
+        # every body (only far debris is dropped).
+        labels = _component_labels(_as_i64(ct))
+        if labels is not None and len(labels) and len(cv):
+            thresh = (float(meta0.get('r_base', r_base))
+                      + ADAPTIVE_DRAIN_BAND_VOXELS * g_voxel)
+            near = dist <= thresh
+            vlab = np.full(len(cv), -1, np.int64)
+            ct_arr = np.asarray(ct)
+            vlab[ct_arr[:, 0]] = labels
+            vlab[ct_arr[:, 1]] = labels
+            vlab[ct_arr[:, 2]] = labels
+            cnt = np.zeros(int(labels.max()) + 1, np.int64)
+            sel_v = vlab >= 0
+            np.add.at(cnt, vlab[sel_v], near[sel_v].astype(np.int64))
+            keep_lab = cnt > 0
+            hmask = np.zeros(len(cv), bool)
+            hmask[sel_v] = keep_lab[vlab[sel_v]]
+            healthy = healthy & hmask
+        if g0 is not None and len(cv):
+            gv = _nearest_grid_values(g0, cv, origin, g_voxel, dims)
+            healthy = healthy & (gv <= ADAPTIVE_DRAIN_G_ZERO)
+        return dev, healthy, _iteration_stats(dev, healthy)
+
+    dev0, healthy0, st0 = measure(cv0, ct0)
+    h0, nm0 = reload_strict_holes_nm(cv0, ct0)
+    p0 = count_components(ct0)
+    best = {
+        'iter': 0, 'cv': cv0, 'ct': ct0, 'meta': meta0, 'engine': engine0,
+        'dev': dev0, 'healthy': healthy0, 'stats': st0,
+        'holes': h0, 'nm': nm0, 'parts': p0, 'corrected': False,
+        'objective': _objective(st0, h0, nm0, p0),
+    }
+    detail = [{
+        'iteration': 0, 'corrected': False, 'engine': engine0,
+        'median': st0['median'], 'p95': st0['p95'],
+        'mean_abs': st0['mean_abs'], 'n': st0['n'],
+        'holes': h0, 'non_manifold': nm0, 'parts': p0, 'valid': True,
+    }]
+    if g_voxel is None:
+        return cv0, ct0, meta0, _loop_report(True, detail, 0, False, engine0)
+
+    # Cheap pre-loop selector: return iteration 0 without paying for the second
+    # (full) extraction when a corrected re-extraction cannot help.  Two
+    # triggers, either sufficient: (1) iteration 0 already meets the
+    # healthy-deviation target, or (2) the predicted level-set correction is
+    # too small to move a crossing.  The loop below is unchanged for meshes
+    # that pass the selector.
+    if st0['n'] == 0 or (
+            st0['p95'] is not None
+            and st0['p95'] <= ADAPTIVE_DRAIN_TARGET_VOXELS * g_voxel):
+        return cv0, ct0, meta0, _loop_report(True, detail, 0, False, engine0)
+    delta0 = _build_correction(best['dev'], best['healthy'], best['cv'],
+                               origin, dims, g_voxel, g0)
+    if float(np.max(np.abs(delta0))) < ADAPTIVE_DRAIN_MIN_SHIFT_FRAC * g_voxel:
+        return cv0, ct0, meta0, _loop_report(True, detail, 0, False, engine0)
+
+    corr_total = np.zeros(dims, np.float32)
+    for k in range(1, ADAPTIVE_DRAIN_MAX_ITERS + 1):
+        delta = _build_correction(best['dev'], best['healthy'], best['cv'],
+                                  origin, dims, g_voxel, g0)
+        if not delta.any():
+            break
+        corr_total = (corr_total + delta).astype(np.float32)
+        corr = (origin, dims, g_voxel, corr_total.reshape(-1))
+        ck_v, ck_t, meta_k, eng_k = _extract_iteration(
+            v0, t0, voxel, r_base, r_max, sigma, defect_idx, box, drain_delta,
+            corr=corr)
+        applied = bool(meta_k.get('correction_applied', False))
+        if not applied:
+            # Grid mismatch / unsupported build: keep iteration 0 as-is.
+            break
+        devk, healthyk, stk = measure(ck_v, ck_t)
+        hk, nmk = reload_strict_holes_nm(ck_v, ck_t)
+        pk = count_components(ck_t)
+        valid = (hk <= h0 and nmk <= nm0
+                 and (pk is None or p0 is None
+                      or pk <= p0 + ADAPTIVE_DRAIN_PARTS_SLACK))
+        obj = _objective(stk, hk, nmk, pk)
+        detail.append({
+            'iteration': k, 'corrected': True, 'engine': eng_k,
+            'median': stk['median'], 'p95': stk['p95'],
+            'mean_abs': stk['mean_abs'], 'n': stk['n'],
+            'holes': hk, 'non_manifold': nmk, 'parts': pk, 'valid': valid,
+        })
+        if not valid or not (obj < best['objective']):
+            break
+        prev_p95, prev_med = best['objective'][0], best['objective'][1]
+        best = {
+            'iter': k, 'cv': ck_v, 'ct': ck_t, 'meta': meta_k, 'engine': eng_k,
+            'dev': devk, 'healthy': healthyk, 'stats': stk,
+            'holes': hk, 'nm': nmk, 'parts': pk, 'corrected': True,
+            'objective': obj,
+        }
+        new_p95 = obj[0]
+        new_med = obj[1]
+        if (prev_p95 - new_p95 < ADAPTIVE_DRAIN_IMPROVE_EPS
+                and prev_med - new_med < ADAPTIVE_DRAIN_IMPROVE_EPS):
+            break
+
+    return (best['cv'], best['ct'], best['meta'],
+            _loop_report(True, detail, best['iter'], best['corrected'],
+                         best['engine']))
 
 
 # ---------------------------------------------------------------------------
@@ -1005,15 +1434,28 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
 
     cv = ct = None
     meta = {}
-    rust = _rust_dressing_coat(v0, t0, voxel, rb, rmx, sg, defect_idx, box,
-                               drain_delta)
-    if rust is not None:
-        cv, ct, meta = rust
-        report['engine'] = 'rust'
-    if cv is None or len(ct) == 0:
-        cv, ct, meta = _numpy_coat(v0, t0, voxel, rb, rmx, sg, defect_idx, box,
+    # The closed-loop adaptive drain only makes sense once the constant drain
+    # is engaged: with drain off the healthy surface is deliberately outward by
+    # r_base and recentring it would change that mode.  So it runs only for
+    # drain_delta > 0 (and only when not opted out), keeping drain=none
+    # byte-identical.
+    loop = None
+    if drain_delta > 0.0 and adaptive_drain_enabled():
+        cv, ct, meta, loop = _adaptive_coat(
+            v0, t0, voxel, rb, rmx, sg, defect_idx, box, drain_delta)
+        report['engine'] = loop.get('engine', 'numpy')
+    else:
+        rust = _rust_dressing_coat(v0, t0, voxel, rb, rmx, sg, defect_idx, box,
                                    drain_delta)
-        report['engine'] = 'numpy'
+        if rust is not None:
+            cv, ct, meta = rust
+            report['engine'] = 'rust'
+        if cv is None or len(ct) == 0:
+            cv, ct, meta = _numpy_coat(v0, t0, voxel, rb, rmx, sg, defect_idx,
+                                       box, drain_delta)
+            report['engine'] = 'numpy'
+    if loop is not None:
+        report['drain'].update(loop)
     if len(ct) == 0:
         report['error'] = 'level-set extraction produced no geometry'
         report['seconds'] = round(time.perf_counter() - t_start, 3)

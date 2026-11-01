@@ -35,7 +35,9 @@ düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../
   düğmesi) otomatik derin katmanları etkinleştirip kapatır (sıra sabit kalır);
   Elle modda seçilen sırayla `--methods` geçirir; yalnızca kullanıcı geçersiz
   kılmasını yazar, kilitli kapıları salt okunur gösterir ve Sıfırla bozuk bir
-  dosyayı kurtarır.
+  dosyayı kurtarır. Dressing'i açtığınızda, kaplamasını sağlıklı bölgelerde
+  orijinal yüzeye daha yakın olacak şekilde iyileştirebiliyor; isteğe bağlı
+  kalıyor ve `SUTURA_DRESSING_ADAPTIVE_DRAIN=0` bu iyileştirmeyi kapatıyor.
 - **v0.9.7 — 2026-10-26** — Deneysel bir **son çare katı motoru** seçeneği.
   Varsayılan **fTetWild** olarak kalır; isteğe bağlı kesin bir yeniden inşa
   (**CDT**, kısıtlı dörtyüzlüleme) `--solid-engine cdt`, Seçenekler → Onarım →

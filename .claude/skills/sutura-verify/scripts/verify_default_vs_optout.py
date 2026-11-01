@@ -98,8 +98,9 @@ def cli_report(stdout):
     return {}
 
 
-def measure(in_path, out_path, elapsed, repo):
-    m = vrs.verify(in_path, out_path, repo=repo)
+def measure(in_path, out_path, elapsed, repo, surface_budget='sweep'):
+    m = vrs.verify(in_path, out_path, repo=repo,
+                   surface_budget=surface_budget)
     m['time_s'] = round(elapsed, 2)
     return m
 
@@ -290,7 +291,42 @@ def judge_quality(b, c, tol):
     return 'SAME', 'no quality change'
 
 
-def _markdown_modes(results, mode):
+# Provisional, report-only surface thresholds.  They do NOT change the main
+# verdict until calibrated against the core-oracle data.
+SURFACE_RECALL_DROP = 0.005
+SURFACE_FILL_RISE_MM3 = 1.0
+SURFACE_FILL_FRACTION = 1e-4
+SURFACE_BUDGETS = {'sweep': (4000, 10), 'gate': (10000, 16)}
+
+
+def _num(v):
+    return v if isinstance(v, (int, float)) else None
+
+
+def _recall(m):
+    v = _num(m.get('feature_recall_exterior'))
+    return v if v is not None else _num(m.get('feature_recall'))
+
+
+def judge_surface(b, c):
+    """Non-blocking WORSE flag for exterior recall / healthy fill."""
+    flags, reasons = [], []
+    rb, rc = _recall(b), _recall(c)
+    if rb is not None and rc is not None and rc < rb - SURFACE_RECALL_DROP:
+        flags.append('recall')
+        reasons.append('recall %.4f -> %.4f' % (rb, rc))
+    f_floor = max(SURFACE_FILL_RISE_MM3, SURFACE_FILL_FRACTION * (
+        _num(b.get('healthy_input_volume_mm3')) or 0.0))
+    for key, label in (('healthy_fill_mm3', 'fill'),
+                       ('healthy_removed_mm3', 'removed')):
+        vb, vc = _num(b.get(key)), _num(c.get(key))
+        if vb is not None and vc is not None and vc > vb + f_floor:
+            flags.append(label)
+            reasons.append('%s %.4f -> %.4f mm3' % (label, vb, vc))
+    return flags, '; '.join(reasons)
+
+
+def _markdown_modes(results, mode, surface_budget='sweep'):
     if mode == 'byte':
         lines = ['# Byte gate (refactors)', '',
                  '| Mesh | Baseline MD5 | Candidate MD5 | Verdict | Note |',
@@ -302,26 +338,49 @@ def _markdown_modes(results, mode):
                 r['name'], (b.get('md5') or '')[:8], (c.get('md5') or '')[:8],
                 r['verdict'], r.get('verdict_reason', '')))
         return '\n'.join(lines) + '\n'
+    area, layers = SURFACE_BUDGETS.get(surface_budget, (0, 0))
     lines = ['# Quality gate (behaviour changes)', '',
+             '- Surface budget: `%s` (`%d` area samples x `%d` offset '
+             'layers).' % (surface_budget, area, layers),
+             '- Recall ext = exterior-only (buried input edges removed); '
+             'all = all healthy input sharp edges.',
+             '',
              '| Mesh | Holes b/c | NM b/c | SI b/c | 2-sided max b/c | '
-             'Vol err b/c | Parts b/c | Verdict | Changed |',
-             '|---|---|---|---|---|---|---|---|---|']
+             'Vol err b/c | Parts b/c | Recall ext b/c | Recall all b/c | '
+             'Fill b/c | Removed b/c | Surface | Verdict | Changed |',
+             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for r in results:
         b = r.get('baseline') or {}
         c = r.get('candidate') or {}
         if not b or not c:
-            lines.append('| %s | - | - | - | - | - | - | **%s** | - |' % (
+            lines.append('| %s | - | - | - | - | - | - | - | - | - | - | - | **%s** | - |' % (
                 r['name'], r['verdict']))
             continue
         bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
         cp = c['orca_number_of_parts'] if c['orca_number_of_parts'] is not None else c['components']
-        lines.append('| %s | %d/%d | %d/%d | %s/%s | %.4f/%.4f | %.6f/%.6f | %s/%s | **%s** | %s |' % (
+        re_b, re_c = _recall(b), _recall(c)
+        ra_b, ra_c = _num(b.get('feature_recall')), _num(c.get('feature_recall'))
+        fb, fc = _num(b.get('healthy_fill_mm3')), _num(c.get('healthy_fill_mm3'))
+        rmb, rmc = _num(b.get('healthy_removed_mm3')), _num(c.get('healthy_removed_mm3'))
+        rec_ext = ('%.3f/%.3f' % (re_b, re_c)) if re_b is not None and re_c is not None else '-'
+        rec_all = ('%.3f/%.3f' % (ra_b, ra_c)) if ra_b is not None and ra_c is not None else '-'
+        fill = ('%.3f/%.3f' % (fb, fc)) if fb is not None and fc is not None else '-'
+        rem = ('%.3f/%.3f' % (rmb, rmc)) if rmb is not None and rmc is not None else '-'
+        surf = '**WORSE**' if r.get('surface_worse') else '-'
+        lines.append('| %s | %d/%d | %d/%d | %s/%s | %.4f/%.4f | %.6f/%.6f | %s/%s | %s | %s | %s | %s | %s | **%s** | %s |' % (
             r['name'], b['reload_holes'], c['reload_holes'],
             b['reload_non_manifold_edges'], c['reload_non_manifold_edges'],
             b['si_output'], c['si_output'],
             b['two_sided_max_mm'], c['two_sided_max_mm'],
             b['volume_error_rel'], c['volume_error_rel'], bp, cp,
+            rec_ext, rec_all, fill, rem, surf,
             r['verdict'], 'yes' if r.get('changed') else 'no'))
+    surf_bad = [r for r in results if r.get('surface_worse')]
+    if surf_bad:
+        lines.append('')
+        lines.append('## Surface metrics (report-only, not blocking)')
+        for r in surf_bad:
+            lines.append('* **%s**: %s' % (r['name'], r.get('surface_reason', '')))
     vqa_bad = [r for r in results if r.get('verdict') == 'VISUAL-WORSE']
     if vqa_bad:
         lines.append('')
@@ -376,6 +435,9 @@ def main():
     ap.add_argument('--extra-arg', action='append', default=[])
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--timeout', type=int, default=900)
+    ap.add_argument('--surface-budget', choices=('sweep', 'gate'),
+                    default='sweep',
+                    help='surface sampling budget (default: sweep 4k x 10)')
     ap.add_argument('--visual', dest='visual', action='store_true', default=None,
                     help='visual QA: render comparison on changed meshes (default on with --quality)')
     ap.add_argument('--no-visual', dest='visual', action='store_false',
@@ -457,7 +519,8 @@ def main():
         with open(out_stl, 'rb') as f:
             md5 = hashlib.md5(f.read()).hexdigest()
         if mode in ('quality', 'feature'):
-            meas = measure(in_path, out_stl, el, repo_x)
+            meas = measure(in_path, out_stl, el, repo_x,
+                           args.surface_budget)
         else:
             meas = {'time_s': round(el, 2)}
         meas.update({'md5': md5, 'ftetwild_adopted': ftetwild_adopted(report),
@@ -503,6 +566,8 @@ def main():
         else:
             verdict, reason = judge_quality(b, c, b.get('tolerance_mm', 0.05))
         changed = bool(b.get('md5') != c.get('md5'))
+        surface_flags, surface_reason = (
+            judge_surface(b, c) if mode == 'quality' else ([], ''))
 
         # Visual QA follows the judge's non-determinism rule: an adopted fTetWild
         # result is stochastic, so the comparison is skipped (in every run,
@@ -529,7 +594,9 @@ def main():
 
         print('  -> %s (%s)' % (verdict, reason), flush=True)
         res = {'name': name, key_b: b, key_c: c, 'verdict': verdict,
-               'verdict_reason': reason, 'changed': changed}
+               'verdict_reason': reason, 'changed': changed,
+               'surface_worse': bool(surface_flags),
+               'surface_reason': surface_reason}
         if vqa_res:
             res['vqa'] = vqa_res
         return res
@@ -553,15 +620,18 @@ def main():
         md = generate_markdown([r for r in results if r['verdict'] != 'ERROR'],
                                args.opt_out_flag)
     else:
-        md = _markdown_modes(results, mode)
+        md = _markdown_modes(results, mode, args.surface_budget)
     with open(os.path.join(out_dir, 'report.md'), 'w') as f:
         f.write(md)
     bad = [r['name'] for r in results if r['verdict'] in ('WORSE', 'CHANGED', 'ERROR', 'VISUAL-WORSE')]
     skipped = [r['name'] for r in results if r['verdict'] == 'SKIPPED-NONDET']
+    surface_bad = [r['name'] for r in results if r.get('surface_worse')]
     print('\nwrote %s/summary.json and report.md' % out_dir)
     print('FAIL: %s' % (', '.join(bad) if bad else 'none'))
     if skipped:
         print('SKIPPED-NONDET: %s' % ', '.join(skipped))
+    if surface_bad:
+        print('SURFACE-WORSE (report-only): %s' % ', '.join(surface_bad))
     print('(%s)' % PRIVATE_HINT)
     return 1 if bad else 0
 

@@ -26,6 +26,7 @@ pub mod diagnosis;
 pub mod dressing;
 pub mod dual_contour;
 pub mod flap;
+pub mod hermite;
 pub mod hole;
 pub mod interval;
 pub mod lava;
@@ -42,6 +43,7 @@ pub mod profile;
 pub mod rbf;
 pub mod raycast;
 pub mod resample;
+pub mod roi;
 pub mod shell;
 pub mod splint;
 pub mod tamponade;
@@ -859,7 +861,7 @@ fn sdf_grid<'py>(
 /// default; when both raystab and antipodal are enabled, antipodal runs last
 /// and wins.  `SUTURA_ANTIPODAL=0` opts out in the environment.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None))]
+#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None, hermite=None))]
 fn morph_close<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -874,6 +876,7 @@ fn morph_close<'py>(
     raystab_seed: u64,
     raystab_parity: bool,
     antipodal: Option<bool>,
+    hermite: Option<bool>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -977,11 +980,17 @@ fn morph_close<'py>(
         surface.as_deref(),
         Some("tets") | Some("tet") | Some("marching_tets")
     );
-    let dc = if use_tets {
+    let mut dc = if use_tets {
         dual_contour::marching_tets_mesh(&field, dims, origin, voxel)
     } else {
         dual_contour::dual_contour(&field, dims, origin, voxel)
     };
+    let mut hermite_info: Option<hermite::HermiteReport> = None;
+    if !use_tets && hermite.unwrap_or_else(hermite::enabled_by_default) {
+        let (better, rep) = hermite::refine_vertices(bvh, &field, dims, origin, voxel, dc);
+        dc = better;
+        hermite_info = Some(rep);
+    }
 
     let out_verts: Vec<Vec<f64>> = dc.verts.iter().map(|p| p.to_vec()).collect();
     let out_tris: Vec<Vec<i32>> = dc
@@ -1005,6 +1014,9 @@ fn morph_close<'py>(
     info.set_item("manifold", dc.manifold)?;
     info.set_item("fill_cavities", fill_cavities)?;
     info.set_item("surface", if use_tets { "tets" } else { "dual" })?;
+    if let Some(h) = hermite_info {
+        info.set_item("hermite", hermite::report_dict(py, &h)?)?;
+    }
     if let Some(st) = stab_stats {
         info.set_item("raystab", raystab_info(py, st.dirs, raystab_seed, st.parity, &st)?)?;
     }
@@ -1029,7 +1041,7 @@ fn morph_close<'py>(
 /// re-centres on the original boundary while the defect coverage is kept.
 /// `0.0` (the default) leaves the plain outward coat.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0))]
+#[pyo3(signature = (verts, tris, defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0, corr_origin=None, corr_dims=None, corr_voxel=None, corr_values=None))]
 fn dressing_coat<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -1042,6 +1054,10 @@ fn dressing_coat<'py>(
     band_voxels: f64,
     margin_voxels: f64,
     drain: f64,
+    corr_origin: Option<[f64; 3]>,
+    corr_dims: Option<[usize; 3]>,
+    corr_voxel: Option<f64>,
+    corr_values: Option<PyArrayLike1<'py, f32, AllowTypeChange>>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -1067,7 +1083,18 @@ fn dressing_coat<'py>(
         margin_voxels,
         drain,
     };
-    let m = dressing::dressing_coat(&rv, &rt, &dp, &params);
+    let corr = match (corr_origin, corr_dims, corr_voxel, &corr_values) {
+        (Some(origin), Some(dims), Some(voxel), Some(values)) => {
+            Some(dressing::CorrectionGrid {
+                origin,
+                dims,
+                voxel,
+                values: values.as_array().to_vec(),
+            })
+        }
+        _ => None,
+    };
+    let m = dressing::dressing_coat(&rv, &rt, &dp, &params, corr.as_ref());
 
     let out_verts: Vec<Vec<f64>> = m.verts.iter().map(|p| p.to_vec()).collect();
     let out_tris: Vec<Vec<i32>> = m
@@ -1095,6 +1122,7 @@ fn dressing_coat<'py>(
     info.set_item("coarsened", m.info.coarsened)?;
     info.set_item("fallback", m.info.fallback)?;
     info.set_item("manifold", m.info.manifold)?;
+    info.set_item("correction_applied", m.info.correction_applied)?;
     info.set_item("seconds", m.info.seconds)?;
     info.set_item("band_seconds", m.info.band_seconds)?;
     info.set_item("field_seconds", m.info.field_seconds)?;
@@ -1736,6 +1764,29 @@ fn rasterize<'py>(
         PyArray2::from_owned_array(py, depth),
         PyArray2::from_owned_array(py, mask),
     ))
+}
+
+/// The crate's single self-intersection definition (`melt::scan_si`).
+///
+/// A face is flagged when it properly crosses a non-adjacent face, using the
+/// exact `triangle_intersection` classifier and `arrangement` broad phase.
+/// Coplanar overlaps are a separate defect and are NOT flagged.  This is the
+/// authoritative SI mask: the diagnosis `self_intersection` face bit (16) is
+/// derived from it.  Returns `(mask, count)`; `count = -1` when skipped.
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+fn si_faces_exact<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray1<bool>>, i64)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let rt_u32: Vec<[u32; 3]> = rt
+        .iter()
+        .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+        .collect();
+    let s = melt::scan_si(&rv, &rt_u32);
+    Ok((PyArray1::from_vec(py, s.mask), s.count))
 }
 
 /// Faces involved in a self-intersection.
@@ -2395,6 +2446,44 @@ fn interior_depth(
     Ok(melt::interior_depth_norm(&rv, &rt, max_cells))
 }
 
+/// Stitch two nested, near-planar boundary loops with a triangle band.
+///
+/// `loop_a` and `loop_b` are the two closed rims as `(P, 3)` and `(Q, 3)`
+/// float64 arrays.  Returns a list of `(i, j, k)` triples indexing into the
+/// concatenation `loop_a ++ loop_b`, or `None` when the seam cannot be built
+/// safely (not near-planar, a loop not simple, loops not nested, or a folded
+/// band whose area does not match the annulus).
+#[pyfunction]
+fn triangulate_annulus<'py>(
+    py: Python<'py>,
+    loop_a: PyArrayLike2<'py, f64, AllowTypeChange>,
+    loop_b: PyArrayLike2<'py, f64, AllowTypeChange>,
+) -> PyResult<Option<Bound<'py, PyList>>> {
+    let a = loop_a.as_array();
+    let b = loop_b.as_array();
+    if a.ncols() != 3 || b.ncols() != 3 {
+        return Err(PyValueError::new_err("loops must be Nx3"));
+    }
+    let mut la: Vec<[f64; 3]> = Vec::with_capacity(a.nrows());
+    for i in 0..a.nrows() {
+        la.push([a[[i, 0]], a[[i, 1]], a[[i, 2]]]);
+    }
+    let mut lb: Vec<[f64; 3]> = Vec::with_capacity(b.nrows());
+    for i in 0..b.nrows() {
+        lb.push([b[[i, 0]], b[[i, 1]], b[[i, 2]]]);
+    }
+    match roi::triangulate_annulus(&la, &lb) {
+        None => Ok(None),
+        Some(tris) => {
+            let list = PyList::empty(py);
+            for t in tris {
+                list.append((t[0], t[1], t[2]))?;
+            }
+            Ok(Some(list))
+        }
+    }
+}
+
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
@@ -2417,6 +2506,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(closest_points, m)?)?;
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
+    m.add_function(wrap_pyfunction!(si_faces_exact, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_grid, m)?)?;
@@ -2442,6 +2532,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(diagnose, m)?)?;
     m.add_function(wrap_pyfunction!(interior_depth, m)?)?;
     m.add_function(wrap_pyfunction!(hole::close_holes, m)?)?;
+    m.add_function(wrap_pyfunction!(triangulate_annulus, m)?)?;
     m.add_function(wrap_pyfunction!(cluster::cluster_decimate, m)?)?;
     m.add_function(wrap_pyfunction!(decimate::decimate_qem, m)?)?;
     m.add_function(wrap_pyfunction!(resample::resample_uniform, m)?)?;

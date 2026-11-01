@@ -8,6 +8,8 @@ import sys
 import tempfile
 import time
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (os.path.join(REPO, 'sutura'), REPO):
     if _p not in sys.path:
@@ -164,30 +166,57 @@ def test_trace_diff_tool_identical(tmp_path):
     assert exit_code == 0
 
 
+def _stage(i, name, sha):
+    return {
+        "step": i, "object_id": "main", "attempt": "primary",
+        "stage": name, "method": "m", "sha256": sha, "gate": {},
+        "output": {"faces": 10, "verts": 10, "holes": 0, "nm_edges": 0,
+                   "nm_verts": 0, "components": 1},
+        "elapsed_seconds": 0.0,
+    }
+
+
+def _write_trace(path, stages):
+    data = {"version": 1, "total_elapsed_seconds": 0.0, "stages": stages,
+            "final_summary": {"sha256": stages[-1]["sha256"]}}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    return str(path)
+
+
+STAGE_NAMES = [
+    "load", "tamponade_prepass", "flap_prepass", "stage1_chain",
+    "stage1_delete_fallback", "si_excise", "closing_ladder",
+    "tamponade_post", "graft", "dressing", "splint", "coaptation",
+    "ftetwild", "pinch_split", "stage2", "p_weld", "validate",
+]
+
+
 def test_trace_diff_identifies_ftetwild_divergence(tmp_path):
-    """Run thingi10k_100827 twice and verify trace_diff identifies ftetwild as the first divergence."""
-    model = "tests/real-world-samples/thingi10k_100827.stl"
-    t1_path = str(tmp_path / "100827_run1.json")
-    t2_path = str(tmp_path / "100827_run2.json")
-    out1 = str(tmp_path / "out1.stl")
-    out2 = str(tmp_path / "out2.stl")
-
-    env = os.environ.copy()
-    env["PYTHONPATH"] = "sutura:sutura/sutura_engine:" + env.get("PYTHONPATH", "")
-
-    cmd1 = [sys.executable, "sutura/repair.py", model, "-o", out1, "--trace", t1_path]
-    subprocess.run(cmd1, env=env, check=True)
-
-    cmd2 = [sys.executable, "sutura/repair.py", model, "-o", out2, "--trace", t2_path]
-    subprocess.run(cmd2, env=env, check=True)
-
-    t1_data = _load_trace(t1_path)
-    t2_data = _load_trace(t2_path)
-
-    # Run trace_diff via CLI to check terminal report
-    diff_cmd = [sys.executable, "scripts/trace_diff.py", t1_path, t2_path]
-    res = subprocess.run(diff_cmd, capture_output=True, text=True)
-
+    """A synthetic pair that differs only at step 12 (stage 'ftetwild')."""
+    a = [_stage(i, n, "a" * 64) for i, n in enumerate(STAGE_NAMES)]
+    b = [_stage(i, n, "a" * 64) for i, n in enumerate(STAGE_NAMES)]
+    b[12]["sha256"] = "b" * 64
+    pa = _write_trace(tmp_path / "a.json", a)
+    pb = _write_trace(tmp_path / "b.json", b)
+    res = subprocess.run(
+        [sys.executable, "scripts/trace_diff.py", pa, pb],
+        capture_output=True, text=True)
     assert res.returncode == 1
     assert "FIRST DIVERGING STAGE: Step 12 ['ftetwild']" in res.stdout
     assert "Verdict: Runs first diverged at Step 12 ['ftetwild']." in res.stdout
+
+
+def test_trace_diff_identical_pair(tmp_path):
+    """The same trace twice must report identical and exit 0."""
+    a = [_stage(i, n, "a" * 64) for i, n in enumerate(STAGE_NAMES)]
+    pa = _write_trace(tmp_path / "a.json", a)
+    res = subprocess.run(
+        [sys.executable, "scripts/trace_diff.py", pa, pa],
+        capture_output=True, text=True)
+    assert res.returncode == 0
+    assert "executed identically" in res.stdout
+
+
+if __name__ == '__main__':
+    raise SystemExit(pytest.main([os.path.abspath(__file__), '-q']))
