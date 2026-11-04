@@ -317,7 +317,12 @@ that survive with unchanged vertex coordinates; newly created triangles are not
 given inherited paint. The JSON report carries `triangle_attributes` per object
 (`original_attributed`, `kept`, `dropped`, `output_triangles`) and a summed
 file-level value for multi-object 3MF. Regression-tested in
-`tests/test_3mf_roundtrip.py`.
+`tests/test_3mf_roundtrip.py`. This is also shown to the user: when a repaired
+3MF lost attributes on surviving triangles, the `--human` report and the GUI
+show one warning line with the kept / dropped / new-triangles-without-attributes
+counts (per object for a multi-object file); when only newly created triangles
+lack attributes — which is expected — the same counts are shown as a neutral
+note. Nothing is shown when the input had no painted/seam/support attributes.
 
 GUI:
 

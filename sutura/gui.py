@@ -322,6 +322,9 @@ STRINGS = {
         'brief_note_reload_nm': 'The saved file reopens with a topology problem.',
         'brief_note_unit': 'The model may not be in millimetres.',
         'brief_note_material': 'OBJ material references were not preserved.',
+        'brief_note_attr_loss': ('Painted/seam/support attributes were lost on '
+                                 '%d triangle(s); %d kept, %d new triangles '
+                                 'have none.'),
         'brief_note_budget': 'The result was not saved because the repair went over its size or risk limit.',
         'brief_note_thin_wall': ('Some walls are thin: ~%s%% of the surface is '
                                  'thinner than %s%% of the model size'),
@@ -1176,6 +1179,9 @@ STRINGS = {
         'brief_note_reload_nm': 'Kaydedilen dosyada yeniden açılışta bir yapı sorunu var.',
         'brief_note_unit': 'Model milimetre cinsinde olmayabilir.',
         'brief_note_material': 'OBJ malzeme referansları korunmadı.',
+        'brief_note_attr_loss': ('%d üçgende boya/dikiş/destek özniteliği '
+                                 'kayboldu; %d korundu, %d yeni üçgen '
+                                 'özniteliksiz.'),
         'brief_note_budget': 'Onarım boyut veya risk sınırını aştığı için sonuç kaydedilmedi.',
         'brief_note_thin_wall': ('Yüzeyin ~%s%% kadarı model boyutunun %s%% '
                                  'değerinden ince'),
@@ -2126,6 +2132,25 @@ def format_report(data):
     lines.append('')
     if data.get('unit_warning'):
         lines.append(_t('unit_warning', data.get('unit_hint', '')))
+        lines.append('')
+    _attrs = classification.attribute_stats(data)
+    if _attrs is not None and (_attrs['dropped'] > 0 or _attrs['new_without'] > 0):
+        if _attrs['dropped'] > 0:
+            lines.append('WARNING: %d painted/seam/support triangle attribute(s) '
+                         'were lost; new triangles have none (kept %d, dropped '
+                         '%d, new without attributes %d).'
+                         % (_attrs['dropped'], _attrs['kept'],
+                            _attrs['dropped'], _attrs['new_without']))
+        else:
+            lines.append('Note: triangle attributes were kept where possible; '
+                         'new triangles have none (kept %d, dropped %d, new '
+                         'without attributes %d).'
+                         % (_attrs['kept'], _attrs['dropped'],
+                            _attrs['new_without']))
+        for o in _attrs['objects']:
+            lines.append('  %s: kept %d, dropped %d, new without attributes %d'
+                         % (o.get('model') or 'object', o['kept'],
+                            o['dropped'], o['new_without']))
         lines.append('')
     if data.get('status') == 'budget_declined':
         lines.append('ERROR: %s' % data.get('error'))
@@ -6218,6 +6243,9 @@ class MainWindow(QMainWindow):
                 out.append(_t('brief_note_unit'))
             elif code == 'material_discarded':
                 out.append(_t('brief_note_material'))
+            elif code == 'attribute_loss':
+                out.append(_t('brief_note_attr_loss', a.get('dropped', 0),
+                              a.get('kept', 0), a.get('new_without', 0)))
             elif code == 'budget':
                 out.append(_t('brief_note_budget'))
             elif code == 'thin_wall':

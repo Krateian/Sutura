@@ -241,6 +241,55 @@ def _code_value(data, code):
     return 0
 
 
+def _attr_stats(stats):
+    """Per-object triangle-attribute counts, or None when none were present.
+
+    ``stats`` is one ``triangle_attributes`` dict. ``new_without`` is the number
+    of output triangles that carry no attribute (kept ones subtracted): those
+    are the newly created triangles, which get no inherited paint/seam/support.
+    Returns None when the input had no attributed triangles (nothing to warn
+    about).
+    """
+    if not isinstance(stats, dict):
+        return None
+    original = int(stats.get('original_attributed') or 0)
+    if original <= 0:
+        return None
+    kept = int(stats.get('kept') or 0)
+    dropped = int(stats.get('dropped') or 0)
+    output = int(stats.get('output_triangles') or 0)
+    return {'original_attributed': original, 'kept': kept, 'dropped': dropped,
+            'output_triangles': output, 'new_without': max(output - kept, 0)}
+
+
+def attribute_stats(data):
+    """Aggregate + per-object 3MF triangle-attribute stats, or None.
+
+    Reads the report's top-level ``triangle_attributes`` (the file-level
+    aggregate for a multi-object 3MF, or the single object's stats) and each
+    object's own stats from ``object_reports``. Returns None when no mesh
+    carried triangle attributes, so the caller can stay silent.
+    """
+    objects = []
+    for rep in data.get('object_reports') or []:
+        s = _attr_stats(rep.get('triangle_attributes'))
+        if s is not None:
+            s = dict(s)
+            s['model'] = rep.get('model')
+            objects.append(s)
+    top = _attr_stats(data.get('triangle_attributes'))
+    if top is None and not objects:
+        return None
+    keys = ('original_attributed', 'kept', 'dropped', 'output_triangles',
+            'new_without')
+    if objects:
+        agg = {k: sum(o[k] for o in objects) for k in keys}
+        agg['objects'] = objects
+        return agg
+    top['objects'] = []
+    return top
+
+
 def _brief_notes(data, issues, pr):
     """Machine-readable notes (code + args) for the compact report."""
     notes = []
@@ -261,6 +310,13 @@ def _brief_notes(data, issues, pr):
         add('unit_warning')
     if data.get('material_discarded'):
         add('material_discarded')
+    # 3MF paint/seam/support lost on surviving triangles is a warning; when only
+    # new triangles lack attributes it is informational (handled in the report
+    # details, not as a note, so the verdict is not flagged).
+    attrs = attribute_stats(data)
+    if attrs is not None and attrs['dropped'] > 0:
+        add('attribute_loss', dropped=attrs['dropped'], kept=attrs['kept'],
+            new_without=attrs['new_without'])
     b = data.get('budget')
     if isinstance(b, dict) and b.get('within_budget') is False:
         add('budget')

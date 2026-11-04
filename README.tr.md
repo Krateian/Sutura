@@ -110,6 +110,10 @@ sutura a.stl b.stl c.3mf         # toplu onarım
   `sutura --diagnostics out.zip` hata bildirimi için temizlenmiş bir kopyasını
   pakete ekler. Kayıt, siz eklemedikçe makinenizden çıkmaz.
   Bkz. [Sorun giderme](docs/guide/tr/troubleshooting.md).
+- **3MF boya, dikiş ve destekleri mümkün olduğunca korunur.** Değişmeden kalan
+  üçgenlerde kalır; yeni oluşturulan üçgenlere aktarılmaz. Bir onarım bunları
+  kaybederse rapor, tutulan / bırakılan / yeni sayılarıyla bunu bildirir.
+  Bkz. [Kullanım](docs/guide/tr/usage.md).
 - **Son çare katı motoru (deneysel):** `--solid-engine cdt|ftetwild` her şey
   başarısız olduğunda kullanılacak yeniden inşayı seçer (Seçenekler → Onarım
   altında da; entegrasyonlarca devralınır). Varsayılan **fTetWild** olarak
