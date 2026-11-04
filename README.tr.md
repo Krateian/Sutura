@@ -122,8 +122,8 @@ sutura a.stl b.stl c.3mf         # toplu onarım
   Bkz. [Kullanım](docs/guide/tr/usage.md).
 - **Ayrı küçük parçalar raporlanır, sessizce değiştirilmez.** Rapor, onarımın
   kaldırdığı küçük bileşenleri (`< 8` yüz) boyutları ve ana gövdeye uzaklıklarıyla
-  listeler ve olası kırıntıya benzeyen korunmuş parçaları işaretler — hiçbir şey
-  silinmeden. Bkz. [Kullanım](docs/guide/tr/usage.md).
+  listeler ve korunan küçük ayrı parçaları (bilgilendirme amaçlı, hüküm
+  değişmez) — hiçbir şey silinmeden. Bkz. [Kullanım](docs/guide/tr/usage.md).
 - **Onarım başına tek hüküm.** Hem CLI hem GUI tek bir başlık hükmü gösterir
   (şekil kontrolü katlanmış); tam rapor **Ayrıntılar** arkasında ve İngilizce ile
   Türkçe yerelleştirilmiştir. Bkz. [Kullanım](docs/guide/tr/usage.md).

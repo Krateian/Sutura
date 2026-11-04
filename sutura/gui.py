@@ -325,8 +325,6 @@ STRINGS = {
         'brief_note_attr_loss': ('Painted/seam/support attributes were lost on '
                                  '%d triangle(s); %d kept, %d new triangles '
                                  'have none.'),
-        'brief_note_possible_debris': ('%d suspicious separate part(s) were kept '
-                                       '(possible debris; nothing was removed).'),
         'brief_note_budget': 'The result was not saved because the repair went over its size or risk limit.',
         'brief_note_thin_wall': ('Some walls are thin: ~%s%% of the surface is '
                                  'thinner than %s%% of the model size'),
@@ -607,8 +605,8 @@ STRINGS = {
                               'body'),
         'detail_small_part_pct': ' (%.3g%% of model)',
         'detail_small_more': '  ... (%d more not listed)',
-        'detail_suspicious': ('Suspicious separate part(s) kept: %d (possible '
-                              'debris; nothing was removed)'),
+        'detail_suspicious': 'Small separate part(s) kept: %d (check if intended)',
+        'detail_small_obj': 'Small parts (%s):',
         'detail_suspicious_part': ('  %d face(s), %.3g%% of the largest volume, '
                                    '%s from the main body'),
         'detail_attr_warn': ('WARNING: %d painted/seam/support triangle '
@@ -1254,8 +1252,6 @@ STRINGS = {
         'brief_note_attr_loss': ('%d üçgende boya/dikiş/destek özniteliği '
                                  'kayboldu; %d korundu, %d yeni üçgen '
                                  'özniteliksiz.'),
-        'brief_note_possible_debris': ('%d şüpheli ayrı parça korundu (olası '
-                                       'kırıntı; hiçbir şey kaldırılmadı).'),
         'brief_note_budget': 'Onarım boyut veya risk sınırını aştığı için sonuç kaydedilmedi.',
         'brief_note_thin_wall': ('Yüzeyin ~%s%% kadarı model boyutunun %s%% '
                                  'değerinden ince'),
@@ -1543,8 +1539,8 @@ STRINGS = {
         'detail_small_part': ('  %d yüz, boyut %.3g mm%s, ana gövdeden %s'),
         'detail_small_part_pct': ' (modelin %.3g%% kadarı)',
         'detail_small_more': '  ... (%d tanesi listelenmedi)',
-        'detail_suspicious': ('Korunan şüpheli ayrı parça: %d (olası '
-                              'kırıntı; hiçbir şey kaldırılmadı)'),
+        'detail_suspicious': 'Küçük ayrı parça korundu: %d (amaçlanan mı diye kontrol edin)',
+        'detail_small_obj': 'Küçük parçalar (%s):',
         'detail_suspicious_part': ('  %d yüz, en büyük hacmin %.3g%% kadarı, '
                                    'ana gövdeden %s'),
         'detail_attr_warn': ('UYARI: %d boya/dikiş/destek üçgen özniteliği '
@@ -2264,12 +2260,8 @@ def summarize(data):
     return label
 
 
-def _small_parts_report_lines(s1):
-    """Small-part visibility for the GUI result details (report-only).
-
-    Defensive: a sparse/partial report (``None`` counts, sizes or lists) must
-    never raise while formatting the details pane.
-    """
+def _small_parts_section(s1):
+    """Small-part block for one mesh's Stage-1 dict (defensive)."""
     s1 = s1 or {}
     lines = []
 
@@ -2308,6 +2300,22 @@ def _small_parts_report_lines(s1):
     return lines
 
 
+def _small_parts_report_lines(data):
+    """Small-part visibility for the GUI details, per object for multi-object 3MF."""
+    data = data or {}
+    reps = [r for r in (data.get('object_reports') or []) if isinstance(r, dict)]
+    if reps:
+        out = []
+        for i, rep in enumerate(reps):
+            block = _small_parts_section(rep.get('stage1') or {})
+            if block:
+                out.append(_t('detail_small_obj',
+                              rep.get('model') or ('object %d' % i)))
+                out.extend(block)
+        return out
+    return _small_parts_section(data.get('stage1') or {})
+
+
 def format_report(data):
     if data.get('error') and 'stage1' not in data:
         return _t('detail_error_line', data['error'])
@@ -2341,7 +2349,7 @@ def format_report(data):
             lines.append(_t('detail_attr_obj', o.get('model') or 'object',
                             o['kept'], o['dropped'], o['new_without']))
         lines.append('')
-    _sp = _small_parts_report_lines(data.get('stage1'))
+    _sp = _small_parts_report_lines(data)
     if _sp:
         lines.extend(_sp)
         lines.append('')
@@ -6477,8 +6485,6 @@ class MainWindow(QMainWindow):
             elif code == 'attribute_loss':
                 out.append(_t('brief_note_attr_loss', a.get('dropped', 0),
                               a.get('kept', 0), a.get('new_without', 0)))
-            elif code == 'possible_debris':
-                out.append(_t('brief_note_possible_debris', a.get('count', 0)))
             elif code == 'budget':
                 out.append(_t('brief_note_budget'))
             elif code == 'thin_wall':
@@ -7643,6 +7649,16 @@ class MainWindow(QMainWindow):
 # user gets one short dialog pointing at the Diagnostics export.
 
 _CRASH_DIALOG_SHOWN = False
+# Chained to in _install_crash_hooks so uncaught tracebacks still reach the
+# terminal / the default thread handler.
+_PREV_EXCEPTHOOK = None
+_PREV_THREADING_EXCEPTHOOK = None
+
+
+def _env_truthy(name):
+    """True for a non-empty, non-off environment flag."""
+    v = os.environ.get(name)
+    return bool(v) and v.strip().lower() not in ('0', 'false', 'no', 'off')
 
 
 def _crash_log(text):
@@ -7652,8 +7668,9 @@ def _crash_log(text):
             from sutura.diagnostics import crash_log_path
         except ImportError:
             from diagnostics import crash_log_path
-        with open(crash_log_path(), 'a', encoding='utf-8',
-                  errors='replace') as f:
+        path = crash_log_path()
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, 'a', encoding='utf-8', errors='replace') as f:
             f.write(text.rstrip('\n') + '\n')
     except Exception:
         pass
@@ -7683,6 +7700,10 @@ def _show_crash_dialog():
             return
     except Exception:
         pass
+    # No real user to dismiss a modal under CI / headless / xcb-under-Xvfb or
+    # when explicitly disabled: log only.
+    if any(_env_truthy(n) for n in ('CI', 'HEADLESS', 'SUTURA_NO_DIALOG')):
+        return
     _CRASH_DIALOG_SHOWN = True
     try:
         QMessageBox.warning(None, _t('app_title'), _t('crash_dialog_msg'))
@@ -7693,6 +7714,15 @@ def _show_crash_dialog():
 def _gui_excepthook(exc_type, exc, tb):
     _crash_log('uncaught exception:\n' + ''.join(
         traceback.format_exception(exc_type, exc, tb)))
+    # Chain: still print the traceback to stderr as Python normally would.
+    prev = _PREV_EXCEPTHOOK or sys.__excepthook__
+    try:
+        prev(exc_type, exc, tb)
+    except Exception:
+        try:
+            traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
+        except Exception:
+            pass
     _show_crash_dialog()
 
 
@@ -7701,10 +7731,23 @@ def _gui_threading_excepthook(args):
         getattr(args.thread, 'name', '?'),
         ''.join(traceback.format_exception(
             args.exc_type, args.exc_value, args.exc_traceback))))
+    prev = _PREV_THREADING_EXCEPTHOOK or threading.__excepthook__
+    try:
+        prev(args)
+    except Exception:
+        pass
     _show_crash_dialog()
 
 
 def _gui_qt_message_handler(mode, context, message):
+    # Only critical/fatal Qt messages reach the log: routine warnings (font
+    # fallbacks, stylesheet notes, resize chatter) must not write to disk.
+    try:
+        from PySide6.QtCore import QtMsgType
+        if mode not in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+            return
+    except Exception:
+        pass
     try:
         _crash_log('Qt[%s] %s' % (mode, message))
     except Exception:
@@ -7721,11 +7764,14 @@ def _install_crash_hooks():
         enable_crash_logging()
     except Exception:
         pass
+    global _PREV_EXCEPTHOOK, _PREV_THREADING_EXCEPTHOOK
     try:
+        _PREV_EXCEPTHOOK = sys.excepthook
         sys.excepthook = _gui_excepthook
     except Exception:
         pass
     try:
+        _PREV_THREADING_EXCEPTHOOK = threading.excepthook
         threading.excepthook = _gui_threading_excepthook
     except Exception:
         pass

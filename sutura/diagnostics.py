@@ -20,6 +20,7 @@ import getpass
 import json
 import os
 import platform
+import re
 import sys
 import zipfile
 from typing import Any, Dict, List, Optional
@@ -65,6 +66,13 @@ def _trim_crash_log(path: str, max_bytes: int = CRASH_LOG_MAX_BYTES) -> None:
         with open(path, 'rb') as f:
             f.seek(size - max_bytes)
             tail = f.read()
+        # Start at a clean line/UTF-8 boundary: a raw byte cut can split a
+        # multi-byte character and leave the file unreadable as UTF-8.
+        nl = tail.find(b'\n')
+        if 0 <= nl < 1024:
+            tail = tail[nl + 1:]
+        else:
+            tail = tail.decode('utf-8', errors='replace').encode('utf-8')
         with open(path, 'wb') as f:
             f.write(b'... crash log trimmed to the last %d bytes ...\n'
                     % max_bytes)
@@ -92,12 +100,10 @@ def enable_crash_logging():
         pass
     _trim_crash_log(path)
     try:
+        # No startup banner: crash.log must stay empty on a normal run and only
+        # gain content when faulthandler actually catches a fatal signal (or a
+        # hook logs an uncaught exception).
         fh = open(path, 'ab')
-        try:
-            fh.write(b'--- sutura start (pid %d) ---\n' % os.getpid())
-            fh.flush()
-        except Exception:
-            pass
         faulthandler.enable(file=fh, all_threads=True)
     except Exception:
         return None
@@ -123,6 +129,8 @@ def crash_log_tail(max_bytes: int = CRASH_LOG_MAX_BYTES) -> Optional[str]:
         text = data.decode('utf-8', errors='replace')
     except Exception:
         return None
+    if not text.strip():
+        return None
     home, user = _get_home_and_user()
     return sanitize_value(text, home, user)
 
@@ -137,13 +145,24 @@ def _get_home_and_user():
 
 
 def sanitize_value(val: Any, home: str, user: str) -> Any:
-    """Recursively scrub personal paths and usernames from diagnostic data."""
+    """Recursively scrub personal paths and usernames from diagnostic data.
+
+    Matching is case-insensitive (macOS APFS/HFS+ is case-preserving, so a home
+    path can differ in case from ``getpass.getuser()``), and external drive /
+    mount roots (``/Volumes/<name>``, ``/media/<user>``, ``/run/media/<user>``)
+    keep their directory name out of the archive too.
+    """
     if isinstance(val, str):
         res = val
-        if home and home in res:
-            res = res.replace(home, '~')
-        if user and user in res:
-            res = res.replace(user, '<user>')
+        if home:
+            res = re.sub(re.escape(home), '~', res, flags=re.IGNORECASE)
+        if user:
+            res = re.sub(re.escape(user), '<user>', res, flags=re.IGNORECASE)
+        res = re.sub(r'(/run/media/)[^/\s]+', r'\1<user>', res,
+                     flags=re.IGNORECASE)
+        res = re.sub(r'(/media/)[^/\s]+', r'\1<user>', res, flags=re.IGNORECASE)
+        res = re.sub(r'(/Volumes/)[^/\s]+', r'\1<name>', res,
+                     flags=re.IGNORECASE)
         return res
     if isinstance(val, dict):
         return {sanitize_value(k, home, user): sanitize_value(v, home, user) for k, v in val.items()}

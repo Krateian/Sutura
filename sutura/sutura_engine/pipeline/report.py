@@ -634,10 +634,6 @@ def _brief_note_lines(b):
             out.append('  Note: The model may not be in millimetres.')
         elif code == 'material_discarded':
             out.append('  Note: OBJ material references were not preserved.')
-        elif code == 'possible_debris':
-            out.append('  Note: %d suspicious separate part(s) were kept '
-                       '(possible debris; nothing was removed).'
-                       % a.get('count', 0))
         elif code == 'budget':
             out.append('  Note: The result was not saved because the repair '
                        'went over its size or risk limit.')
@@ -661,14 +657,9 @@ def _brief_note_lines(b):
     return out
 
 
-def _small_parts_lines(r):
-    """Small-part visibility for --human (report-only; nothing is removed).
-
-    (a) components the Stage-1 ``< N faces`` rule dropped, (b) suspicious
-    separate part(s) kept in the input (census rule F). Empty when neither
-    applies.
-    """
-    s1 = r.get('stage1') or {}
+def _small_parts_section(s1):
+    """Small-part block for one mesh's Stage-1 dict (report-only)."""
+    s1 = s1 or {}
     lines = []
 
     def _dist(v):
@@ -692,8 +683,8 @@ def _small_parts_lines(r):
     pd = s1.get('possible_debris')
     if pd and pd.get('count'):
         lines.append('')
-        lines.append('Suspicious separate part(s) kept: %d '
-                     '(possible debris; nothing was removed)' % pd['count'])
+        lines.append('Small separate part(s) kept: %d (check if intended)'
+                     % pd['count'])
         for p in pd.get('parts', []):
             lines.append('  %d face(s), %.3g%% of the largest volume, %s from '
                          'the main body'
@@ -703,6 +694,29 @@ def _small_parts_lines(r):
         if extra > 0:
             lines.append('  ... (%d more not listed)' % extra)
     return lines
+
+
+def _small_parts_lines(r):
+    """Small-part visibility for --human, per object for a multi-object 3MF.
+
+    (a) components the Stage-1 ``< N faces`` rule dropped, (b) small separate
+    part(s) kept in the repaired mesh. Informational only.
+    """
+    reps = [x for x in (r.get('object_reports') or []) if isinstance(x, dict)]
+    if reps:
+        out = []
+        for i, rep in enumerate(reps):
+            block = _small_parts_section(rep.get('stage1') or {})
+            if not block:
+                continue
+            if block and block[0] == '':
+                block = block[1:]
+            out.append('')
+            out.append('Small parts (%s):'
+                       % (rep.get('model') or ('object %d' % i)))
+            out.extend(block)
+        return out
+    return _small_parts_section(r.get('stage1') or {})
 
 
 def _attribute_lines(r):

@@ -114,7 +114,51 @@ def main():
     print('ok  open in slicer command')
 
     test_format_report_localized()
+    test_crash_hooks()
     w.close()
+
+
+def test_crash_hooks():
+    """An uncaught exception writes crash.log and still chains to stderr; the
+    modal dialog never appears on a headless/CI platform."""
+    os.environ['SUTURA_DATA_DIR'] = os.path.join(_TMP, 'data')
+    try:
+        from sutura.diagnostics import crash_log_path
+    except ImportError:
+        from diagnostics import crash_log_path
+    p = crash_log_path()
+    if os.path.exists(p):
+        os.remove(p)
+    chained = []
+    old_prev = gui._PREV_EXCEPTHOOK
+    gui._PREV_EXCEPTHOOK = lambda *a: chained.append(a)
+    try:
+        try:
+            raise RuntimeError('boom-hook')
+        except Exception:
+            gui._gui_excepthook(*sys.exc_info())
+    finally:
+        gui._PREV_EXCEPTHOOK = old_prev
+    with open(p, encoding='utf-8') as f:
+        text = f.read()
+    assert 'RuntimeError: boom-hook' in text, text
+    assert chained, 'excepthook must chain to the previous hook'
+    # No modal under offscreen/CI.
+    shown = []
+
+    class _MB:
+        @staticmethod
+        def warning(*a, **k):
+            shown.append(a)
+    old_mb = gui.QMessageBox
+    gui.QMessageBox = _MB
+    try:
+        gui._CRASH_DIALOG_SHOWN = False
+        gui._show_crash_dialog()
+    finally:
+        gui.QMessageBox = old_mb
+    assert not shown, 'modal crash dialog must not appear headless/CI'
+    print('ok  crash excepthook logs + chains; no headless dialog')
 
 
 def test_format_report_localized():

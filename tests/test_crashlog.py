@@ -62,15 +62,60 @@ def test_trim_keeps_tail_and_bounds():
     assert os.path.getsize(p) <= 100 + 120
 
 
-def test_enable_crash_logging_writes_marker():
+def test_trim_keeps_valid_utf8():
+    """A byte-offset cut must not leave an invalid UTF-8 tail."""
+    p = _write_log('A' * 99 + '\u00e7' + 'B' * 50)
+    diagnostics._trim_crash_log(p, max_bytes=51)
+    with open(p, encoding='utf-8') as f:
+        f.read()  # must not raise UnicodeDecodeError
+
+
+def test_normal_run_leaves_log_empty():
+    """A normal run enables the handler but writes nothing (no startup banner)."""
     _reset_log()
     path = diagnostics.enable_crash_logging()
     assert path == diagnostics.crash_log_path()
-    with open(path, encoding='utf-8') as f:
-        text = f.read()
-    assert 'sutura start (pid' in text
+    assert os.path.isfile(path)
+    with open(path, 'rb') as f:
+        assert f.read() == b''
+    assert diagnostics.crash_log_tail() is None
     import faulthandler
     assert faulthandler.is_enabled()
+
+
+def test_real_crash_writes_dump():
+    """A real fatal signal in a child process writes a trace to crash.log."""
+    import subprocess
+    _reset_log()
+    code = (
+        'import sys, faulthandler\n'
+        'sys.path.insert(0, %r)\n'
+        'import diagnostics\n'
+        'diagnostics.enable_crash_logging()\n'
+        'faulthandler._sigsegv()\n' % os.path.join(REPO, 'sutura'))
+    env = dict(os.environ)
+    env['HOME'] = _TMP
+    env['SUTURA_DATA_DIR'] = os.path.join(_TMP, 'data')
+    p = subprocess.run([sys.executable, '-c', code], capture_output=True,
+                       text=True, timeout=60, env=env)
+    assert p.returncode != 0, p.stderr
+    with open(diagnostics.crash_log_path(), encoding='utf-8') as f:
+        text = f.read()
+    assert 'Fatal Python error' in text, text
+    assert 'Segmentation fault' in text or 'SIGSEGV' in text, text
+
+
+def test_empty_log_tail_is_none():
+    _write_log('')
+    assert diagnostics.crash_log_tail() is None
+
+
+def test_diagnostics_zip_omits_empty_crash_log():
+    _write_log('')
+    out = os.path.join(_TMP, 'diag-empty.zip')
+    diagnostics.create_diagnostics_zip(out)
+    with zipfile.ZipFile(out) as zf:
+        assert 'crash_log.txt' not in zf.namelist()
 
 
 def test_crash_log_tail_sanitizes():

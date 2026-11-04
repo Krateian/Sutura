@@ -318,15 +318,15 @@ The same `stage1` block records what happened to **separate small parts**
   rule dropped: `count`, `faces_total` and a capped `parts` list, each with
   `faces`, `size_mm` (and `size_pct` of the model) and `distance_mm` to the main
   body.
-- `possible_debris` — kept components that look like possible debris (a
+- `possible_debris` — small separate part(s) kept in the repaired mesh (a
   separate, closed, non-degenerate part under 0.5% of the largest part's
   volume), with `faces`, `volume_pct`, `size_pct` and `distance_mm`. This is
-  **report-only**: nothing is removed.
+  **informational only**: it never changes the verdict, and nothing is removed.
 
 Both appear per object for multi-object 3MF files, in the `--human` report
-(a `Small parts removed …` / `Suspicious separate part(s) kept …` block) and in
-the GUI result details; the GUI verdict also carries a note when
-`possible_debris` is non-empty.
+(a `Small parts removed …` / `Small separate part(s) kept: N (check if
+intended)` block) and in the GUI result details. The kept-part line is
+informational and does not turn a ready repair into one with notes.
 
 A mesh is only counted as **watertight** when stage 2 ran and
 validated the closed solid. If stage 1 closes a mesh but stage 2 is skipped,

@@ -61,13 +61,14 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
   report and GUI details) lists how many components the `<8`-face rule dropped,
   their total face count and, for a capped list, each component's face count,
   size and distance to the main body.
-* **Suspicious separate small parts are flagged, never removed.**
-  `stage1.possible_debris` lists kept components that look like possible debris
+* **Small separate parts are listed, never removed.**
+  `stage1.possible_debris` lists small separate parts kept in the repaired mesh
   (a separate, closed, non-degenerate part under 0.5% of the largest part's
   volume) with their face count, volume share and distance to the main body.
-  This is report-only — nothing is deleted — because an injected or stray small
-  part is geometrically indistinguishable from a legitimate one. The `--human`
-  report, the GUI details and the GUI verdict note surface the same counts.
+  This is informational only — nothing is deleted and it does not change the
+  verdict — because a stray small part is geometrically indistinguishable from a
+  legitimate one (a pin, a nut, an eye). The `--human` report and the GUI details
+  show the same counts, per object for a multi-object 3MF.
 * **Dense coplanar contacts are analysed with a bounded exact pass.** For a
   mechanical part with very many coincident faces on one contact patch, the
   exact coplanar shell analysis is capped at 512 triangles / 1,024 constraint

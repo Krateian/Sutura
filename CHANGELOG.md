@@ -103,6 +103,18 @@ All notable changes to this project are documented here.
   Calibrated on samples40 + oracle36 against independent visual QA: **61
   preserved / 2 changed / 0 silent** (down from 8 false `changed`, no repair
   silently presented as preserved). Report-only; no repair output change.
+- **Crash log and small-part reporting hardening (review follow-up).**
+  `crash.log` stays empty on a normal run (no startup banner) and only gains
+  content on a real fatal signal or uncaught exception; the modal crash dialog
+  never appears under offscreen/minimal/CI/HEADLESS/`SUTURA_NO_DIALOG`; the GUI
+  exception hooks chain to the default handler so tracebacks still reach stderr;
+  Qt warnings are no longer logged (only critical/fatal). The diagnostics
+  sanitizer matches home/user case-insensitively and also scrubs
+  `/Volumes/<name>`, `/media/<user>` and `/run/media/<user>`; the trimmed
+  crash-log tail stays valid UTF-8. A kept small separate part is now
+  informational — neutral wording, computed on the repaired mesh and reported per
+  object for a multi-object 3MF — and no longer demotes a ready repair to
+  "Repaired with notes". Report-only; no repair output changes.
 
 ## [0.9.8] - 2026-10-31
 

@@ -63,13 +63,14 @@ güvenilir şekilde algılayabilir.
   ayrıntıları), `<8`-yüz kuralının kaç bileşen kaldırdığını, toplam yüz sayısını
   ve sınırlı bir liste için her bileşenin yüz sayısını, boyutunu ve ana gövdeye
   uzaklığını verir.
-* **Şüpheli ayrı küçük parçalar işaretlenir, asla kaldırılmaz.**
-  `stage1.possible_debris`, olası kırıntıya benzeyen korunmuş bileşenleri
-  (ayrı, kapalı, dejenere olmayan ve en büyük parçanın hacminin %0,5'inden küçük)
-  yüz sayısı, hacim payı ve ana gövdeye uzaklığıyla listeler. Bu yalnızca
-  raporlamadır — hiçbir şey silinmez — çünkü enjekte edilmiş ya da başıboş küçük
-  bir parça, meşru bir parçadan geometrik olarak ayırt edilemez. `--human` raporu,
-  GUI ayrıntıları ve GUI karar notu aynı sayıları gösterir.
+* **Küçük ayrı parçalar listelenir, asla kaldırılmaz.**
+  `stage1.possible_debris`, onarılan mesh'te korunan küçük ayrı parçaları (ayrı,
+  kapalı, dejenere olmayan ve en büyük parçanın hacminin %0,5'inden küçük) yüz
+  sayısı, hacim payı ve ana gövdeye uzaklığıyla listeler. Bu yalnızca
+  bilgilendirmedir — hiçbir şey silinmez ve hüküm değişmez — çünkü başıboş küçük
+  bir parça, meşru bir parçadan (bir pim, somun, göz) geometrik olarak ayırt
+  edilemez. `--human` raporu ve GUI ayrıntıları aynı sayıları, çok nesneli 3MF'de
+  nesne başına gösterir.
 * **Yoğun eş düzlemli temaslar sınırlı bir exact geçişle analiz edilir.**
   Tek bir temas yamasında çok sayıda çakışık yüz bulunan mekanik bir parçada
   exact eş düzlemli kabuk analizi, temas kümesi başına 512 üçgen / 1.024
