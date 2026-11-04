@@ -114,6 +114,10 @@ sutura a.stl b.stl c.3mf         # toplu onarım
   üçgenlerde kalır; yeni oluşturulan üçgenlere aktarılmaz. Bir onarım bunları
   kaybederse rapor, tutulan / bırakılan / yeni sayılarıyla bunu bildirir.
   Bkz. [Kullanım](docs/guide/tr/usage.md).
+- **Ayrı küçük parçalar raporlanır, sessizce değiştirilmez.** Rapor, onarımın
+  kaldırdığı küçük bileşenleri (`< 8` yüz) boyutları ve ana gövdeye uzaklıklarıyla
+  listeler ve olası kırıntıya benzeyen korunmuş parçaları işaretler — hiçbir şey
+  silinmeden. Bkz. [Kullanım](docs/guide/tr/usage.md).
 - **Son çare katı motoru (deneysel):** `--solid-engine cdt|ftetwild` her şey
   başarısız olduğunda kullanılacak yeniden inşayı seçer (Seçenekler → Onarım
   altında da; entegrasyonlarca devralınır). Varsayılan **fTetWild** olarak

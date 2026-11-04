@@ -634,6 +634,10 @@ def _brief_note_lines(b):
             out.append('  Note: The model may not be in millimetres.')
         elif code == 'material_discarded':
             out.append('  Note: OBJ material references were not preserved.')
+        elif code == 'possible_debris':
+            out.append('  Note: %d suspicious separate part(s) were kept '
+                       '(possible debris; nothing was removed).'
+                       % a.get('count', 0))
         elif code == 'budget':
             out.append('  Note: The result was not saved because the repair '
                        'went over its size or risk limit.')
@@ -655,6 +659,50 @@ def _brief_note_lines(b):
                 out.append('  Note: Overlapping surfaces remain; the safer '
                            'repair was kept.')
     return out
+
+
+def _small_parts_lines(r):
+    """Small-part visibility for --human (report-only; nothing is removed).
+
+    (a) components the Stage-1 ``< N faces`` rule dropped, (b) suspicious
+    separate part(s) kept in the input (census rule F). Empty when neither
+    applies.
+    """
+    s1 = r.get('stage1') or {}
+    lines = []
+
+    def _dist(v):
+        return ('%.3g mm' % v) if v is not None else 'n/a'
+
+    rem = s1.get('removed_small_parts')
+    if rem and rem.get('count'):
+        lines.append('')
+        lines.append('Small parts removed (< %d faces): %d component(s), %d face(s)'
+                     % (rem.get('min_faces', 8), rem['count'],
+                        rem.get('faces_total', 0)))
+        for p in rem.get('parts', []):
+            pct = (' (%.3g%% of model)' % p['size_pct']
+                   if p.get('size_pct') is not None else '')
+            lines.append('  %d face(s), size %.3g mm%s, %s from the main body'
+                         % (p['faces'], p.get('size_mm', 0.0), pct,
+                            _dist(p.get('distance_mm'))))
+        extra = rem['count'] - len(rem.get('parts', []))
+        if extra > 0:
+            lines.append('  ... (%d more not listed)' % extra)
+    pd = s1.get('possible_debris')
+    if pd and pd.get('count'):
+        lines.append('')
+        lines.append('Suspicious separate part(s) kept: %d '
+                     '(possible debris; nothing was removed)' % pd['count'])
+        for p in pd.get('parts', []):
+            lines.append('  %d face(s), %.3g%% of the largest volume, %s from '
+                         'the main body'
+                         % (p['faces'], p.get('volume_pct') or 0.0,
+                            _dist(p.get('distance_mm'))))
+        extra = pd['count'] - len(pd.get('parts', []))
+        if extra > 0:
+            lines.append('  ... (%d more not listed)' % extra)
+    return lines
 
 
 def _attribute_lines(r):
@@ -760,6 +808,7 @@ def human_report(r, show_defects=False, show_diff=False):
         lines.append('Material: input OBJ has mtllib/usemtl references which '
                      'are not preserved in the repaired output.')
     lines.extend(_attribute_lines(r))
+    lines.extend(_small_parts_lines(r))
     lines.append('')
     lines.append('Stage 1 (MeshLab):')
     lines.append('  Holes closed            : %d' % s1.get('holes_closed', 0))

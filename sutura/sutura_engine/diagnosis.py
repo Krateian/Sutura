@@ -75,6 +75,7 @@ class ObjectAnalysis:
     classifier_engine: str = ''
     classifier_version: str = ''
     diagnosis_v2: Optional[dict] = None
+    possible_debris: Optional[dict] = None
 
 
 # --- Classifier Glue --------------------------------------------------------
@@ -437,6 +438,12 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
     except Exception:
         analysis.diagnosis_v2 = None
 
+    try:
+        from sutura_engine import debris as _debris
+        analysis.possible_debris = _debris.possible_debris(v, t)
+    except Exception:
+        analysis.possible_debris = None
+
     if use_cache and m_hash and cache.is_cache_enabled():
         cache.put_cached_analysis(m_hash, cache_key, to_dict(analysis))
 
@@ -461,6 +468,7 @@ def combine(objs: Sequence[ObjectAnalysis]) -> ObjectAnalysis:
     c = dataclasses.replace(objs[0])
     c.model = None
     c.diagnosis_v2 = None
+    c.possible_debris = None
     c.faces = max(o.faces for o in objs)
     c.vertices = max(o.vertices for o in objs)
     c.components = max(o.components for o in objs)
@@ -505,4 +513,6 @@ def to_dict(analysis: ObjectAnalysis) -> dict:
         'classifier_version': analysis.classifier_version,
         **({'diagnosis_v2': analysis.diagnosis_v2}
            if analysis.diagnosis_v2 is not None else {}),
+        **({'possible_debris': analysis.possible_debris}
+           if analysis.possible_debris is not None else {}),
     }
