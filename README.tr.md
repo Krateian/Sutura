@@ -53,8 +53,9 @@ yöneticisinde sağ tıkla ya da bir OrcaSlicer eklentisiyle.
 - **Yalnızca bozuk olanı onarır.** Delikler, yanlış birleşmiş kenarlar, ters
   yüzler, üst üste binen ya da kendini kesen parçalar ve kopuk döküntüler
   onarılır; temiz bir model değişmeden geçer.
-- **Girdiden asla kötü değil.** Her onarım adımı, yalnızca sonucu onarımın o
-  ana kadarki halinden en az onun kadar iyiyse benimsenir; değilse atılır.
+- **Topoloji ve şekil korumalarında asla kötü değil.** Her onarım adayı,
+  yalnızca katı kusur, patlama ve şekil sınırlarını geçtiğinde benimsenir;
+  değilse atılır (bkz. ["Daha kötü değil" neleri kapsar](docs/guide/tr/how-it-works.md#daha-kötü-değil-neleri-kapsar)).
 - **Dürüst sonuç.** Sonuç su geçirmez denmeden önce yeniden yüklenip tekrar
   kontrol edilir; rapor neyin düzeltildiğini, neyin kaldığını ve şeklin ne
   kadar değiştiğini gösterir.
