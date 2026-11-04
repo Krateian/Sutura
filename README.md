@@ -54,8 +54,9 @@ OrcaSlicer plugin.
   overlapping or self-intersecting parts and loose debris are treated; a clean
   model passes through unchanged.
 - **Topology guaranteed not to worsen.** Every repair candidate is adopted only
-  when it strictly reduces holes and defect edges without mesh blow-ups; otherwise
-  it is discarded (see [what "no worse" covers](docs/guide/how-it-works.md#what-no-worse-covers)).
+  when defect counts do not rise (no increase in holes or non-manifold edges,
+  with many tiers requiring zero remaining defects) without mesh blow-ups;
+  otherwise it is discarded (see [what "no worse" covers](docs/guide/how-it-works.md#what-no-worse-covers)).
 - **Shape transparency.** If severe damage forces an aggressive solid rebuild
   (such as fTetWild), the report-only **Fidelity score** alerts you exactly
   where and how much the surface moved.

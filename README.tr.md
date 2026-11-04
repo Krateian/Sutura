@@ -54,8 +54,9 @@ yöneticisinde sağ tıkla ya da bir OrcaSlicer eklentisiyle.
   yüzler, üst üste binen ya da kendini kesen parçalar ve kopuk döküntüler
   onarılır; temiz bir model değişmeden geçer.
 - **Topoloji ve şekil kontrollerinde geriye gitmez.** Her onarım adayı,
-  yalnızca delikleri ve kusurları kesin olarak azalttığında ve patlama sınırlarını
-  geçtiğinde benimsenir; aksi halde reddedilir (bkz. ["Daha kötü yapmama" ilkesi neleri kapsar](docs/guide/tr/how-it-works.md#daha-kötü-yapmama-no-worse-ilkesi-neleri-kapsar)).
+  yalnızca topolojik kusurlar kötüleşmediğinde (delik veya non-manifold kenar
+  sayısı artmaz; birçok katmanda sıfır kusur şartı aranır) ve patlama sınırları
+  aşılmadığında benimsenir; aksi halde reddedilir (bkz. ["Daha kötü yapmama" ilkesi neleri kapsar](docs/guide/tr/how-it-works.md#daha-kötü-yapmama-no-worse-ilkesi-neleri-kapsar)).
 - **Şekil şeffaflığı.** Ağır hasar modeli yeniden inşa etmeye zorlarsa
   (örneğin fTetWild ile), raporlama amaçlı **Sadakat puanı** yüzeyin nerede ve
   ne kadar değiştiğini açıkça gösterir.

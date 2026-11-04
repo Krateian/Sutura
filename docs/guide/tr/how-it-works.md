@@ -246,10 +246,10 @@ benimsenir; yani aşamalı işlem hattı her zaman güvenilir bir güvenlik ağ�
 
 ## "Daha kötü yapmama" (no-worse) ilkesi neleri kapsar
 
-Sutura'nın "daha kötü yapmama" (no-worse) ilkesi, doğrudan **onarım süreci sırasındaki aday benimseme korumalarını** kapsar: onarım adayları yalnızca topolojik kusurları azalttıklarında ve ağ karmaşıklığını patlatmadıklarında benimsenir; topoloji ve şekil kontrollerinde geriye gitmez. Böylece otomatik bir onarım adımının, modeli önceki halinden daha fazla delikli veya non-manifold kenarlı bırakması engellenir.
+Sutura'nın "daha kötü yapmama" (no-worse) ilkesi, doğrudan **onarım süreci sırasındaki aday benimseme korumalarını** kapsar: onarım adayları yalnızca topolojik kusurlar kötüleşmediğinde (kusur sayılarında artış olmaması; Graft, Dressing, Splint, Coaptation ve CDT gibi katmanlar kesinlikle sıfır kusur, Flap ve Tamponade ise kusurların kesin azalmasını şart koşar) ve ağ karmaşıklığı patlamadığında benimsenir; topoloji ve şekil kontrollerinde geriye gitmez. Böylece otomatik bir onarım adımının, modeli önceki halinden daha fazla delikli veya non-manifold kenarlı bırakması engellenir.
 
 Ancak "daha kötü yapmama" ilkesi, ağır hasarlı modellerde her mikroskobik yüzey ayrıntısının veya boyutsal toleransın mutlak korunacağı anlamına gelen genel bir vaat değildir:
-1. **Topolojik benimseme korumaları (çalışma anında zorunlu):** Her ara adım kusur sayılarını (delikler, non-manifold kenarlar) kesinlikle azaltmalı ve katı yüz, vertex, bileşen ve hacim sınırları içinde kalmalıdır. Aday korumalardan herhangi birine takılırsa derhal reddedilir.
+1. **Topolojik benimseme korumaları (çalışma anında zorunlu):** Her ara adım kusurların artmamasını güvenceye almalı (aday kusur sayısı ≤ taban; birçok katmanda kesinlikle sıfır delik ve non-manifold kenar aranır) ve katı yüz, vertex, bileşen ve hacim sınırları içinde kalmalıdır. Aday korumalardan herhangi birine takılırsa derhal reddedilir.
 2. **Şekil Sadakati (yalnızca raporlama):** Ağır hasarlar Sutura'yı agresif katı yeniden inşasına zorlarsa (örneğin fTetWild, Splint veya büyük Tamponade tıkaçları), nihai ağ basılabilir ve manifold hale gelir ancak şekli kaymış olabilir. Yalnızca raporlama amaçlı **Sadakat puanı** bu sapmayı ölçer ve başlıkta `şekil değişti` ya da `tahmini alanlar - kontrol edin` uyarısı verir. Sadakat puanı bir benimseme engeli değildir.
 
 ### Katman bazında benimseme korumaları
