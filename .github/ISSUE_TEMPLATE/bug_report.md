@@ -29,11 +29,17 @@ Paste the `--human` report (or the JSON from the plain command) here:
 
 What did you expect to happen, and what happened instead?
 
-## Environment
+## Diagnostics archive
 
-- OS / distro:
-- Python version (`python3 --version`):
-- Sutura version (if from git, the commit or tag):
+Please generate and attach a diagnostics archive instead of hand-typed environment info:
+- CLI: run `sutura --diagnostics sutura-diag.zip`
+- GUI: click the **Diagnostics** button
+
+Attach `sutura-diag.zip` to this issue.
+
+## Crash log (optional)
+
+If Sutura crashed or terminated unexpectedly, attach `crash.log (see Troubleshooting)`.
 
 ## Attach the mesh (if possible)
 
