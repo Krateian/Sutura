@@ -901,13 +901,15 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     stats['stage1']['faces_removed'] = max(before.get('faces_number', 0) - after.get('faces_number', 0), 0)
     stats['stage1']['applied_filters'] = applied
     # Report-only small-part visibility (no geometry change): what the <N-face
-    # rule dropped from the adopted chain, and which surviving input parts look
-    # like possible debris (census rule F). See sutura_engine.debris.
+    # rule dropped from the adopted chain, and which surviving parts of the
+    # repaired mesh look like small separate parts (census rule F). Measured on
+    # the adopted stage-1 output, not the raw input, so parts merged or removed
+    # by the chain are not reported as ghost survivors.
     stats['stage1']['removed_small_parts'] = _debris_sink.get('removed_small_parts')
     try:
         from sutura_engine import debris as _debris_mod
         stats['stage1']['possible_debris'] = _debris_mod.possible_debris(
-            _s1_in_v, _s1_in_t, min_faces=_p['mincomponentsize'])
+            cur_v, cur_t, min_faces=_p['mincomponentsize'])
     except Exception:
         stats['stage1']['possible_debris'] = None
     if skipped:

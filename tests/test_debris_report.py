@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.join(REPO, 'sutura'))
 
 from sutura_engine import debris  # noqa: E402
 import classification  # noqa: E402
-from sutura_engine.pipeline.report import human_report  # noqa: E402
+from sutura_engine.pipeline.report import (  # noqa: E402
+    _small_parts_lines, human_report)
 
 
 def _box(cx, cy, cz, s):
@@ -115,15 +116,53 @@ def _result():
     }
 
 
-def test_brief_note_and_human_render():
+def test_human_render_and_info_only():
     b = classification.brief(_result())
     codes = {n['code'] for n in b['notes']}
-    assert 'possible_debris' in codes, b['notes']
+    # Informational: a kept small part is not a "note" and cannot demote the
+    # verdict to "Repaired with notes".
+    assert 'possible_debris' not in codes, b['notes']
     text = human_report(_result())
     assert 'Small parts removed (< 8 faces): 1 component(s), 4 face(s)' in text, text
     assert '4 face(s), size' in text and 'from the main body' in text, text
-    assert 'Suspicious separate part(s) kept: 1' in text, text
-    assert 'nothing was removed' in text, text
+    assert 'Small separate part(s) kept: 1 (check if intended)' in text, text
+    assert 'Suspicious' not in text and 'nothing was removed' not in text, text
+
+
+def test_possible_debris_does_not_demote_ready():
+    r = {
+        'input': 'i', 'output': 'o',
+        'stage1': {'two_manifold': True, 'holes_remaining': 0,
+                   'components': 2, 'components_before': 2,
+                   'possible_debris': {'count': 1}},
+        'stage2': {'ok': True},
+        'print_report': {'fixed': [], 'issues': [], 'advisories': [],
+                         'geometry': {'components_before': 2,
+                                      'components_after': 2}},
+    }
+    b = classification.brief(r)
+    assert b['verdict'] == 'ready', b
+    assert 'possible_debris' not in {n['code'] for n in b['notes']}, b['notes']
+
+
+def test_small_parts_per_object_for_multi_object_3mf():
+    r = {
+        'stage1': {'possible_debris': {'count': 1}},
+        'object_reports': [
+            {'model': '3D/Objects/a.model',
+             'stage1': {'removed_small_parts': {'count': 1, 'min_faces': 8,
+                                                'faces_total': 3, 'parts': []}}},
+            {'model': '3D/Objects/b.model',
+             'stage1': {'possible_debris': {'count': 1, 'parts': []}}},
+        ],
+    }
+    lines = _small_parts_lines(r)
+    text = '\n'.join(lines)
+    assert 'Small parts (3D/Objects/a.model):' in text, text
+    assert 'Small parts (3D/Objects/b.model):' in text, text
+    assert 'Small parts removed' in text and 'Small separate part' in text, text
+    # The top-level stage1 (object 0) is not used when per-object reports exist.
+    assert 'Small separate part(s) kept: 1 (check if intended)' in text, text
 
 
 def test_no_lines_when_nothing_flagged():
@@ -132,7 +171,7 @@ def test_no_lines_when_nothing_flagged():
     r['stage1']['possible_debris'] = None
     text = human_report(r)
     assert 'Small parts removed' not in text
-    assert 'Suspicious separate part' not in text
+    assert 'Small separate part' not in text
     b = classification.brief(r)
     assert not any(n['code'] == 'possible_debris' for n in b['notes']), b['notes']
 

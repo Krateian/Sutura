@@ -122,8 +122,9 @@ sutura a.stl b.stl c.3mf         # batch
   See [Usage](docs/guide/usage.md).
 - **Separate small parts are reported, never silently changed.** The report
   lists the tiny components the repair removed (`< 8` faces) with their size and
-  distance to the main body, and flags kept parts that look like possible debris
-  — without deleting anything. See [Usage](docs/guide/usage.md).
+  distance to the main body, and lists small separate parts kept
+  (informational, no verdict change) — without deleting anything. See
+  [Usage](docs/guide/usage.md).
 - **One verdict per repair.** Both the CLI and the GUI show a single headline
   verdict (shape check folded in), with the full report available behind
   **Details** and localized in English and Turkish. See

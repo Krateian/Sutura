@@ -322,11 +322,8 @@ def _brief_notes(data, issues, pr):
     if attrs is not None and attrs['dropped'] > 0:
         add('attribute_loss', dropped=attrs['dropped'], kept=attrs['kept'],
             new_without=attrs['new_without'])
-    # Suspicious separate part(s) kept in the input (census rule F); report-only,
-    # never removed. See sutura_engine.debris.
-    pd = (data.get('stage1') or {}).get('possible_debris') or {}
-    if pd.get('count'):
-        add('possible_debris', count=pd.get('count'))
+    # A kept small separate part is informational only (rendered in the report
+    # details); it never demotes a ready repair to "notes".
     b = data.get('budget')
     if isinstance(b, dict) and b.get('within_budget') is False:
         add('budget')
