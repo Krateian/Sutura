@@ -154,6 +154,9 @@ DEFAULT_CONFIG = {
     'coaptation': True,
     # Self-intersection policy used by the GUI's initial combo: report/repair/off.
     'si_mode': 'report',
+    # Opt-in per-model fallback ordering (--auto-reorder / Options > Methods).
+    # Off by default: the measured effect was neutral, so it stays opt-in.
+    'auto_reorder': False,
 }
 
 

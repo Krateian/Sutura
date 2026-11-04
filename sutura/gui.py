@@ -4075,7 +4075,7 @@ class MethodControlPanel(QWidget):
         self.chk_auto_reorder.setToolTip(_t('method_panel_auto_reorder_tip'))
         self.chk_auto_reorder.setChecked(
             bool(updater.load_config().get('auto_reorder', False)))
-        self.chk_auto_reorder.toggled.connect(self._save_auto_reorder)
+        self.chk_auto_reorder.toggled.connect(lambda _on: self._update_apply())
         a.addWidget(self.chk_auto_reorder)
         self.lst_auto = QListWidget()
         self.lst_auto.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -4194,6 +4194,10 @@ class MethodControlPanel(QWidget):
         return True if widget is None else bool(widget.isChecked())
 
     def reload(self):
+        self.chk_auto_reorder.blockSignals(True)
+        self.chk_auto_reorder.setChecked(
+            bool(updater.load_config().get('auto_reorder', False)))
+        self.chk_auto_reorder.blockSignals(False)
         self.lst_auto.clear()
         self._auto_items = {}
         order = []
@@ -4408,6 +4412,7 @@ class MethodControlPanel(QWidget):
                 self._effective = self._policy_mod.write_user_policy(
                     {'order': {'deep_tier_order': tiers}})
                 self._user_written = True
+                self._save_auto_reorder(self.chk_auto_reorder.isChecked())
                 self.warn.setText(_t('method_panel_saved'))
                 self._refresh_status()
             except Exception as exc:
@@ -4433,6 +4438,7 @@ class MethodControlPanel(QWidget):
         except Exception as exc:
             self._show_write_error(exc)
             return
+        self._save_auto_reorder(False)
         self.reload()
         if getattr(self._policy_mod, 'LAST_WRITE_WARNING', None):
             self.warn.setText(_t('method_panel_reset_recovered'))

@@ -65,6 +65,54 @@ def test_reorder_never_raises():
         triage._methods_mod = orig
 
 
+class _FakeMethodsEmpty:
+    @staticmethod
+    def suggest_methods(analysis, top_n=3):
+        return []
+
+
+def test_reorder_empty_suggestions_keeps_order():
+    orig = triage._methods_mod
+    triage._methods_mod = lambda: _FakeMethodsEmpty
+    try:
+        recs = [_Rec(4), _Rec(9), _Rec(1)]
+        out = triage._auto_reorder_recs(recs, object())
+    finally:
+        triage._methods_mod = orig
+    assert [r.num for r in out] == [4, 9, 1], [r.num for r in out]
+
+
+def test_reorder_keeps_omitted_relative_order():
+    orig = triage._methods_mod
+    triage._methods_mod = lambda: _FakeMethods
+    try:
+        recs = [_Rec(13), _Rec(16), _Rec(7), _Rec(2), _Rec(3)]
+        out = triage._auto_reorder_recs(recs, object())
+    finally:
+        triage._methods_mod = orig
+    nums = [r.num for r in out]
+    assert nums[:3] == [13, 7, 3], nums
+    assert nums[3:] == [16, 2], nums  # omitted keep their previous order
+
+
+class _FakeMethodsFtwetwildFirst:
+    @staticmethod
+    def suggest_methods(analysis, top_n=3):
+        return [{'num': 7}, {'num': 13}, {'num': 1}]
+
+
+def test_apply_reorder_keeps_graft_before_ftetwild():
+    orig = triage._methods_mod
+    triage._methods_mod = lambda: _FakeMethodsFtwetwildFirst
+    try:
+        recs = [_Rec(13), _Rec(7), _Rec(1)]
+        out = triage._apply_auto_reorder(recs, object())
+    finally:
+        triage._methods_mod = orig
+    nums = [r.num for r in out]
+    assert nums.index(13) < nums.index(7), nums
+
+
 def _sha(path):
     h = hashlib.sha256()
     with open(path, 'rb') as f:

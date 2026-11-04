@@ -273,8 +273,8 @@ kapı tabloları kilitli ve salt okunur gösterilir.
 kutusu ve CLI `--auto-reorder` bayrağıdır: **otomatik yedek** yöntemleri model
 başına öneri sıralamasına göre yeniden sıralar. Yalnızca yedek deneme sırası
 değişir — temel işlem hattı ve derin onarım sırası değişmez ve Graft yine
-fTetWild’dan önce gelir. Varsayılan olarak KAPALI gelir ve herhangi bir varsayılan
-değişikliğinden önce ölçülür.
+fTetWild’dan önce gelir (çok nesneli 3MF’de de). Varsayılan olarak KAPALI gelir
+ve herhangi bir varsayılan değişikliğinden önce ölçülür.
 
 ![Yöntem denetim paneli: salt okunur otomatik sıra, elle sıra ve kilitli kapılar](../../../assets/methods-panel.png)
 

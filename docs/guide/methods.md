@@ -275,7 +275,8 @@ read-only with a lock.
 flag `--auto-reorder`: it reorders the **automatic fallback** methods per model
 from the suggested-method ranking. Only the fallback attempt order changes — the
 baseline pipeline and the deep-repair ladder are unchanged, and Graft still
-precedes fTetWild. It ships OFF and is measured before any default change.
+precedes fTetWild (also in multi-object 3MF). It ships OFF and is measured
+before any default change.
 
 ![Method control panel: read-only automatic ladder, manual sequence and locked gates](../../assets/methods-panel.png)
 
