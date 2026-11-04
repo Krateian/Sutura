@@ -78,6 +78,7 @@ _DEFAULTS = {
         'volume_change_scale_pct': 15.0,
         'bbox_scale_pct': 5.0,
         'invented_scale_fraction': 0.05,
+        'invented_tol_pct': 1.0,
         'change_tol_factor': 3.0,
         'tiers': {'high': 85, 'mid': 60},
         'low_confidence': {

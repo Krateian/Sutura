@@ -565,8 +565,11 @@ STRINGS = {
                                              'preserved'),
         'fidelity_verdict_changed': ('Repaired, shape changed in %d area(s) '
                                      '- check'),
+        'fidelity_verdict_changed_no_area': 'Repaired, shape changed - check',
         'fidelity_verdict_low_confidence': (
             'Repaired, shape changed in %d guessed area(s) - check'),
+        'fidelity_verdict_low_confidence_no_area': (
+            'Repaired, shape may be rebuilt - check'),
         'fidelity_verdict_not_repaired': 'Not fully repaired',
         'fidelity_verdict_unavailable': 'Shape check unavailable',
         # Details body (the collapsible report); values stay verbatim.
@@ -1501,8 +1504,13 @@ STRINGS = {
                                              'korundu'),
         'fidelity_verdict_changed': ('Onarıldı, %d bölgede şekil değişti '
                                      '- kontrol edin'),
+        'fidelity_verdict_changed_no_area': (
+            'Onarıldı, şekil değişti - kontrol edin'),
         'fidelity_verdict_low_confidence': (
             'Onarıldı, %d bölge tahminle yeniden oluşturuldu - kontrol edin'),
+        'fidelity_verdict_low_confidence_no_area': (
+            'Onarıldı, şekil tahminle yeniden oluşturulmuş olabilir - kontrol '
+            'edin'),
         'fidelity_verdict_not_repaired': 'Tam onarılmadı',
         'fidelity_verdict_unavailable': 'Şekil kontrolü kullanılamıyor',
         'detail_output': 'Çıktı dosyası: %s',
@@ -6533,7 +6541,10 @@ class MainWindow(QMainWindow):
         if code in ('ready', 'notes'):
             _verdict_text = _t('brief_' + code)
         elif code in ('changed', 'low_confidence'):
-            _verdict_text = _t('fidelity_verdict_' + code, hv['areas'])
+            if int(hv['areas'] or 0) > 0:
+                _verdict_text = _t('fidelity_verdict_' + code, hv['areas'])
+            else:
+                _verdict_text = _t('fidelity_verdict_' + code + '_no_area')
         else:
             _verdict_text = _t('fidelity_verdict_' + code)
         self.report_verdict.setText('%s %s' % (symbol, _verdict_text))

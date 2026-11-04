@@ -116,6 +116,16 @@ All notable changes to this project are documented here.
   object for a multi-object 3MF — and no longer demotes a ready repair to
   "Repaired with notes". Report-only; no repair output changes.
 
+- **Fidelity review fixes.** A mesh with no measurable healthy skin now reports
+  Fidelity `unavailable` instead of a fabricated 100; invalid closest-point
+  results are dropped rather than mapped to face 0; area sampling is no longer
+  capped by the face count and filters the defect mask before the CDF; the
+  0.1 mm detail floor scales with the bounding-box diagonal; reduced-budget
+  meshes no longer invent a "1 area" count; low-confidence wins the multi-object
+  headline; and the aggregate verdict follows semantic severity
+  (`not_repaired` > `low_confidence` > `changed` > `preserved`). Report-only;
+  no repair output change.
+
 ## [0.9.8] - 2026-10-31
 
 ### Added

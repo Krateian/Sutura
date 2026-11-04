@@ -754,8 +754,11 @@ _FIDELITY_VERDICT_TEXT = {
     'preserved': 'Repaired, shape preserved',
     'preserved_notes': 'Repaired with notes \u2014 shape preserved',
     'changed': 'Repaired, shape changed in %d area(s) - check',
+    'changed_no_area': 'Repaired, shape changed - check',
     'low_confidence': ('Repaired, shape changed in %d guessed area(s) '
                        '- check'),
+    'low_confidence_no_area': ('Repaired, shape may be rebuilt '
+                               '- check'),
     'not_repaired': 'Not fully repaired',
     'unavailable': 'Shape check unavailable',
 }
@@ -765,7 +768,10 @@ def fidelity_verdict_text(code, areas=0):
     """Plain-language Fidelity verdict (English; the GUI localizes it)."""
     code = code or 'unavailable'
     if code in ('changed', 'low_confidence'):
-        return _FIDELITY_VERDICT_TEXT[code] % int(areas or 0)
+        n = int(areas or 0)
+        if n <= 0:
+            return _FIDELITY_VERDICT_TEXT[code + '_no_area']
+        return _FIDELITY_VERDICT_TEXT[code] % n
     return _FIDELITY_VERDICT_TEXT.get(code,
                                       _FIDELITY_VERDICT_TEXT['unavailable'])
 

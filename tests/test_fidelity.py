@@ -116,17 +116,20 @@ def test_scaled_shape_scores_lower():
     v, t = _box()
     r = fidelity.compute((v, t), (v * 1.01, t), _REPORT)
     assert r['repair_fidelity'] is not None
-    assert r['repair_fidelity'] < 100, r
+    assert r['repair_fidelity'] == 33, r
     # A 1 % size change stays within the calibrated 1 %-of-diagonal gate: the
     # score drops but the verdict remains preserved (no cry-wolf).
     assert r['repair_verdict_code'] == 'preserved', r
+    assert r['repair_verdict_areas'] == 0, r
     assert r['repair_fidelity_factors']['healthy_distance']['penalty'] > 0
 
 
 def test_scaled_shape_above_gate_is_changed():
     v, t = _box()
     r = fidelity.compute((v, t), (v * 1.06, t), _REPORT)
-    assert r['repair_verdict_code'] in ('changed', 'low_confidence'), r
+    assert r['repair_fidelity'] == 0, r
+    assert r['repair_verdict_code'] == 'low_confidence', r
+    assert r['repair_verdict_areas'] == 1, r
     assert r['repair_fidelity_metrics']['healthy_distance_max_pct'] > 1.0, r
 
 
@@ -134,7 +137,9 @@ def test_small_hole_keeps_high_fidelity():
     v, t = _box(hole=True)
     vf, tf = _box()
     r = fidelity.compute((v, t), (vf, tf), _REPORT)
-    assert r['repair_fidelity'] is not None and r['repair_fidelity'] >= 80, r
+    assert r['repair_fidelity'] == 98, r
+    assert r['repair_verdict_code'] == 'preserved', r
+    assert r['repair_verdict_areas'] == 2, r
     assert r['repair_verdict_low_confidence'] is False, r
 
 
@@ -142,9 +147,10 @@ def test_big_hole_is_low_confidence():
     v, t = _box(open_top=True)
     vf, tf = _box()
     r = fidelity.compute((v, t), (vf, tf), _REPORT)
+    assert r['repair_fidelity'] == 90, r
     assert r['repair_verdict_low_confidence'] is True, r
     assert r['repair_verdict_code'] == 'low_confidence', r
-    assert r['repair_verdict_areas'] >= 1
+    assert r['repair_verdict_areas'] == 1, r
     assert 'invented_area' in r['repair_verdict_reasons']
 
 
@@ -181,14 +187,16 @@ def test_parity_with_verify_surface_metrics():
         print('surface_metrics unavailable; skipping parity')
         return
     v, t = _box()
-    m = sm.measure(v, t, v, t, _REPORT)
-    assert abs(m['feature_recall'] - 1.0) < 1e-12, m
-    assert abs(m['healthy_fill_mm3']) < 1e-9, m
-    assert abs(m['healthy_removed_mm3']) < 1e-9, m
-    r = fidelity.compute((v, t), (v, t), _REPORT)
-    assert r['repair_fidelity_metrics']['feature_recall'] == 1.0
-    assert r['repair_fidelity_metrics']['healthy_fill_fraction'] == 0.0
-    assert r['repair_fidelity_metrics']['healthy_removed_fraction'] == 0.0
+    from defects import detect
+    vo = v + np.array([0.02, 0.0, 0.0])
+    m = sm.measure(v, t, vo, t, detect(v, t, with_indices=True))
+    r = fidelity.compute((v, t), (vo, t), _REPORT)
+    assert abs(m['feature_recall'] - r['repair_fidelity_metrics'][
+        'feature_recall']) < 1e-6, (m, r)
+    # The lean fill uses a smaller lattice; require agreement within 1 mm3
+    # (surface_metrics reports 0.6 mm3 on this shift, the lean pass 0.0).
+    assert abs((m['healthy_fill_mm3'] or 0.0)) < 1.0, m
+    assert abs((m['healthy_removed_mm3'] or 0.0)) < 1.0, m
 
 
 def test_aggregate_worst_object():
@@ -217,6 +225,116 @@ def test_aggregate_worst_object():
     assert agg['repair_fidelity'] == 0, agg
     assert agg['repair_verdict_code'] == 'low_confidence', agg
     assert agg['repair_fidelity_metrics']['worst_object'] == 1, agg
+
+
+def test_fully_defective_input_is_unavailable():
+    vi = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    ti = np.array([[0, 1, 2]])
+    vo, to = _box()
+    r = fidelity.compute((vi, ti), (vo, to), _REPORT)
+    assert r['repair_fidelity'] is None, r
+    # There is no healthy baseline, but the invented/new surface is a guess:
+    # low_confidence is the honest headline, not a fabricated score.
+    assert r['repair_verdict_code'] == 'low_confidence', r
+    assert r['repair_verdict_low_confidence'] is True, r
+
+
+def test_invalid_closest_indices_are_dropped():
+    v, t = _box()
+    geom = fidelity.sutura_geom
+    orig = geom.closest_points
+    def fake(vi, ti, pts):
+        return pts, np.zeros(len(pts)), np.full(len(pts), -1)
+    geom.closest_points = fake
+    try:
+        r = fidelity.compute((v, t), (v, t), _REPORT)
+    finally:
+        geom.closest_points = orig
+    assert r['repair_fidelity'] is None, r
+    assert r['repair_verdict_code'] == 'unavailable', r
+
+
+def test_area_samples_are_not_capped_by_face_count():
+    v, t = _box()
+    pts, _n, _w, idx = fidelity._area_samples(v, t, 4000)
+    assert len(pts) == 4000 and len(idx) == 4000
+    mask = np.zeros(len(t), dtype=bool)
+    mask[::2] = True
+    pts2, _n2, _w2, idx2 = fidelity._area_samples(v, t, 4000, face_mask=mask)
+    assert len(pts2) == 4000 and len(idx2) == 4000
+    assert not mask[idx2].any()
+
+
+def test_large_mesh_skips_healthy_mask():
+    v, t = _box()
+    cfg = fidelity.load_config({'fidelity': {'budgets': {'max_faces': 1}}})
+    r = fidelity.compute((v, t), (v, t), _REPORT, config=cfg)
+    assert r['repair_fidelity'] is None, r
+    assert 'healthy mask skipped (large mesh)' in (r['repair_fidelity_note'] or ''), r
+
+
+def test_fill_basis_is_translation_invariant():
+    v, t = _box()
+    vo = v + np.array([0.2, 0.0, 0.0])
+    mask = np.zeros(len(t), dtype=bool)
+    b = fidelity._DEFAULTS['fidelity']['budgets']
+    tol = fidelity._detail_tol(v)
+    a = fidelity._healthy_fill(v, t, vo, t, mask, tol, b, 600, 6)
+    sh = np.array([100.0, 100.0, 100.0])
+    c = fidelity._healthy_fill(v + sh, t, vo + sh, t, mask, tol, b, 600, 6)
+    assert a.get('fill_fraction') is not None, a
+    assert abs(a['fill_fraction'] - c['fill_fraction']) < 1e-9, (a, c)
+    assert abs(a['removed_fraction'] - c['removed_fraction']) < 1e-9, (a, c)
+
+
+def test_aggregate_semantic_verdict_and_low_confidence():
+    failed = {'repair_fidelity': 90, 'repair_verdict_code': 'not_repaired',
+              'repair_verdict_areas': 0, 'repair_verdict_low_confidence': False,
+              'repair_verdict_reasons': [],
+              'repair_fidelity_metrics': {'changed_areas': 0,
+                                          'low_confidence_areas': 0}}
+    good = {'repair_fidelity': 70, 'repair_verdict_code': 'preserved',
+            'repair_verdict_areas': 0, 'repair_verdict_low_confidence': False,
+            'repair_verdict_reasons': [],
+            'repair_fidelity_metrics': {'changed_areas': 0,
+                                        'low_confidence_areas': 0}}
+    agg = fidelity._aggregate([good, failed])
+    assert agg['repair_verdict_code'] == 'not_repaired', agg
+    assert agg['repair_fidelity'] is None, agg
+    changed = {'repair_fidelity': 65, 'repair_verdict_code': 'changed',
+               'repair_verdict_areas': 2, 'repair_verdict_low_confidence': False,
+               'repair_verdict_reasons': [],
+               'repair_fidelity_metrics': {'changed_areas': 2,
+                                           'low_confidence_areas': 0}}
+    guessed = {'repair_fidelity': 75, 'repair_verdict_code': 'low_confidence',
+               'repair_verdict_areas': 1, 'repair_verdict_low_confidence': True,
+               'repair_verdict_reasons': ['invented_area'],
+               'repair_fidelity_metrics': {'changed_areas': 1,
+                                           'low_confidence_areas': 1}}
+    agg = fidelity._aggregate([changed, guessed])
+    assert agg['repair_verdict_code'] == 'low_confidence', agg
+    assert agg['repair_verdict_low_confidence'] is True, agg
+
+
+def test_no_fabricated_area_when_reduced():
+    from sutura_engine.pipeline.report import fidelity_verdict_text
+    code, areas = fidelity._verdict(
+        50.0, _REPORT, False, [], 0, fidelity.load_config(), max_pct=2.0)
+    assert code == 'changed' and areas == 0, (code, areas)
+    assert fidelity_verdict_text('changed', 0) == (
+        'Repaired, shape changed - check')
+    assert fidelity_verdict_text('low_confidence', 0) == (
+        'Repaired, shape may be rebuilt - check')
+
+
+def test_detail_tol_scales_both_ways():
+    v, t = _box()
+    tol = fidelity._detail_tol(v)
+    assert abs(tol - 0.002 * fidelity._bbox_diag(v)) < 1e-12
+    vs = v * 0.02
+    assert abs(fidelity._detail_tol(vs) - 0.002 * fidelity._bbox_diag(vs)) < 1e-12
+    vl = v * 100.0
+    assert abs(fidelity._detail_tol(vl) - 0.1) < 1e-12
 
 
 def test_human_report_headline():

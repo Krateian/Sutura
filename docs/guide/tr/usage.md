@@ -224,7 +224,12 @@ klasik güven skorundan bağımsız, ayrı bir skorlama sistemi
   ayrıntısı analiz bütçesinin altındaki mesh'lerde ölçülür; daha büyük
   mesh'ler skoru ve hükmü korur ama alan sayısını kullanılamaz olarak bildirir;
   aynı nedenle çok büyük mesh'lerde keskin kenar terimi de atlanır ve
-  `repair_fidelity_note` bunu belirtir.
+  `repair_fidelity_note` bunu belirtir. Girdide ölçülebilir sağlıklı yüzey
+  yoksa (veya tüm en-yakın-nokta sonuçları geçersizse) skor `unavailable`
+  olur, asla uydurma 100 değil. Çok nesneli dosyalarda düşük-güvenilirlikli
+  nesne dosya başlığını belirler. 0,1 mm ayrıntı toleransı sınır kutusu
+  köşegeninin `%0,2`'siyle sınırlanır; minyatürler ve metre ölçekli dışa
+  aktarımlar doğru ölçeklenir.
 
 `--human` bu tek hükmü kendi satırında, ardından sayıları
 (`Health: X/100   Risk: Y/100   Fidelity: Z/100`) yazdırır; sayılar artık hükmü

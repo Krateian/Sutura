@@ -131,7 +131,13 @@ def _bbox_diag(v):
 
 
 def _detail_tol(v):
-    return max(DETAIL_TOL_MM, DETAIL_TOL_FRACTION * _bbox_diag(v))
+    diag = _bbox_diag(v)
+    if diag <= 0.0:
+        return DETAIL_TOL_MM
+    # The 0.1 mm floor must not dominate a miniature (2 mm) or a metre-scale
+    # export: take the smaller of the absolute and the diagonal-relative
+    # tolerance, never more than 0.1 mm.
+    return max(min(DETAIL_TOL_MM, DETAIL_TOL_FRACTION * diag), 1e-9)
 
 
 def _face_areas(v, t):
@@ -170,12 +176,26 @@ def _defect_face_mask(t):
 
 
 def _area_samples(v, t, n_total, face_mask=None):
-    """Deterministic area-weighted surface samples (points, normals, weights)."""
+    """Deterministic area-weighted surface samples (points, normals, weights).
+
+    The sample count is *not* capped by the face count: a coarse CAD part may
+    have 12 large faces and still need 4000 stratified samples. When
+    ``face_mask`` is given the masked faces are removed before the CDF is
+    built, so the whole sample budget lands on the healthy surface.
+    """
     t = np.asarray(t, dtype=np.int64)
-    n = int(min(int(n_total), len(t)))
+    n = max(0, int(n_total))
     if n <= 0 or len(t) == 0:
         return (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0),
                 np.zeros(0, dtype=np.int64))
+    face_ids = None
+    if face_mask is not None:
+        keep_faces = ~np.asarray(face_mask, dtype=bool)
+        if not keep_faces.any():
+            return (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0),
+                    np.zeros(0, dtype=np.int64))
+        face_ids = np.flatnonzero(keep_faces)
+        t = t[keep_faces]
     a, b, c = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
     area = 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1)
     total = float(area.sum())
@@ -193,11 +213,11 @@ def _area_samples(v, t, n_total, face_mask=None):
     w[flip] = 1.0 - w[flip]
     pts = (a[idx] * (1.0 - u - w)[:, None] + b[idx] * u[:, None]
            + c[idx] * w[:, None])
-    normals, _ok = _face_normals(v, t)
+    face_normals, _ok = _face_normals(v, t)
+    normals = face_normals[idx]
     weights = np.full(n, total / n, dtype=np.float64)
-    if face_mask is not None:
-        keep = ~np.asarray(face_mask, dtype=bool)[idx]
-        pts, normals, weights, idx = pts[keep], normals[keep], weights[keep], idx[keep]
+    if face_ids is not None:
+        idx = face_ids[idx]
     return pts, normals, weights, idx
 
 
@@ -335,10 +355,17 @@ def _healthy_fill(vi, ti, vo, to, mask, tol, budget, area, layers):
         removed = (w_in > 0.5) & (w_out < 0.5)
         fill = float(vol_w[added].sum())
         rem = float(vol_w[removed].sum())
-        try:
-            basis_vol = _signed_volume(vi, ti)
-        except Exception:  # noqa: BLE001
-            basis_vol = 0.0
+        # The reference volume must come from the validated closed repair, not
+        # from the (often open) input; an open input's signed volume is not
+        # translation-invariant. Input/bbox are fallbacks only.
+        basis_vol = 0.0
+        for vv, tt in ((vo, to), (vi, ti)):
+            try:
+                basis_vol = _signed_volume(vv, tt)
+            except Exception:  # noqa: BLE001
+                basis_vol = 0.0
+            if basis_vol > 0.0:
+                break
         if not basis_vol > 0.0:
             lo, hi = vi.min(0), vi.max(0)
             basis_vol = float(np.prod(np.maximum(hi - lo, 1e-12)))
@@ -421,13 +448,16 @@ def _verdict(score, report, low_confidence, reasons, areas, cfg, max_pct=None):
         health = _rs.get('health')
     except Exception:  # noqa: BLE001
         health = None
-    low_areas = max(int(areas or 0), 1 if low_confidence else 0)
+    low_areas = max(int(areas or 0), 0)
     if health is not None and not _health_tier(health, cfg):
         return 'not_repaired', low_areas
-    if score is None:
-        return 'unavailable', low_areas
+    # low-quality evidence is the stronger statement: if the reconstruction is
+    # a guess, do not downgrade it to "unavailable" just because the numeric
+    # score could not be formed.
     if low_confidence:
         return 'low_confidence', low_areas
+    if score is None:
+        return 'unavailable', low_areas
     if areas:
         code, verdict_areas = 'changed', low_areas
     else:
@@ -436,7 +466,7 @@ def _verdict(score, report, low_confidence, reasons, areas, cfg, max_pct=None):
         if score >= high:
             code, verdict_areas = 'preserved', low_areas
         else:
-            code, verdict_areas = 'changed', max(low_areas, 1)
+            code, verdict_areas = 'changed', low_areas
     # A shape change only counts when the healthy surface actually moved beyond
     # the configured fraction of the bbox diagonal; below it the repair is
     # within tolerance and reads as preserved. Config-driven, not code.
@@ -487,11 +517,17 @@ def compute(in_arrays, out_arrays, report=None, config=None):
         elif reduced:
             note.append('reduced budget')
 
-        mask = _defect_face_mask(ti)
+        recall_max = int(budgets.get('recall_max_faces', 50000))
+        mask_available = not gated
+        if mask_available:
+            mask = _defect_face_mask(ti)
+        else:
+            mask = np.zeros(len(ti), dtype=bool)
+            note.append('healthy mask skipped (large mesh)')
 
         # --- one distance query, reused by distance / invented area / areas
-        area = _face_areas(vo, to)
         if not reduced:
+            area = _face_areas(vo, to)
             pts, w, face_idx = ((vo[to[:, 0]] + vo[to[:, 1]] + vo[to[:, 2]])
                                 / 3.0, area, np.arange(len(to)))
         else:
@@ -504,8 +540,16 @@ def compute(in_arrays, out_arrays, report=None, config=None):
         _q, d, nf = sutura_geom.closest_points(vi, _as_i32(ti), pts)
         d = np.asarray(d, dtype=np.float64)
         nf = np.asarray(nf, dtype=np.int64)
-        healthy = ~mask[np.clip(nf, 0, max(len(mask) - 1, 0))] if len(mask) else \
-            np.ones(len(d), dtype=bool)
+        if mask_available and len(mask):
+            sample_ok = (nf >= 0) & (nf < len(mask))
+            healthy = np.zeros(len(d), dtype=bool)
+            healthy[sample_ok] = ~mask[nf[sample_ok]]
+        elif mask_available:
+            sample_ok = np.ones(len(d), dtype=bool)
+            healthy = np.ones(len(d), dtype=bool)
+        else:
+            sample_ok = np.zeros(len(d), dtype=bool)
+            healthy = np.zeros(len(d), dtype=bool)
         wh = w[healthy]
         dh = d[healthy]
         if wh.sum() > 0.0:
@@ -514,7 +558,11 @@ def compute(in_arrays, out_arrays, report=None, config=None):
                 if diag > 0 else None
         else:
             max_pct = mean_pct = None
-        invented_frac = float(w[d > tol].sum() / w.sum()) if w.sum() > 0 else 0.0
+        inv_tol = max(tol, float(fc.get('invented_tol_pct', 1.0))
+                      / 100.0 * diag)
+        inv_den = float(w[sample_ok].sum())
+        invented_frac = (float(w[sample_ok & (d > inv_tol)].sum()) / inv_den
+                         if inv_den > 0 else 0.0)
 
         # --- changed / low-confidence areas (full budget only)
         areas_n = None
@@ -536,7 +584,6 @@ def compute(in_arrays, out_arrays, report=None, config=None):
 
         # --- feature recall (gated: full edge table on a very large mesh is
         # the most expensive part and scan noise makes it less informative)
-        recall_max = int(budgets.get('recall_max_faces', 50000))
         if gated or max(len(ti), len(to)) > recall_max:
             recall, rec_detail = None, {'note': 'feature recall skipped '
                                                 '(large mesh)'}
@@ -622,7 +669,7 @@ def compute(in_arrays, out_arrays, report=None, config=None):
             note.append('feature recall unavailable')
         if fill is None:
             note.append('healthy volume unavailable')
-        if used > 0.0:
+        if max_pct is not None and used > 0.0:
             score = int(round(max(0.0, min(1.0, 1.0 - num / used)) * 100))
 
         # --- low-confidence evidence
@@ -699,6 +746,19 @@ def attach_file(result, src, out):
                                     (outs[i][1], outs[i][2]), reports[i]))
             for i, v in enumerate(vals):
                 reports[i].update(v)
+            # An object omitted from the output still needs the keys, so a
+            # consumer never sees a partial report.
+            defaults = {
+                'repair_fidelity': None,
+                'repair_fidelity_factors': {},
+                'repair_fidelity_note': 'object missing from output',
+                'repair_verdict_code': 'unavailable',
+                'repair_verdict_areas': 0,
+                'repair_verdict_low_confidence': False,
+                'repair_verdict_reasons': [],
+            }
+            for i in range(n, len(reports)):
+                reports[i].update(defaults)
             agg = _aggregate(vals)
             if agg:
                 result.update(agg)
@@ -713,25 +773,50 @@ def attach_file(result, src, out):
     return result
 
 
+_VERDICT_SEVERITY = {
+    'not_repaired': 4,
+    'low_confidence': 3,
+    'changed': 2,
+    'preserved': 1,
+    'unavailable': 0,
+}
+
+
 def _aggregate(vals):
     vals = [v for v in vals if isinstance(v, dict)]
     if not vals:
         return None
+    metrics = [v.get('repair_fidelity_metrics') or {} for v in vals]
+    codes = [v.get('repair_verdict_code') or 'unavailable' for v in vals]
+    worst_code = max(codes, key=lambda c: _VERDICT_SEVERITY.get(c, 0))
+    # A failed/missing object must lead the file verdict even when another
+    # object has a higher numeric score.
+    if 'not_repaired' in codes:
+        worst_code = 'not_repaired'
+    elif 'unavailable' in codes:
+        worst_code = 'unavailable'
+    low_conf = any(v.get('repair_verdict_low_confidence') for v in vals)
+    if low_conf and worst_code not in ('not_repaired', 'unavailable'):
+        worst_code = 'low_confidence'
+    # Pick the object that determines the verdict, for factors/note.
+    worst = min(vals, key=lambda v: (
+        -_VERDICT_SEVERITY.get(v.get('repair_verdict_code') or 'unavailable', 0),
+        v.get('repair_fidelity') is None,
+        100 if v.get('repair_fidelity') is None else v.get('repair_fidelity')))
     scores = [v.get('repair_fidelity') for v in vals
               if isinstance(v.get('repair_fidelity'), (int, float))]
-    metrics = [v.get('repair_fidelity_metrics') or {} for v in vals]
-    def _rank(v):
-        s = v.get('repair_fidelity')
-        return (s is None, 100 if s is None else s)
-
-    worst = min(vals, key=_rank)
+    if (worst_code in ('not_repaired', 'unavailable')
+            or any(v.get('repair_fidelity') is None for v in vals)):
+        score = None
+    else:
+        score = int(min(scores)) if scores else None
     changed = [m.get('changed_areas') for m in metrics
                if isinstance(m.get('changed_areas'), (int, float))]
     low = [m.get('low_confidence_areas') for m in metrics
            if isinstance(m.get('low_confidence_areas'), (int, float))]
     reasons = sorted({r for v in vals for r in (v.get('repair_verdict_reasons') or [])})
     return {
-        'repair_fidelity': int(min(scores)) if scores else None,
+        'repair_fidelity': score,
         'repair_fidelity_factors': worst.get('repair_fidelity_factors') or {},
         'repair_fidelity_note': worst.get('repair_fidelity_note'),
         'repair_fidelity_metrics': {
@@ -739,10 +824,9 @@ def _aggregate(vals):
             'changed_areas': int(sum(changed)) if changed else None,
             'low_confidence_areas': int(sum(low)) if low else None,
         },
-        'repair_verdict_code': worst.get('repair_verdict_code', 'unavailable'),
+        'repair_verdict_code': worst_code,
         'repair_verdict_areas': int(sum(
             v.get('repair_verdict_areas') or 0 for v in vals)),
-        'repair_verdict_low_confidence': any(
-            v.get('repair_verdict_low_confidence') for v in vals),
+        'repair_verdict_low_confidence': low_conf,
         'repair_verdict_reasons': reasons,
     }
