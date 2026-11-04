@@ -224,7 +224,12 @@ configurable via `sutura/repair_score_config.json`):
   measured on meshes below the analysis budget; larger meshes keep the score
   and the verdict but report the area count as unavailable; the sharp-edge
   term is also skipped on very large meshes for the same reason, and
-  `repair_fidelity_note` says so.
+  `repair_fidelity_note` says so. If the input has no measurable healthy skin
+  (or every closest-point result is invalid) the score is `unavailable`, never
+  a fabricated 100. On multi-object files a low-confidence object wins the
+  file headline. The 0.1 mm detail tolerance is capped by
+  `0.2 %` of the bounding-box diagonal, so miniatures and metre-scale exports
+  scale correctly.
 
 `--human` prints that one verdict on its own line, then
 `Health: X/100   Risk: Y/100   Fidelity: Z/100` as the numbers (the numbers no

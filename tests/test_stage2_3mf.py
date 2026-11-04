@@ -175,12 +175,22 @@ def test_multi_object_aggregate_scores(tmp):
     assert hs and rs and fs, d
     assert d.get('repair_health') == min(hs), (d.get('repair_health'), hs)
     assert d.get('repair_risk') == max(rs), (d.get('repair_risk'), rs)
-    assert d.get('repair_fidelity') == min(fs), (d.get('repair_fidelity'), fs)
+    if any(o.get('repair_fidelity') is None for o in reps):
+        assert d.get('repair_fidelity') is None, d
+    else:
+        assert d.get('repair_fidelity') == min(fs), (d.get('repair_fidelity'), fs)
 
-    worst = min(range(len(reps)),
-                key=lambda i: reps[i].get('repair_fidelity'))
-    assert d.get('repair_verdict_code') == reps[worst].get(
-        'repair_verdict_code'), (d.get('repair_verdict_code'), worst, reps)
+    # The file verdict follows the semantic worst object, not the numeric one:
+    # not_repaired > low_confidence > changed > preserved > unavailable.
+    sev = {'not_repaired': 4, 'low_confidence': 3, 'changed': 2,
+           'preserved': 1, 'unavailable': 0}
+    codes = [o.get('repair_verdict_code') or 'unavailable' for o in reps]
+    worst_code = max(codes, key=lambda c: sev.get(c, 0))
+    if any(o.get('repair_verdict_low_confidence') for o in reps) and \
+            worst_code not in ('not_repaired', 'unavailable'):
+        worst_code = 'low_confidence'
+    assert d.get('repair_verdict_code') == worst_code, (
+        d.get('repair_verdict_code'), codes, reps)
     assert bool(d.get('repair_verdict_low_confidence')) == any(
         o.get('repair_verdict_low_confidence') for o in reps), d
 
