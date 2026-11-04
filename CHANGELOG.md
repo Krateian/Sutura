@@ -38,6 +38,15 @@ All notable changes to this project are documented here.
   and budgets live in `sutura/repair_score_config.json`; `--no-fidelity` (and
   the Options checkbox) opts out. `--human`, the JSON report, the GUI header
   and `history.jsonl` are wired; docs updated in English and Turkish.
+- **Separate small parts are visible in the report.** `stage1.removed_small_parts`
+  records the components the Stage-1 `< mincomponentsize`-face rule dropped
+  (count, total faces, and a capped per-component list of face count, size and
+  distance to the main body). `stage1.possible_debris` flags kept components that
+  look like possible debris under the census rule F (a separate, closed,
+  non-degenerate part below 0.5% of the largest part's volume) with face count,
+  volume share and distance. Both appear in the `--human` report and the GUI
+  result details (EN/TR), per object for multi-object 3MF. This is report-only:
+  nothing extra is removed, so the output is byte-identical.
 
 ## [0.9.8] - 2026-10-31
 

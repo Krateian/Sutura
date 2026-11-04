@@ -325,6 +325,8 @@ STRINGS = {
         'brief_note_attr_loss': ('Painted/seam/support attributes were lost on '
                                  '%d triangle(s); %d kept, %d new triangles '
                                  'have none.'),
+        'brief_note_possible_debris': ('%d suspicious separate part(s) were kept '
+                                       '(possible debris; nothing was removed).'),
         'brief_note_budget': 'The result was not saved because the repair went over its size or risk limit.',
         'brief_note_thin_wall': ('Some walls are thin: ~%s%% of the surface is '
                                  'thinner than %s%% of the model size'),
@@ -1195,6 +1197,8 @@ STRINGS = {
         'brief_note_attr_loss': ('%d üçgende boya/dikiş/destek özniteliği '
                                  'kayboldu; %d korundu, %d yeni üçgen '
                                  'özniteliksiz.'),
+        'brief_note_possible_debris': ('%d şüpheli ayrı parça korundu (olası '
+                                       'kırıntı; hiçbir şey kaldırılmadı).'),
         'brief_note_budget': 'Onarım boyut veya risk sınırını aştığı için sonuç kaydedilmedi.',
         'brief_note_thin_wall': ('Yüzeyin ~%s%% kadarı model boyutunun %s%% '
                                  'değerinden ince'),
@@ -2149,6 +2153,42 @@ def summarize(data):
     return label
 
 
+def _small_parts_report_lines(s1):
+    """Small-part visibility for the GUI result details (report-only)."""
+    lines = []
+
+    def _dist(v):
+        return ('%.3g mm' % v) if v is not None else 'n/a'
+
+    rem = (s1 or {}).get('removed_small_parts')
+    if rem and rem.get('count'):
+        lines.append('Small parts removed (< %d faces): %d component(s), '
+                     '%d face(s)' % (rem.get('min_faces', 8), rem['count'],
+                                     rem.get('faces_total', 0)))
+        for p in rem.get('parts', []):
+            pct = (' (%.3g%% of model)' % p['size_pct']
+                   if p.get('size_pct') is not None else '')
+            lines.append('  %d face(s), size %.3g mm%s, %s from the main body'
+                         % (p['faces'], p.get('size_mm', 0.0), pct,
+                            _dist(p.get('distance_mm'))))
+        extra = rem['count'] - len(rem.get('parts', []))
+        if extra > 0:
+            lines.append('  ... (%d more not listed)' % extra)
+    pd = (s1 or {}).get('possible_debris')
+    if pd and pd.get('count'):
+        lines.append('Suspicious separate part(s) kept: %d '
+                     '(possible debris; nothing was removed)' % pd['count'])
+        for p in pd.get('parts', []):
+            lines.append('  %d face(s), %.3g%% of the largest volume, %s from '
+                         'the main body'
+                         % (p['faces'], p.get('volume_pct') or 0.0,
+                            _dist(p.get('distance_mm'))))
+        extra = pd['count'] - len(pd.get('parts', []))
+        if extra > 0:
+            lines.append('  ... (%d more not listed)' % extra)
+    return lines
+
+
 def format_report(data):
     if data.get('error') and 'stage1' not in data:
         return 'ERROR: %s' % data['error']
@@ -2193,6 +2233,10 @@ def format_report(data):
             lines.append('  %s: kept %d, dropped %d, new without attributes %d'
                          % (o.get('model') or 'object', o['kept'],
                             o['dropped'], o['new_without']))
+        lines.append('')
+    _sp = _small_parts_report_lines(data.get('stage1', {}))
+    if _sp:
+        lines.extend(_sp)
         lines.append('')
     if data.get('status') == 'budget_declined':
         lines.append('ERROR: %s' % data.get('error'))
@@ -6303,6 +6347,8 @@ class MainWindow(QMainWindow):
             elif code == 'attribute_loss':
                 out.append(_t('brief_note_attr_loss', a.get('dropped', 0),
                               a.get('kept', 0), a.get('new_without', 0)))
+            elif code == 'possible_debris':
+                out.append(_t('brief_note_possible_debris', a.get('count', 0)))
             elif code == 'budget':
                 out.append(_t('brief_note_budget'))
             elif code == 'thin_wall':

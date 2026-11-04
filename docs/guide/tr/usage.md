@@ -294,6 +294,23 @@ dosyalarında nesne başına gösterilir; `--human --diff` bunları da yazdırı
 GUI kusur paneli tek satırlık bir özet gösterir ("Volume: +0.12% · Surface:
 -2.37% · Vertex: 12→9").
 
+Aynı `stage1` bloğu, **ayrı küçük parçalara** ne olduğunu kaydeder (mevcut
+`< mincomponentsize` kuralının ötesinde hiçbir şey silinmez):
+
+- `removed_small_parts` — Aşama 1'in `< mincomponentsize`-yüz kuralının
+  kaldırdığı bileşenler: `count`, `faces_total` ve sınırlı bir `parts` listesi;
+  her biri `faces`, `size_mm` (ve modelin `size_pct` değeri) ve ana gövdeye
+  `distance_mm` taşır.
+- `possible_debris` — olası kırıntıya benzeyen korunmuş bileşenler (ayrı, kapalı,
+  dejenere olmayan ve en büyük parçanın hacminin %0,5'inden küçük); `faces`,
+  `volume_pct`, `size_pct` ve `distance_mm` ile birlikte. Bu **yalnızca
+  raporlamadır**: hiçbir şey kaldırılmaz.
+
+Her ikisi de çok nesneli 3MF dosyalarında nesne başına, `--human` raporunda
+(`Small parts removed …` / `Suspicious separate part(s) kept …` bloğu) ve GUI
+sonuç ayrıntılarında görünür; `possible_debris` doluysa GUI kararında bir not da
+bulunur.
+
 Bir mesh yalnızca aşama 2 gerçekten çalışıp kapalı katıyı doğruladığında
 **su geçirmez** sayılır. Aşama 1 bir meshi kapatır ama aşama 2 atlanır, hata
 verir veya hiç çalışmazsa (ör. macOS/conda yerinde geri dönüşün kullanılamaması)

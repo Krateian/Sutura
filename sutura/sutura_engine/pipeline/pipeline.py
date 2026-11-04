@@ -479,8 +479,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     _s1_in_v, _s1_in_t = v, t
 
     cur_v, cur_t = np.asarray(v, np.float64), np.asarray(t, np.int64)
+    _debris_sink = {}
     cur_v, cur_t, applied, skipped = apply_chain(
-        cur_v, cur_t, stage1_chain(**_p, join_components=join_components))
+        cur_v, cur_t, stage1_chain(**_p, join_components=join_components),
+        sink=_debris_sink)
     after = topology.mesh_topology(cur_v, cur_t)
     if trace.is_active():
         trace.record_stage('stage1_chain', 'stage1.apply_chain',
@@ -512,8 +514,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             ar_v, ar_t, ar_info = _autorefine.autorefine(ar_v, ar_t)
             ar_rep.update(ar_info)
             if len(ar_t) > 0:
+                _ar_sink = {}
                 ar_v, ar_t, _a, _s = apply_chain(
-                    ar_v, ar_t, stage1_chain(**_p, join_components=join_components))
+                    ar_v, ar_t, stage1_chain(**_p, join_components=join_components),
+                    sink=_ar_sink)
                 cand_after = topology.mesh_topology(ar_v, ar_t)
                 cand_holes = boundary_loop_stats(ar_v, ar_t)[0]
                 cand_nm = cand_after.get('non_two_manifold_edges', 0)
@@ -524,6 +528,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 if adopted:
                     cur_v, cur_t = ar_v, ar_t
                     after = cand_after
+                    _debris_sink = _ar_sink
         if _ga.error is not None:
             ar_rep['error'] = str(_ga.error)
         stats['experimental_autorefine'] = ar_rep
@@ -550,8 +555,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 ia_v, ia_t, al_info = indirect_bridge.arrangement_lite_arrays(v, t)
                 ia_rep.update(al_info)
                 if len(ia_t) > 0:
+                    _ia_sink = {}
                     ia_v, ia_t, _a, _s = apply_chain(
-                        ia_v, ia_t, stage1_chain(**_p, join_components=join_components))
+                        ia_v, ia_t, stage1_chain(**_p, join_components=join_components),
+                        sink=_ia_sink)
                     cand_after = topology.mesh_topology(ia_v, ia_t)
                     cand_holes = boundary_loop_stats(ia_v, ia_t)[0]
                     cand_nm = cand_after.get('non_two_manifold_edges', 0)
@@ -562,6 +569,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                     if adopted:
                         cur_v, cur_t = ia_v, ia_t
                         after = cand_after
+                        _debris_sink = _ia_sink
             if _gi.error is not None:
                 if isinstance(_gi.error, ImportError):
                     ia_rep['skipped'] = True
@@ -574,13 +582,16 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if after.get('non_two_manifold_edges', 0) > 0 or after.get('non_two_manifold_vertices', 0) > 0:
         _t_fb = time.perf_counter()
         _fb_in_v, _fb_in_t = cur_v, cur_t
+        _fb_sink = {}
         fb_v, fb_t, fapplied, fskipped = apply_chain(
-            cur_v, cur_t, delete_fallback_chain(**_p, join_components=join_components))
+            cur_v, cur_t, delete_fallback_chain(**_p, join_components=join_components),
+            sink=_fb_sink)
         fafter = topology.mesh_topology(fb_v, fb_t)
         _adopted = (fafter.get('non_two_manifold_edges', 0) + fafter.get('non_two_manifold_vertices', 0)
                 < after.get('non_two_manifold_edges', 0) + after.get('non_two_manifold_vertices', 0))
         if _adopted:
             cur_v, cur_t, after, applied, skipped = fb_v, fb_t, fafter, fapplied, fskipped
+            _debris_sink = _fb_sink
         if trace.is_active():
             trace.record_stage('stage1_delete_fallback', 'stage1.delete_fallback_chain',
                                _fb_in_v, _fb_in_t, cur_v, cur_t,
@@ -889,6 +900,16 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     stats['stage1']['faces_before'] = before.get('faces_number')
     stats['stage1']['faces_removed'] = max(before.get('faces_number', 0) - after.get('faces_number', 0), 0)
     stats['stage1']['applied_filters'] = applied
+    # Report-only small-part visibility (no geometry change): what the <N-face
+    # rule dropped from the adopted chain, and which surviving input parts look
+    # like possible debris (census rule F). See sutura_engine.debris.
+    stats['stage1']['removed_small_parts'] = _debris_sink.get('removed_small_parts')
+    try:
+        from sutura_engine import debris as _debris_mod
+        stats['stage1']['possible_debris'] = _debris_mod.possible_debris(
+            _s1_in_v, _s1_in_t, min_faces=_p['mincomponentsize'])
+    except Exception:
+        stats['stage1']['possible_debris'] = None
     if skipped:
         stats['stage1']['skipped'] = skipped
 

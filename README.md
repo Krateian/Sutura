@@ -118,6 +118,10 @@ sutura a.stl b.stl c.3mf         # batch
   triangles that survive unchanged; newly created triangles get none. When a
   repair loses them the report says so, with the kept / dropped / new counts.
   See [Usage](docs/guide/usage.md).
+- **Separate small parts are reported, never silently changed.** The report
+  lists the tiny components the repair removed (`< 8` faces) with their size and
+  distance to the main body, and flags kept parts that look like possible debris
+  — without deleting anything. See [Usage](docs/guide/usage.md).
 - **Last-resort solid engine (experimental):** `--solid-engine cdt|ftetwild`
   chooses the rebuild used when everything else failed (also under Options →
   Repair and inherited by the integrations). The default stays **fTetWild**;

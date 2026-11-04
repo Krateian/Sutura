@@ -52,7 +52,17 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
   It closes the mesh, but the patch quality is average and may need smoothing.
 * **Tiny disconnected debris.** Components with fewer than 8 faces are
   removed. A small legitimate part that is not connected to the main body
-  will be removed too.
+  will be removed too. The report makes this visible: `stage1.removed_small_parts`
+  (and the `--human` report and GUI details) lists how many components the
+  `<8`-face rule dropped, their total face count and, for a capped list, each
+  component's face count, size and distance to the main body.
+* **Suspicious separate small parts are flagged, never removed.**
+  `stage1.possible_debris` lists kept components that look like possible debris
+  (a separate, closed, non-degenerate part under 0.5% of the largest part's
+  volume) with their face count, volume share and distance to the main body.
+  This is report-only — nothing is deleted — because an injected or stray small
+  part is geometrically indistinguishable from a legitimate one. The `--human`
+  report, the GUI details and the GUI verdict note surface the same counts.
 * **Dense coplanar contacts are analysed with a bounded exact pass.** For a
   mechanical part with very many coincident faces on one contact patch, the
   exact coplanar shell analysis is capped at 512 triangles / 1,024 constraint
