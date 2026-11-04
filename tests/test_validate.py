@@ -10,9 +10,10 @@ Checks that:
      (no _fixed file, no extra files in the directory).
   4. Malformed input still returns a JSON error and exits 1.
 
-Uses the repo's own repair.py under the venv (pymeshlab), not the installed
-CLI, so this tracks the code under test.
-Usage: ~/.local/share/sutura/venv/bin/python tests/test_validate.py
+Uses the repo's own repair.py under the active interpreter, not the installed
+CLI, so this tracks the code under test. Fixtures are built with numpy only
+(no trimesh), so the suite runs wherever numpy and sutura_geom do.
+Usage: <venv>/bin/python tests/test_validate.py
 """
 import hashlib
 import json
@@ -49,12 +50,54 @@ def _make_broken(path):
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _make_sphere(path):
+def _icosphere(subdivisions=2):
+    """Deterministic unit icosphere as ``(verts float32, tris int64)``.
+
+    Pure numpy (no trimesh): an icosahedron subdivided ``subdivisions`` times
+    with midpoints projected onto the unit sphere. Closed, consistently wound,
+    no duplicate/degenerate faces -- exactly what a validate fixture needs.
+    """
     import numpy as np
-    import trimesh
-    m = trimesh.creation.icosphere(subdivisions=2)
-    verts = np.asarray(m.vertices, dtype=np.float32)
-    tris = np.asarray(m.faces, dtype=np.int64)
+
+    t = (1.0 + 5.0 ** 0.5) / 2.0
+    verts = [
+        [-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0],
+        [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+        [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1],
+    ]
+    faces = [
+        (0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11),
+        (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
+        (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
+        (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1),
+    ]
+    mid_cache = {}
+
+    def midpoint(a, b):
+        key = (a, b) if a < b else (b, a)
+        idx = mid_cache.get(key)
+        if idx is not None:
+            return idx
+        va, vb = verts[a], verts[b]
+        m = [(va[i] + vb[i]) / 2.0 for i in range(3)]
+        norm = (m[0] ** 2 + m[1] ** 2 + m[2] ** 2) ** 0.5
+        verts.append([x / norm for x in m])
+        idx = len(verts) - 1
+        mid_cache[key] = idx
+        return idx
+
+    for _ in range(int(subdivisions)):
+        nxt = []
+        for a, b, c in faces:
+            ab, bc, ca = midpoint(a, b), midpoint(b, c), midpoint(c, a)
+            nxt += [(a, ab, ca), (b, bc, ab), (c, ca, bc), (ab, bc, ca)]
+        faces = nxt
+    return (np.asarray(verts, dtype=np.float32),
+            np.asarray(faces, dtype=np.int64))
+
+
+def _make_sphere(path):
+    verts, tris = _icosphere(subdivisions=2)
     with open(path, 'wb') as f:
         f.write(b'sutura-validate'.ljust(80, b'\0'))
         f.write(struct.pack('<I', len(tris)))
