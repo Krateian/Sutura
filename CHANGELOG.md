@@ -84,6 +84,19 @@ All notable changes to this project are documented here.
   archive (`sutura --diagnostics sutura-diag.zip` or GUI Diagnostics button) and optional
   crash log instead of manual environment typing.
 
+### Fixed
+
+- **Stale documentation text.** The Turkish version history now says the v0.7.0
+  registry had 15 methods (matching the English page), the Turkish usage guide
+  gains the `--profile scan` equivalence sentence, and the September security
+  audit no longer references a removed `requirements-311.txt`. Text only; no
+  behaviour change.
+- **Stale code docstrings and a documented config override.** The methods
+  registry docstrings now state 1..19, and the `deep_repair` key of
+  `~/.config/sutura/config.json` is documented as an explicit manual override
+  (the app does not write it; `--deep-repair` and `SUTURA_DEEP_REPAIR` win). No
+  behaviour change.
+
 ## [0.9.8] - 2026-10-31
 
 ### Added

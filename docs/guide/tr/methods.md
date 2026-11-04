@@ -18,6 +18,10 @@ preset'te önceki davranışını korur. Seçilen yoğunluk raporda
 olarak görünür; `--list-intensities` presetleri ve profilleri etkin
 değerleriyle yazdırıp çıkar.
 
+`--deep-repair` ayrıca `SUTURA_DEEP_REPAIR` ve `~/.config/sutura/config.json`
+içindeki `deep_repair` anahtarından varsayılan alır (GUI'nin yazmadığı açık bir
+elle geçersiz kılma; bayrak kazanır), aksi halde `full`.
+
 - **Quick** — derin-onarım merdivenini ve fTetWild katmanını tamamen atlar
   (`deep_repair=off`, fTetWild kapalı) ve sadeleştirme merdiveni boştur: en
   hızlı çalışma; zor ağları açık bırakır.
