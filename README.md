@@ -53,16 +53,16 @@ OrcaSlicer plugin.
 - **Repairs only what is broken.** Holes, wrongly joined edges, flipped faces,
   overlapping or self-intersecting parts and loose debris are treated; a clean
   model passes through unchanged.
-- **Never worse on topology and shape guards.** Every repair candidate is
-  adopted only when it passes strict defect, blow-up, and shape limits; otherwise
-  it is discarded (see [what "no worse" covers](docs/guide/how-it-works.md#what-no-worse-covers);
-  surface detail is checked by the report-only Fidelity score).
-- **Honest verdict.** The result is reloaded and re-checked before it is called
-  watertight, and a report shows what was fixed, what remains and how much the
-  shape moved.
-- **Shape check.** A Fidelity score compares the repaired model with the input
-  on the healthy surface, so a mesh that closed correctly but lost detail is
-  visible; large rebuilt areas are marked as guesses.
+- **Topology guaranteed not to worsen.** Every repair candidate is adopted only
+  when defect counts do not rise (no increase in holes or non-manifold edges,
+  with many tiers requiring zero remaining defects) without mesh blow-ups;
+  otherwise it is discarded (see [what "no worse" covers](docs/guide/how-it-works.md#what-no-worse-covers)).
+- **Shape transparency.** If severe damage forces an aggressive solid rebuild
+  (such as fTetWild), the report-only **Fidelity score** alerts you exactly
+  where and how much the surface moved.
+- **One plain verdict.** A single headline verdict tells you if the model is
+  ready to print, has caveats, or had its shape altered, with full health,
+  risk, and fidelity scores behind **Details**.
 - **Many tools, one button.** Nineteen ranked repair methods sit behind a single
   *Repair* button; the triage engine picks what a model needs.
 - **Native and offline.** A Rust core (`sutura_geom`) does the geometry; no

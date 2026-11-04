@@ -243,6 +243,95 @@ summed. The GUI shows the same single headline in the report summary, with the
 full report — now localized in English and Turkish — folded behind the
 **Details** toggle.
 
+### Understanding the repair report
+
+#### Score cheat sheet
+
+Every repair report presents three independent 0–100 shape and mesh indicators alongside the triage confidence score:
+
+| Score | Scale | Good direction | What it measures |
+|---|---|---|---|
+| **Health** | 0 – 100 | **HIGHER is better** (100 is ideal) | **Topological & structural integrity.** 100 indicates a fully closed, watertight 2-manifold solid with zero holes, zero non-manifold edges, zero bad faces, zero residual self-intersections, and correct face winding orientation. Lower scores indicate remaining defects. |
+| **Risk** | 0 – 100 | **LOWER is better** (0 is ideal) | **Degree of mesh alteration.** Measures how much the repair altered the original geometry (face/vertex count deltas, volume shifts, shell pruning, or solid remeshing). A low risk score (0–25) means the part was gently patched; high risk (> 60) signals aggressive reconstruction. |
+| **Fidelity** | 0 – 100 | **HIGHER is better** (100 is ideal) | **Shape preservation on healthy regions.** Measures one-sided Hausdorff deviation, sharp feature-edge recall (dihedral angles), and healthy fill/removal. **Report-only:** does not block candidate adoption. If large damaged sections were reconstructed from scratch, the headline warns `guessed area(s) - check`. |
+| **Confidence** | 0 – 100 / High-Med-Low | *Diagnostic certainty* | **Triage classifier confidence.** Indicates how confident Sutura was when diagnosing the input mesh defect category and selecting the initial repair strategy. It reflects input analysis certainty, independent of the geometric quality of the output. |
+
+> [!TIP]
+> **Remember the Risk inversion:** While Health and Fidelity follow the common "higher is better" rule, **Risk is a penalty metric where 0 is untouched and 100 is severe alteration**. A repair with `Health: 100   Risk: 1   Fidelity: 100` is nearly perfect!
+
+#### Headline verdicts & inspection advice
+
+The CLI `--human` mode and the GUI collapse the topology brief and Fidelity shape check into **one headline**:
+- `Ready to print` / `Repaired, shape preserved`: Topology is closed and sound; original surface details are intact.
+- `Repaired with notes — shape preserved`: Topology was closed, but with informational notes (e.g., thin walls or residual cosmetic self-intersections); surface shape was preserved.
+- `Repaired, shape changed in N area(s) - check`: Topology is sound, but aggressive fallback repair was required and shifted the healthy surface by more than 1.0% of the bounding-box diagonal (and Fidelity is below the 85 high tier).
+- `Repaired, shape changed in N guessed area(s) - check`: Missing or destroyed sections were rebuilt by solid reconstruction (such as fTetWild, Splint, or a large Tamponade cap); the geometry in those areas is an algorithmic estimate. If a model exhibits both healthy-surface drift and large reconstructed areas, `low_confidence` wins the headline over `changed`.
+- `Not fully repaired` / `Failed`: Defect counts could not be fully resolved to a watertight manifold state within safe limits.
+
+When a report headline advises `check`:
+- In the **GUI**: Open the **Before / After** comparison view or the **Heatmap** tab to visually inspect regions where the surface moved or where hole patches were grafted.
+- In the **CLI**: Re-run with `--human --diff` to see vertex, face, and surface-area deltas, or `--human --defects` to review the exact defect locations.
+
+#### Example `--human` output
+
+The following output shows a genuine repair of an imperfect model (`thingi10k_100173.stl` from the test corpus) containing a boundary hole and thin walls:
+
+```text
+Repaired with notes — shape preserved
+  Holes closed: 1 · Orientation: already correct · Parts: 1 kept · Shape change: 0.00%
+  Note: thin walls: ~8.0% of the surface is thinner than 0.5% of the model size (thinnest ~0.21 mm) [estimated]
+
+Input : model.stl
+Output: model_fixed.stl
+Mode  : auto
+Classifier: experimental
+Intensity: balanced
+Type  : organic (confidence 0.67) - default thresholds (below confidence gate)
+Confidence: 87/100 (High)
+Health: 100/100   Risk: 1/100   Fidelity: 100/100
+
+Print impact:
+  Fixed : 1 hole(s) closed
+  Remaining: none
+  Geometry: deviation max 0.0% of size
+  Not assessed: volume
+Methods: 19/19 OK
+Repair status: Safe to inspect
+
+Stage 1 (MeshLab):
+  Holes closed            : 1
+  Holes remaining         : 0
+  Non-manifold edges fixed: 0
+  Faces removed           : 0
+  Connected components    : 1
+  Two-manifold            : YES
+  Tamponade (plug)        : 1 plugs, 2 plug faces, holes=0 nm=0, healthy kept 250 in 0.00s adopted
+  Volume change          : n/a (input volume not measurable)
+
+Stage 2 (Manifold):
+  input_vertices: 128
+  input_faces: 252
+  input_watertight: True
+  construct_status: Error.NoError
+  ok: True
+  volume_before: 10070.636131079196
+  shells_found: 1
+  output_vertices: 128
+  output_faces: 252
+  volume_after: 10070.636131079196
+  shells: 1
+```
+
+#### Geometry terms glossary
+
+- **Non-manifold (edges / vertices):** Geometrical defects where a mesh does not behave like a physical 2-manifold surface — e.g. an edge shared by 3 or more faces (T-junction), an open boundary edge with only 1 face, or two separate volumes touching only at an isolated point or line like an hourglass.
+- **Winding orientation:** The consistent clockwise or counter-clockwise ordering of face vertices that determines which side of a triangle faces "outside" towards empty space and which side faces "inside" the solid interior.
+- **fTetWild (Fast Tetrahedral Meshing in the Wild):** An aggressive fallback engine that converts broken surface triangles into a 3D volumetric tetrahedral solid, guaranteeing a watertight output even when surfaces are severely corrupted.
+- **CDT (Constrained Delaunay Triangulation):** An exact triangulation method that inserts triangles conforming exactly to given boundary segments or constraints without altering unconstrained features.
+- **Sub-ULP (Unit in the Last Place):** Floating-point arithmetic precision smaller than the distance between consecutive floating-point numbers; used in exact geometric predicates to guarantee robust orientation and intersection tests without numerical rounding errors.
+- **Hausdorff distance:** The maximum distance from any point on one surface to the closest point on another surface; a rigorous measure of the worst-case geometric deviation between the original and repaired shapes.
+- **Dihedral angle:** The internal angle between the planes of two adjoining triangular faces sharing an edge; used to detect sharp features and preserve mechanical edges during repair.
+
 The automatic **fallback** order can be reordered per model, opt-in, with
 `--auto-reorder` (or the *Auto-reorder* checkbox in Options → Methods). It uses
 the per-model suggested-method ranking; the baseline pipeline and the deep-repair

@@ -69,6 +69,15 @@ All notable changes to this project are documented here.
 
 ### Documentation
 
+- **New user guidance, score cheat sheet, and geometry glossary:** Clarified the
+  distinction between runtime topology adoption guards ("no worse") and report-only
+  shape verification (Fidelity). Added a score cheat sheet to usage guides
+  explaining Health (higher is better), Risk (lower is better penalty scale),
+  Fidelity (higher is better), and triage Confidence. Added a genuine CLI `--human`
+  output example generated from the test corpus, added plain-language geometry
+  glossary definitions (fTetWild, CDT, sub-ULP, non-manifold, Hausdorff distance,
+  dihedral angle, winding orientation), synchronized Turkish documentation
+  avoiding overclaiming terminology, and updated Turkish UI option labels.
 - **Adoption guards and guarantees documentation:** Added 'What "no worse" covers'
   table and breakdown to `docs/guide/how-it-works.md` and Turkish guide, detailing
   runtime adoption guards, explaining self-intersection policies (`strict_zero`,
