@@ -66,6 +66,16 @@
   uyum gerekirse, ortamda `SUTURA_ANTIPODAL=0` tanımlayarak klasik sarım yoluna
   dönebilirsiniz (Python'daki `antipodal=False` parametresi yalnızca Graft'ın
   `shell_wrap` işlevine ulaşır, `dressing.py`'de ise bir anahtar bulunmaz).
+* **Sert bir çökme mesaj bırakmadı ama bir çökme kaydı var.** Sutura (CLI veya
+  GUI) çöktüğünde — yerel geometri ya da Qt katmanında bir segfault veya
+  yakalanmamış bir Python hatası — Sutura'nın kullanıcı verisi klasörüne bir
+  `crash.log` yazar; GUI ayrıca Tanılama'ya işaret eden kısa bir diyalog gösterir.
+  Kayıt yalnızca en son bölümünü (~200 KB) tutar. İşletim sistemine göre konum:
+  Linux ve macOS'ta `~/.local/share/sutura/data/crash.log`; `SUTURA_DATA_DIR`
+  ortam değişkeni ayarlıysa bunun yerine `$SUTURA_DATA_DIR/crash.log`. (Sutura'nın
+  Windows derlemesi yoktur.) Dosya kendiliğinden makinenizden çıkmaz — hiçbir
+  şey yüklenmez; `sutura --diagnostics out.zip` temizlenmiş bir kopyasını pakete
+  ekler, onu kendiniz bir hata bildirimine ekleyebilirsiniz.
 
 Bir onarım başarısız olursa veya bir yöntem kullanılamıyor görünürse, üç komut
 kurulumu tanılamaya ve kurtarmaya yardımcı olur:
@@ -80,10 +90,11 @@ kurulumu tanılamaya ve kurtarmaya yardımcı olur:
   kullanılamıyorsa kapatılabilir bir uyarı şeridi gösterir.
 * **`sutura --diagnostics out.zip`** sistem ve Python çalışma zamanı
   bilgilerini, `sutura_geom` uzantısının durumunu, on dokuz yöntemin tümünün
-  kullanılabilirliğini, kullanıcı ayarlarını ve en son onarım kaydını içeren
-  tek bir ZIP arşivi yazar. Kişisel yollar ve kullanıcı adları arşivden
-  temizlenir ve arşive hiçbir dosya adı konmaz; böylece bir hata raporuna
-  eklenebilir.
+  kullanılabilirliğini, kullanıcı ayarlarını, en son onarım kaydını ve çökme
+  kaydının temizlenmiş bir kopyasını (`crash_log.txt`; yalnızca bir çökme kaydı
+  varsa) içeren tek bir ZIP arşivi yazar. Kişisel yollar ve kullanıcı adları
+  arşivden temizlenir ve arşive hiçbir dosya adı konmaz; böylece bir hata
+  raporuna eklenebilir.
 * **`sutura --self-repair`** kurulu uygulama dosyalarını, kurulu sürüme ait
   sürüm bildirimine (manifest) göre denetler ve eksik ya da değişmiş bir
   dosyayı onarır. Her zaman değiştirmeden önce sorar, değiştirdiği dosyaları

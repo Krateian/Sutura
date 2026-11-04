@@ -12,6 +12,7 @@ import math
 import shutil
 import tempfile
 import threading
+import traceback
 import importlib.util
 import subprocess
 import webbrowser
@@ -321,6 +322,9 @@ STRINGS = {
         'brief_note_reload_nm': 'The saved file reopens with a topology problem.',
         'brief_note_unit': 'The model may not be in millimetres.',
         'brief_note_material': 'OBJ material references were not preserved.',
+        'brief_note_attr_loss': ('Painted/seam/support attributes were lost on '
+                                 '%d triangle(s); %d kept, %d new triangles '
+                                 'have none.'),
         'brief_note_budget': 'The result was not saved because the repair went over its size or risk limit.',
         'brief_note_thin_wall': ('Some walls are thin: ~%s%% of the surface is '
                                  'thinner than %s%% of the model size'),
@@ -909,6 +913,11 @@ STRINGS = {
         'save_diagnostics_title': 'Save Diagnostics Archive',
         'diagnostics_saved': 'Diagnostics written to %s',
         'diagnostics_failed': 'Could not write diagnostics: %s',
+        'crash_status': 'Sutura hit an unexpected error (a crash log was written).',
+        'crash_dialog_msg': ('Sutura hit an unexpected error and wrote a crash '
+                             'log.\nTo report it, use Diagnostics to save an '
+                             'archive and attach it to a bug report. The log '
+                             'stays on this machine until you share it.'),
     },
     'tr': {
         'app_title': 'Sutura',
@@ -1170,6 +1179,9 @@ STRINGS = {
         'brief_note_reload_nm': 'Kaydedilen dosyada yeniden açılışta bir yapı sorunu var.',
         'brief_note_unit': 'Model milimetre cinsinde olmayabilir.',
         'brief_note_material': 'OBJ malzeme referansları korunmadı.',
+        'brief_note_attr_loss': ('%d üçgende boya/dikiş/destek özniteliği '
+                                 'kayboldu; %d korundu, %d yeni üçgen '
+                                 'özniteliksiz.'),
         'brief_note_budget': 'Onarım boyut veya risk sınırını aştığı için sonuç kaydedilmedi.',
         'brief_note_thin_wall': ('Yüzeyin ~%s%% kadarı model boyutunun %s%% '
                                  'değerinden ince'),
@@ -1766,6 +1778,11 @@ STRINGS = {
         'save_diagnostics_title': 'Tanılama Arşivini Kaydet',
         'diagnostics_saved': 'Tanılama %s konumuna yazıldı',
         'diagnostics_failed': 'Tanılama yazılamadı: %s',
+        'crash_status': 'Sutura beklenmeyen bir hatayla karşılaştı (çökme kaydı yazıldı).',
+        'crash_dialog_msg': ('Sutura beklenmeyen bir hatayla karşılaştı ve bir '
+                             'çökme kaydı yazdı.\nBildirmek için Tanılama ile bir '
+                             'arşiv kaydedip hata bildirimine ekleyin. Kayıt, siz '
+                             'paylaşana kadar bu makinede kalır.'),
     },
 }
 
@@ -2116,6 +2133,25 @@ def format_report(data):
     if data.get('unit_warning'):
         lines.append(_t('unit_warning', data.get('unit_hint', '')))
         lines.append('')
+    _attrs = classification.attribute_stats(data)
+    if _attrs is not None and (_attrs['dropped'] > 0 or _attrs['new_without'] > 0):
+        if _attrs['dropped'] > 0:
+            lines.append('WARNING: %d painted/seam/support triangle attribute(s) '
+                         'were lost; new triangles have none (kept %d, dropped '
+                         '%d, new without attributes %d).'
+                         % (_attrs['dropped'], _attrs['kept'],
+                            _attrs['dropped'], _attrs['new_without']))
+        else:
+            lines.append('Note: triangle attributes were kept where possible; '
+                         'new triangles have none (kept %d, dropped %d, new '
+                         'without attributes %d).'
+                         % (_attrs['kept'], _attrs['dropped'],
+                            _attrs['new_without']))
+        for o in _attrs['objects']:
+            lines.append('  %s: kept %d, dropped %d, new without attributes %d'
+                         % (o.get('model') or 'object', o['kept'],
+                            o['dropped'], o['new_without']))
+        lines.append('')
     if data.get('status') == 'budget_declined':
         lines.append('ERROR: %s' % data.get('error'))
         lines.append('')
@@ -2289,6 +2325,7 @@ class RepairWorker(QThread):
     file_done = Signal(str, str, str, object)   # path, summary, report, data
     progress = Signal(int, int)          # current, total
     all_done = Signal(bool)              # cancelled
+    internal_error = Signal(str)         # traceback text (worker thread crash)
 
     def __init__(self, files, mode='auto', profile=None, force=False,
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
@@ -2347,6 +2384,17 @@ class RepairWorker(QThread):
             self._proc.terminate()
 
     def run(self):
+        # A crash here (an exception escaping the loop) must not vanish into the
+        # Qt thread boundary: log it, surface it, and still signal completion.
+        try:
+            self._run_loop()
+        except Exception:
+            tb = traceback.format_exc()
+            _crash_log('repair worker crashed:\n' + tb)
+            self.internal_error.emit(tb)
+            self.all_done.emit(False)
+
+    def _run_loop(self):
         n = len(self._files)
         for idx, path in enumerate(self._files, 1):
             if self._cancelled:
@@ -2450,13 +2498,25 @@ class RepairWorker(QThread):
             return {'error': 'could not start sutura: %s' % e}
         try:
             out, err = self._proc.communicate(timeout=600)
+            rc = self._proc.returncode
         except subprocess.TimeoutExpired:
             self._proc.kill()
             out, err = self._proc.communicate()
             return {'error': 'timeout while repairing'}
         finally:
             self._proc = None
-        return parse_cli_output(out, err)
+        result = parse_cli_output(out, err)
+        if isinstance(rc, int) and rc < 0:
+            # The CLI process was killed by a signal (segfault/abort): its own
+            # faulthandler already wrote to the shared crash log. Make the
+            # failure visible in the result too.
+            _crash_log('sutura CLI killed by signal %d\nstdout:\n%s\nstderr:\n%s'
+                       % (-rc, out, err))
+            if not result.get('error'):
+                result['error'] = ('sutura process crashed (signal %d); see the '
+                                   'crash log' % -rc)
+            result['crashed'] = True
+        return result
 
 
 class AnalyzeWorker(QThread):
@@ -5826,6 +5886,7 @@ class MainWindow(QMainWindow):
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
         self.worker.all_done.connect(self._on_all_done)
+        self.worker.internal_error.connect(self._on_worker_error)
         self.worker.start()
 
     def analyze(self):
@@ -6182,6 +6243,9 @@ class MainWindow(QMainWindow):
                 out.append(_t('brief_note_unit'))
             elif code == 'material_discarded':
                 out.append(_t('brief_note_material'))
+            elif code == 'attribute_loss':
+                out.append(_t('brief_note_attr_loss', a.get('dropped', 0),
+                              a.get('kept', 0), a.get('new_without', 0)))
             elif code == 'budget':
                 out.append(_t('brief_note_budget'))
             elif code == 'thin_wall':
@@ -7198,6 +7262,14 @@ class MainWindow(QMainWindow):
         _stop_viewer()
         viewport.shutdown()
 
+    def _on_worker_error(self, traceback_text):
+        """A crash escaped the repair worker: it is logged; tell the user.
+
+        Runs on the GUI thread (queued from the worker signal); the shared
+        dialog is shown once."""
+        self.status.setText(_t('crash_status'))
+        _show_crash_dialog()
+
     def _on_all_done(self, cancelled):
         self.status.setText(_t('done_stopped') if cancelled else _t('done'))
         self.btn_stop.setEnabled(False)
@@ -7312,6 +7384,106 @@ class MainWindow(QMainWindow):
         self.btn_analyze.setEnabled(bool(self.files) and not busy)
 
 
+# --- crash reporting --------------------------------------------------------
+# A hard crash (a segfault in the Rust/Qt layer, or an uncaught Python
+# exception) must leave a trace: faulthandler plus uncaught-exception hooks all
+# write to the shared bounded crash.log owned by sutura.diagnostics, and the
+# user gets one short dialog pointing at the Diagnostics export.
+
+_CRASH_DIALOG_SHOWN = False
+
+
+def _crash_log(text):
+    """Append one entry to the shared crash log; never raises."""
+    try:
+        try:
+            from sutura.diagnostics import crash_log_path
+        except ImportError:
+            from diagnostics import crash_log_path
+        with open(crash_log_path(), 'a', encoding='utf-8',
+                  errors='replace') as f:
+            f.write(text.rstrip('\n') + '\n')
+    except Exception:
+        pass
+
+
+def _on_gui_thread():
+    """True when called on the QApplication's main thread."""
+    try:
+        app = QApplication.instance()
+        return app is not None and QThread.currentThread() == app.thread()
+    except Exception:
+        return False
+
+
+def _show_crash_dialog():
+    """Show the crash dialog once, on the GUI thread; never raises.
+
+    Skipped on a windowless Qt platform (offscreen/minimal, e.g. headless CI),
+    where a modal dialog would block with nobody to answer it -- the crash is
+    still logged there.
+    """
+    global _CRASH_DIALOG_SHOWN
+    if _CRASH_DIALOG_SHOWN or not _on_gui_thread():
+        return
+    try:
+        if QApplication.platformName() in HEADLESS_QPA_PLATFORMS:
+            return
+    except Exception:
+        pass
+    _CRASH_DIALOG_SHOWN = True
+    try:
+        QMessageBox.warning(None, _t('app_title'), _t('crash_dialog_msg'))
+    except Exception:
+        pass
+
+
+def _gui_excepthook(exc_type, exc, tb):
+    _crash_log('uncaught exception:\n' + ''.join(
+        traceback.format_exception(exc_type, exc, tb)))
+    _show_crash_dialog()
+
+
+def _gui_threading_excepthook(args):
+    _crash_log('uncaught exception in thread %s:\n%s' % (
+        getattr(args.thread, 'name', '?'),
+        ''.join(traceback.format_exception(
+            args.exc_type, args.exc_value, args.exc_traceback))))
+    _show_crash_dialog()
+
+
+def _gui_qt_message_handler(mode, context, message):
+    try:
+        _crash_log('Qt[%s] %s' % (mode, message))
+    except Exception:
+        pass
+
+
+def _install_crash_hooks():
+    """Enable faulthandler and uncaught-exception hooks into crash.log."""
+    try:
+        try:
+            from sutura.diagnostics import enable_crash_logging
+        except ImportError:
+            from diagnostics import enable_crash_logging
+        enable_crash_logging()
+    except Exception:
+        pass
+    try:
+        sys.excepthook = _gui_excepthook
+    except Exception:
+        pass
+    try:
+        threading.excepthook = _gui_threading_excepthook
+    except Exception:
+        pass
+    try:
+        from PySide6.QtCore import qInstallMessageHandler
+        qInstallMessageHandler(_gui_qt_message_handler)
+    except Exception:
+        pass
+
+
 def main():
     try:
         from sutura_engine import paths as _paths
@@ -7320,6 +7492,7 @@ def main():
             sys.stderr.write('sutura: user-data migration warning: %s\n' % _err)
     except Exception:
         pass
+    _install_crash_hooks()
     app = QApplication(sys.argv)
     apply_dark_theme(app)
     win = MainWindow()

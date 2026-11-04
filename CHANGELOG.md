@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **A crash log for hard crashes.** A hard crash — a segfault in the native
+  `sutura_geom` or Qt layer, or an uncaught Python error — now leaves a trace
+  instead of dying silently. The CLI and the GUI both enable `faulthandler` and
+  uncaught-exception hooks into a single bounded `crash.log` in Sutura's
+  user-data directory (`~/.local/share/sutura/data/crash.log`, or
+  `$SUTURA_DATA_DIR/crash.log`); it keeps only its most recent ~200 KB. The GUI
+  also shows one short dialog pointing at Diagnostics. `sutura --diagnostics
+  out.zip` now includes a scrubbed `crash_log.txt` (the same sanitizer as the
+  rest of the archive). The file never leaves the machine unless the user
+  attaches it. No repair output changes.
+- **3MF triangle-attribute loss is now visible.** When a repaired 3MF loses
+  paint/seam/support attributes on surviving triangles, the `--human` report and
+  the GUI show one warning line with the kept / dropped /
+  new-triangles-without-attributes counts (per object for a multi-object file).
+  When only newly created triangles lack attributes — which is expected — the
+  same counts are shown as a neutral note instead of a warning, and nothing is
+  shown when the input had no attributes. The JSON report already carried these
+  counts; no repair output changes.
+
 ## [0.9.8] - 2026-10-31
 
 ### Added

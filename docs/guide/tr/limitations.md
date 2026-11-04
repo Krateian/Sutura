@@ -122,4 +122,8 @@ güvenilir şekilde algılayabilir.
   alanlarıyla birlikte korunur. Birden fazla mesh aynı `.model` girdisini
   paylaşsa bile hiçbir nesne kaybolmaz. Nesne başına sonuç (her nesnenin aşama 2
   kararı ve `triangle_attributes` tutulan/bırakılan sayıları dahil) CLI
-  çıktısında ve GUI'de raporlanır.
+  çıktısında ve GUI'de raporlanır. Sağ kalan üçgenlerde boya/dikiş/destek
+  öznitelikleri kaybolduysa, CLI (`--human`) ve GUI tutulan, bırakılan ve
+  özniteliksiz yeni üçgen sayılarını içeren bir uyarı gösterir; yalnızca yeni
+  oluşturulan üçgenler özniteliksizse, aynı sayılar uyarı yerine nötr bir not
+  olarak görünür.

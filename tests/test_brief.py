@@ -85,6 +85,61 @@ def test_orientation_and_parts():
     assert 'Parts: 3 -> 1 (2 removed)' in text, text
 
 
+def test_attribute_loss_warns():
+    r = _base()
+    r['triangle_attributes'] = {'original_attributed': 10, 'kept': 6,
+                                'dropped': 4, 'output_triangles': 34}
+    b = classification.brief(r)
+    assert b['verdict'] == 'notes', b
+    assert any(n['code'] == 'attribute_loss' for n in b['notes']), b['notes']
+    text = human_report(r)
+    assert 'WARNING:' in text, text
+    assert 'kept 6' in text and 'dropped 4' in text, text
+    assert 'new without attributes 28' in text, text  # 34 output - 6 kept
+
+
+def test_attribute_new_only_is_info_not_warning():
+    r = _base()
+    r['triangle_attributes'] = {'original_attributed': 10, 'kept': 10,
+                                'dropped': 0, 'output_triangles': 30}
+    b = classification.brief(r)
+    # only new triangles lack attributes: information, not a warning/note
+    assert b['verdict'] == 'ready', b
+    assert not any(n['code'] == 'attribute_loss' for n in b['notes']), b['notes']
+    text = human_report(r)
+    assert 'Note:' in text and 'new without attributes 20' in text, text
+    assert 'WARNING:' not in text, text
+
+
+def test_attribute_silent_without_attributes():
+    r = _base()
+    r['triangle_attributes'] = {'original_attributed': 0, 'kept': 0,
+                                'dropped': 0, 'output_triangles': 30}
+    assert classification.attribute_stats(r) is None
+    assert 'without attributes' not in human_report(r)
+
+
+def test_attribute_multi_object_per_object_lines():
+    r = _base()
+    r['objects'] = 2
+    r['triangle_attributes'] = {'original_attributed': 10, 'kept': 6,
+                                'dropped': 4, 'output_triangles': 40}
+    r['object_reports'] = [
+        {'model': '3D/Objects/a.model',
+         'triangle_attributes': {'original_attributed': 6, 'kept': 6,
+                                 'dropped': 0, 'output_triangles': 20}},
+        {'model': '3D/Objects/b.model',
+         'triangle_attributes': {'original_attributed': 4, 'kept': 0,
+                                 'dropped': 4, 'output_triangles': 20}},
+    ]
+    stats = classification.attribute_stats(r)
+    assert stats['dropped'] == 4 and stats['kept'] == 6, stats
+    assert stats['new_without'] == 34, stats  # (20-6) + (20-0)
+    text = human_report(r)
+    assert '3D/Objects/a.model: kept 6, dropped 0' in text, text
+    assert '3D/Objects/b.model: kept 0, dropped 4' in text, text
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):

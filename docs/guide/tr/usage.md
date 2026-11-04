@@ -313,7 +313,13 @@ alanı bildirimleri korunur. Aşama 1 ayrıca köşe koordinatları değişmeyen
 `pid`/`p1`, ...) korur; yeni oluşturulan üçgenlere boya aktarılmaz. JSON raporu
 nesne başına `triangle_attributes` (`original_attributed`, `kept`, `dropped`,
 `output_triangles`) ve çok nesneli 3MF için toplam bir dosya düzeyi değeri
-taşır. `tests/test_3mf_roundtrip.py` ile regresyon testi yapılır.
+taşır. `tests/test_3mf_roundtrip.py` ile regresyon testi yapılır. Bu ayrıca
+kullanıcıya gösterilir: onarılan bir 3MF'de sağ kalan üçgenlerde öznitelik
+kaybolduysa, `--human` raporu ve GUI tutulan / bırakılan / özniteliksiz yeni
+üçgen sayılarını içeren tek bir uyarı satırı gösterir (çok nesneli dosyada nesne
+başına); yalnızca yeni oluşturulan üçgenler özniteliksizse — ki bu beklenen bir
+durumdur — aynı sayılar nötr bir not olarak gösterilir. Girdide hiç
+boya/dikiş/destek özniteliği yoksa hiçbir şey gösterilmez.
 
 GUI:
 

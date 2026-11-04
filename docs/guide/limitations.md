@@ -119,4 +119,8 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
   and namespaces. No object is lost, even when several meshes share one
   `.model` entry. The per-object result (including each object's stage-2 verdict
   and the `triangle_attributes` keep/drop counts) is reported in the CLI output
-  and the GUI.
+  and the GUI. When painted/seam/support attributes were lost on surviving
+  triangles, the CLI (`--human`) and the GUI show a warning with the kept,
+  dropped and new-triangles-without-attributes counts; when only newly created
+  triangles lack them, the same counts appear as a neutral note rather than a
+  warning.

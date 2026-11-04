@@ -657,6 +657,37 @@ def _brief_note_lines(b):
     return out
 
 
+def _attribute_lines(r):
+    """3MF triangle-attribute keep/drop lines for --human output.
+
+    A warning when attributed triangles were dropped; a neutral note when only
+    newly created triangles lack attributes (which is expected); nothing when
+    the input had no attributes.
+    """
+    stats = classification.attribute_stats(r)
+    if stats is None:
+        return []
+    if stats['dropped'] > 0:
+        head = ('WARNING: %d painted/seam/support triangle attribute(s) were '
+                'lost; new triangles have none (kept %d, dropped %d, new '
+                'without attributes %d).'
+                % (stats['dropped'], stats['kept'], stats['dropped'],
+                   stats['new_without']))
+    elif stats['new_without'] > 0:
+        head = ('Note: triangle attributes were kept where possible; new '
+                'triangles have none (kept %d, dropped %d, new without '
+                'attributes %d).'
+                % (stats['kept'], stats['dropped'], stats['new_without']))
+    else:
+        return []
+    lines = ['', head]
+    for o in stats['objects']:
+        lines.append('  %s: kept %d, dropped %d, new without attributes %d'
+                     % (o.get('model') or 'object', o['kept'], o['dropped'],
+                        o['new_without']))
+    return lines
+
+
 def human_report(r, show_defects=False, show_diff=False):
     if 'error' in r and 'stage1' not in r:
         return 'ERROR: %s' % r['error']
@@ -728,6 +759,7 @@ def human_report(r, show_defects=False, show_diff=False):
     if r.get('material_discarded'):
         lines.append('Material: input OBJ has mtllib/usemtl references which '
                      'are not preserved in the repaired output.')
+    lines.extend(_attribute_lines(r))
     lines.append('')
     lines.append('Stage 1 (MeshLab):')
     lines.append('  Holes closed            : %d' % s1.get('holes_closed', 0))
