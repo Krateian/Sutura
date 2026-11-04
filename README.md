@@ -53,9 +53,10 @@ OrcaSlicer plugin.
 - **Repairs only what is broken.** Holes, wrongly joined edges, flipped faces,
   overlapping or self-intersecting parts and loose debris are treated; a clean
   model passes through unchanged.
-- **Never worse than the input.** Every repair step is adopted only when its
-  result is at least as good as what the repair already had; otherwise it is
-  discarded.
+- **Never worse on topology and shape guards.** Every repair candidate is
+  adopted only when it passes strict defect, blow-up, and shape limits; otherwise
+  it is discarded (see [what "no worse" covers](docs/guide/how-it-works.md#what-no-worse-covers);
+  surface detail is checked by the report-only Fidelity score).
 - **Honest verdict.** The result is reloaded and re-checked before it is called
   watertight, and a report shows what was fixed, what remains and how much the
   shape moved.

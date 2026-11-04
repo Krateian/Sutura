@@ -1,5 +1,12 @@
 # Repair benchmark — strict watertight measurement (115-mesh corpus)
 
+> [!NOTE] Historical Benchmark
+> This document records a historical benchmark run from the v0.2.8 era (September 2026),
+> conducted before the introduction of modern pipeline stages and tiers (such as
+> P-WELD, Flap prepass, Tamponade, Graft, Dressing, Splint, Coaptation, and CDT).
+> It is retained for historical traceability and reproducibility, and is not
+> representative of current releases.
+
 Date: 2026-09-20
 Repo state: HEAD `c0f5d26` (v0.2.8 + FAZ 1 `developable_fraction` signal + FAZ 2
 40-mesh corpus / retrained classifier head).

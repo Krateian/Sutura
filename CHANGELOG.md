@@ -48,6 +48,23 @@ All notable changes to this project are documented here.
   result details (EN/TR), per object for multi-object 3MF. This is report-only:
   nothing extra is removed, so the output is byte-identical.
 
+### Documentation
+
+- **Adoption guards and guarantees documentation:** Added 'What "no worse" covers'
+  table and breakdown to `docs/guide/how-it-works.md` and Turkish guide, detailing
+  runtime adoption guards, explaining self-intersection policies (`strict_zero`,
+  `non_rise`, `improved_flag`, `flag`), and clarifying distinctions between runtime
+  checks, release verification, and unmeasured fidelity.
+- **Clarified README highlights:** Updated 'Never worse than the input' bullet to
+  point precisely to topology and shape adoption guards in both English and Turkish.
+- **Historical benchmark markers:** Marked the 115-mesh corpus benchmark and citations
+  as historical v0.2.8-era results across documentation.
+- **Precise debris and hole patching rules:** Documented native `< 8` triangle debris
+  removal threshold and Flap boundary continuation in `docs/guide/limitations.md`.
+- **Bug report issue template:** Updated bug report template to request the diagnostics
+  archive (`sutura --diagnostics sutura-diag.zip` or GUI Diagnostics button) and optional
+  crash log instead of manual environment typing.
+
 ## [0.9.8] - 2026-10-31
 
 ### Added

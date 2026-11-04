@@ -47,15 +47,20 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
   mesh as a solid, which resolves interior/overlapping geometry, but the
   rebuild can slightly reshape features in pathological cases. Always check
   the result in a slicer.
-* **Large hole patches.** The stage-1 closer fills holes with flat triangulated patches; for
-  very large holes the fill is a simple patch, not a smart reconstruction.
-  It closes the mesh, but the patch quality is average and may need smoothing.
-* **Tiny disconnected debris.** Components with fewer than 8 faces are
-  removed. A small legitimate part that is not connected to the main body
-  will be removed too. The report makes this visible: `stage1.removed_small_parts`
-  (and the `--human` report and GUI details) lists how many components the
-  `<8`-face rule dropped, their total face count and, for a capped list, each
-  component's face count, size and distance to the main body.
+* **Large hole patches.** The Flap tier advances boundary curvature and
+  tangent continuity across holes to reconstruct smooth surface geometry. However,
+  for very large holes where boundary curvature cannot reliably span the opening,
+  the repair falls back to a plain flat triangulated patch, which closes the
+  opening topologically but may require smoothing or solid remeshing.
+* **Tiny disconnected debris.** Disconnected components with strictly fewer
+  than 8 triangles are removed during Stage 1 cleanup
+  (`sutura.topology.remove_connected_components`). Separate, disconnected parts
+  with 8 or more triangles are kept intact. (To preserve sub-8-face details on
+  tiny models, the `--profile miniature` preset lowers this threshold to 1). The
+  report makes this visible: `stage1.removed_small_parts` (and the `--human`
+  report and GUI details) lists how many components the `<8`-face rule dropped,
+  their total face count and, for a capped list, each component's face count,
+  size and distance to the main body.
 * **Suspicious separate small parts are flagged, never removed.**
   `stage1.possible_debris` lists kept components that look like possible debris
   (a separate, closed, non-degenerate part under 0.5% of the largest part's

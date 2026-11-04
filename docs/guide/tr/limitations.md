@@ -49,12 +49,16 @@ güvenilir şekilde algılayabilir.
   olarak yeniden kurar, bu iç/örtüşen geometriyi çözer, ama patolojik
   durumlarda yeniden kurma, özellikleri hafifçe yeniden şekillendirebilir.
   Sonucu her zaman bir dilimleyicide kontrol edin.
-* **Büyük delik yamaları.** Aşama 1 kapatıcısı, delikleri düz üçgen yamalarla doldurur; çok
-  büyük delikler için dolgu basit bir yamadır, akıllı bir yeniden yapılandırma
-  değildir. Meshi kapatır ama yama kalitesi ortalamadır ve yumuşatma
-  gerektirebilir.
-* **Küçük bağlantısız döküntüler.** 8 yüzden az olan bileşenler kaldırılır.
-  Ana gövdeye bağlı olmayan küçük, meşru bir parça da kaldırılır. Rapor bunu
+* **Büyük delik yamaları.** Flap katmanı, pürüzsüz yüzey geometrisini yeniden
+  kurmak için delikler boyunca sınır eğriliğini ve teğet sürekliliğini ilerletir.
+  Ancak sınır eğriliğinin açıklığı güvenilir biçimde bağlayamadığı çok büyük
+  deliklerde onarım, açıklığı topolojik olarak kapatan ancak yumuşatma veya katı
+  yeniden örme gerektirebilen düz üçgensel bir yamaya geri döner.
+* **Küçük bağlantısız döküntüler.** Kesin olarak 8 üçgenden az olan bağlantısız
+  bileşenler Aşama 1 temizliğinde kaldırılır
+  (`sutura.topology.remove_connected_components`). 8 veya daha fazla üçgene sahip
+  ayrık parçalar korunur. (Minyatür modellerdeki 8 yüzün altındaki ayrıntıları
+  korumak için `--profile miniature` preseti bu eşiği 1'e indirir). Rapor bunu
   görünür kılar: `stage1.removed_small_parts` (ve `--human` raporu ile GUI
   ayrıntıları), `<8`-yüz kuralının kaç bileşen kaldırdığını, toplam yüz sayısını
   ve sınırlı bir liste için her bileşenin yüz sayısını, boyutunu ve ana gövdeye
