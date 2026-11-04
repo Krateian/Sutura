@@ -106,6 +106,11 @@ sutura a.stl b.stl c.3mf         # batch
   (or drag and drop) and press **Repair**.
 - **KDE Dolphin:** right-click a model → **Repair with Sutura**.
 - **macOS Finder:** right-click → *Quick Actions* → **Sutura — Repair**.
+- **If something goes wrong:** a hard crash writes a capped `crash.log` in
+  Sutura's user-data folder (the GUI shows a short dialog); `sutura
+  --diagnostics out.zip` bundles a scrubbed copy for a bug report. The log never
+  leaves your machine unless you attach it. See
+  [Troubleshooting](docs/guide/troubleshooting.md).
 - **Last-resort solid engine (experimental):** `--solid-engine cdt|ftetwild`
   chooses the rebuild used when everything else failed (also under Options →
   Repair and inherited by the integrations). The default stays **fTetWild**;

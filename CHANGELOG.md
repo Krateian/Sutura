@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **A crash log for hard crashes.** A hard crash — a segfault in the native
+  `sutura_geom` or Qt layer, or an uncaught Python error — now leaves a trace
+  instead of dying silently. The CLI and the GUI both enable `faulthandler` and
+  uncaught-exception hooks into a single bounded `crash.log` in Sutura's
+  user-data directory (`~/.local/share/sutura/data/crash.log`, or
+  `$SUTURA_DATA_DIR/crash.log`); it keeps only its most recent ~200 KB. The GUI
+  also shows one short dialog pointing at Diagnostics. `sutura --diagnostics
+  out.zip` now includes a scrubbed `crash_log.txt` (the same sanitizer as the
+  rest of the archive). The file never leaves the machine unless the user
+  attaches it. No repair output changes.
+
 ## [0.9.8] - 2026-10-31
 
 ### Added

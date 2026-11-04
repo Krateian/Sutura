@@ -105,6 +105,11 @@ sutura a.stl b.stl c.3mf         # toplu onarım
   ekleyin (veya sürükleyip bırakın) ve **Onar**'a basın.
 - **KDE Dolphin:** modele sağ tık → **Sutura ile Onar**.
 - **macOS Finder:** sağ tık → *Hızlı Eylemler* → **Sutura — Repair**.
+- **Bir şeyler ters giderse:** sert bir çökme, Sutura'nın kullanıcı verisi
+  klasörüne sınırlı boyutlu bir `crash.log` yazar (GUI kısa bir diyalog gösterir);
+  `sutura --diagnostics out.zip` hata bildirimi için temizlenmiş bir kopyasını
+  pakete ekler. Kayıt, siz eklemedikçe makinenizden çıkmaz.
+  Bkz. [Sorun giderme](docs/guide/tr/troubleshooting.md).
 - **Son çare katı motoru (deneysel):** `--solid-engine cdt|ftetwild` her şey
   başarısız olduğunda kullanılacak yeniden inşayı seçer (Seçenekler → Onarım
   altında da; entegrasyonlarca devralınır). Varsayılan **fTetWild** olarak

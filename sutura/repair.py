@@ -1223,6 +1223,16 @@ def main(argv=None):
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     debug = '--debug' in argv or os.environ.get('SUTURA_DEBUG') == '1'
+    # faulthandler into the shared crash log before any work, so a segfault in
+    # the Rust extension leaves a trace (see sutura.diagnostics).
+    try:
+        try:
+            from sutura.diagnostics import enable_crash_logging
+        except ImportError:
+            from diagnostics import enable_crash_logging
+        enable_crash_logging()
+    except Exception:
+        pass
     try:
         _main(argv)
     except CancelledError:
