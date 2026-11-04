@@ -18,6 +18,10 @@ their previous behaviour in every preset. The chosen intensity is reported as
 `--list-intensities` prints the presets and profiles with their effective
 values and exits.
 
+`--deep-repair` also defaults from `SUTURA_DEEP_REPAIR` and the `deep_repair`
+key of `~/.config/sutura/config.json` (an explicit manual override that the GUI
+does not write; the flag wins), otherwise `full`.
+
 - **Quick** — skips the deep-repair ladder and the fTetWild tier entirely
   (`deep_repair=off`, fTetWild off) and has an empty decimation ladder: the
   fastest run, which leaves hard meshes open.

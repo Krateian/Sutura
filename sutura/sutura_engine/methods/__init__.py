@@ -4,7 +4,7 @@
 
 Provides:
   - RepairMethod protocol & concrete implementation
-  - Method registration and auto-discovery of builtin method modules (1..12)
+  - Method registration and auto-discovery of builtin method modules (1..19)
   - Method recommendation and ranking based on object analysis & templates
   - Text & JSON formatting helpers for CLI inspection
 """
