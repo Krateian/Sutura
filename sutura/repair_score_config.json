@@ -32,6 +32,7 @@
     "bbox_scale_pct": 5.0,
     "invented_scale_fraction": 0.05,
     "change_tol_factor": 3.0,
+    "changed_min_healthy_distance_pct": 1.0,
     "tiers": { "high": 85, "mid": 60 },
     "low_confidence": {
       "invented_area_fraction": 0.03,

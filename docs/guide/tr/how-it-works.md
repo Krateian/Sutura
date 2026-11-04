@@ -332,7 +332,12 @@ dört açık kurala ayırır:
      dolgusu/eksiltmesi ve düşük güvenli tahmin alanları); ancak bu skor **yalnızca
      raporlama amaçlıdır**, bir benimseme koruması DEĞİLDİR. Kullanıcı şeffaflığı
      için nihai mesh'i değerlendirir ve bir onarım adayının benimsenip reddedileceğini
-     asla belirlemez.
+     asla belirlemez. Bir şekil değişikliği artık yalnızca sağlıklı yüzey sınır
+     kutusu köşegeninin %1,0'inden fazla hareket ettiğinde `changed` okunur
+     (`repair_score_config.json` içindeki `changed_min_healthy_distance_pct`);
+     samples40 + oracle36 kalibrasyonunda bu, altı yanlış alarmı kaldırdı ve
+     sessiz (görsel olarak daha kötü) vaka bırakmadı (61 korundu / 2 değişti /
+     0 sessiz).
    - **İç boşlukların ve iç kabuk geometrisinin korunması:** Çalışma zamanında
      ölçülmez veya korunmaz (katı yeniden kurma katmanları iç boşlukları
      birleştirebilir, basitleştirebilir veya doldurabilir).

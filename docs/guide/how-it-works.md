@@ -328,7 +328,12 @@ self-intersection guards into four explicit policies:
      (healthy-surface distance, feature-edge recall, healthy fill/removed volume,
      and low-confidence guess areas), but this score is **report-only**, NOT an
      adoption guard. It evaluates the final mesh for user transparency and never
-     decides whether a repair candidate is accepted or rejected.
+     decides whether a repair candidate is accepted or rejected. A shape change
+     now reads as `changed` only when the healthy surface moved more than 1.0 %
+     of the bounding-box diagonal (`changed_min_healthy_distance_pct` in
+     `repair_score_config.json`); on the samples40 + oracle36 calibration this
+     removed six false alarms with no silent (visually worse) case (61 preserved
+     / 2 changed / 0 silent).
    - **Internal cavity and interior shell preservation:** Not measured or guarded
      at runtime (solid rebuild tiers may merge, simplify, or fill interior voids).
 

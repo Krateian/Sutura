@@ -117,8 +117,17 @@ def test_scaled_shape_scores_lower():
     r = fidelity.compute((v, t), (v * 1.01, t), _REPORT)
     assert r['repair_fidelity'] is not None
     assert r['repair_fidelity'] < 100, r
-    assert r['repair_verdict_code'] in ('changed', 'low_confidence'), r
+    # A 1 % size change stays within the calibrated 1 %-of-diagonal gate: the
+    # score drops but the verdict remains preserved (no cry-wolf).
+    assert r['repair_verdict_code'] == 'preserved', r
     assert r['repair_fidelity_factors']['healthy_distance']['penalty'] > 0
+
+
+def test_scaled_shape_above_gate_is_changed():
+    v, t = _box()
+    r = fidelity.compute((v, t), (v * 1.06, t), _REPORT)
+    assert r['repair_verdict_code'] in ('changed', 'low_confidence'), r
+    assert r['repair_fidelity_metrics']['healthy_distance_max_pct'] > 1.0, r
 
 
 def test_small_hole_keeps_high_fidelity():
@@ -228,6 +237,22 @@ def test_human_report_headline():
         'Repaired, shape changed in 2 area(s) - check')
     assert fidelity_verdict_text('low_confidence', 3) == (
         'Repaired, shape changed in 3 guessed area(s) - check')
+
+
+def test_changed_area_distance_gate():
+    """A changed area counts only beyond the configured healthy-distance gate."""
+    cfg = fidelity.load_config()
+    # area present, max healthy distance at/below the 1.0 % gate -> preserved
+    code, _ = fidelity._verdict(90, {}, False, [], 2, cfg, max_pct=0.9)
+    assert code == 'preserved', code
+    # clearly above the gate -> changed
+    code, _ = fidelity._verdict(90, {}, False, [], 2, cfg, max_pct=1.5)
+    assert code == 'changed', code
+    # config-driven: a tighter gate makes the same distance count as changed
+    cfg2 = fidelity.load_config(
+        {'fidelity': {'changed_min_healthy_distance_pct': 0.2}})
+    code, _ = fidelity._verdict(90, {}, False, [], 2, cfg2, max_pct=0.3)
+    assert code == 'changed', code
 
 
 def main():
