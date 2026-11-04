@@ -47,12 +47,16 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
   mesh as a solid, which resolves interior/overlapping geometry, but the
   rebuild can slightly reshape features in pathological cases. Always check
   the result in a slicer.
-* **Large hole patches.** The stage-1 closer fills holes with flat triangulated patches; for
-  very large holes the fill is a simple patch, not a smart reconstruction.
-  It closes the mesh, but the patch quality is average and may need smoothing.
-* **Tiny disconnected debris.** Components with fewer than 8 faces are
-  removed. A small legitimate part that is not connected to the main body
-  will be removed too.
+* **Large hole patches.** The Flap tier advances boundary curvature and
+  tangent continuity across holes to reconstruct smooth surface geometry. However,
+  for very large holes where boundary curvature cannot reliably span the opening,
+  the repair falls back to a plain flat triangulated patch, which closes the
+  opening topologically but may require smoothing or solid remeshing.
+* **Tiny disconnected debris.** Disconnected components with strictly fewer
+  than 8 triangles are removed during Stage 1 cleanup
+  (`sutura.topology.remove_connected_components`). Separate, disconnected parts
+  with 8 or more triangles are kept intact. (To preserve sub-8-face details on
+  tiny models, the `--profile miniature` preset lowers this threshold to 1).
 * **Dense coplanar contacts are analysed with a bounded exact pass.** For a
   mechanical part with very many coincident faces on one contact patch, the
   exact coplanar shell analysis is capped at 512 triangles / 1,024 constraint
