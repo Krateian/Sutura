@@ -74,7 +74,7 @@ def main():
     failed.pop('stage2', None)
     w._render_report_brief('/tmp/in.stl', failed, 'ERROR: broken')
     assert '✗' in w.report_verdict.text()
-    assert 'Could not fully repair' in w.report_verdict.text()
+    assert 'Not fully repaired' in w.report_verdict.text()
     assert 'hole(s) remain' in w.report_notes.text(), w.report_notes.text()
     print('ok  failed verdict')
 

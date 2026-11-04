@@ -403,3 +403,28 @@ def brief(data):
         'notes': notes,
         'error': data.get('error'),
     }
+
+
+def headline_verdict(data):
+    """One folded headline verdict for the report (display only).
+
+    The single user-facing verdict line: the Fidelity ``repair_verdict`` when it
+    was measured, with the topology ``brief`` verdict folded in. A failed repair
+    always reads ``not_repaired``; when Fidelity is absent/unavailable the
+    headline falls back to the honest brief verdict (``ready``/``notes``) rather
+    than claiming a shape check that was not run.
+
+    Returns ``{'code', 'areas'}``. ``code`` is a Fidelity verdict code
+    (``preserved`` / ``changed`` / ``low_confidence`` / ``not_repaired``) when
+    Fidelity was measured, else a brief code (``ready`` / ``notes``). It never
+    changes the JSON ``category`` or ``repair_verdict_code``; the GUI and the CLI
+    only format it.
+    """
+    b = brief(data)
+    code = data.get('repair_verdict_code')
+    areas = int(data.get('repair_verdict_areas') or 0)
+    if b['verdict'] == 'failed' or code == 'not_repaired':
+        return {'code': 'not_repaired', 'areas': areas}
+    if code in (None, 'unavailable'):
+        return {'code': b['verdict'], 'areas': 0}
+    return {'code': code, 'areas': areas}

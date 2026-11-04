@@ -121,6 +121,9 @@ sutura a.stl b.stl c.3mf         # toplu onarım
   kaldırdığı küçük bileşenleri (`< 8` yüz) boyutları ve ana gövdeye uzaklıklarıyla
   listeler ve olası kırıntıya benzeyen korunmuş parçaları işaretler — hiçbir şey
   silinmeden. Bkz. [Kullanım](docs/guide/tr/usage.md).
+- **Onarım başına tek hüküm.** Hem CLI hem GUI tek bir başlık hükmü gösterir
+  (şekil kontrolü katlanmış); tam rapor **Ayrıntılar** arkasında ve İngilizce ile
+  Türkçe yerelleştirilmiştir. Bkz. [Kullanım](docs/guide/tr/usage.md).
 - **Son çare katı motoru (deneysel):** `--solid-engine cdt|ftetwild` her şey
   başarısız olduğunda kullanılacak yeniden inşayı seçer (Seçenekler → Onarım
   altında da; entegrasyonlarca devralınır). Varsayılan **fTetWild** olarak
