@@ -236,6 +236,13 @@ toplanır. GUI, rapor özetinde aynı tek başlığı gösterir ve tam raporu �
 İngilizce ve Türkçe yerelleştirilmiş — **Ayrıntılar** düğmesinin arkasına
 katlar.
 
+Otomatik **yedek** sırası, isteğe bağlı olarak model başına `--auto-reorder`
+(veya Seçenekler → Yöntemler içindeki *Otomatik yeniden sıralama* onay kutusu)
+ile yeniden sıralanabilir. Model başına önerilen yöntem sıralamasını kullanır;
+temel işlem hattı ve derin onarım sırası değişmez ve Graft yine fTetWild’dan önce
+gelir. Kapalı gelir ve samples40 + oracle36 gate kümelerinde nötr kaldı (hiçbir
+mesh değişmedi).
+
 ### Baskı-etkisi raporu
 
 Her onarım raporu, sonucu tek tek koşullara ayıran ve her birinin bir FDM

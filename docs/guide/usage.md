@@ -238,6 +238,12 @@ summed. The GUI shows the same single headline in the report summary, with the
 full report — now localized in English and Turkish — folded behind the
 **Details** toggle.
 
+The automatic **fallback** order can be reordered per model, opt-in, with
+`--auto-reorder` (or the *Auto-reorder* checkbox in Options → Methods). It uses
+the per-model suggested-method ranking; the baseline pipeline and the deep-repair
+ladder are unchanged, and Graft still precedes fTetWild. It ships off, and on the
+samples40 + oracle36 gate sets it was neutral (no mesh changed).
+
 ### Print-impact report
 
 Every repair report carries a `print_report` block that decomposes the outcome
