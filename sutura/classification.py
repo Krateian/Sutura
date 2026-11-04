@@ -214,6 +214,11 @@ VERDICT_LABELS = {
     'failed': 'Could not fully repair',
 }
 
+# Health boundary for a clean headline: below the "not repaired" mid tier that
+# fidelity._verdict already uses, a repair must not read as an unconditional
+# shape-preserved success.
+HEADLINE_HEALTH_READY = 60
+
 
 def _num(v, default=None):
     if isinstance(v, bool) or not isinstance(v, (int, float)):
@@ -403,3 +408,37 @@ def brief(data):
         'notes': notes,
         'error': data.get('error'),
     }
+
+
+def headline_verdict(data):
+    """One folded headline verdict for the report (display only).
+
+    The single user-facing verdict line: the Fidelity ``repair_verdict`` when it
+    was measured, with the topology ``brief`` verdict folded in. A failed repair
+    always reads ``not_repaired``; when Fidelity is absent/unavailable the
+    headline falls back to the honest brief verdict (``ready``/``notes``) rather
+    than claiming a shape check that was not run.
+
+    Returns ``{'code', 'areas'}``. ``code`` is a Fidelity verdict code
+    (``preserved`` / ``changed`` / ``low_confidence`` / ``not_repaired``) when
+    Fidelity was measured, else a brief code (``ready`` / ``notes``). It never
+    changes the JSON ``category`` or ``repair_verdict_code``; the GUI and the CLI
+    only format it.
+    """
+    b = brief(data)
+    code = data.get('repair_verdict_code')
+    areas = int(data.get('repair_verdict_areas') or 0)
+    if b['verdict'] == 'failed' or code == 'not_repaired':
+        return {'code': 'not_repaired', 'areas': areas}
+    if code in (None, 'unavailable'):
+        return {'code': b['verdict'], 'areas': 0}
+    # Fidelity was measured. Never present an unconditional clean "shape
+    # preserved" when the topology has caveats ('notes') or Health is below the
+    # ready boundary; combine them instead ("Repaired with notes - shape
+    # preserved").
+    health = data.get('repair_health')
+    low_health = (isinstance(health, (int, float)) and not isinstance(health, bool)
+                  and health < HEADLINE_HEALTH_READY)
+    if code == 'preserved' and (b['verdict'] == 'notes' or low_health):
+        return {'code': 'preserved_notes', 'areas': areas}
+    return {'code': code, 'areas': areas}

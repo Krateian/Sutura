@@ -738,6 +738,7 @@ def _attribute_lines(r):
 
 _FIDELITY_VERDICT_TEXT = {
     'preserved': 'Repaired, shape preserved',
+    'preserved_notes': 'Repaired with notes \u2014 shape preserved',
     'changed': 'Repaired, shape changed in %d area(s) - check',
     'low_confidence': ('Repaired, shape changed in %d guessed area(s) '
                        '- check'),
@@ -761,7 +762,14 @@ def human_report(r, show_defects=False, show_diff=False):
     brief = classification.brief(r)
     s1 = r.get('stage1', {})
     lines = []
-    lines.append(classification.VERDICT_LABELS[brief['verdict']])
+    # ONE headline verdict: the Fidelity repair_verdict with the topology brief
+    # folded in (classification.headline_verdict). The old brief label is not
+    # printed as a second verdict.
+    _hv = classification.headline_verdict(r)
+    if _hv['code'] in classification.VERDICT_LABELS:
+        lines.append(classification.VERDICT_LABELS[_hv['code']])
+    else:
+        lines.append(fidelity_verdict_text(_hv['code'], _hv['areas']))
     lines.append(_brief_count_line(brief))
     lines.extend(_brief_note_lines(brief))
     if brief['verdict'] == 'failed' and brief.get('error'):
@@ -795,15 +803,10 @@ def human_report(r, show_defects=False, show_diff=False):
     rk = r.get('repair_risk')
     rf = r.get('repair_fidelity')
     if rh is not None or rk is not None or rf is not None:
-        headline = ('Health: %s/100   Risk: %s/100   Fidelity: %s/100' % (
+        lines.append('Health: %s/100   Risk: %s/100   Fidelity: %s/100' % (
             'n/a' if rh is None else rh,
             'n/a' if rk is None else rk,
             'n/a' if rf is None else rf))
-        vcode = r.get('repair_verdict_code')
-        if vcode:
-            headline += '   ' + fidelity_verdict_text(
-                vcode, r.get('repair_verdict_areas') or 0)
-        lines.append(headline)
         if r.get('repair_fidelity_note'):
             lines.append('Fidelity note: %s' % r['repair_fidelity_note'])
     pr = r.get('print_report')

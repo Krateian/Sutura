@@ -124,6 +124,10 @@ sutura a.stl b.stl c.3mf         # batch
   lists the tiny components the repair removed (`< 8` faces) with their size and
   distance to the main body, and flags kept parts that look like possible debris
   — without deleting anything. See [Usage](docs/guide/usage.md).
+- **One verdict per repair.** Both the CLI and the GUI show a single headline
+  verdict (shape check folded in), with the full report available behind
+  **Details** and localized in English and Turkish. See
+  [Usage](docs/guide/usage.md).
 - **Last-resort solid engine (experimental):** `--solid-engine cdt|ftetwild`
   chooses the rebuild used when everything else failed (also under Options →
   Repair and inherited by the integrations). The default stays **fTetWild**;

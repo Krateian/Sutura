@@ -205,13 +205,18 @@ klasik güven skorundan bağımsız, ayrı bir skorlama sistemi
   çökmez. Faktör başına katkılar da raporlanır
   (`repair_health_factors` / `repair_risk_factors` /
   `repair_fidelity_factors`).
-- `repair_verdict_code` / `repair_verdict_areas` — kullanıcı için tek, sade
-  hüküm: `preserved` ("Onarıldı, şekil korundu"), `changed` ("Onarıldı, N
-  bölgede şekil değişti - kontrol edin"), `low_confidence` ("... N bölge
-  tahminle yeniden oluşturuldu ..."), `not_repaired` ("Tam onarılmadı") veya
-  `unavailable`. Hükmü Sağlık yönetir: başarısız bir onarım, dokunulmamış
-  kısımlar hâlâ eşleşse bile asla korundu olarak tanımlanmaz. Büyük uydurulmuş
-  alanlar (büyük delik kapağı, fTetWild/Splint yeniden inşası)
+- `repair_verdict_code` / `repair_verdict_areas` — JSON raporundaki Sadakat
+  **şekil** hükmü ve değişen alan sayısı: `preserved` ("Onarıldı, şekil
+  korundu"), `changed` ("Onarıldı, N bölgede şekil değişti - kontrol edin"),
+  `low_confidence` ("... N bölge tahminle yeniden oluşturuldu ..."),
+  `not_repaired` ("Tam onarılmadı") veya `unavailable`. JSON alanı, yalnızca
+  gösterim için olan `ready` / `notes` kodlarını asla içermez. CLI `--human` ve
+  GUI bunu topoloji hükmüyle TEK bir başlıkta birleştirir: başarısız bir onarım
+  (veya orta katmanın altındaki Sağlık) `not_repaired` okunur; topolojide notlar
+  varken şekil korunduysa başlık "Notlarla onarıldı — şekil korundu" olur, asla
+  temiz bir "şekil korundu" değil; Sadakat ölçülmediğinde ise sade hükme döner
+  ("Baskıya hazır" / "Notlarla onarıldı"). Büyük uydurulmuş alanlar
+  (büyük delik kapağı, fTetWild/Splint yeniden inşası)
   `repair_verdict_low_confidence` bayrağını açar: oradaki yeniden oluşturma bir
   tahmindir, ölçüm değildir. Alan başına sayımlar ve düşük-güvenilirlik küme
   ayrıntısı analiz bütçesinin altındaki mesh'lerde ölçülür; daha büyük
@@ -219,15 +224,17 @@ klasik güven skorundan bağımsız, ayrı bir skorlama sistemi
   aynı nedenle çok büyük mesh'lerde keskin kenar terimi de atlanır ve
   `repair_fidelity_note` bunu belirtir.
 
-`--human` başlığı
-`Health: X/100   Risk: Y/100   Fidelity: Z/100   <hüküm>` olarak gösterir;
-`repair_status` bir sonraki ayrıntı satırındadır. `--no-fidelity` (veya
-Options onay kutusu) ölçümü atlar; yalnızca raporlama amaçlıdır, kaydedilen
-mesh'i asla değiştirmez. Skorlama fail-silent'tir: eksik/geçersiz metrik
-atlanır (ağırlığı diğerlerine dağıtılır) ve skorlama onarımı asla bozmaz. Çok
-nesneli 3MF raporları bunları nesne başına taşır; dosya düzeyi Sadakat en kötü
-nesnedir ve değişen/düşük-güvenilirlik alan sayıları toplanır. GUI kusur paneli
-aynı başlığı seçili dosyanın başlık satırında gösterir.
+`--human` bu tek hükmü kendi satırında, ardından sayıları
+(`Health: X/100   Risk: Y/100   Fidelity: Z/100`) yazdırır; sayılar artık hükmü
+tekrarlamaz ve `repair_status` bir sonraki ayrıntı satırında kalır.
+`--no-fidelity` (veya Options onay kutusu) ölçümü atlar; yalnızca raporlama
+amaçlıdır, kaydedilen mesh'i asla değiştirmez. Skorlama fail-silent'tir:
+eksik/geçersiz metrik atlanır (ağırlığı diğerlerine dağıtılır) ve skorlama
+onarımı asla bozmaz. Çok nesneli 3MF raporları bunları nesne başına taşır; dosya
+düzeyi Sadakat en kötü nesnedir ve değişen/düşük-güvenilirlik alan sayıları
+toplanır. GUI, rapor özetinde aynı tek başlığı gösterir ve tam raporu — artık
+İngilizce ve Türkçe yerelleştirilmiş — **Ayrıntılar** düğmesinin arkasına
+katlar.
 
 ### Baskı-etkisi raporu
 

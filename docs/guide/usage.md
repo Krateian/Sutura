@@ -206,13 +206,19 @@ configurable via `sutura/repair_score_config.json`):
   The per-factor contributions are also reported
   (`repair_health_factors` / `repair_risk_factors` /
   `repair_fidelity_factors`).
-- `repair_verdict_code` / `repair_verdict_areas` — one plain-language verdict
-  for the user: `preserved` ("Repaired, shape preserved"), `changed`
-  ("Repaired, shape changed in N area(s) - check"), `low_confidence`
-  ("... in N guessed area(s) ..."), `not_repaired` ("Not fully repaired") or
-  `unavailable`. Health leads the verdict: a failed repair is never described
-  as preserved even if the untouched parts still match. Large invented areas
-  (a big hole cap, fTetWild/Splint rebuild) set
+- `repair_verdict_code` / `repair_verdict_areas` — the Fidelity **shape**
+  verdict in the JSON report and its changed-area count: `preserved`
+  ("Repaired, shape preserved"), `changed` ("Repaired, shape changed in N
+  area(s) - check"), `low_confidence` ("... in N guessed area(s) ..."),
+  `not_repaired` ("Not fully repaired") or `unavailable`. The JSON field never
+  contains the display-only `ready` / `notes` codes. The CLI `--human` and the
+  GUI fold it with the topology verdict into ONE headline: a failed repair (or
+  Health below the mid tier) reads `not_repaired` even if the untouched parts
+  still match; with topology caveats but a preserved shape the headline is
+  "Repaired with notes — shape preserved", never a clean "shape preserved"; and
+  when Fidelity is not measured it falls back to the plain brief verdict
+  ("Ready to print" / "Repaired with notes").
+  Large invented areas (a big hole cap, fTetWild/Splint rebuild) set
   `repair_verdict_low_confidence`: the reconstruction there is a guess, not a
   measurement. The per-area counts and low-confidence cluster detail are
   measured on meshes below the analysis budget; larger meshes keep the score
@@ -220,15 +226,17 @@ configurable via `sutura/repair_score_config.json`):
   term is also skipped on very large meshes for the same reason, and
   `repair_fidelity_note` says so.
 
-`--human` shows the headline as
-`Health: X/100   Risk: Y/100   Fidelity: Z/100   <verdict>`, with
-`repair_status` on the following details line. `--no-fidelity` (or the
-Options checkbox) skips the measurement; it is reporting-only, so it never
-changes the saved mesh. Scoring is fail-silent: any missing/invalid metric is
-skipped (its weight redistributed), and scoring never breaks a repair.
-Multi-object 3MF reports carry these per object; the file-level Fidelity is
-the worst object and the changed/low-confidence area counts are summed. The
-GUI defect panel shows the same headline in the selected file's header line.
+`--human` prints that one verdict on its own line, then
+`Health: X/100   Risk: Y/100   Fidelity: Z/100` as the numbers (the numbers no
+longer repeat the verdict); `repair_status` stays on the following details line.
+`--no-fidelity` (or the Options checkbox) skips the measurement; it is
+reporting-only, so it never changes the saved mesh. Scoring is fail-silent: any
+missing/invalid metric is skipped (its weight redistributed), and scoring never
+breaks a repair. Multi-object 3MF reports carry these per object; the file-level
+Fidelity is the worst object and the changed/low-confidence area counts are
+summed. The GUI shows the same single headline in the report summary, with the
+full report — now localized in English and Turkish — folded behind the
+**Details** toggle.
 
 ### Print-impact report
 

@@ -47,6 +47,25 @@ All notable changes to this project are documented here.
   volume share and distance. Both appear in the `--human` report and the GUI
   result details (EN/TR), per object for multi-object 3MF. This is report-only:
   nothing extra is removed, so the output is byte-identical.
+- **Opt-in auto-reorder of the automatic fallbacks.** `--auto-reorder` (and a
+  checkbox in Options → Methods, *Automatic* mode) reorders the automatic
+  fallback methods per model from the suggested-method ranking. Only the fallback
+  attempt order changes; the baseline pipeline and the deep-repair ladder are
+  unchanged, and Graft still precedes fTetWild. It ships off pending the
+  samples40 + oracle36 measurement.
+
+### Changed
+
+- **One verdict, in one line.** The report now shows a single headline verdict
+  in both `--human` and the GUI — the Fidelity `repair_verdict`, with the
+  topology verdict folded in — instead of two verdict lines. The
+  Health/Risk/Fidelity numbers no longer repeat the verdict, and a failed repair
+  always reads "Not fully repaired". When Fidelity is not measured the headline
+  falls back to the plain brief verdict ("Ready to print" / "Repaired with
+  notes") rather than claiming an unmeasured shape check. The GUI report details
+  (behind the **Details** toggle) are now localized in English and Turkish.
+  Display only: no repair output changes (core_clean byte gate 100/100).
+  Screenshots in the README/docs predate this change and need refreshing.
 
 ### Documentation
 

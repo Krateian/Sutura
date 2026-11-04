@@ -74,7 +74,7 @@ def main():
     failed.pop('stage2', None)
     w._render_report_brief('/tmp/in.stl', failed, 'ERROR: broken')
     assert '✗' in w.report_verdict.text()
-    assert 'Could not fully repair' in w.report_verdict.text()
+    assert 'Not fully repaired' in w.report_verdict.text()
     assert 'hole(s) remain' in w.report_notes.text(), w.report_notes.text()
     print('ok  failed verdict')
 
@@ -112,7 +112,33 @@ def main():
         gui.subprocess.Popen = old_popen
     assert launched and launched[0] == ['orca-slicer', out], launched
     print('ok  open in slicer command')
+
+    test_format_report_localized()
     w.close()
+
+
+def test_format_report_localized():
+    """format_report runs in EN and TR and survives a sparse report.
+
+    Exercises the real details-body formatter (not a hardcoded string) with
+    None stage1/stage2/objects and a 3MF report whose object lists are None.
+    """
+    sparse = {'output': 'a.stl', 'stage1': None, 'stage2': None, 'objects': None}
+    en = gui.format_report(sparse)
+    assert 'Output file:' in en, en
+    multi = {'output': 'a.3mf', 'stage1': {}, 'objects': 2,
+             'objects_watertight': 1, 'object_reports': None}
+    assert '3MF objects repaired' in gui.format_report(multi)
+    en_tbl = gui.STRINGS['en']
+    try:
+        gui.STRINGS['en'] = gui.STRINGS['tr']
+        tr = gui.format_report(sparse)
+        assert 'Çıktı dosyası:' in tr, tr
+        assert 'Aşama 1' in tr, tr
+        assert 'Onarılan 3MF nesnesi' in gui.format_report(multi)
+    finally:
+        gui.STRINGS['en'] = en_tbl
+    print('ok  format_report EN/TR + sparse report')
 
 
 if __name__ == '__main__':

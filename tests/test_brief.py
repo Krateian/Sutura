@@ -67,7 +67,8 @@ def test_failed_partial():
     b = classification.brief(r)
     assert b['verdict'] == 'failed', b
     text = human_report(r)
-    assert 'Could not fully repair' in text, text
+    # ONE headline verdict: a failed repair reads as the repair_verdict wording.
+    assert 'Not fully repaired' in text, text
     assert 'hole(s) remain' in text, text
 
 
@@ -83,6 +84,51 @@ def test_orientation_and_parts():
     text = human_report(r)
     assert 'Orientation: corrected' in text, text
     assert 'Parts: 3 -> 1 (2 removed)' in text, text
+
+
+def test_headline_folds_fidelity():
+    # Fidelity measured -> headline is the repair_verdict wording.
+    r = _base()
+    r['repair_verdict_code'] = 'preserved'
+    r['repair_verdict_areas'] = 0
+    assert classification.headline_verdict(r)['code'] == 'preserved'
+    text = human_report(r)
+    assert text.splitlines()[0] == 'Repaired, shape preserved', text
+
+    r2 = _base()
+    r2['repair_verdict_code'] = 'changed'
+    r2['repair_verdict_areas'] = 2
+    assert classification.headline_verdict(r2) == {'code': 'changed', 'areas': 2}
+
+    # A failed brief overrides a "preserved" Fidelity.
+    r3 = _base(output=None)
+    r3.pop('stage2', None)
+    r3['stage1']['two_manifold'] = False
+    r3['stage1']['holes_remaining'] = 3
+    r3['repair_verdict_code'] = 'preserved'
+    assert classification.headline_verdict(r3)['code'] == 'not_repaired'
+    assert human_report(r3).splitlines()[0] == 'Not fully repaired'
+
+    # No Fidelity -> the honest brief verdict is the headline (no fake shape claim).
+    assert classification.headline_verdict(_base())['code'] == 'ready'
+    assert human_report(_base()).splitlines()[0] == 'Ready to print'
+
+    # brief 'notes' + Fidelity 'preserved' must NOT read as a clean preserved.
+    rn = _base()
+    rn['stage2'] = {'error': 'Stage 2 skipped: no bridge'}
+    rn['repair_verdict_code'] = 'preserved'
+    rn['repair_verdict_areas'] = 0
+    assert classification.brief(rn)['verdict'] == 'notes', classification.brief(rn)
+    assert classification.headline_verdict(rn)['code'] == 'preserved_notes'
+    assert human_report(rn).splitlines()[0] == (
+        'Repaired with notes \u2014 shape preserved')
+
+    # Low Health + Fidelity 'preserved' also cannot read as a clean preserved.
+    rl = _base()
+    rl['repair_health'] = 40
+    rl['repair_verdict_code'] = 'preserved'
+    rl['repair_verdict_areas'] = 0
+    assert classification.headline_verdict(rl)['code'] == 'preserved_notes'
 
 
 def test_attribute_loss_warns():

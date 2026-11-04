@@ -265,6 +265,13 @@ etiketlerini doldurur ve CLI bu tam sırayı `--methods` olarak alır. Panel,
 elle sırayı ilkeye kaydetmez. Güvenlik kapıları, `[si_escalation]` ve katman
 kapı tabloları kilitli ve salt okunur gösterilir.
 
+**Otomatik yeniden sıralama** (isteğe bağlı), *Otomatik* panelindeki bir onay
+kutusu ve CLI `--auto-reorder` bayrağıdır: **otomatik yedek** yöntemleri model
+başına öneri sıralamasına göre yeniden sıralar. Yalnızca yedek deneme sırası
+değişir — temel işlem hattı ve derin onarım sırası değişmez ve Graft yine
+fTetWild’dan önce gelir. Varsayılan olarak KAPALI gelir ve herhangi bir varsayılan
+değişikliğinden önce ölçülür.
+
 ![Yöntem denetim paneli: salt okunur otomatik sıra, elle sıra ve kilitli kapılar](../../../assets/methods-panel.png)
 
 ### Yinelenen öge onarımı (otomatik/elle seçici)
