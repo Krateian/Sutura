@@ -657,6 +657,25 @@ def _brief_note_lines(b):
     return out
 
 
+_FIDELITY_VERDICT_TEXT = {
+    'preserved': 'Repaired, shape preserved',
+    'changed': 'Repaired, shape changed in %d area(s) - check',
+    'low_confidence': ('Repaired, shape changed in %d guessed area(s) '
+                       '- check'),
+    'not_repaired': 'Not fully repaired',
+    'unavailable': 'Shape check unavailable',
+}
+
+
+def fidelity_verdict_text(code, areas=0):
+    """Plain-language Fidelity verdict (English; the GUI localizes it)."""
+    code = code or 'unavailable'
+    if code in ('changed', 'low_confidence'):
+        return _FIDELITY_VERDICT_TEXT[code] % int(areas or 0)
+    return _FIDELITY_VERDICT_TEXT.get(code,
+                                      _FIDELITY_VERDICT_TEXT['unavailable'])
+
+
 def human_report(r, show_defects=False, show_diff=False):
     if 'error' in r and 'stage1' not in r:
         return 'ERROR: %s' % r['error']
@@ -695,11 +714,17 @@ def human_report(r, show_defects=False, show_diff=False):
                      % (rc, str(r.get('repair_confidence_label', '?')).title()))
     rh = r.get('repair_health')
     rk = r.get('repair_risk')
-    if rh is not None or rk is not None:
-        lines.append('Health: %s/100   Risk: %s/100   Status: %s' % (
+    rf = r.get('repair_fidelity')
+    if rh is not None or rk is not None or rf is not None:
+        headline = ('Health: %s/100   Risk: %s/100   Fidelity: %s/100' % (
             'n/a' if rh is None else rh,
             'n/a' if rk is None else rk,
-            r.get('repair_status', 'n/a')))
+            'n/a' if rf is None else rf))
+        vcode = r.get('repair_verdict_code')
+        if vcode:
+            headline += '   ' + fidelity_verdict_text(
+                vcode, r.get('repair_verdict_areas') or 0)
+        lines.append(headline)
     pr = r.get('print_report')
     if pr:
         block = human_print_report(pr, include_advisories=False)
@@ -728,6 +753,13 @@ def human_report(r, show_defects=False, show_diff=False):
     if r.get('material_discarded'):
         lines.append('Material: input OBJ has mtllib/usemtl references which '
                      'are not preserved in the repaired output.')
+    if r.get('repair_status'):
+        lines.append('Repair status: %s' % r.get('repair_status'))
+    if (r.get('repair_fidelity_metrics') or {}).get('changed_areas'):
+        lines.append('Shape areas: %d changed, %d low-confidence' % (
+            (r.get('repair_fidelity_metrics') or {}).get('changed_areas') or 0,
+            (r.get('repair_fidelity_metrics') or {}).get(
+                'low_confidence_areas') or 0))
     lines.append('')
     lines.append('Stage 1 (MeshLab):')
     lines.append('  Holes closed            : %d' % s1.get('holes_closed', 0))

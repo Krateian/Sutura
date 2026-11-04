@@ -58,6 +58,9 @@ yöneticisinde sağ tıkla ya da bir OrcaSlicer eklentisiyle.
 - **Dürüst sonuç.** Sonuç su geçirmez denmeden önce yeniden yüklenip tekrar
   kontrol edilir; rapor neyin düzeltildiğini, neyin kaldığını ve şeklin ne
   kadar değiştiğini gösterir.
+- **Şekil kontrolü.** Bir Sadakat skoru, onarılan modeli sağlıklı yüzeyde
+  girdiyle karşılaştırır; böylece ağ doğru kapanmış ama ayrıntı kaybetmişse
+  görünür olur; büyük yeniden oluşturulan bölgeler tahmin olarak işaretlenir.
 - **Çok araç, tek düğme.** On dokuz sıralı onarım yöntemi tek bir *Onar*
   düğmesinin arkasındadır; triage motoru modelin neye ihtiyaç duyduğunu seçer.
 - **Yerel ve çevrimdışı.** Geometriyi Rust çekirdeği (`sutura_geom`) yapar;

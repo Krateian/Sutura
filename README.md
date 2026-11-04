@@ -59,6 +59,9 @@ OrcaSlicer plugin.
 - **Honest verdict.** The result is reloaded and re-checked before it is called
   watertight, and a report shows what was fixed, what remains and how much the
   shape moved.
+- **Shape check.** A Fidelity score compares the repaired model with the input
+  on the healthy surface, so a mesh that closed correctly but lost detail is
+  visible; large rebuilt areas are marked as guesses.
 - **Many tools, one button.** Nineteen ranked repair methods sit behind a single
   *Repair* button; the triage engine picks what a model needs.
 - **Native and offline.** A Rust core (`sutura_geom`) does the geometry; no

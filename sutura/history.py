@@ -127,6 +127,11 @@ def build_record(result, fingerprint, version, elapsed_ms, fmt=None):
         'issues': list(result.get('issues') or []),
         'repair_confidence': result.get('repair_confidence'),
         'repair_confidence_label': result.get('repair_confidence_label'),
+        'repair_fidelity': result.get('repair_fidelity'),
+        'repair_verdict_code': result.get('repair_verdict_code'),
+        'repair_verdict_areas': result.get('repair_verdict_areas'),
+        'repair_verdict_low_confidence': bool(
+            result.get('repair_verdict_low_confidence')),
         'volume_change_percent': s1.get('volume_change_percent'),
         'extreme_passes_applied': result.get('extreme_passes_applied'),
         'self_intersections_found': result.get('self_intersections_found'),

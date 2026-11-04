@@ -39,6 +39,8 @@ SCHEMA_KEYS = {
     'repair_mode', 'tuning_applied', 'filters_applied', 'filters_skipped',
     'stage2_status', 'category', 'issues', 'repair_confidence',
     'repair_confidence_label', 'volume_change_percent',
+    'repair_fidelity', 'repair_verdict_code', 'repair_verdict_areas',
+    'repair_verdict_low_confidence',
     'extreme_passes_applied', 'self_intersections_found',
     'self_intersections_removed', 'autorefine_applied', 'ftetwild_applied',
     'indirect_autorefine_applied', 'tamponade_applied', 'method_used_num',
@@ -66,6 +68,8 @@ def _sample_result(**over):
         'stage2': {'ok': True},
         'category': 'watertight', 'issues': [],
         'repair_confidence': 92, 'repair_confidence_label': 'high',
+        'repair_fidelity': 87, 'repair_verdict_code': 'preserved',
+        'repair_verdict_areas': 0, 'repair_verdict_low_confidence': False,
     }
     r.update(over)
     return r

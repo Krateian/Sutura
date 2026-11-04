@@ -32,6 +32,7 @@ from confidence import (estimate_confidence_pre_repair, repair_confidence)
 from defects import detect as detect_defects
 from mesh_classifier import classify_mesh
 import repair_score
+import fidelity
 import history
 from sutura_engine.progress import (
     CancelledError, CancelToken, make_progress, progress_stage, raise_if_cancelled,
@@ -207,6 +208,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  splint=False, splint_adaptive=None,
                  solid_engine='ftetwild',
                  coaptation=False,
+                 fidelity_enabled=True,
                  trace_path=None, progress=None, cancel=None):
     """Repair one file. Returns (result_dict, category).
 
@@ -290,6 +292,14 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             solid_engine=solid_engine,
             coaptation=coaptation,
             dressing_force_adopt=dressing_force_adopt))
+
+        # Fidelity is report-only and is measured once for the FINAL result,
+        # after every candidate decision has been made (never for a losing
+        # candidate). Fail-silent; it cannot influence adoption or saving.
+        if fidelity_enabled and 'error' not in result:
+            _fout = tmp_out if os.path.exists(tmp_out) else out
+            if _fout and os.path.exists(_fout):
+                result = fidelity.attach_file(result, src, _fout)
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -553,6 +563,10 @@ def _main(argv=None):
                         help='with --max-geometry-change/--max-risk: save the '
                              'output even when the budget is exceeded, without '
                              'asking')
+    parser.add_argument('--no-fidelity', action='store_true',
+                        help='skip the Fidelity shape score (it is measured '
+                             'by default and is report-only; cannot change the '
+                             'repair result)')
     parser.add_argument('--last', type=int, default=0, metavar='N',
                         help='export-history: only the last N records')
     parser.add_argument('--clear', action='store_true',
@@ -1162,6 +1176,7 @@ def _main(argv=None):
                 repeat_source=repeat_source,
                 repeat_target=repeat_target,
                 wall_min_thickness=args.wall_min_thickness,
+                fidelity_enabled=not args.no_fidelity,
                 trace_path=args.trace,
                 progress=reporter, cancel=cancel)
             results.append(result)
