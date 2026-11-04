@@ -20,6 +20,7 @@ import getpass
 import json
 import os
 import platform
+import re
 import sys
 import zipfile
 from typing import Any, Dict, List, Optional
@@ -144,13 +145,24 @@ def _get_home_and_user():
 
 
 def sanitize_value(val: Any, home: str, user: str) -> Any:
-    """Recursively scrub personal paths and usernames from diagnostic data."""
+    """Recursively scrub personal paths and usernames from diagnostic data.
+
+    Matching is case-insensitive (macOS APFS/HFS+ is case-preserving, so a home
+    path can differ in case from ``getpass.getuser()``), and external drive /
+    mount roots (``/Volumes/<name>``, ``/media/<user>``, ``/run/media/<user>``)
+    keep their directory name out of the archive too.
+    """
     if isinstance(val, str):
         res = val
-        if home and home in res:
-            res = res.replace(home, '~')
-        if user and user in res:
-            res = res.replace(user, '<user>')
+        if home:
+            res = re.sub(re.escape(home), '~', res, flags=re.IGNORECASE)
+        if user:
+            res = re.sub(re.escape(user), '<user>', res, flags=re.IGNORECASE)
+        res = re.sub(r'(/run/media/)[^/\s]+', r'\1<user>', res,
+                     flags=re.IGNORECASE)
+        res = re.sub(r'(/media/)[^/\s]+', r'\1<user>', res, flags=re.IGNORECASE)
+        res = re.sub(r'(/Volumes/)[^/\s]+', r'\1<name>', res,
+                     flags=re.IGNORECASE)
         return res
     if isinstance(val, dict):
         return {sanitize_value(k, home, user): sanitize_value(v, home, user) for k, v in val.items()}
