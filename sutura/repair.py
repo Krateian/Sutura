@@ -196,7 +196,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False, join_components=False,
                  autorefine=False, ftetwild=False, indirect_autorefine=False,
-                 extra_features=False, deep_repair=None, triage_spec=None,
+                 extra_features=False, deep_repair=None, auto_reorder=False,
+                 triage_spec=None,
                  engines=None, engine_chain=None, engine_warnings=None,
                  methods=None, engine_filter=None, repeat_source=None,
                  repeat_target=None, wall_min_thickness=None, graft=False,
@@ -277,6 +278,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             autorefine=autorefine, ftetwild=ftetwild,
             indirect_autorefine=indirect_autorefine,
             extra_features=extra_features, deep_repair=deep_repair,
+            auto_reorder=auto_reorder,
             triage_spec=triage_spec, engines=engines,
             engine_chain=engine_chain, repeat_source=repeat_source,
             repeat_target=repeat_target, wall_min_thickness=wall_min_thickness,
@@ -534,6 +536,11 @@ def _main(argv=None):
     parser.add_argument('--list-methods', action='store_true',
                         help='list the repair methods (num, id, family, '
                              'availability) and exit (no repair)')
+    parser.add_argument('--auto-reorder', action='store_true',
+                        help='opt-in: reorder the automatic fallback methods '
+                             'per model from the suggested-method ranking. The '
+                             'baseline pipeline and the deep-repair ladder are '
+                             'unchanged, and Graft still precedes fTetWild.')
     parser.add_argument('--analyze', action='store_true',
                         help='analyze the input object(s) -- defects, mesh '
                              'type, self-intersection load -- and print the '
@@ -1194,6 +1201,7 @@ def _main(argv=None):
                 join_components=args.experimental_join_components,
                 autorefine=args.experimental_autorefine,
                 ftetwild=_ft_arg, deep_repair=_dr_mode,
+                auto_reorder=args.auto_reorder,
                 graft=_graft_arg, flap=_flap_arg,
                 tamponade=_tamponade_arg,
                 dressing=_dressing_arg,

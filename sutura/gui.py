@@ -714,6 +714,13 @@ STRINGS = {
         'method_panel_mode_auto': 'Automatic (policy order)',
         'method_panel_mode_manual': 'Manual (exact order)',
         'method_panel_auto_ladder': 'Automatic ladder',
+        'method_panel_auto_reorder': 'Auto-reorder the fallback order per model (opt-in)',
+        'method_panel_auto_reorder_tip': ('Reorder the automatic fallback '
+                                          'methods from the per-model suggestion '
+                                          'ranking. The baseline pipeline and '
+                                          'the deep-repair ladder are '
+                                          'unchanged, and Graft still precedes '
+                                          'fTetWild.'),
         'method_panel_manual_sequence': 'Manual sequence',
         'method_panel_auto_hint': 'The automatic order is fixed. Check a tier '
                                   'to run it; use Manual mode for a custom order.',
@@ -1639,6 +1646,12 @@ STRINGS = {
         'method_panel_mode_auto': 'Otomatik (ilke sırası)',
         'method_panel_mode_manual': 'Elle (tam sıra)',
         'method_panel_auto_ladder': 'Otomatik sıra',
+        'method_panel_auto_reorder': 'Yedek sırasını model başına otomatik sırala (isteğe bağlı)',
+        'method_panel_auto_reorder_tip': ('Otomatik yedek yöntemleri model '
+                                          'başına öneri sıralamasına göre '
+                                          'yeniden sıralar. Temel işlem hattı ve '
+                                          'derin onarım sırası değişmez; Graft '
+                                          'yine fTetWild’dan önce gelir.'),
         'method_panel_manual_sequence': 'Elle yöntem sırası',
         'method_panel_auto_hint': 'Otomatik sıra sabittir. Çalışması için bir '
                                   'katmanı işaretleyin; özel sıra için Elle modu.',
@@ -2544,6 +2557,7 @@ class RepairWorker(QThread):
         self._no_cache = not bool(cfg.get('cache_enabled', True))
         self._no_learning = not bool(cfg.get('learning_triage', True))
         self._no_fidelity = not bool(cfg.get('fidelity_enabled', True))
+        self._auto_reorder = bool(cfg.get('auto_reorder', False))
 
     def cancel(self):
         self._cancelled = True
@@ -2616,6 +2630,8 @@ class RepairWorker(QThread):
                 args.append('--ftetwild-optimize')
             if self._si_mode and self._si_mode != 'report':
                 args += ['--si-mode', self._si_mode]
+            if self._auto_reorder:
+                args.append('--auto-reorder')
             if self._flap:
                 args.append('--flap')
             else:
@@ -4020,6 +4036,12 @@ class MethodControlPanel(QWidget):
         self.auto_hint = QLabel(_t('method_panel_auto_hint'))
         self.auto_hint.setWordWrap(True)
         a.addWidget(self.auto_hint)
+        self.chk_auto_reorder = QCheckBox(_t('method_panel_auto_reorder'))
+        self.chk_auto_reorder.setToolTip(_t('method_panel_auto_reorder_tip'))
+        self.chk_auto_reorder.setChecked(
+            bool(updater.load_config().get('auto_reorder', False)))
+        self.chk_auto_reorder.toggled.connect(self._save_auto_reorder)
+        a.addWidget(self.chk_auto_reorder)
         self.lst_auto = QListWidget()
         self.lst_auto.setSelectionMode(QAbstractItemView.SingleSelection)
         self.lst_auto.itemChanged.connect(lambda _i: self._update_apply())
@@ -4306,6 +4328,15 @@ class MethodControlPanel(QWidget):
         self.auto_box.setEnabled(auto)
         self.manual_box.setEnabled(not auto)
         self._update_apply()
+
+    def _save_auto_reorder(self, on):
+        """Persist the opt-in per-model auto-reorder toggle to config.json."""
+        try:
+            cfg = updater.load_config()
+            cfg['auto_reorder'] = bool(on)
+            updater.save_config(cfg)
+        except Exception:
+            pass
 
     def _update_apply(self):
         if self._policy_mod is None:

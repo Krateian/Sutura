@@ -47,6 +47,12 @@ All notable changes to this project are documented here.
   volume share and distance. Both appear in the `--human` report and the GUI
   result details (EN/TR), per object for multi-object 3MF. This is report-only:
   nothing extra is removed, so the output is byte-identical.
+- **Opt-in auto-reorder of the automatic fallbacks.** `--auto-reorder` (and a
+  checkbox in Options → Methods, *Automatic* mode) reorders the automatic
+  fallback methods per model from the suggested-method ranking. Only the fallback
+  attempt order changes; the baseline pipeline and the deep-repair ladder are
+  unchanged, and Graft still precedes fTetWild. It ships off pending the
+  samples40 + oracle36 measurement.
 
 ### Changed
 
