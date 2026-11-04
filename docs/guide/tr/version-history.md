@@ -130,7 +130,7 @@ düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../
   X-Ray, Kabuk/Hull ve Döküm/Cast); genişletilebilir Eklenti API'si
   (`RepairMethodProtocol`); içerik adresli Chart önbelleği (`~/.cache/sutura/`);
   #13 **Graft** yöntemi (fTetWild öncesi sağlıklı yüzey sadakat korumalı morfoloji
-  kabuk sarma); resmi görünen adlarla 16 yöntemli kayıt defteri; ve çalışma
+  kabuk sarma); resmi görünen adlarla 15 yöntemli kayıt defteri; ve çalışma
   süresi bütçeli otomatik kademelendirme.
 - **v0.6.1 — 2026-09-28** — İki isteğe bağlı geometri yöntemi: **Aynalı
   Tamamlama** (#14, tek-taraflı simetrik bir taramanın eksik arkasını algılanan

@@ -126,6 +126,8 @@ eşikleri sürmez:
 Seçilen profil raporlanır (`repair_profile` JSON'da, `Profile:` `--human`da).
 Varsayılan (no `--profile`) eskisiyle bayt-birebir aynıdır. GUI, aynı
 profilleri bir **Profil** açılır listesiyle sunar (batch geneli).
+`sutura model.stl --profile scan`, eski `--mode aggressive` tarzı tarama
+işlemeye eşdeğerdir ancak modu `auto` olarak korur.
 
 **Birim uyarısı.** STL/OBJ dosyaları birim meta verisi taşımaz ve boyut
 temelli onarım eşikleri (delik boyutu, döküntü kesimi) milimetreyi varsayar.

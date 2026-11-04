@@ -21,7 +21,7 @@ findings below are either clean or low-severity recommendations.
 
 `pip-audit` (installed temporarily) was run against the active environment
 (pymeshlab, numpy, manifold3d, trimesh, PySide6) and against
-`requirements.txt` / `requirements-311.txt` / `requirements-gui.txt`:
+`requirements.txt` / `requirements-gui.txt`:
 
 - Environment: **no known vulnerabilities found**.
 - Requirements files: **no known vulnerabilities found**.
