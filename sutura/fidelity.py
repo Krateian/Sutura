@@ -64,6 +64,10 @@ _DEFAULTS = {
         'bbox_scale_pct': 5.0,
         'invented_scale_fraction': 0.05,
         'change_tol_factor': 3.0,
+        # A shape change only counts when the healthy surface moved more than
+        # this fraction of the bbox diagonal; below it the repair reads as
+        # preserved (calibrated on samples40 + oracle36).
+        'changed_min_healthy_distance_pct': 1.0,
         'tiers': {'high': 85, 'mid': 60},
         'low_confidence': {
             'invented_area_fraction': 0.03,
@@ -410,7 +414,7 @@ def _health_tier(health, cfg):
     return health >= mid
 
 
-def _verdict(score, report, low_confidence, reasons, areas, cfg):
+def _verdict(score, report, low_confidence, reasons, areas, cfg, max_pct=None):
     try:
         import repair_score
         _rs = repair_score.compute_scores(report, cfg)
@@ -425,11 +429,22 @@ def _verdict(score, report, low_confidence, reasons, areas, cfg):
     if low_confidence:
         return 'low_confidence', low_areas
     if areas:
-        return 'changed', low_areas
-    high = float((cfg.get('fidelity') or {}).get('tiers', {}).get('high', 85))
-    if score >= high:
+        code, verdict_areas = 'changed', low_areas
+    else:
+        high = float((cfg.get('fidelity') or {}).get(
+            'tiers', {}).get('high', 85))
+        if score >= high:
+            code, verdict_areas = 'preserved', low_areas
+        else:
+            code, verdict_areas = 'changed', max(low_areas, 1)
+    # A shape change only counts when the healthy surface actually moved beyond
+    # the configured fraction of the bbox diagonal; below it the repair is
+    # within tolerance and reads as preserved. Config-driven, not code.
+    gate = float((cfg.get('fidelity') or {}).get(
+        'changed_min_healthy_distance_pct', 1.0))
+    if code == 'changed' and max_pct is not None and max_pct <= gate:
         return 'preserved', low_areas
-    return 'changed', max(low_areas, 1)
+    return code, verdict_areas
 
 
 def compute(in_arrays, out_arrays, report=None, config=None):
@@ -627,7 +642,8 @@ def compute(in_arrays, out_arrays, report=None, config=None):
 
         code, verdict_areas = _verdict(
             score, report, low_confidence, reasons,
-            areas_n if areas_n is not None else low_areas, cfg)
+            areas_n if areas_n is not None else low_areas, cfg,
+            max_pct=max_pct)
         if note:
             empty['repair_fidelity_note'] = '; '.join(note)
 

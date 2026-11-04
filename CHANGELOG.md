@@ -96,6 +96,13 @@ All notable changes to this project are documented here.
   `~/.config/sutura/config.json` is documented as an explicit manual override
   (the app does not write it; `--deep-repair` and `SUTURA_DEEP_REPAIR` win). No
   behaviour change.
+- **Fidelity no longer cries wolf on tiny shape changes.** A shape change now
+  counts (verdict `changed`) only when the healthy surface moved more than 1.0 %
+  of the bounding-box diagonal — `fidelity.changed_min_healthy_distance_pct` in
+  `repair_score_config.json`, not code; below it the verdict is `preserved`.
+  Calibrated on samples40 + oracle36 against independent visual QA: **61
+  preserved / 2 changed / 0 silent** (down from 8 false `changed`, no repair
+  silently presented as preserved). Report-only; no repair output change.
 
 ## [0.9.8] - 2026-10-31
 
