@@ -63,9 +63,8 @@
   Graft, Tamponad, Dressing ve SDF üretiminde varsayılan olarak hızlandırılmış
   antipodal genelleştirilmiş sarım sayısını kullanır. Olağandışı bir modelde
   istenmeyen bir davranış görülürse veya klasik sarım sayısı orakılı ile tam
-  uyum gerekirse, ortamda `SUTURA_ANTIPODAL=0` tanımlayarak klasik sarım yoluna
-  dönebilirsiniz (Python'daki `antipodal=False` parametresi yalnızca Graft'ın
-  `shell_wrap` işlevine ulaşır, `dressing.py`'de ise bir anahtar bulunmaz).
+  uyum gerekirse, ortamda `SUTURA_ANTIPODAL=0` tanımlayarak tüm katmanlarda klasik
+  sarım yoluna dönebilirsiniz.
 * **Sert bir çökme mesaj bırakmadı ama bir çökme kaydı var.** Sutura (CLI veya
   GUI) çöktüğünde — yerel geometri ya da Qt katmanında bir segfault veya
   yakalanmamış bir Python hatası — Sutura'nın kullanıcı verisi klasörüne bir

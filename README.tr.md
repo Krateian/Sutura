@@ -102,6 +102,7 @@ Gereksinimler, fTetWild katmanı, güncelleme ve kaldırma
 sutura model.stl                 # model_fixed.stl yazar
 sutura model.3mf -o fixed.3mf    # çıktı adını seçer
 sutura model.stl --human         # nelerin düzeltildiğine dair okunur rapor
+sutura model.stl --no-fidelity   # şekil sadakati skorunu atla (yalnızca rapor)
 sutura validate model.stl        # yalnızca analiz, hiçbir şeyi değiştirmez
 sutura a.stl b.stl c.3mf         # toplu onarım
 ```

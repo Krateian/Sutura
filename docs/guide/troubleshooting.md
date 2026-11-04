@@ -62,8 +62,7 @@
   Graft, Tamponade, Dressing, and SDF generation. If an unusual mesh exhibits
   unwanted behaviour or you need exact parity with the classic winding number
   oracle, set `SUTURA_ANTIPODAL=0` in the environment to opt out and restore the
-  classic winding path globally (the `antipodal=False` Python argument only
-  reaches Graft's `shell_wrap`, whereas `dressing.py` has no switch).
+  classic winding path globally across all tiers.
 * **A hard crash left no message, but there is a crash log.** When Sutura (CLI
   or GUI) crashes — a segfault in the native geometry or Qt layer, or an
   uncaught Python error — it writes a `crash.log` in Sutura's user-data folder,

@@ -256,15 +256,15 @@ sınırlarını, self-intersection kurallarını ve sınırlı şekil sapmaları
 
 | Katman / Yöntem | Delik ve Non-Manifold Kenarlar | Self-Intersection (SI) Kuralı | Yüz ve Vertex Patlama Koruması | Bileşen ve Şekil Korumaları |
 |---|---|---|---|---|
-| **Flap** (döngü ilerletme) | Yeniden yükleme hasarını (`delik + nm`) kesinlikle azaltmalı | Zincir öncesi koruma SI'yi göz ardı eder (`si_policy='off'`); güvenlik ağı `service.py` içinde nihai flap-açık vs. flap-kapalı karşılaştırmasını çalıştırır | Üst sınır: maks(4× girdi, girdi + 1.000 + 4× döngü vertex'i) | Sınırla uyumlu teğetsel yüzey devamı |
-| **Tamponade (prepass)** | Delikler kesinlikle düşmeli; deliklerde artış olmamalı | `non_rise` (`tiers/tamponade.py` içinde SI artışına izin verilmez) | Üst sınır: maks(4× girdi, girdi + 1.000 + 4× tıkaç yüzü) | Parça sayısı artamaz; ≥ %99 sağlıklı yüz korunur; katı dışına 0 tıkaç sızıntı noktası |
+| **Flap** (döngü ilerletme) | Yeniden yükleme hasarını (`delik + nm`) kesinlikle azaltmalı | Zincir-öncesi denetim SI'yi göz ardı eder; pipeline güvenlik ağı flap-açık ve flap-kapalı nihai karşılaştırmasını çalıştırır | Üst sınır: maks(4× girdi, girdi + 1.000 + 4× döngü vertex'i) | Sınırla uyumlu teğetsel yüzey devamı |
+| **Tamponade (prepass)** | Delikler kesinlikle düşmeli; deliklerde artış olmamalı | `non_rise` (SI artışına izin verilmez) | Üst sınır: maks(4× girdi, girdi + 1.000 + 4× tıkaç yüzü) | Parça sayısı artamaz; ≥ %99 sağlıklı yüz korunur; katı dışına 0 tıkaç sızıntı noktası |
 | **Tamponade (aşama 1 sonrası)** | Delik/nm kesinlikle düşmeli (veya yerel SI düşmeli); kusur artamaz | `flag` (yalnızca rapor; dilimleyiciler örtüşen hacimleri birleştirir) | Üst sınır: maks(4× girdi, girdi + 1.000 + 4× tıkaç yüzü) | Parça sayısı artamaz; ≥ %99 sağlıklı yüz korunur; katı dışına 0 tıkaç sızıntı noktası |
-| **Local Mend** (yerel remesh) | Delik ve nm kesinlikle iyileşmeli, kusur artışı olmamalı | `adopt_guard` içinde yalnızca rapor; `local_remesh.py` içindeki katmanın kendi kapısı artış-yok kuralını (`new_si <= base_si`) zorunlu kılar | Hasarlı bölge yüz üst sınırı ile sınırlı | Hasarlı bölge dışındaki yüzler birebir korunur |
+| **Local Mend** (yerel remesh) | Delik ve nm kesinlikle iyileşmeli, kusur artışı olmamalı | Katmanın kendi iç kapısı artış-yok kuralını zorunlu kılar (aday SI ≤ taban SI; genel benimseme denetiminde yalnızca rapor) | Hasarlı bölge yüz üst sınırı ile sınırlı | Hasarlı bölge dışındaki yüzler birebir korunur |
 | **Graft** (kabuk sarma) | Kesinlikle 0 delik ve 0 non-manifold kenar | `improved_flag` (SI artışına yalnızca delik/nm azaldıysa izin verilir) | Üst sınır: maks(4× girdi, girdi + 1.000) | Sağlıklı bölge Hausdorff ≤ eşik; girdi kapsamı onaylı |
 | **Dressing** (hacimsel kabuk) | Kesinlikle 0 delik ve 0 non-manifold kenar | `strict_zero` (0 self-intersection zorunlu) | Üst sınır: maks(4× girdi, girdi + 1.000) | Sağlıklı bölge Hausdorff ≤ eşik; hacim değişimi ≤ %2; parça toleransı ≤ 1; normal açısı p95 ≤ 35° |
 | **Splint** (exact katı yeniden kurma) | Kesinlikle 0 delik ve 0 non-manifold kenar | `non_rise` (aday SI ≤ taban SI) | Üst sınır: maks(4× girdi, girdi + 1.000) | Manifold son-işleme ancak kusurlar artmıyorsa korunur |
-| **Coaptation** (dikiş kaynağı) | Kesinlikle 0 delik ve 0 non-manifold kenar | `strict_zero` (`tiers/coaptation.py` içinde SI'yi kesinlikle 0'a indirir) | Üst sınır: maks(4× girdi, girdi + 1.000) | Bileşen sayısı artamaz (`parts <= base_parts`) |
-| **CDT** (exact katı motoru) | Kesinlikle 0 delik ve 0 non-manifold kenar | `adopt_guard` varsayılanında yalnızca rapor; `tiers/cdt.py` içindeki merdiven katmanı `policy_for('splint')` kuralına (`non_rise`) yönlendirir | Üst sınır: maks(4× girdi, girdi + 1.000) | Çıktı tek bir katı parça olmalıdır (`parts == 1`) |
+| **Coaptation** (dikiş kaynağı) | Kesinlikle 0 delik ve 0 non-manifold kenar | `strict_zero` (self-intersection'ları kesinlikle 0'a indirir) | Üst sınır: maks(4× girdi, girdi + 1.000) | Bileşen sayısı artamaz (`parts <= base_parts`) |
+| **CDT** (exact katı motoru) | Kesinlikle 0 delik ve 0 non-manifold kenar | Yeniden inşa kapısınca artış-yok kuralı zorunlu kılınır (aday SI ≤ taban SI; genel benimseme denetiminde yalnızca rapor) | Üst sınır: maks(4× girdi, girdi + 1.000) | Çıktı tek bir katı parça olmalıdır (`parts == 1`) |
 | **fTetWild** (tetrahedral katı) | Delikler ve non-manifold kenarlar ≤ taban | `improved_flag` (SI artışına yalnızca delik/nm azaldıysa izin verilir) | Taban 5.120 yüz/vertex; iyileşme varsa büyümeye izin verilir | Çıktıdan girdiye Hausdorff izlenir (kutu köşegeninin > %1'i ise `shape_changed` olarak işaretlenir) |
 | **Transplant (Otomatik/Manuel)** | Kesinlikle 0 delik ve 0 non-manifold kenar | `non_rise` (aday SI ≤ taban SI) | Desen sınır kutuları ile sınırlı | Onarılan kutuların dışındaki dokunulmamış geometri kımıldamaz (Hausdorff ≤ 0,05 mm) |
 | **Wall Thicken** | Kesinlikle 0 delik ve 0 non-manifold kenar | `non_rise` (aday SI ≤ taban SI) | Yerel kalınlaştırma genişlemesi ile sınırlı | Toplam kusur (`delik + nm`) ≤ taban |
@@ -274,28 +274,29 @@ sınırlarını, self-intersection kurallarını ve sınırlı şekil sapmaları
 
 Ağır non-manifold topolojiyi veya derin sınır deliklerini kapatmak bazen yerel
 yüzey örtüşmelerine yol açabileceğinden Sutura, self-intersection korumalarını
-`adopt_guard.py` içinde dört açık kurala ayırır:
+dört açık kurala ayırır:
 
 - **`strict_zero`:** Aday tamamen self-intersection'dan arındırılmış olmalıdır.
-  Tek bir kesişim bile adayın hemen reddedilmesine yol açar (`_TIER_POLICIES` içinde
-  Dressing ve Coaptation için yapılandırılmıştır; ayrıca `tiers/coaptation.py` içindeki
-  Coaptation'ın kendi kapısınca doğrulanır).
+  Tek bir kesişim bile adayın hemen reddedilmesine yol açar (Dressing ve Coaptation
+  için zorunlu kılınır).
 - **`non_rise`:** Adayın self-intersecting yüz sayısı, yerine geçtiği mesh'ten
-  fazla olamaz. `_TIER_POLICIES` içinde Splint, Transplant/Transplant+ ve Wall Thicken
-  için kayıtlıdır; ayrıca Local Mend'in `local_remesh.py` içindeki kendi kapısı ve
-  CDT'nin `tiers/cdt.py` çağrısı tarafından da zorunlu kılınır.
+  fazla olamaz. Splint, Transplant/Transplant+, Wall Thicken, CDT ve Local Mend
+  için geçerlidir.
 - **`improved_flag`:** Aday delikleri veya non-manifold kenarları kesinlikle
   ortadan kaldırıyorsa, self-intersection sayısındaki bir artış makul bir ödünleşim
   olarak kabul edilir ve onarım raporunda işaretlenir. Topolojik bir kazanım
-  yoksa aday reddedilir (`_TIER_POLICIES` içinde Graft ve fTetWild için kayıtlıdır).
+  yoksa aday reddedilir (Graft ve fTetWild için yapılandırılmıştır).
 - **`flag` (yalnızca rapor):** Self-intersection'lar ölçülür ve raporlanır, ancak
-  adayın reddedilmesine neden olmaz. Örtüşen hacimler kabul edilir; çünkü
-  modern 3D dilimleyiciler dilimleme sırasında örtüşen kabukları otomatik olarak
-  boolean birleşime tabi tutar. `adopt_guard.policy_for` içinde listede yer almayan
-  tüm yöntemler (triage'daki Balloon, Backplate, Scaffold, Mirror ve Join dahil) için
-  varsayılan kuraldır ve Aşama 1 sonrası Tamponade tarafından kullanılır. Flap zincir
-  öncesi korumasında SI'yi göz ardı eder (`si_policy='off'`) ve güvenlik ağı olarak
-  `service.py` içindeki nihai flap-açık vs. flap-kapalı karşılaştırmasına dayanır.
+  bir artış adayın reddedilmesine neden olmaz. Örtüşen hacimler kabul edilir;
+  çünkü modern 3D dilimleyiciler dilimleme sırasında örtüşen kabukları otomatik
+  olarak boolean birleşime tabi tutar. Bu kural, özel bir SI kapısı bulunmayan
+  yöntemler (triage'daki Balloon, Backplate, Scaffold, Mirror ve Join dahil) ile
+  aşama-1 sonrası Tamponade için geçerlidir. Flap, zincir-öncesi geçişinde SI
+  kontrolünü atlar ve pipeline güvenlik ağı olarak flap-açık ile flap-kapalı
+  arasında nihai bir karşılaştırma kullanır.
+
+> [!NOTE]
+> **Geliştiriciler için:** Katman benimseme denetimleri ve self-intersection politikaları, `sutura_engine/pipeline/adopt_guard.py` dosyasında ve `sutura/sutura_engine/tiers/` altındaki ilgili katman modüllerinde tanımlanmıştır.
 
 ### Üç denetim düzeyi
 

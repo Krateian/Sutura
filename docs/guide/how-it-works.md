@@ -255,15 +255,15 @@ policies, and bounded shape deviations.
 
 | Tier / Method | Holes & Non-Manifold Edges | Self-Intersection (SI) Policy | Face & Vertex Blow-up Guard | Component & Shape Guards |
 |---|---|---|---|---|
-| **Flap** (loop advancement) | Must strictly reduce reload damage (`holes + nm`) | Pre-chain guard ignores SI (`si_policy='off'`); safety net runs final flap-on vs. flap-off comparison in `service.py` | Cap: max(4× input, input + 1,000 + 4× loop vertices) | Boundary-aligned tangent continuation |
-| **Tamponade (prepass)** | Holes must strictly fall; no rise in holes | `non_rise` (no SI increase allowed in `tiers/tamponade.py`) | Cap: max(4× input, input + 1,000 + 4× plug faces) | Parts do not rise; ≥ 99% healthy faces kept; 0 plug leak points outside solid |
+| **Flap** (loop advancement) | Must strictly reduce reload damage (`holes + nm`) | Pre-chain guard ignores SI; pipeline safety net runs final flap-on vs. flap-off comparison | Cap: max(4× input, input + 1,000 + 4× loop vertices) | Boundary-aligned tangent continuation |
+| **Tamponade (prepass)** | Holes must strictly fall; no rise in holes | `non_rise` (no SI increase allowed) | Cap: max(4× input, input + 1,000 + 4× plug faces) | Parts do not rise; ≥ 99% healthy faces kept; 0 plug leak points outside solid |
 | **Tamponade (post-stage 1)** | Strict fall in holes/nm (or local SI falls); no defect rise | `flag` (report-only; slicers union overlapping volumes) | Cap: max(4× input, input + 1,000 + 4× plug faces) | Parts do not rise; ≥ 99% healthy faces kept; 0 plug leak points outside solid |
-| **Local Mend** (local remesh) | Holes & nm must strictly improve with no defect rise | Report-only in `adopt_guard`; tier's own gate in `local_remesh.py` enforces non-rise (`new_si <= base_si`) | Bound by damaged region face cap | Faces outside damaged region preserved verbatim |
+| **Local Mend** (local remesh) | Holes & nm must strictly improve with no defect rise | Tier's internal gate enforces non-rise (candidate SI ≤ baseline SI; report-only in general adopt guard) | Bound by damaged region face cap | Faces outside damaged region preserved verbatim |
 | **Graft** (shell wrap) | Strictly 0 holes and 0 non-manifold edges | `improved_flag` (SI rise allowed only if holes/nm improved) | Cap: max(4× input, input + 1,000) | Healthy-region Hausdorff ≤ gate; input coverage certified |
 | **Dressing** (volumetric skin) | Strictly 0 holes and 0 non-manifold edges | `strict_zero` (0 self-intersections required) | Cap: max(4× input, input + 1,000) | Healthy-region Hausdorff ≤ gate; volume change ≤ 2%; parts slack ≤ 1; normal angle p95 ≤ 35° |
 | **Splint** (exact solid rebuild) | Strictly 0 holes and 0 non-manifold edges | `non_rise` (candidate SI ≤ baseline SI) | Cap: max(4× input, input + 1,000) | Manifold post-processing kept only if defects do not rise |
-| **Coaptation** (seam weld) | Strictly 0 holes and 0 non-manifold edges | `strict_zero` (strictly reduces SI to 0 in `tiers/coaptation.py`) | Cap: max(4× input, input + 1,000) | Component count must not increase (`parts <= base_parts`) |
-| **CDT** (exact solid engine) | Strictly 0 holes and 0 non-manifold edges | Report-only in `adopt_guard` default; ladder tier in `tiers/cdt.py` delegates to `policy_for('splint')` (`non_rise`) | Cap: max(4× input, input + 1,000) | Output must be a single solid part (`parts == 1`) |
+| **Coaptation** (seam weld) | Strictly 0 holes and 0 non-manifold edges | `strict_zero` (strictly reduces self-intersections to 0) | Cap: max(4× input, input + 1,000) | Component count must not increase (`parts <= base_parts`) |
+| **CDT** (exact solid engine) | Strictly 0 holes and 0 non-manifold edges | Non-rise enforced by rebuild gate (candidate SI ≤ baseline SI; report-only in general adopt guard) | Cap: max(4× input, input + 1,000) | Output must be a single solid part (`parts == 1`) |
 | **fTetWild** (tetrahedral solid) | Holes and non-manifold edges ≤ baseline | `improved_flag` (SI rise allowed only if holes/nm improved) | Absolute floor 5,120 faces/vertices; growth allowed if improved | Output-to-input Hausdorff tracked (flagged as `shape_changed` if > 1% bbox diagonal) |
 | **Transplant (Auto/Manual)** | Strictly 0 holes and 0 non-manifold edges | `non_rise` (candidate SI ≤ baseline SI) | Bound by pattern bounding boxes | Untouched geometry outside repaired boxes does not move (Hausdorff ≤ 0.05 mm) |
 | **Wall Thicken** | Strictly 0 holes and 0 non-manifold edges | `non_rise` (candidate SI ≤ baseline SI) | Bound by local offset expansion | Total defects (`holes + nm`) ≤ baseline |
@@ -273,27 +273,27 @@ policies, and bounded shape deviations.
 
 Because eliminating severe non-manifold topology or deep boundary holes can
 sometimes introduce localized face overlaps, Sutura categorizes
-self-intersection guards into four explicit policies in `adopt_guard.py`:
+self-intersection guards into four explicit policies:
 
 - **`strict_zero`:** The candidate must be completely free of self-intersections.
-  Any intersection causes immediate rejection (configured in `_TIER_POLICIES` for
-  Dressing and Coaptation, and verified by Coaptation's own gate in `tiers/coaptation.py`).
+  Any intersection causes immediate rejection (enforced for Dressing and Coaptation).
 - **`non_rise`:** The candidate may not have more self-intersecting faces than
-  the mesh it replaces. Registered in `_TIER_POLICIES` for Splint, Transplant/Transplant+,
-  and Wall Thicken; additionally enforced by Local Mend's own gate in `local_remesh.py`
-  and CDT's tier call in `tiers/cdt.py`.
+  the mesh it replaces. Enforced for Splint, Transplant/Transplant+, Wall Thicken,
+  CDT, and Local Mend.
 - **`improved_flag`:** If the candidate strictly eliminates holes or non-manifold
   edges, an increase in self-intersections is accepted as a pragmatic trade-off
   and flagged in the repair report. If there was no topological gain, the
-  candidate is rejected (registered in `_TIER_POLICIES` for Graft and fTetWild).
+  candidate is rejected (configured for Graft and fTetWild).
 - **`flag` (report-only):** Self-intersections are measured and reported, but an
   increase does not reject the candidate. Overlapping volumes are accepted
   because modern 3D slicers automatically boolean-union overlapping shells during
-  slicing. This is the default in `adopt_guard.policy_for` for all unlisted
-  methods (including Balloon, Backplate, Scaffold, Mirror, and Join in triage),
-  and used by post-stage 1 Tamponade. Flap ignores SI in its pre-chain guard
-  (`si_policy='off'`) and uses a final flap-on vs. flap-off comparison in
-  `service.py` as its safety net.
+  slicing. This applies to methods without a dedicated SI gate (including Balloon,
+  Backplate, Scaffold, Mirror, and Join in triage), as well as post-stage 1 Tamponade.
+  Flap bypasses SI checking in its pre-chain pass and uses a final flap-on vs. flap-off
+  comparison as its pipeline safety net.
+
+> [!NOTE]
+> **For developers:** Tier adoption guards and self-intersection policies are implemented in `sutura_engine/pipeline/adopt_guard.py` alongside tier definitions in `sutura/sutura_engine/tiers/`.
 
 ### The three inspection tiers
 

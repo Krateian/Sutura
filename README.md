@@ -102,6 +102,7 @@ in [Install and requirements](docs/guide/install.md).
 sutura model.stl                 # writes model_fixed.stl
 sutura model.3mf -o fixed.3mf    # choose the output name
 sutura model.stl --human         # readable report of what was fixed
+sutura model.stl --no-fidelity   # skip the shape-fidelity score (report only)
 sutura validate model.stl        # analyse only, change nothing
 sutura a.stl b.stl c.3mf         # batch
 ```
