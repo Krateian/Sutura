@@ -7643,6 +7643,16 @@ class MainWindow(QMainWindow):
 # user gets one short dialog pointing at the Diagnostics export.
 
 _CRASH_DIALOG_SHOWN = False
+# Chained to in _install_crash_hooks so uncaught tracebacks still reach the
+# terminal / the default thread handler.
+_PREV_EXCEPTHOOK = None
+_PREV_THREADING_EXCEPTHOOK = None
+
+
+def _env_truthy(name):
+    """True for a non-empty, non-off environment flag."""
+    v = os.environ.get(name)
+    return bool(v) and v.strip().lower() not in ('0', 'false', 'no', 'off')
 
 
 def _crash_log(text):
@@ -7652,8 +7662,9 @@ def _crash_log(text):
             from sutura.diagnostics import crash_log_path
         except ImportError:
             from diagnostics import crash_log_path
-        with open(crash_log_path(), 'a', encoding='utf-8',
-                  errors='replace') as f:
+        path = crash_log_path()
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, 'a', encoding='utf-8', errors='replace') as f:
             f.write(text.rstrip('\n') + '\n')
     except Exception:
         pass
@@ -7683,6 +7694,10 @@ def _show_crash_dialog():
             return
     except Exception:
         pass
+    # No real user to dismiss a modal under CI / headless / xcb-under-Xvfb or
+    # when explicitly disabled: log only.
+    if any(_env_truthy(n) for n in ('CI', 'HEADLESS', 'SUTURA_NO_DIALOG')):
+        return
     _CRASH_DIALOG_SHOWN = True
     try:
         QMessageBox.warning(None, _t('app_title'), _t('crash_dialog_msg'))
@@ -7693,6 +7708,15 @@ def _show_crash_dialog():
 def _gui_excepthook(exc_type, exc, tb):
     _crash_log('uncaught exception:\n' + ''.join(
         traceback.format_exception(exc_type, exc, tb)))
+    # Chain: still print the traceback to stderr as Python normally would.
+    prev = _PREV_EXCEPTHOOK or sys.__excepthook__
+    try:
+        prev(exc_type, exc, tb)
+    except Exception:
+        try:
+            traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
+        except Exception:
+            pass
     _show_crash_dialog()
 
 
@@ -7701,10 +7725,23 @@ def _gui_threading_excepthook(args):
         getattr(args.thread, 'name', '?'),
         ''.join(traceback.format_exception(
             args.exc_type, args.exc_value, args.exc_traceback))))
+    prev = _PREV_THREADING_EXCEPTHOOK or threading.__excepthook__
+    try:
+        prev(args)
+    except Exception:
+        pass
     _show_crash_dialog()
 
 
 def _gui_qt_message_handler(mode, context, message):
+    # Only critical/fatal Qt messages reach the log: routine warnings (font
+    # fallbacks, stylesheet notes, resize chatter) must not write to disk.
+    try:
+        from PySide6.QtCore import QtMsgType
+        if mode not in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+            return
+    except Exception:
+        pass
     try:
         _crash_log('Qt[%s] %s' % (mode, message))
     except Exception:
@@ -7721,11 +7758,14 @@ def _install_crash_hooks():
         enable_crash_logging()
     except Exception:
         pass
+    global _PREV_EXCEPTHOOK, _PREV_THREADING_EXCEPTHOOK
     try:
+        _PREV_EXCEPTHOOK = sys.excepthook
         sys.excepthook = _gui_excepthook
     except Exception:
         pass
     try:
+        _PREV_THREADING_EXCEPTHOOK = threading.excepthook
         threading.excepthook = _gui_threading_excepthook
     except Exception:
         pass
