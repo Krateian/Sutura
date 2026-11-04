@@ -134,6 +134,15 @@ All notable changes to this project are documented here.
   headline; and the aggregate verdict follows semantic severity
   (`not_repaired` > `low_confidence` > `changed` > `preserved`). Report-only;
   no repair output change.
+- **Auto-reorder fixes.** With the opt-in `--auto-reorder`, Graft now always
+  precedes fTetWild in multi-object 3MF too (a suggestion ranking fTetWild first
+  could previously push Graft past the three-attempt limit, so Graft was never
+  tried); empty suggestions keep the calibrated order instead of scrambling it
+  into method-number order; methods the ranking omits keep their previous
+  relative order; and the GUI *Auto-reorder* checkbox now commits with the
+  panel's **Apply** (like the tier order), resets with **Reset Defaults** and
+  refreshes when the config changes. The flag stays OFF by default and the
+  flag-off output is unchanged.
 
 ## [0.9.8] - 2026-10-31
 
