@@ -240,9 +240,89 @@ and SHA-256), the `baseline` metrics and `tolerance_mm`. When it does not run,
 `triggered` is false and `reason` says why. Explicit `--methods` runs do not
 auto-escalate.
 
-Every tier is adopted only when its result is no worse than the plain
-staged result on holes and non-manifold edges, so the core staged path always
-remains the safety net. An adopted fTetWild result whose one-sided
+Every tier is adopted only when its result passes the adoption guards
+described below, ensuring the staged pipeline acts as a reliable safety net.
+
+## What "no worse" covers
+
+Sutura guarantees that repair candidates are adopted only when they pass
+automated adoption guards. However, "no worse" is not a blanket guarantee of
+preserving microscopic surface features or dimensional tolerances. Instead, it
+enforces strict topological defect reduction, complexity caps, self-intersection
+policies, and bounded shape deviations.
+
+### Per-tier adoption guards
+
+| Tier / Method | Holes & Non-Manifold Edges | Self-Intersection (SI) Policy | Face & Vertex Blow-up Guard | Component & Shape Guards |
+|---|---|---|---|---|
+| **Flap** (loop advancement) | Must strictly reduce reload damage (`holes + nm`) | `flag` (reported, does not reject) | Cap: max(4× input, input + 1,000 + 4× loop vertices) | Boundary-aligned tangent continuation |
+| **Tamponade (prepass)** | Holes must strictly fall; no rise in holes | `non_rise` (no SI increase allowed) | Cap: max(4× input, input + 1,000 + 4× plug faces) | Parts do not rise; ≥ 99% healthy faces kept; 0 plug leak points outside solid |
+| **Tamponade (post-stage 1)** | Strict fall in holes/nm (or local SI falls); no defect rise | `flag` (report-only; slicers union overlapping volumes) | Cap: max(4× input, input + 1,000 + 4× plug faces) | Parts do not rise; ≥ 99% healthy faces kept; 0 plug leak points outside solid |
+| **Local Mend** (local remesh) | Holes & nm must strictly improve with no defect rise | `non_rise` (candidate SI ≤ baseline SI) | Bound by damaged region face cap | Faces outside damaged region preserved verbatim |
+| **Graft** (shell wrap) | Strictly 0 holes and 0 non-manifold edges | `improved_flag` (SI rise allowed only if holes/nm improved) | Cap: max(4× input, input + 1,000) | Healthy-region Hausdorff ≤ gate; input coverage certified |
+| **Dressing** (volumetric skin) | Strictly 0 holes and 0 non-manifold edges | `strict_zero` (0 self-intersections required) | Cap: max(4× input, input + 1,000) | Healthy-region Hausdorff ≤ gate; volume change ≤ 2%; parts slack ≤ 1; normal angle p95 ≤ 35° |
+| **Splint** (exact solid rebuild) | Strictly 0 holes and 0 non-manifold edges | `non_rise` (candidate SI ≤ baseline SI) | Cap: max(4× input, input + 1,000) | Manifold post-processing kept only if defects do not rise |
+| **Coaptation** (seam weld) | Strictly 0 holes and 0 non-manifold edges | `strict_zero` (strictly reduces SI to 0) | Cap: max(4× input, input + 1,000) | Component count must not increase (`parts <= base_parts`) |
+| **CDT** (exact solid engine) | Strictly 0 holes and 0 non-manifold edges | `non_rise` (candidate SI ≤ baseline SI) | Cap: max(4× input, input + 1,000) | Output must be a single solid part (`parts == 1`) |
+| **fTetWild** (tetrahedral solid) | Holes and non-manifold edges ≤ baseline | `improved_flag` (SI rise allowed only if holes/nm improved) | Absolute floor 5,120 faces/vertices; growth allowed if improved | Output-to-input Hausdorff tracked (flagged as `shape_changed` if > 1% bbox diagonal) |
+| **Transplant (Auto/Manual)** | Strictly 0 holes and 0 non-manifold edges | `non_rise` (candidate SI ≤ baseline SI) | Bound by pattern bounding boxes | Untouched geometry outside repaired boxes does not move (Hausdorff ≤ 0.05 mm) |
+| **Wall Thicken** | Strictly 0 holes and 0 non-manifold edges | `non_rise` (candidate SI ≤ baseline SI) | Bound by local offset expansion | Total defects (`holes + nm`) ≤ baseline |
+| **Generative Triage Methods** (Balloon #8, Backplate #9, Scaffold #10, Mirror #14, Join #4) | Strictly 0 holes and 0 non-manifold edges | Per-method adoption guard | Cap: max(4× input, input + 1,000) | One-sided Hausdorff distance to input ≤ 1% bounding-box diagonal |
+
+### Self-intersection policies explained
+
+Because eliminating severe non-manifold topology or deep boundary holes can
+sometimes introduce localized face overlaps, Sutura categorizes
+self-intersection guards into four explicit policies:
+
+- **`strict_zero`:** The candidate must be completely free of self-intersections.
+  Any intersection causes immediate rejection (used by Dressing and Coaptation).
+- **`non_rise`:** The candidate may not have more self-intersecting faces than
+  the mesh it replaces (used by Splint, CDT, Local Mend, Wall Thicken, and Transplant).
+- **`improved_flag`:** If the candidate strictly eliminates holes or non-manifold
+  edges, an increase in self-intersections is accepted as a pragmatic trade-off
+  and flagged in the repair report. If there was no topological gain, the
+  candidate is rejected (used by Graft and fTetWild).
+- **`flag` (report-only):** Self-intersections are measured and reported, but an
+  increase does not reject the candidate. Overlapping volumes are accepted
+  because modern 3D slicers automatically boolean-union overlapping shells during
+  slicing (used by Flap and post-stage 1 Tamponade).
+
+### The three inspection tiers
+
+1. **Checked for every candidate at runtime:**
+   - Reload-honest topology: zero holes and non-manifold edges on closed outputs,
+     or strict reduction of reload damage.
+   - Complexity blow-up limits: face and vertex counts cannot explode beyond
+     proportional and absolute thresholds.
+   - Exact self-intersection policy per tier (`strict_zero`, `non_rise`,
+     `improved_flag`, or `flag`).
+   - Disconnected component guards: component counts cannot increase beyond
+     allowed tolerances (and CDT requires exactly one part).
+   - Tier-specific shape bounds: healthy-region deviation and coverage (Graft),
+     volume change and normal variation (Dressing), plug leak checks outside
+     the input solid (Tamponade), and 1% bounding-box one-sided Hausdorff
+     thresholds (generative triage methods and Join).
+
+2. **Checked only in release verification:**
+   - Sharp feature-edge recall: percentage of original sharp feature edges
+     preserved in the repair with matching dihedral angles.
+   - Healthy-region fill and removal: volume added outside or removed from
+     unaffected surface regions.
+   - Multi-camera visual QA rendering: automated spherical visual inspection
+     detecting surface distortion, voxel stepping, missing foreground, or
+     excess debris.
+   - Headless slicer verification: confirming that slicers recognize the mesh
+     as a valid, manifold print.
+   - Outside-the-input leak detection via generalized winding number integration.
+
+3. **Not measured yet:**
+   - Runtime sharp-edge fidelity and dimensional tolerance metrics (a shape-fidelity
+     score is currently in progress, with no release date or promises).
+   - Internal cavity and interior shell preservation (solid rebuild tiers may
+     merge, simplify, or fill interior voids).
+
+An adopted fTetWild result whose one-sided
 output-to-input Hausdorff distance exceeds 1 % of the bounding-box diagonal
 (provisional threshold) is kept but flagged: the report carries
 `shape_changed: true` and the issue `shape_changed` ("Shape changed by the
