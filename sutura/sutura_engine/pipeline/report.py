@@ -738,6 +738,7 @@ def _attribute_lines(r):
 
 _FIDELITY_VERDICT_TEXT = {
     'preserved': 'Repaired, shape preserved',
+    'preserved_notes': 'Repaired with notes \u2014 shape preserved',
     'changed': 'Repaired, shape changed in %d area(s) - check',
     'low_confidence': ('Repaired, shape changed in %d guessed area(s) '
                        '- check'),

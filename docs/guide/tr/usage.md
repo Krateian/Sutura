@@ -205,14 +205,17 @@ klasik güven skorundan bağımsız, ayrı bir skorlama sistemi
   çökmez. Faktör başına katkılar da raporlanır
   (`repair_health_factors` / `repair_risk_factors` /
   `repair_fidelity_factors`).
-- `repair_verdict_code` / `repair_verdict_areas` — kullanıcının gördüğü **tek
-  başlık hükmü**: `preserved` ("Onarıldı, şekil korundu"), `changed` ("Onarıldı,
-  N bölgede şekil değişti - kontrol edin"), `low_confidence` ("... N bölge
-  tahminle yeniden oluşturuldu ..."), `not_repaired` ("Tam onarılmadı") veya
-  `unavailable`. Topoloji hükmü buna katlanır: başarısız bir onarım, dokunulmamış
-  kısımlar hâlâ eşleşse bile her zaman `not_repaired` okunur ve Sadakat
-  ölçülmediğinde başlık, ölçülmemiş bir şekil kontrolü iddia etmek yerine sade
-  hükme döner ("Baskıya hazır" / "Notlarla onarıldı"). Büyük uydurulmuş alanlar
+- `repair_verdict_code` / `repair_verdict_areas` — JSON raporundaki Sadakat
+  **şekil** hükmü ve değişen alan sayısı: `preserved` ("Onarıldı, şekil
+  korundu"), `changed` ("Onarıldı, N bölgede şekil değişti - kontrol edin"),
+  `low_confidence` ("... N bölge tahminle yeniden oluşturuldu ..."),
+  `not_repaired` ("Tam onarılmadı") veya `unavailable`. JSON alanı, yalnızca
+  gösterim için olan `ready` / `notes` kodlarını asla içermez. CLI `--human` ve
+  GUI bunu topoloji hükmüyle TEK bir başlıkta birleştirir: başarısız bir onarım
+  (veya orta katmanın altındaki Sağlık) `not_repaired` okunur; topolojide notlar
+  varken şekil korunduysa başlık "Notlarla onarıldı — şekil korundu" olur, asla
+  temiz bir "şekil korundu" değil; Sadakat ölçülmediğinde ise sade hükme döner
+  ("Baskıya hazır" / "Notlarla onarıldı"). Büyük uydurulmuş alanlar
   (büyük delik kapağı, fTetWild/Splint yeniden inşası)
   `repair_verdict_low_confidence` bayrağını açar: oradaki yeniden oluşturma bir
   tahmindir, ölçüm değildir. Alan başına sayımlar ve düşük-güvenilirlik küme

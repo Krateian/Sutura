@@ -563,6 +563,8 @@ STRINGS = {
         'health_risk_fidelity_line': ('Health: %s/100 · Risk: %s/100 · '
                                       'Fidelity: %s/100'),
         'fidelity_verdict_preserved': 'Repaired, shape preserved',
+        'fidelity_verdict_preserved_notes': ('Repaired with notes \u2014 shape '
+                                             'preserved'),
         'fidelity_verdict_changed': ('Repaired, shape changed in %d area(s) '
                                      '- check'),
         'fidelity_verdict_low_confidence': (
@@ -603,6 +605,7 @@ STRINGS = {
                                  'component(s), %d face(s)'),
         'detail_small_part': ('  %d face(s), size %.3g mm%s, %s from the main '
                               'body'),
+        'detail_small_part_pct': ' (%.3g%% of model)',
         'detail_small_more': '  ... (%d more not listed)',
         'detail_suspicious': ('Suspicious separate part(s) kept: %d (possible '
                               'debris; nothing was removed)'),
@@ -1498,6 +1501,8 @@ STRINGS = {
         'health_risk_fidelity_line': ('Sağlık: %s/100 · Risk: %s/100 · '
                                       'Sadakat: %s/100'),
         'fidelity_verdict_preserved': 'Onarıldı, şekil korundu',
+        'fidelity_verdict_preserved_notes': ('Notlarla onarıldı \u2014 şekil '
+                                             'korundu'),
         'fidelity_verdict_changed': ('Onarıldı, %d bölgede şekil değişti '
                                      '- kontrol edin'),
         'fidelity_verdict_low_confidence': (
@@ -1509,12 +1514,12 @@ STRINGS = {
         'detail_stage1': 'Aşama 1 (yerel):',
         'detail_holes_closed': '  Kapatılan delik           : %d',
         'detail_holes_remaining': '  Kalan delik               : %d',
-        'detail_nm_fixed': '  Düzeltilen non-manifold   : %d',
+        'detail_nm_fixed': '  Düzeltilen non-manifold kenar: %d',
         'detail_faces_removed': '  Kaldırılan yüz            : %d',
         'detail_components': '  Bağlı bileşen             : %d',
         'detail_two_manifold': '  İki-manifold              : %s',
         'detail_yes': 'EVET', 'detail_no': 'HAYIR',
-        'detail_budget': ('  Bütçe                     : biçim değişimi %s%% '
+        'detail_budget': ('  Bütçe                     : geometri değişimi %s%% '
                           '(sınır %s) · risk %s (sınır %s) · %s'),
         'detail_stage2': 'Aşama 2 (Manifold):',
         'detail_skipped': '  ATLANDI: %s',
@@ -1536,8 +1541,9 @@ STRINGS = {
         'detail_small_removed': ('Kaldırılan küçük parçalar (< %d yüz): %d '
                                  'bileşen, %d yüz'),
         'detail_small_part': ('  %d yüz, boyut %.3g mm%s, ana gövdeden %s'),
+        'detail_small_part_pct': ' (modelin %.3g%% kadarı)',
         'detail_small_more': '  ... (%d tanesi listelenmedi)',
-        'detail_suspicious': ('Korunan şüpheli ayrı parça(lar): %d (olası '
+        'detail_suspicious': ('Korunan şüpheli ayrı parça: %d (olası '
                               'kırıntı; hiçbir şey kaldırılmadı)'),
         'detail_suspicious_part': ('  %d yüz, en büyük hacmin %.3g%% kadarı, '
                                    'ana gövdeden %s'),
@@ -2259,33 +2265,44 @@ def summarize(data):
 
 
 def _small_parts_report_lines(s1):
-    """Small-part visibility for the GUI result details (report-only)."""
+    """Small-part visibility for the GUI result details (report-only).
+
+    Defensive: a sparse/partial report (``None`` counts, sizes or lists) must
+    never raise while formatting the details pane.
+    """
+    s1 = s1 or {}
     lines = []
 
     def _dist(v):
-        return ('%.3g mm' % v) if v is not None else 'n/a'
+        return ('%.3g mm' % v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 'n/a'
 
-    rem = (s1 or {}).get('removed_small_parts')
-    if rem and rem.get('count'):
-        lines.append(_t('detail_small_removed', rem.get('min_faces', 8),
-                        rem['count'], rem.get('faces_total', 0)))
-        for p in rem.get('parts', []):
-            pct = (' (%.3g%% of model)' % p['size_pct']
+    def _parts(block):
+        return [p for p in (block.get('parts') or []) if isinstance(p, dict)]
+
+    rem = s1.get('removed_small_parts')
+    if isinstance(rem, dict) and (rem.get('count') or 0):
+        parts = _parts(rem)
+        lines.append(_t('detail_small_removed', int(rem.get('min_faces') or 8),
+                        int(rem.get('count') or 0),
+                        int(rem.get('faces_total') or 0)))
+        for p in parts:
+            pct = (_t('detail_small_part_pct', p['size_pct'])
                    if p.get('size_pct') is not None else '')
-            lines.append(_t('detail_small_part', p['faces'],
-                            p.get('size_mm', 0.0), pct,
+            lines.append(_t('detail_small_part', int(p.get('faces') or 0),
+                            float(p.get('size_mm') or 0.0), pct,
                             _dist(p.get('distance_mm'))))
-        extra = rem['count'] - len(rem.get('parts', []))
+        extra = int(rem.get('count') or 0) - len(parts)
         if extra > 0:
             lines.append(_t('detail_small_more', extra))
-    pd = (s1 or {}).get('possible_debris')
-    if pd and pd.get('count'):
-        lines.append(_t('detail_suspicious', pd['count']))
-        for p in pd.get('parts', []):
-            lines.append(_t('detail_suspicious_part', p['faces'],
-                            p.get('volume_pct') or 0.0,
+    pd = s1.get('possible_debris')
+    if isinstance(pd, dict) and (pd.get('count') or 0):
+        parts = _parts(pd)
+        lines.append(_t('detail_suspicious', int(pd.get('count') or 0)))
+        for p in parts:
+            lines.append(_t('detail_suspicious_part', int(p.get('faces') or 0),
+                            float(p.get('volume_pct') or 0.0),
                             _dist(p.get('distance_mm'))))
-        extra = pd['count'] - len(pd.get('parts', []))
+        extra = int(pd.get('count') or 0) - len(parts)
         if extra > 0:
             lines.append(_t('detail_small_more', extra))
     return lines
@@ -2294,7 +2311,7 @@ def _small_parts_report_lines(s1):
 def format_report(data):
     if data.get('error') and 'stage1' not in data:
         return _t('detail_error_line', data['error'])
-    s1 = data.get('stage1', {})
+    s1 = data.get('stage1') or {}
     lines = []
     lines.append(_t('detail_output', data.get('output')))
     rf = data.get('repair_fidelity')
@@ -2324,7 +2341,7 @@ def format_report(data):
             lines.append(_t('detail_attr_obj', o.get('model') or 'object',
                             o['kept'], o['dropped'], o['new_without']))
         lines.append('')
-    _sp = _small_parts_report_lines(data.get('stage1', {}))
+    _sp = _small_parts_report_lines(data.get('stage1'))
     if _sp:
         lines.extend(_sp)
         lines.append('')
@@ -2332,11 +2349,11 @@ def format_report(data):
         lines.append(_t('detail_error_line', data.get('error')))
         lines.append('')
     lines.append(_t('detail_stage1'))
-    lines.append(_t('detail_holes_closed', s1.get('holes_closed', 0)))
-    lines.append(_t('detail_holes_remaining', s1.get('holes_remaining', 0)))
-    lines.append(_t('detail_nm_fixed', s1.get('non_manifold_edges_fixed', 0)))
-    lines.append(_t('detail_faces_removed', s1.get('faces_removed', 0)))
-    lines.append(_t('detail_components', s1.get('components', 0)))
+    lines.append(_t('detail_holes_closed', int(s1.get('holes_closed') or 0)))
+    lines.append(_t('detail_holes_remaining', int(s1.get('holes_remaining') or 0)))
+    lines.append(_t('detail_nm_fixed', int(s1.get('non_manifold_edges_fixed') or 0)))
+    lines.append(_t('detail_faces_removed', int(s1.get('faces_removed') or 0)))
+    lines.append(_t('detail_components', int(s1.get('components') or 0)))
     lines.append(_t('detail_two_manifold',
                     _t('detail_yes') if s1.get('two_manifold')
                     else _t('detail_no')))
@@ -2349,45 +2366,47 @@ def format_report(data):
             'n/a' if b.get('max_risk_score') is None else b.get('max_risk_score'),
             _t('budget_status_exceeded') if not b.get('within_budget')
             else _t('budget_status_within')))
-    if 'stage2' in data:
-        s2 = data['stage2']
+    s2 = data.get('stage2')
+    if isinstance(s2, dict):
         lines.append('')
         lines.append(_t('detail_stage2'))
-        if 'error' in s2:
-            if s2['error'].startswith('Stage 2 skipped'):
-                lines.append(_t('detail_skipped', s2['error']))
+        err = s2.get('error')
+        if err:
+            if isinstance(err, str) and err.startswith('Stage 2 skipped'):
+                lines.append(_t('detail_skipped', err))
             else:
-                lines.append(_t('detail_err', s2['error']))
+                lines.append(_t('detail_err', str(err)))
         else:
-            lines.append(_t('detail_input_triangles', s2.get('input_faces', 0)))
-            lines.append(_t('detail_output_triangles', s2.get('output_faces', 0)))
+            lines.append(_t('detail_input_triangles', int(s2.get('input_faces') or 0)))
+            lines.append(_t('detail_output_triangles', int(s2.get('output_faces') or 0)))
             if s2.get('shells_merged'):
-                lines.append(_t('detail_shells_merged', s2['shells_merged']))
-            lines.append(_t('detail_volume_after', s2.get('volume_after', 0)))
-    if 'objects' in data:
+                lines.append(_t('detail_shells_merged', int(s2['shells_merged'] or 0)))
+            lines.append(_t('detail_volume_after', float(s2.get('volume_after') or 0.0)))
+    if data.get('objects') is not None:
+        reps = [r for r in (data.get('object_reports') or []) if isinstance(r, dict)]
         lines.append('')
-        lines.append(_t('detail_objects', data.get('objects', 0)))
+        lines.append(_t('detail_objects', int(data.get('objects') or 0)))
         if data.get('objects_watertight') is not None:
             lines.append(_t('detail_objects_watertight',
-                data.get('objects_watertight'),
-                len(data.get('object_reports', []))))
-        for i, rep in enumerate(data.get('object_reports', [])):
-            s1o = rep.get('stage1', {})
+                int(data.get('objects_watertight') or 0), len(reps)))
+        for i, rep in enumerate(reps):
+            s1o = rep.get('stage1') or {}
             s2o = rep.get('stage2') or {}
+            s2_err = s2o.get('error')
+            skipped = isinstance(s2_err, str) and s2_err.startswith('Stage 2 skipped')
             if s2o.get('ok'):
                 label = _t('detail_obj_watertight')
-            elif s1o.get('two_manifold') and s1o.get('holes_remaining', 0) == 0:
-                label = _t('detail_obj_s2_skipped'
-                           if s2o.get('error', '').startswith('Stage 2 skipped')
+            elif s1o.get('two_manifold') and int(s1o.get('holes_remaining') or 0) == 0:
+                label = _t('detail_obj_s2_skipped' if skipped
                            else 'detail_obj_s2_error')
             else:
                 label = _t('detail_obj_partial')
             lines.append(_t('detail_object_line', i, label,
-                            s1o.get('holes_remaining', 0),
+                            int(s1o.get('holes_remaining') or 0),
                             _t('detail_yes') if s1o.get('two_manifold')
                             else _t('detail_no')))
             if rep.get('unit_warning'):
-                lines.append(_t('detail_warning', rep.get('unit_hint')))
+                lines.append(_t('detail_warning', str(rep.get('unit_hint') or '')))
     mu = data.get('method_used') or {}
     tried = data.get('methods_tried') or []
     if mu.get('num') is not None or tried:
@@ -6502,8 +6521,9 @@ class MainWindow(QMainWindow):
         hv = classification.headline_verdict(data)
         code = hv['code']
         symbol = {'ready': '✓', 'notes': '⚠', 'preserved': '✓',
-                  'changed': '⚠', 'low_confidence': '⚠',
-                  'not_repaired': '✗', 'unavailable': '⚠'}.get(code, '')
+                  'preserved_notes': '⚠', 'changed': '⚠',
+                  'low_confidence': '⚠', 'not_repaired': '✗',
+                  'unavailable': '⚠'}.get(code, '')
         if code in ('ready', 'notes'):
             _verdict_text = _t('brief_' + code)
         elif code in ('changed', 'low_confidence'):

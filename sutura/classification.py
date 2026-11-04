@@ -214,6 +214,11 @@ VERDICT_LABELS = {
     'failed': 'Could not fully repair',
 }
 
+# Health boundary for a clean headline: below the "not repaired" mid tier that
+# fidelity._verdict already uses, a repair must not read as an unconditional
+# shape-preserved success.
+HEADLINE_HEALTH_READY = 60
+
 
 def _num(v, default=None):
     if isinstance(v, bool) or not isinstance(v, (int, float)):
@@ -427,4 +432,13 @@ def headline_verdict(data):
         return {'code': 'not_repaired', 'areas': areas}
     if code in (None, 'unavailable'):
         return {'code': b['verdict'], 'areas': 0}
+    # Fidelity was measured. Never present an unconditional clean "shape
+    # preserved" when the topology has caveats ('notes') or Health is below the
+    # ready boundary; combine them instead ("Repaired with notes - shape
+    # preserved").
+    health = data.get('repair_health')
+    low_health = (isinstance(health, (int, float)) and not isinstance(health, bool)
+                  and health < HEADLINE_HEALTH_READY)
+    if code == 'preserved' and (b['verdict'] == 'notes' or low_health):
+        return {'code': 'preserved_notes', 'areas': areas}
     return {'code': code, 'areas': areas}

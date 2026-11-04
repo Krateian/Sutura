@@ -206,14 +206,18 @@ configurable via `sutura/repair_score_config.json`):
   The per-factor contributions are also reported
   (`repair_health_factors` / `repair_risk_factors` /
   `repair_fidelity_factors`).
-- `repair_verdict_code` / `repair_verdict_areas` — the **single headline
-  verdict** the user sees: `preserved` ("Repaired, shape preserved"), `changed`
-  ("Repaired, shape changed in N area(s) - check"), `low_confidence`
-  ("... in N guessed area(s) ..."), `not_repaired` ("Not fully repaired") or
-  `unavailable`. The topology verdict is folded into it: a failed repair always
-  reads `not_repaired` even if the untouched parts still match, and when Fidelity
-  is not measured the headline falls back to the plain brief verdict ("Ready to
-  print" / "Repaired with notes") instead of claiming an unmeasured shape check.
+- `repair_verdict_code` / `repair_verdict_areas` — the Fidelity **shape**
+  verdict in the JSON report and its changed-area count: `preserved`
+  ("Repaired, shape preserved"), `changed` ("Repaired, shape changed in N
+  area(s) - check"), `low_confidence` ("... in N guessed area(s) ..."),
+  `not_repaired` ("Not fully repaired") or `unavailable`. The JSON field never
+  contains the display-only `ready` / `notes` codes. The CLI `--human` and the
+  GUI fold it with the topology verdict into ONE headline: a failed repair (or
+  Health below the mid tier) reads `not_repaired` even if the untouched parts
+  still match; with topology caveats but a preserved shape the headline is
+  "Repaired with notes — shape preserved", never a clean "shape preserved"; and
+  when Fidelity is not measured it falls back to the plain brief verdict
+  ("Ready to print" / "Repaired with notes").
   Large invented areas (a big hole cap, fTetWild/Splint rebuild) set
   `repair_verdict_low_confidence`: the reconstruction there is a guess, not a
   measurement. The per-area counts and low-confidence cluster detail are

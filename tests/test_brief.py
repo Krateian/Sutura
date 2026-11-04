@@ -113,6 +113,23 @@ def test_headline_folds_fidelity():
     assert classification.headline_verdict(_base())['code'] == 'ready'
     assert human_report(_base()).splitlines()[0] == 'Ready to print'
 
+    # brief 'notes' + Fidelity 'preserved' must NOT read as a clean preserved.
+    rn = _base()
+    rn['stage2'] = {'error': 'Stage 2 skipped: no bridge'}
+    rn['repair_verdict_code'] = 'preserved'
+    rn['repair_verdict_areas'] = 0
+    assert classification.brief(rn)['verdict'] == 'notes', classification.brief(rn)
+    assert classification.headline_verdict(rn)['code'] == 'preserved_notes'
+    assert human_report(rn).splitlines()[0] == (
+        'Repaired with notes \u2014 shape preserved')
+
+    # Low Health + Fidelity 'preserved' also cannot read as a clean preserved.
+    rl = _base()
+    rl['repair_health'] = 40
+    rl['repair_verdict_code'] = 'preserved'
+    rl['repair_verdict_areas'] = 0
+    assert classification.headline_verdict(rl)['code'] == 'preserved_notes'
+
 
 def test_attribute_loss_warns():
     r = _base()
