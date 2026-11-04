@@ -66,6 +66,7 @@ class _FakeWorker:
         self.file_done = _Sig()
         self.progress = _Sig()
         self.all_done = _Sig()
+        self.internal_error = _Sig()
 
     def start(self):
         pass
@@ -73,6 +74,8 @@ class _FakeWorker:
 
 def _fake_proc(out='{"ok": true}'):
     class _P:
+        returncode = 0
+
         def poll(self):
             return None
 

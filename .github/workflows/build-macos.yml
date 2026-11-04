@@ -142,6 +142,7 @@ jobs:
           # autorefine, in-process). Stage 2 now runs in sutura_geom.
           cp sutura/ftetwild_bridge.py dist/sutura-cli/
           cp sutura/indirect_bridge.py dist/sutura-cli/
+          cp sutura/repair_score_config.json dist/sutura-cli/
 
       - name: Build GUI .app (windowed onedir)
         run: |
@@ -166,6 +167,7 @@ jobs:
             --hidden-import repeat_repair \
             --hidden-import mirror_repair --hidden-import wall_thickness \
             --hidden-import shell_wrap \
+            --hidden-import repair_score --hidden-import fidelity \
             --hidden-import pytetwild \
             --collect-submodules pytetwild \
             --collect-binaries pytetwild \

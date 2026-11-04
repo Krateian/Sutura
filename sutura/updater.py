@@ -80,6 +80,7 @@ APP_MODULES = (
     'shell_wrap.py',
     'history.py',
     'repair_score.py',
+    'fidelity.py',
     'updater.py',
     'gui.py',
     'heatmap.py',
