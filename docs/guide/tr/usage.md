@@ -217,7 +217,7 @@ klasik güven skorundan bağımsız, ayrı bir skorlama sistemi
   (veya orta katmanın altındaki Sağlık) `not_repaired` okunur; topolojide notlar
   varken şekil korunduysa başlık "Notlarla onarıldı — şekil korundu" olur, asla
   temiz bir "şekil korundu" değil; Sadakat ölçülmediğinde ise sade hükme döner
-  ("Baskıya hazır" / "Notlarla onarıldı"). Büyük uydurulmuş alanlar
+  ("Baskıya hazır" / "Notlarla onarıldı"). Büyük tahmini alanlar
   (büyük delik kapağı, fTetWild/Splint yeniden inşası)
   `repair_verdict_low_confidence` bayrağını açar: oradaki yeniden oluşturma bir
   tahmindir, ölçüm değildir. Alan başına sayımlar ve düşük-güvenilirlik küme
@@ -237,6 +237,95 @@ düzeyi Sadakat en kötü nesnedir ve değişen/düşük-güvenilirlik alan say�
 toplanır. GUI, rapor özetinde aynı tek başlığı gösterir ve tam raporu — artık
 İngilizce ve Türkçe yerelleştirilmiş — **Ayrıntılar** düğmesinin arkasına
 katlar.
+
+### Onarım raporunu anlama
+
+#### Puanlama özet tablosu (Cheat Sheet)
+
+Her onarım raporu, tanılama güven skoruyla birlikte üç bağımsız 0–100 şekil ve ağ göstergesi sunar:
+
+| Puan | Ölçek | İyi yön | Neyi ölçer |
+|---|---|---|---|
+| **Sağlık** | 0 – 100 | **YÜKSEK olması iyidir** (100 idealdir) | **Topolojik ve yapısal bütünlük.** 100 puan, sıfır delik, sıfır non-manifold kenar, sıfır bozuk yüz, sıfır artık kendini-kesişim ve doğru yüz yönlenmesine sahip, tamamen kapalı, su geçirmez 2-manifold bir katıyı gösterir. Düşük puanlar kalan kusurları ifade eder. |
+| **Risk** | 0 – 100 | **DÜŞÜK olması iyidir** (0 idealdir) | **Ağdaki değişiklik derecesi.** Onarımın orijinal geometriyi ne kadar değiştirdiğini ölçer (yüz/vertex farkları, hacim kaymaları, kabuk budama veya katı remesh). Düşük risk puanı (0–25) modelin nazikçe yamandığını; yüksek risk (> 60) agresif bir yeniden inşa uygulandığını gösterir. |
+| **Sadakat** | 0 – 100 | **YÜKSEK olması iyidir** (100 idealdir) | **Sağlıklı bölgelerde şeklin korunma doğruluğu.** Girdiye doğru tek yönlü Hausdorff sapmasını, keskin kenar hatırlamasını (dihedral açılar) ve sağlıklı dolgu/kaldırma oranını ölçer. **Yalnızca raporlama amaçlıdır:** aday yöntemlerin benimsenmesini engellemez. Büyük hasarlı bölümler sıfırdan inşa edildiyse başlıkta `tahmini alanlar - kontrol edin` uyarısı verilir. |
+| **Güvenilirlik** | 0 – 100 / Yüksek-Orta-Düşük | *Tanılama kesinliği* | **Triage sınıflandırıcı güveni.** Sutura'nın girdi ağındaki kusur kategorisini teşhis ederken ve ilk onarım stratejisini seçerken ne kadar emin olduğunu gösterir. Çıktının geometrik kalitesinden bağımsız bir girdi analiz kesinliğidir. |
+
+> [!TIP]
+> **Risk puanının ters ölçekli olduğunu unutmayın:** Sağlık ve Sadakat puanlarında "yüksek puan iyidir" kuralı geçerliyken, **Risk puanı bir ceza metriğidir; 0 dokunulmamış ideali, 100 ise ağır müdahaleyi gösterir**. `Sağlık: 100   Risk: 1   Sadakat: 100` değerlerine sahip bir onarım neredeyse kusursuzdur!
+
+#### Başlık hükümleri ve inceleme önerileri
+
+CLI `--human` modu ve GUI, topoloji özeti ile Sadakat şekil kontrolünü **tek bir başlıkta** birleştirir:
+- `Baskıya hazır` / `Onarıldı, şekil korundu`: Topoloji kapalı ve sağlam; orijinal yüzey ayrıntıları korundu.
+- `Notlarla onarıldı — şekil korundu`: Topoloji kapatıldı ancak bilgilendirme notları var (örn. ince duvarlar veya zararsız kozmetik kendini-kesişmeler); yüzey şekli korundu.
+- `Onarıldı, N bölgede şekil değişti - kontrol edin`: Topoloji sağlam ancak agresif yedek onarım gerekti ve sağlıklı yüzey sınırlayıcı kutu köşegeninin %1'inden fazla kaydı.
+- `Onarıldı, N bölge tahminle yeniden oluşturuldu - kontrol edin`: Eksik veya parçalanmış bölümler katı yeniden inşasıyla (fTetWild, Splint veya büyük Tamponade kapağı) sıfırdan oluşturuldu; bu bölgelerdeki geometri algoritmik bir tahmindir.
+- `Tam onarılmadı` / `Başarısız`: Kusurlar güvenli sınırlar içinde tamamen su geçirmez manifold duruma getirilemedi.
+
+Başlık `kontrol edin` uyarısı verdiğinde:
+- **GUI'de:** Yüzeyin kaydığı veya yama yapıldığı yerleri görsel olarak görmek için **Önce / Sonra** karşılaştırma görünümünü veya **Isı Haritası (Heatmap)** sekmesini açın.
+- **CLI'da:** Vertex, yüz ve yüzey alanı değişimlerini görmek için `--human --diff` ile, kusur konumlarını listelemek için `--human --defects` ile çalıştırın.
+
+#### Örnek `--human` çıktısı
+
+Aşağıdaki çıktı, sınır deliği ve ince duvarlar içeren kusurlu bir modelin (`tests/real-world-samples/thingi10k_100173.stl`) gerçek onarım raporunu göstermektedir:
+
+```text
+Repaired with notes — shape preserved
+  Holes closed: 1 · Orientation: already correct · Parts: 1 kept · Shape change: 0.00%
+  Note: thin walls: ~8.0% of the surface is thinner than 0.5% of the model size (thinnest ~0.21 mm) [estimated]
+
+Input : model.stl
+Output: model_fixed.stl
+Mode  : auto
+Classifier: experimental
+Intensity: balanced
+Type  : organic (confidence 0.67) - default thresholds (below confidence gate)
+Confidence: 87/100 (High)
+Health: 100/100   Risk: 1/100   Fidelity: 100/100
+
+Print impact:
+  Fixed : 1 hole(s) closed
+  Remaining: none
+  Geometry: deviation max 0.0% of size
+  Not assessed: volume
+Methods: 19/19 OK
+Repair status: Safe to inspect
+
+Stage 1 (MeshLab):
+  Holes closed            : 1
+  Holes remaining         : 0
+  Non-manifold edges fixed: 0
+  Faces removed           : 0
+  Connected components    : 1
+  Two-manifold            : YES
+  Tamponade (plug)        : 1 plugs, 2 plug faces, holes=0 nm=0, healthy kept 250 in 0.00s adopted
+  Volume change          : n/a (input volume not measurable)
+
+Stage 2 (Manifold):
+  input_vertices: 128
+  input_faces: 252
+  input_watertight: True
+  construct_status: Error.NoError
+  ok: True
+  volume_before: 10070.636131079196
+  shells_found: 1
+  output_vertices: 128
+  output_faces: 252
+  volume_after: 10070.636131079196
+  shells: 1
+```
+
+#### Geometri terimleri sözlüğü
+
+- **Non-manifold (kenarlar / vertex'ler):** Bir ağın gerçek dünyadaki geçerli bir 2-manifold fiziksel yüzey gibi davranmasını engelleyen geometrik kusurlar — örneğin 3 veya daha fazla yüz tarafından paylaşılan bir kenar (T-birleşimi), tek bir yüze bağlı açık sınır kenarı ya da kum saati gibi tek bir izole noktada veya çizgide birbirine değen iki ayrı hacim.
+- **Yüz yönlenmesi (Winding orientation):** Bir üçgenin hangi tarafının boşluğa ("dış"), hangi tarafının katı gövdeye ("iç") baktığını belirleyen, üçgen köşe noktalarının (vertex) saat yönünde veya tersindeki tutarlı sıralanışı.
+- **fTetWild (Fast Tetrahedral Meshing in the Wild):** Bozuk yüzey üçgenlerini 3 boyutlu hacimsel bir tetrahedral katı gövdeye dönüştürerek yüzeyler ağır hasarlı olsa dahi su geçirmez çıktıyı güvenceye alan agresif bir kurtarma motoru.
+- **CDT (Constrained Delaunay Triangulation / Kısıtlı Delaunay Üçgenlemesi):** Kısıtlanmamış özellikleri bozmadan, tam olarak verilen sınır segmentlerine veya kısıtlamalarına uyan üçgenler yerleştiren kesin bir üçgenleme yöntemi.
+- **Sub-ULP (Unit in the Last Place / Son Basamak Birimi altı):** Ardışık kayan noktalı (floating-point) sayılar arasındaki en küçük aralıktan daha hassas aritmetik; kesin geometrik önermelerde (predicates) sayısal yuvarlama hataları olmadan sağlam yön ve kesişim testleri yapmak için kullanılır.
+- **Hausdorff mesafesi:** Bir yüzeydeki herhangi bir noktadan diğer yüzeydeki en yakın noktaya olan maksimum mesafe; orijinal ve onarılan şekiller arasındaki en kötü durum geometrik sapmasının matematiksel ölçüsü.
+- **Dihedral açı:** Bir kenarı paylaşan bitişik iki üçgen yüzün düzlemleri arasındaki iç açı; onarım sırasında keskin hatları tespit etmek ve mekanik kenarları korumak için kullanılır.
 
 Otomatik **yedek** sırası, isteğe bağlı olarak model başına `--auto-reorder`
 (veya Seçenekler → Yöntemler içindeki *Otomatik yeniden sıralama* onay kutusu)

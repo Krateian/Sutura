@@ -53,16 +53,15 @@ yöneticisinde sağ tıkla ya da bir OrcaSlicer eklentisiyle.
 - **Yalnızca bozuk olanı onarır.** Delikler, yanlış birleşmiş kenarlar, ters
   yüzler, üst üste binen ya da kendini kesen parçalar ve kopuk döküntüler
   onarılır; temiz bir model değişmeden geçer.
-- **Topoloji ve şekil korumalarında asla kötü değil.** Her onarım adayı,
-  yalnızca katı kusur, patlama ve şekil sınırlarını geçtiğinde benimsenir;
-  değilse atılır (bkz. ["Daha kötü değil" neleri kapsar](docs/guide/tr/how-it-works.md#daha-kötü-değil-neleri-kapsar);
-  yüzey ayrıntısı yalnızca raporlanan Sadakat skoruyla denetlenir).
-- **Dürüst sonuç.** Sonuç su geçirmez denmeden önce yeniden yüklenip tekrar
-  kontrol edilir; rapor neyin düzeltildiğini, neyin kaldığını ve şeklin ne
-  kadar değiştiğini gösterir.
-- **Şekil kontrolü.** Bir Sadakat skoru, onarılan modeli sağlıklı yüzeyde
-  girdiyle karşılaştırır; böylece ağ doğru kapanmış ama ayrıntı kaybetmişse
-  görünür olur; büyük yeniden oluşturulan bölgeler tahmin olarak işaretlenir.
+- **Topoloji ve şekil kontrollerinde geriye gitmez.** Her onarım adayı,
+  yalnızca delikleri ve kusurları kesin olarak azalttığında ve patlama sınırlarını
+  geçtiğinde benimsenir; aksi halde reddedilir (bkz. ["Daha kötü yapmama" ilkesi neleri kapsar](docs/guide/tr/how-it-works.md#daha-kötü-yapmama-no-worse-ilkesi-neleri-kapsar)).
+- **Şekil şeffaflığı.** Ağır hasar modeli yeniden inşa etmeye zorlarsa
+  (örneğin fTetWild ile), raporlama amaçlı **Sadakat puanı** yüzeyin nerede ve
+  ne kadar değiştiğini açıkça gösterir.
+- **Tek ve net hüküm.** Başlık hükmü modelin baskıya hazır olup olmadığını,
+  notlar içerip içermediğini veya şeklinin değişip değişmediğini tek satırda
+  söyler; Sağlık, Risk ve Sadakat puanları **Ayrıntılar** arkasında sunulur.
 - **Çok araç, tek düğme.** On dokuz sıralı onarım yöntemi tek bir *Onar*
   düğmesinin arkasındadır; triage motoru modelin neye ihtiyaç duyduğunu seçer.
 - **Yerel ve çevrimdışı.** Geometriyi Rust çekirdeği (`sutura_geom`) yapar;
