@@ -24,6 +24,20 @@ All notable changes to this project are documented here.
   same counts are shown as a neutral note instead of a warning, and nothing is
   shown when the input had no attributes. The JSON report already carried these
   counts; no repair output changes.
+- **Fidelity: "is it still the same model?"** Every repair report now carries a
+  third, report-only score next to Repair Health and Repair Risk. Fidelity
+  (0-100) compares the final mesh with the input on the healthy (non-defect)
+  surface using one-sided distance, feature-edge recall, healthy fill/removed
+  volume, volume and bounding-box change, and the area of newly created
+  surface. `repair_verdict_code` gives one plain-language verdict ("Repaired,
+  shape preserved", "Repaired, shape changed in N area(s) - check", or "Not
+  fully repaired"); large invented areas (big hole caps, fTetWild/Splint
+  rebuilds) are marked as low-confidence guesses. The measurement
+  runs once on the final result, never changes which candidate is adopted, is
+  deterministic and fail-silent, and is gated on large meshes. Weights, scales
+  and budgets live in `sutura/repair_score_config.json`; `--no-fidelity` (and
+  the Options checkbox) opts out. `--human`, the JSON report, the GUI header
+  and `history.jsonl` are wired; docs updated in English and Turkish.
 
 ## [0.9.8] - 2026-10-31
 

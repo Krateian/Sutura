@@ -78,6 +78,12 @@ def test_config_loads_and_normalizes():
     assert 'mid_high' in table and table['mid_high'] == 'caution'
     assert table['high_low'] == 'safe'
     assert table['low_high'] == 'failed'
+    # Fidelity defaults are shipped in the same file and sum to 100.
+    fw = cfg['fidelity']['weights']
+    assert sum(fw.values()) == 100, fw
+    assert set(fw) == {'healthy_distance', 'feature_recall', 'healthy_volume',
+                       'volume_bbox', 'invented_area'}, fw
+    assert cfg['fidelity']['budgets']['full_faces'] > 0
 
 
 def test_clean_report_high_health_low_risk():

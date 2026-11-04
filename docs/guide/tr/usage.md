@@ -28,6 +28,7 @@ sutura model.stl --mode aggressive   # agresif onarım modunu kullan
 sutura model.stl --classifier-engine classic  # classic sınıflandırıcı motorunu zorla
 sutura model.stl --max-geometry-change 10 --max-risk 40   # onarım bütçeleri (aşağıya bakın)
 sutura model.stl --max-risk 30 --force                    # bütçe aşılsa da sorunsuz kaydet
+sutura model.stl --no-fidelity                            # şekil skorunu atla (yalnızca rapor)
 sutura validate model.stl   # onarmadan ANALİZ (salt-okunur rapor)
 sutura model.stl --dry-run  # onarımın ne yapacağını raporlar, HİÇBİR ŞEY yazmaz
 sutura a.stl b.3mf c.stl    # batch: her dosya bir _fixed çıktı alır
@@ -179,14 +180,22 @@ validate ve `--dry-run` `estimated_confidence` taşır ve
 `Estimated confidence: X/100 (Label) — actual result may differ after repair`
 yazdırır.
 
-Her onarım raporu ayrıca **Onarım Sağlığı / Onarım Riski** taşır — klasik güven
-skorundan bağımsız, ayrı bir skorlama sistemi (`sutura/repair_score_config.json`
-ile yapılandırılabilir):
+Her onarım raporu ayrıca **Onarım Sağlığı / Onarım Riski / Sadakat** taşır —
+klasik güven skorundan bağımsız, ayrı bir skorlama sistemi
+(`sutura/repair_score_config.json` ile yapılandırılabilir):
 - `repair_health` (0–100) — final mesh'in geometrik sağlamlığı: su geçirmezlik
   (aşama 2 doğruladı), non-manifold kenar yok, self-intersection yok, kalan
   delik yok faktörlerinin ağırlıklı toplamı.
 - `repair_risk` (0–100) — onarımın mesh'i ne kadar değiştirdiği: yüz/vertex
   delta %, bileşen değişimi ve hacim delta %.
+- `repair_fidelity` (0–100) — onarımın *şekli* ne kadar koruduğu: sonucun
+  sağlıklı (kusursuz) girdi yüzeyine tek yönlü uzaklığı, keskin kenar geri
+  kazanımı, sağlıklı bölgede eklenen/kaldırılan hacim, hacim ve sınır kutusu
+  değişimi ve yeni oluşturulan yüzey alanı. Yalnızca nihai sonuçta, tüm aday
+  kararları verildikten sonra ölçülür ve hangi adayın benimseneceğini asla
+  değiştirmez. Eksik faktörler atlanır (ağırlıkları diğerlerine dağıtılır);
+  böylece keskin kenar terimi uygulanmayan pürüzsüz modellerde de skor anlamlı
+  kalır.
 - `repair_status` / `repair_status_code` — Sağlık/Risk tier kombinasyonundan
   bir config lookup tablosuyla türetilen iki-eksenli etiket: `safe`
   ("Kontrol için güvenli"), `review` ("İnceleme önerilir"), `caution`
@@ -194,13 +203,31 @@ ile yapılandırılabilir):
   Sağlık ve Risk bağımsız eksenlerdir; yüksek-sağlık + düşük-risk (`safe`) bir
   onarım, orta-sağlık + yüksek-risk (`caution`) ile asla aynı statüye
   çökmez. Faktör başına katkılar da raporlanır
-  (`repair_health_factors` / `repair_risk_factors`).
+  (`repair_health_factors` / `repair_risk_factors` /
+  `repair_fidelity_factors`).
+- `repair_verdict_code` / `repair_verdict_areas` — kullanıcı için tek, sade
+  hüküm: `preserved` ("Onarıldı, şekil korundu"), `changed` ("Onarıldı, N
+  bölgede şekil değişti - kontrol edin"), `low_confidence` ("... N bölge
+  tahminle yeniden oluşturuldu ..."), `not_repaired` ("Tam onarılmadı") veya
+  `unavailable`. Hükmü Sağlık yönetir: başarısız bir onarım, dokunulmamış
+  kısımlar hâlâ eşleşse bile asla korundu olarak tanımlanmaz. Büyük uydurulmuş
+  alanlar (büyük delik kapağı, fTetWild/Splint yeniden inşası)
+  `repair_verdict_low_confidence` bayrağını açar: oradaki yeniden oluşturma bir
+  tahmindir, ölçüm değildir. Alan başına sayımlar ve düşük-güvenilirlik küme
+  ayrıntısı analiz bütçesinin altındaki mesh'lerde ölçülür; daha büyük
+  mesh'ler skoru ve hükmü korur ama alan sayısını kullanılamaz olarak bildirir;
+  aynı nedenle çok büyük mesh'lerde keskin kenar terimi de atlanır ve
+  `repair_fidelity_note` bunu belirtir.
 
-`--human` bunları `Health: X/100   Risk: Y/100   Status: <label>` olarak
-gösterir. Skorlama fail-silent'tir: eksik/geçersiz metrik atlanır (ağırlığı
-diğerlerine dağıtılır) ve skorlama onarımı asla bozmaz. Çok nesneli 3MF
-raporları bunları nesne başına taşır. GUI kusur paneli seçili dosyanın başlık
-satırında gösterir.
+`--human` başlığı
+`Health: X/100   Risk: Y/100   Fidelity: Z/100   <hüküm>` olarak gösterir;
+`repair_status` bir sonraki ayrıntı satırındadır. `--no-fidelity` (veya
+Options onay kutusu) ölçümü atlar; yalnızca raporlama amaçlıdır, kaydedilen
+mesh'i asla değiştirmez. Skorlama fail-silent'tir: eksik/geçersiz metrik
+atlanır (ağırlığı diğerlerine dağıtılır) ve skorlama onarımı asla bozmaz. Çok
+nesneli 3MF raporları bunları nesne başına taşır; dosya düzeyi Sadakat en kötü
+nesnedir ve değişen/düşük-güvenilirlik alan sayıları toplanır. GUI kusur paneli
+aynı başlığı seçili dosyanın başlık satırında gösterir.
 
 ### Baskı-etkisi raporu
 
@@ -208,7 +235,7 @@ Her onarım raporu, sonucu tek tek koşullara ayıran ve her birinin bir FDM
 baskısını nasıl etkilediğini belirten bir `print_report` bloğu taşır. Bu blok
 yalnızca zaten hesaplanmış ölçümlerin bir görünümüdür — mesh'i asla yeniden
 ölçmez — ve bilinçli olarak rakip bir "iyi mi" hükmü eklemez: tek üst-düzey
-yargı yukarıdaki Onarım Sağlığı / Riski / Durumu olarak kalır. Blok dört
+yargı yukarıdaki Onarım Sağlığı / Riski / Sadakati hükmüdür. Blok dört
 parçadan oluşur:
 
 - `fixed` — onarımın gerçekte ne yaptığı, sayılarla: kapatılan delikler,

@@ -97,6 +97,9 @@ jobs:
       - name: "Test: repair score"
         run: ./venv/bin/python tests/test_repair_score.py
 
+      - name: "Test: fidelity"
+        run: ./venv/bin/python tests/test_fidelity.py
+
       - name: "Test: updater"
         run: |
           ./venv/bin/python tests/test_updater.py

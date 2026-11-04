@@ -558,6 +558,15 @@ STRINGS = {
         'status_caution': 'Caution advised', 'status_failed': 'Failed / inspect',
         'status_unavailable': 'Scoring unavailable',
         'health_risk_line': 'Health: %s/100 · Risk: %s/100 · %s',
+        'health_risk_fidelity_line': ('Health: %s/100 · Risk: %s/100 · '
+                                      'Fidelity: %s/100 · %s'),
+        'fidelity_verdict_preserved': 'Repaired, shape preserved',
+        'fidelity_verdict_changed': ('Repaired, shape changed in %d area(s) '
+                                     '- check'),
+        'fidelity_verdict_low_confidence': (
+            'Repaired, shape changed in %d guessed area(s) - check'),
+        'fidelity_verdict_not_repaired': 'Not fully repaired',
+        'fidelity_verdict_unavailable': 'Shape check unavailable',
         'diff_line': 'Volume: %s \u00b7 Surface: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Show heatmap',
         'heatmap_rendering': 'Rendering heatmap…',
@@ -714,6 +723,10 @@ STRINGS = {
                                     'result is not worse than the default chain, '
                                     'but it can make a repair much slower.',
         'opt_history': 'Keep an anonymous usage history (no file names or paths)',
+        'opt_fidelity': 'Show the Fidelity shape score (report only)',
+        'opt_fidelity_tip': 'Compares the repaired shape with the input on '
+            'healthy surface. It only adds a report line; it never changes '
+            'the repaired mesh.',
         'opt_learning': 'Learning triage: rank methods from the local repair history',
         'opt_learning_note': 'A small, bounded bonus from the anonymised '
             '(object type, method) success and time recorded locally. No network.',
@@ -1424,6 +1437,15 @@ STRINGS = {
         'status_caution': 'Dikkatli olunmalı', 'status_failed': 'Başarısız / incele',
         'status_unavailable': 'Skorlama kullanılamıyor',
         'health_risk_line': 'Sağlık: %s/100 · Risk: %s/100 · %s',
+        'health_risk_fidelity_line': ('Sağlık: %s/100 · Risk: %s/100 · '
+                                      'Sadakat: %s/100 · %s'),
+        'fidelity_verdict_preserved': 'Onarıldı, şekil korundu',
+        'fidelity_verdict_changed': ('Onarıldı, %d bölgede şekil değişti '
+                                     '- kontrol edin'),
+        'fidelity_verdict_low_confidence': (
+            'Onarıldı, %d bölge tahminle yeniden oluşturuldu - kontrol edin'),
+        'fidelity_verdict_not_repaired': 'Tam onarılmadı',
+        'fidelity_verdict_unavailable': 'Şekil kontrolü kullanılamıyor',
         'diff_line': 'Hacim: %s \u00b7 Y\u00fczey: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Isı haritası göster',
         'heatmap_rendering': 'Isı haritası çiziliyor…',
@@ -1579,6 +1601,10 @@ STRINGS = {
                                     'zincirden kötü değilse uygulanır, ama onarımı '
                                     'belirgin şekilde yavaşlatabilir.',
         'opt_history': 'Anonim kullanım geçmişi tut (dosya adı veya yol yok)',
+        'opt_fidelity': 'Şekil sadakati skorunu göster (yalnızca rapor)',
+        'opt_fidelity_tip': 'Onarılan şekli sağlıklı yüzeyde girdiyle '
+            'karşılaştırır. Yalnızca bir rapor satırı ekler; onarılan mesh\'i '
+            'asla değiştirmez.',
         'opt_learning': 'Öğrenen triyaj: yöntemleri yerel onarım geçmişine göre sırala',
         'opt_learning_note': 'Yerel olarak kaydedilen anonimleştirilmiş (nesne '
             'tipi, yöntem) başarı ve süre verisinden küçük, sınırlı bir bonus. '
@@ -2129,6 +2155,22 @@ def format_report(data):
     s1 = data.get('stage1', {})
     lines = []
     lines.append('Output file: %s' % data.get('output'))
+    rf = data.get('repair_fidelity')
+    if rf is not None or data.get('repair_verdict_code'):
+        vcode = data.get('repair_verdict_code') or 'unavailable'
+        if vcode in ('changed', 'low_confidence'):
+            vtext = _t('fidelity_verdict_' + vcode,
+                       data.get('repair_verdict_areas') or 0)
+        else:
+            vtext = _t('fidelity_verdict_' + vcode)
+        lines.append(_t('health_risk_fidelity_line',
+                        'n/a' if data.get('repair_health') is None
+                        else data.get('repair_health'),
+                        'n/a' if data.get('repair_risk') is None
+                        else data.get('repair_risk'),
+                        'n/a' if rf is None else rf, vtext))
+        if data.get('repair_status'):
+            lines.append('Status: %s' % data.get('repair_status'))
     lines.append('')
     if data.get('unit_warning'):
         lines.append(_t('unit_warning', data.get('unit_hint', '')))
@@ -2377,6 +2419,7 @@ class RepairWorker(QThread):
         self._no_history = not bool(cfg.get('history_enabled', True))
         self._no_cache = not bool(cfg.get('cache_enabled', True))
         self._no_learning = not bool(cfg.get('learning_triage', True))
+        self._no_fidelity = not bool(cfg.get('fidelity_enabled', True))
 
     def cancel(self):
         self._cancelled = True
@@ -2431,6 +2474,8 @@ class RepairWorker(QThread):
                 args.append('--no-cache')
             if self._no_learning:
                 args.append('--no-learning-triage')
+            if self._no_fidelity:
+                args.append('--no-fidelity')
             if self._edge_tiebreak:
                 args.append('--experimental-edge-tiebreak')
             if self._join_components:
@@ -4271,6 +4316,14 @@ class OptionsDialog(QDialog):
         g.addLayout(cache_row)
         self._update_cache_size_label()
 
+        # Fidelity shape score: report-only (never changes the mesh). It is on
+        # by default; unchecking it or the CLI --no-fidelity skips it.
+        main.chk_fidelity.setChecked(bool(cfg.get('fidelity_enabled', True)))
+        main.chk_fidelity.setToolTip(_t('opt_fidelity_tip'))
+        main.chk_fidelity.toggled.connect(
+            lambda on: self._save_key('fidelity_enabled', bool(on)))
+        g.addWidget(main.chk_fidelity)
+
         # Learning triage: a small, bounded ranking bonus derived from the
         # local usage history. Resettable here without touching the history.
         self.chk_learning = QCheckBox(_t('opt_learning'))
@@ -5003,6 +5056,9 @@ class MainWindow(QMainWindow):
         self.chk_ftetwild_si.setToolTip(_t('ftetwild_si_tip'))
         self.chk_ftetwild_optimize = QCheckBox(_t('ftetwild_opt_label'))
         self.chk_ftetwild_optimize.setToolTip(_t('ftetwild_opt_tip'))
+        # Fidelity shape score (report-only, on by default): opt out here or
+        # with --no-fidelity; it can never change the repaired mesh.
+        self.chk_fidelity = QCheckBox(_t('opt_fidelity'))
         self.chk_fallback_ftetwild.toggled.connect(self._sync_ftetwild)
         self.chk_ftetwild_si.toggled.connect(self._sync_ftetwild)
         self._sync_ftetwild()
@@ -5116,6 +5172,7 @@ class MainWindow(QMainWindow):
             (self.chk_fallback_ftetwild, True),
             (self.chk_ftetwild_si, False),
             (self.chk_ftetwild_optimize, False),
+            (self.chk_fidelity, True),
             (self.chk_autorefine, False),
             (self.chk_indirect_autorefine, False),
             (self.chk_join_components, False),
@@ -6367,7 +6424,11 @@ class MainWindow(QMainWindow):
             self._score_by_path[path] = (data.get('repair_health'),
                                          data.get('repair_risk'),
                                          data.get('repair_status'),
-                                         data.get('repair_status_code'))
+                                         data.get('repair_status_code'),
+                                         data.get('repair_fidelity'),
+                                         data.get('repair_verdict_code'),
+                                         data.get('repair_verdict_areas'),
+                                         data.get('repair_verdict_low_confidence'))
             self._diff_by_path[path] = data.get('stage1', {})
             self._unit_by_path[path] = (data.get('unit_warning'),
                                         data.get('unit_hint'))
@@ -6430,14 +6491,23 @@ class MainWindow(QMainWindow):
             if rc is not None:
                 base += ' — ' + _t('confidence_score', rc,
                                    _t('confidence_' + (dt[4] or 'medium')))
-        # Repair Health / Risk / Status (separate from classic confidence;
-        # localized via the status_code, like the issue_* codes)
+        # Repair Health / Risk / Fidelity and the plain verdict (separate from
+        # classic confidence; localized via codes, like the issue_* codes).
+        # repair_status stays in the details/report log.
         sc = self._score_by_path.get(path)
-        if sc is not None and (sc[0] is not None or sc[1] is not None):
-            base += ' — ' + _t('health_risk_line',
-                               'n/a' if sc[0] is None else sc[0],
-                               'n/a' if sc[1] is None else sc[1],
-                               _t('status_' + (sc[3] or 'unavailable')))
+        if sc is not None and (sc[0] is not None or sc[1] is not None
+                               or sc[4] is not None):
+            vcode = sc[5] or 'unavailable'
+            if vcode in ('changed', 'low_confidence'):
+                vtext = _t('fidelity_verdict_' + vcode, sc[6] or 0)
+            else:
+                vtext = _t('fidelity_verdict_' + vcode)
+            base += ' — ' + _t(
+                'health_risk_fidelity_line',
+                'n/a' if sc[0] is None else sc[0],
+                'n/a' if sc[1] is None else sc[1],
+                'n/a' if sc[4] is None else sc[4],
+                vtext)
         self.defect_label.setText(base)
         lines = []
         # non-blocking unit warning (model may be authored in inches/cm)

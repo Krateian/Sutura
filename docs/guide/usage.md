@@ -28,6 +28,7 @@ sutura model.stl --mode aggressive   # use the aggressive repair mode
 sutura model.stl --classifier-engine classic  # force the classic classifier engine
 sutura model.stl --max-geometry-change 10 --max-risk 40   # repair budgets (see below)
 sutura model.stl --max-risk 30 --force                    # save even past the budget, no prompt
+sutura model.stl --no-fidelity                            # skip the shape score (report only)
 sutura validate model.stl   # analyze WITHOUT repairing (read-only report)
 sutura model.stl --dry-run  # report what a repair would do, write NOTHING
 sutura a.stl b.3mf c.stl    # batch: each file gets a _fixed output
@@ -180,14 +181,22 @@ instead, because the post-repair signals are not known yet: validate and
 `--dry-run` carry `estimated_confidence` and print
 `Estimated confidence: X/100 (Label) — actual result may differ after repair`.
 
-Every repair report also carries **Repair Health / Repair Risk** — a separate
-scoring system (independent of the classic confidence score, configurable via
-`sutura/repair_score_config.json`):
+Every repair report also carries **Repair Health / Repair Risk / Fidelity** —
+a separate scoring system (independent of the classic confidence score,
+configurable via `sutura/repair_score_config.json`):
 - `repair_health` (0–100) — how geometrically sound the final mesh is: a
   weighted sum of watertight (stage 2 confirmed), no non-manifold edges, no
   self-intersections, no remaining holes.
 - `repair_risk` (0–100) — how much the repair altered the mesh: face/vertex
   delta %, component changes, and volume delta %.
+- `repair_fidelity` (0–100) — how much the repair kept the *shape*: the
+  one-sided distance of the result to the input on the healthy (non-defect)
+  surface, feature-edge recall, healthy fill/removal volume, volume and
+  bounding-box change, and the area of newly created surface. It is measured
+  once on the final result, after every candidate decision, and never changes
+  which candidate is adopted. Missing factors are skipped (their weight is
+  redistributed), so the score stays meaningful on smooth models where the
+  sharp-edge term does not apply.
 - `repair_status` / `repair_status_code` — a two-axis label derived from the
   Health/Risk tier combination via a config lookup table: `safe` ("Safe to
   inspect"), `review` ("Review recommended"), `caution` ("Caution advised"),
@@ -195,13 +204,31 @@ scoring system (independent of the classic confidence score, configurable via
   independent axes, so a high-health + low-risk repair (`safe`) never
   collapses to the same status as a mid-health + high-risk one (`caution`).
   The per-factor contributions are also reported
-  (`repair_health_factors` / `repair_risk_factors`).
+  (`repair_health_factors` / `repair_risk_factors` /
+  `repair_fidelity_factors`).
+- `repair_verdict_code` / `repair_verdict_areas` — one plain-language verdict
+  for the user: `preserved` ("Repaired, shape preserved"), `changed`
+  ("Repaired, shape changed in N area(s) - check"), `low_confidence`
+  ("... in N guessed area(s) ..."), `not_repaired` ("Not fully repaired") or
+  `unavailable`. Health leads the verdict: a failed repair is never described
+  as preserved even if the untouched parts still match. Large invented areas
+  (a big hole cap, fTetWild/Splint rebuild) set
+  `repair_verdict_low_confidence`: the reconstruction there is a guess, not a
+  measurement. The per-area counts and low-confidence cluster detail are
+  measured on meshes below the analysis budget; larger meshes keep the score
+  and the verdict but report the area count as unavailable; the sharp-edge
+  term is also skipped on very large meshes for the same reason, and
+  `repair_fidelity_note` says so.
 
-`--human` shows them as `Health: X/100   Risk: Y/100   Status: <label>`.
-Scoring is fail-silent: any missing/invalid metric is skipped (its weight
-redistributed), and scoring never breaks a repair. Multi-object 3MF reports
-carry these per object. The GUI defect panel shows them in the selected
-file's header line.
+`--human` shows the headline as
+`Health: X/100   Risk: Y/100   Fidelity: Z/100   <verdict>`, with
+`repair_status` on the following details line. `--no-fidelity` (or the
+Options checkbox) skips the measurement; it is reporting-only, so it never
+changes the saved mesh. Scoring is fail-silent: any missing/invalid metric is
+skipped (its weight redistributed), and scoring never breaks a repair.
+Multi-object 3MF reports carry these per object; the file-level Fidelity is
+the worst object and the changed/low-confidence area counts are summed. The
+GUI defect panel shows the same headline in the selected file's header line.
 
 ### Print-impact report
 
@@ -209,7 +236,7 @@ Every repair report carries a `print_report` block that decomposes the outcome
 into individual conditions and states how each one affects an FDM print. It is
 a pure view over already-computed measurements — it never re-measures the mesh
 — and it deliberately adds no rival "is it good" verdict: the single top-line
-judgement stays the existing Repair Health / Risk / Status above. The block has
+judgement is the Repair Health / Risk / Fidelity verdict above. The block has
 four parts:
 
 - `fixed` — what the repair actually did, with counts: holes closed,

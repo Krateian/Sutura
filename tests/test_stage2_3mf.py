@@ -156,6 +156,35 @@ def test_multi_object_3mf_reports_flap_aggregate(tmp):
     assert agg['adopted'] <= agg['ran'] <= agg['objects'], agg
 
 
+def test_multi_object_aggregate_scores(tmp):
+    """File-level Health/Risk/Fidelity must agree with the worst object."""
+    path = os.path.join(tmp, 'layered_scores.3mf')
+    _make_layered(path)
+    r = _run([path])
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    d = _json(r)
+    reps = [o for o in d.get('object_reports') or [] if isinstance(o, dict)]
+    assert reps, d
+
+    hs = [o['repair_health'] for o in reps
+          if isinstance(o.get('repair_health'), (int, float))]
+    rs = [o['repair_risk'] for o in reps
+          if isinstance(o.get('repair_risk'), (int, float))]
+    fs = [o['repair_fidelity'] for o in reps
+          if isinstance(o.get('repair_fidelity'), (int, float))]
+    assert hs and rs and fs, d
+    assert d.get('repair_health') == min(hs), (d.get('repair_health'), hs)
+    assert d.get('repair_risk') == max(rs), (d.get('repair_risk'), rs)
+    assert d.get('repair_fidelity') == min(fs), (d.get('repair_fidelity'), fs)
+
+    worst = min(range(len(reps)),
+                key=lambda i: reps[i].get('repair_fidelity'))
+    assert d.get('repair_verdict_code') == reps[worst].get(
+        'repair_verdict_code'), (d.get('repair_verdict_code'), worst, reps)
+    assert bool(d.get('repair_verdict_low_confidence')) == any(
+        o.get('repair_verdict_low_confidence') for o in reps), d
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix='sutura-stage2-3mf-') as tmp:
         failed = 0
