@@ -177,6 +177,20 @@ def test_fail_silent_on_bad_input():
     assert r['repair_fidelity'] is None
 
 
+def test_unavailable_never_reports_area_count():
+    cfg = fidelity.load_config()
+    # No measurement: the verdict is 'unavailable' and carries no area count,
+    # even when changed areas were detected (regression: 99 areas next to
+    # 'unavailable').
+    code, areas = fidelity._verdict(None, _REPORT, False, [], 99, cfg,
+                                    max_pct=None)
+    assert (code, areas) == ('unavailable', 0), (code, areas)
+    # A real low-confidence guess still reports its areas.
+    code, areas = fidelity._verdict(None, _REPORT, True, ['invented_area'], 3,
+                                    cfg, max_pct=None)
+    assert (code, areas) == ('low_confidence', 3), (code, areas)
+
+
 def test_parity_with_verify_surface_metrics():
     """The lean metric must agree with the verification definition on identity."""
     sys.path.insert(0, os.path.join(REPO, '.claude', 'skills', 'sutura-verify',
@@ -252,6 +266,7 @@ def test_invalid_closest_indices_are_dropped():
         geom.closest_points = orig
     assert r['repair_fidelity'] is None, r
     assert r['repair_verdict_code'] == 'unavailable', r
+    assert r['repair_verdict_areas'] == 0, r
 
 
 def test_area_samples_are_not_capped_by_face_count():

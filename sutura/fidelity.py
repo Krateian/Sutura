@@ -457,7 +457,8 @@ def _verdict(score, report, low_confidence, reasons, areas, cfg, max_pct=None):
     if low_confidence:
         return 'low_confidence', low_areas
     if score is None:
-        return 'unavailable', low_areas
+        # No measurement: never publish an area count next to "unavailable".
+        return 'unavailable', 0
     if areas:
         code, verdict_areas = 'changed', low_areas
     else:
