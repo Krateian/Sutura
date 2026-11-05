@@ -54,8 +54,20 @@ if [ -z "$CONDA_BASE" ] || [ ! -x "$CONDA_BASE/bin/conda" ]; then
         MF_TMP="$(mktemp -d "${TMPDIR:-/tmp}/sutura-miniforge.XXXXXX")"
         trap 'rm -rf "$MF_TMP"' EXIT
         curl -fL --retry 3 -o "$MF_TMP/$MF_NAME" "$MF_URL" || die "could not download Miniforge"
-        curl -fL --retry 3 -o "$MF_TMP/$MF_NAME.sha256" "$MF_URL.sha256" || die "could not download the Miniforge checksum"
-        (cd "$MF_TMP" && shasum -a 256 -c "$MF_NAME.sha256") || die "Miniforge SHA-256 verification failed"
+        # The unversioned .sha256 asset is not published by conda-forge, so
+        # resolve the release tag and fetch the versioned checksum; compare the
+        # hashes directly (the checksum file names the versioned tarball).
+        MF_TAG="$(curl -fsSI "https://github.com/conda-forge/miniforge/releases/latest" 2>/dev/null \
+            | sed -n 's#.*/releases/tag/\([^[:space:]\r]*\).*#\1#p' | head -1 || true)"
+        MF_SUMS_URL=""
+        [ -n "$MF_TAG" ] && MF_SUMS_URL="https://github.com/conda-forge/miniforge/releases/download/$MF_TAG/Miniforge3-${MF_TAG}-MacOSX-${MF_ARCH}.sh.sha256"
+        if [ -z "$MF_SUMS_URL" ] \
+                || ! curl -fL --retry 3 -o "$MF_TMP/$MF_NAME.sha256" "$MF_SUMS_URL"; then
+            die "could not download the Miniforge checksum"
+        fi
+        MF_WANT="$(awk 'NR==1{print $1}' "$MF_TMP/$MF_NAME.sha256")"
+        MF_GOT="$(shasum -a 256 "$MF_TMP/$MF_NAME" | awk '{print $1}')"
+        { [ -n "$MF_WANT" ] && [ "$MF_WANT" = "$MF_GOT" ]; } || die "Miniforge SHA-256 verification failed"
         bash "$MF_TMP/$MF_NAME" -b -p "$CONDA_BASE" || die "Miniforge installation failed"
         rm -rf "$MF_TMP"; trap - EXIT
     fi
@@ -97,6 +109,7 @@ fi
 
 # 5) install dependencies ---------------------------------------------------
 echo "==> installing packages into $ENV_NAME"
+conda run -n "$ENV_NAME" pip install -r "$REPO_DIR/requirements.txt"
 conda run -n "$ENV_NAME" pip install PySide6-Essentials==6.11.2
 if [ "${SUTURA_WITH_FTETWILD:-1}" = "1" ]; then
     echo "==> fTetWild fallback tier (pytetwild, ~2.3 MB; opt out with SUTURA_WITH_FTETWILD=0)"
@@ -117,6 +130,9 @@ ENV_PY="$CONDA_BASE/envs/$ENV_NAME/bin/python"
 echo "==> required: sutura_geom Rust extension (Graft #13, ~0.7 MB)"
 [ -f "$REPO_DIR/scripts/install_sutura_geom.sh" ] \
     || die "scripts/install_sutura_geom.sh is missing; sutura_geom is required"
+# Any Rust/cmake the source fallback fetches stays under APP_DIR (never
+# ~/.cargo) so uninstall removes exactly what this installer added.
+export SUTURA_TOOLS_DIR="$APP_DIR/tools"
 bash "$REPO_DIR/scripts/install_sutura_geom.sh" "$ENV_PY" "$REPO_DIR"
 
 # 6) verify ----------------------------------------------------------------

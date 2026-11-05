@@ -10,8 +10,13 @@ Linux:
   venv oluşturamıyorsa kurulum otomatik olarak taşınabilir bir Python 3.11
   indirir.
 * `sutura_geom` doğrulanmış hazır bir wheel'den kurulur; desteklenen
-  platformlarda Rust, cmake veya C++ derleyicisi gerekmez. Kaynaktan derleme
-  yalnızca araç zinciri zaten varsa yedek yoldur.
+  platformlarda Rust, cmake veya C++ derleyicisi gerekmez. Platform için wheel
+  yoksa kurulum, kaynak derlemenin ihtiyaçlarını kendisi, yalnızca kullanıcı
+  alanında indirir: rustup + minimal Rust araç zinciri ve cmake
+  (~11 MB + ~90 MB indirme, ~460 MB + ~137 MB diskte;
+  `SUTURA_NO_TOOLCHAIN_FETCH=1` ile vazgeçilir). Kuramadığı tek önkoşul bir
+  C++20 derleyicisidir; macOS'ta `xcode-select --install` sistem penceresini
+  açar.
 * Dolphin servis menüsü için KDE Plasma (isteğe bağlı; CLI ve GUI her yerde
   çalışır)
 
@@ -24,11 +29,11 @@ macOS (Apple Silicon / Intel):
 
 Python 3.11, fTetWild katmanı için yalnızca ana yorumlayıcı 3.10–3.14
 aralığının dışındayken yedek çalışma zamanı olarak kullanılır; güncel bir
-`python3` ile normal kurulum buna ihtiyaç duymaz.
-
-* Arch: Python 3.11 resmi depolarda bulunmaz; gerektiğinde `install.sh` otomatik olarak taşınabilir bir yedek çalışma zamanı indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir)
-* Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
-* Fedora: `sudo dnf install python3.11`
+`python3` ile normal kurulum buna ihtiyaç duymaz. Gerektiğinde `install.sh` bir
+tane tamamen kullanıcı alanında bulur — kullanılabilir bir `python3.11`,
+kendisinin indirdiği bağımsız bir derleme (~27 MB) veya `uv` varsa onun
+yönettiği bir Python 3.11 — ve asla `sudo apt`/`dnf` komutu yazmaz.
+`SUTURA_NO_PYTHON_DOWNLOAD=1` indirmeyi kapatır.
 
 ## Kurulum
 
@@ -93,15 +98,21 @@ sistem paket yöneticinize hiçbir şey dokunmaz. GUI, PySide6 (~79 MB indirme,
 `install.sh` ve `install-macos.sh` tarafından doğrulanmış hazır bir abi3
 wheel'den otomatik kurulur. Kurulumcu sürüm varlığını kısa süre yeniden dener,
 sonra en güncel uyumlu abi3 wheel'i kullanır; desteklenen platformlarda Rust
-veya cmake gerekmez. Kaynaktan derleme yalnızca wheel yoksa ve araç zinciri
-zaten varsa çalışır. AppImage ve macOS .app/.dmg paketlerine dahildir. Yöntem #13 Graft (morfoloji kabuk sarma), Flap yüzey-delik
+veya cmake gerekmez. Wheel yoksa (yeni bir mimari, başarısız/çevrimdışı sürüm
+varlığı veya bir dal kopyası) kurulum `rust/sutura-geom`'dan derler ve
+ihtiyaçları kendisi, yalnızca kullanıcı alanında, boyutları önce yazdırarak
+indirir: rustup + minimal Rust araç zinciri (~11 MB + ~90 MB indirme, ~460 MB
+diskte) ve PyPI wheel'inden cmake (~54 MB indirme, ~137 MB diskte). Bunlar
+`~/.local/share/sutura/tools` altında yaşar — asla `~/.cargo` — ve
+`uninstall.sh` bunları kaldırır; `SUTURA_NO_TOOLCHAIN_FETCH=1` indirmeyi
+reddeder. cmake geçici bir araç dizinine kurulur ve çalışma zamanı ortamında
+bırakılmaz. Kurulumcunun sağlayamadığı tek önkoşul bir C++20 derleyicisidir;
+yoksa tek satır yazdırır (macOS'ta `xcode-select --install`, sistem penceresini
+açar) ve durur. AppImage ve macOS .app/.dmg paketlerine dahildir. Yöntem #13 Graft (morfoloji kabuk sarma), Flap yüzey-delik
 doldurma (`flap_fill`), Dressing kaplamasını (`dressing_coat`) ve Tamponad iç
 tıkacını (`tamponade`) hızlandırır ve kesin dolaylı predikatları taşır.
-**Eklenti zorunludur:** ne hazır wheel ne de mevcut bir kaynak araç zinciri
-varsa kurulum tek bir platform mesajıyla durur; başlangıç ve
-`sutura --self-check` de sessizce geri düşmek yerine eksik eklentiyi adıyla
-bildirerek hata verir. Yerel wheel için `SUTURA_GEOM_WHEEL=<yol>`, araç zinciri
-varsa kaynaktan derlemeye zorlamak için `SUTURA_GEOM_FROM_SOURCE=1` kullanılır.
+**Eklenti zorunludur.** Yerel wheel için `SUTURA_GEOM_WHEEL=<yol>`, kaynaktan
+derlemeye zorlamak için `SUTURA_GEOM_FROM_SOURCE=1` kullanılır.
 Kaynaktan derleme Rust >= 1.89 (`kiddo` 6.3 MSRV) gerektirir. Eski
 `SUTURA_NO_GEOM=1` çıkış seçeneği kaldırılmıştır.
 
@@ -127,7 +138,7 @@ Sutura ortamına kurar/kaldırır ve önce indirme ve disk boyutlarını göster
 Her ikisi de paketlenmiş veya sistem düzenlerini (AppImage, `.dmg`, sistem
 Python'u) değiştirmeyi reddeder ve gerekçesini bildirir.
 
-Arch'ta `install.sh`, aralık içinde bir `python3` yoksa bağımsız bir Python 3.11 çalışma zamanını yalnızca fTetWild yedek yorumlayıcısı olarak otomatik indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir).
+fTetWild yedek katmanı bir Python 3.11'e ihtiyaç duyup hiçbiri yoksa `install.sh` bunu kullanıcı alanında bulur (kullanılabilir bir `python3.11`, kendisinin indirdiği bağımsız bir derleme ~27 MB veya `uv` zaten kuruluysa onun yönettiği bir 3.11) — asla `sudo apt`/`dnf` komutu yazmaz. `SUTURA_NO_PYTHON_DOWNLOAD=1` indirmeyi kapatır.
 
 ### macOS
 

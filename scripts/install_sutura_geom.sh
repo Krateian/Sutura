@@ -27,7 +27,65 @@ SRC="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 RELEASE_BASE="${SUTURA_RELEASE_BASE:-https://github.com/Krateian/Sutura/releases}"
 SUMS_NAME="sutura_geom-SHA256SUMS"
 
+# Toolchain bootstrap home. Scoped to the Sutura install tree (the installers
+# export SUTURA_TOOLS_DIR=$APP_DIR/tools) so a Rust toolchain fetched here never
+# touches ~/.cargo and is removed with the app; default keeps it next to the
+# python environment for standalone runs.
+TOOLS_DIR="${SUTURA_TOOLS_DIR:-}"
+if [ -z "$TOOLS_DIR" ]; then
+    TOOLS_DIR="$(cd "$(dirname "$PY")/.." 2>/dev/null && pwd)/tools"
+fi
+RUSTUP_HOME="${SUTURA_RUSTUP_HOME:-$TOOLS_DIR/rustup}"
+CARGO_HOME="${SUTURA_CARGO_HOME:-$TOOLS_DIR/cargo}"
+
+# Measured sizes (macOS arm64, 2026-11; Linux is comparable). Download figures
+# are the compressed components; on-disk figures are `du -sh`. See
+# docs/guide/install.md.
+SIZE_RUSTUP_DL="~11 MB"
+SIZE_CARGO_DL="~90 MB"
+SIZE_CARGO_DISK="~460 MB"
+SIZE_CMAKE_DL="~54 MB"
+SIZE_CMAKE_DISK="~137 MB"
+
 note() { echo "    sutura_geom: $*"; }
+
+cargo_usable() {
+    command -v cargo >/dev/null 2>&1 && cargo --version >/dev/null 2>&1
+}
+
+# Fetch rustup + a minimal stable toolchain into $TOOLS_DIR (user space only,
+# never ~/.cargo, never the shell rc). Only called when cargo is absent.
+fetch_rust() {
+    local tmp
+    command -v curl >/dev/null 2>&1 || return 1
+    note "no Rust toolchain found; fetching rustup into $TOOLS_DIR"
+    note "  download: rustup $SIZE_RUSTUP_DL + minimal stable toolchain $SIZE_CARGO_DL"
+    note "  on disk:  ~$SIZE_CARGO_DISK ($TOOLS_DIR)"
+    mkdir -p "$RUSTUP_HOME" "$CARGO_HOME" || return 1
+    tmp="$(mktemp "${TMPDIR:-/tmp}/sutura-rustup.XXXXXX")" || return 1
+    if ! curl -fsSL -o "$tmp" "https://sh.rustup.rs"; then rm -f "$tmp"; return 1; fi
+    if ! RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" \
+         sh "$tmp" -y --no-modify-path --profile minimal --default-toolchain stable; then
+        rm -f "$tmp"; return 1
+    fi
+    rm -f "$tmp"
+    export RUSTUP_HOME CARGO_HOME
+    export PATH="$CARGO_HOME/bin:$PATH"
+    cargo_usable
+}
+
+# Install cmake from its PyPI wheel into a throwaway tools venv (never into the
+# runtime environment). The cmake tools venv is discarded after a successful
+# source build.
+install_cmake_tools() {
+    local venv="$TOOLS_DIR/cmake-venv"
+    note "installing cmake ($SIZE_CMAKE_DL download, ~$SIZE_CMAKE_DISK on disk) into a throwaway tools dir"
+    "$PY" -m venv "$venv" || return 1
+    "$venv/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+    if ! "$venv/bin/pip" install --quiet cmake; then return 1; fi
+    export PATH="$venv/bin:$PATH"
+    command -v cmake >/dev/null 2>&1
+}
 
 finish_fail() {
     echo "error: sutura_geom is required but could not be installed ($*)." >&2
@@ -126,19 +184,37 @@ if [ "${SUTURA_GEOM_FROM_SOURCE:-0}" != "1" ]; then
 fi
 
 # --- 2. build from source ----------------------------------------------------
-if [ -f "$SRC/rust/sutura-geom/pyproject.toml" ] && command -v cargo >/dev/null 2>&1; then
-    missing=""
-    command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
-    if [ -z "${CXX:-}" ]; then
-        command -v c++ >/dev/null 2>&1 || command -v g++ >/dev/null 2>&1 \
-            || command -v clang++ >/dev/null 2>&1 || missing="$missing C++20-compiler"
+# When no prebuilt wheel exists the extension is built from rust/sutura-geom.
+# Everything the build needs is fetched automatically into the install tree
+# (user space only, never ~/.cargo); set SUTURA_NO_TOOLCHAIN_FETCH=1 to refuse.
+if [ -f "$SRC/rust/sutura-geom/pyproject.toml" ]; then
+    if ! cargo_usable; then
+        if [ "${SUTURA_NO_TOOLCHAIN_FETCH:-0}" = "1" ]; then
+            finish_fail "no Rust toolchain and SUTURA_NO_TOOLCHAIN_FETCH=1 (install Rust from https://rustup.rs, or set SUTURA_GEOM_WHEEL)"
+        fi
+        note "no prebuilt wheel for $(uname -s)/$(uname -m): building from source"
+        fetch_rust || finish_fail "could not bootstrap the Rust toolchain"
     fi
-    [ -z "$missing" ] || finish_fail "missing source-build prerequisites:$missing (the Manifold kernel needs cmake and the Geogram PSM needs a C++20 compiler)"
+    if ! command -v cmake >/dev/null 2>&1; then
+        install_cmake_tools || finish_fail "could not install cmake (the source build needs it)"
+    fi
+    # A C++20 compiler is the one prerequisite we cannot install in user space.
+    if [ -z "${CXX:-}" ]; then
+        if ! { command -v c++ >/dev/null 2>&1 || command -v g++ >/dev/null 2>&1 \
+               || command -v clang++ >/dev/null 2>&1; }; then
+            echo "error: no C++ compiler found; the source build needs a C++20 compiler." >&2
+            case "$(uname -s)" in
+                Darwin) echo "       Run: xcode-select --install   (macOS shows its installer dialog)" >&2 ;;
+                *)      echo "       Install a C++ compiler (e.g. build-essential / gcc-c++), then re-run." >&2 ;;
+            esac
+            finish_fail "missing C++20 compiler"
+        fi
+    fi
     # rustup's cargo shim exists even when no default toolchain is selected
     # (common after a HOME change). Probe it so the failure names the fix
     # instead of a generic build error.
     cargo_probe="$(cargo --version 2>&1)" || true
-    if ! cargo --version >/dev/null 2>&1; then
+    if ! cargo_usable; then
         case "$cargo_probe" in
             *[Nn]o\ default*|*could\ not\ choose*|*no\ toolchain*|*not\ installed*)
                 finish_fail "cargo has no default toolchain; source fallback unavailable" ;;
@@ -148,10 +224,11 @@ if [ -f "$SRC/rust/sutura-geom/pyproject.toml" ] && command -v cargo >/dev/null 
     fi
     note "building from rust/sutura-geom (cargo found; ~1 min, pulls maturin ~10 MB)"
     if "$PY" -m pip install --quiet --force-reinstall --no-deps "$SRC/rust/sutura-geom" && import_ok; then
+        rm -rf "$TOOLS_DIR/cmake-venv"   # throwaway cmake tools dir
         note "built and installed from source"
         exit 0
     fi
     finish_fail "source build failed"
 fi
 
-finish_fail "no prebuilt wheel for $(uname -s)/$(uname -m) and no Rust toolchain (cargo not found)"
+finish_fail "no prebuilt wheel for $(uname -s)/$(uname -m) and rust/sutura-geom is missing from the source; cannot build"

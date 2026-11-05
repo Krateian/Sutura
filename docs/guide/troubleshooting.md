@@ -10,16 +10,19 @@
   `PATH`, set `SUTURA_CONDA_BIN=/path/to/conda` for the uninstaller.
 * **`python3.11` not found (fTetWild fallback runtime only).** A normal install
   with an in-range `python3` does not need Python 3.11. When the main
-  interpreter is outside 3.10–3.14, `install.sh` needs a fallback runtime for
-  the fTetWild tier and downloads a standalone CPython 3.11 build into
-  `~/.local/share/sutura/python311` (disable with
-  `SUTURA_NO_PYTHON_DOWNLOAD=1`) or uses the system package:
-  * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
-  * Fedora: `sudo dnf install python3.11`
+  interpreter is outside 3.10–3.14, `install.sh` finds a fallback runtime
+  entirely in user space — a usable `python3.11` on `PATH`, a standalone
+  CPython 3.11 it downloads into `~/.local/share/sutura/python311` (~27 MB,
+  disable with `SUTURA_NO_PYTHON_DOWNLOAD=1`), or a 3.11 already managed by
+  `uv` — and never prints a `sudo apt`/`dnf` command.
   Set `SUTURA_WITH_FTETWILD=0` to skip the tier entirely if no runtime is available.
-* **`sutura_geom` source build fails.** The Manifold kernel is compiled from
-  C++: install `cmake` and a C++20 compiler (g++/clang++), and Rust >= 1.89.
-  Release installs normally use the prebuilt wheel and need none of these.
+* **`sutura_geom` source build fails.** The installer now fetches Rust (rustup +
+  a minimal stable toolchain) and cmake itself, in user space, under
+  `~/.local/share/sutura/tools` — see the install guide. The one thing it
+  cannot install is a C++20 compiler (g++/clang++): on macOS run
+  `xcode-select --install`; on Linux install your distro's compiler. Rust >=
+  1.89 is required. Release installs normally use the prebuilt wheel and need
+  none of these. `SUTURA_NO_TOOLCHAIN_FETCH=1` refuses the toolchain download.
 * **PySide6 install fails.** The GUI needs `PySide6-Essentials`, which is
   installed into the `venv` from PyPI. The version follows the interpreter:
   `6.12.0` on Python 3.12+, `6.11.2` on Python 3.11. On distros where `pip install

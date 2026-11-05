@@ -59,14 +59,20 @@ if [ "$WANT_FTETWILD" = "1" ] && \
 fi
 
 warn_python311() {
-    echo "warning: fTetWild fallback tier skipped: python3.11 not found and" >&2
-    echo "         $MAIN_PY is outside the pytetwild range (3.10-3.14)." >&2
+    echo "warning: fTetWild fallback tier skipped: no Python 3.10-3.14 runtime" >&2
+    echo "         available and none could be fetched in user space." >&2
     echo "         Everything else installs normally; add the tier later with" >&2
-    echo "         'sutura ftetwild install'. To prepare a runtime:" >&2
-    echo "         Debian/Ubuntu: sudo apt install python3.11 python3.11-venv" >&2
-    echo "         Fedora:        sudo dnf install python3.11" >&2
-    echo "         Arch:          unset SUTURA_NO_PYTHON_DOWNLOAD to let this" >&2
-    echo "                        installer fetch a standalone build." >&2
+    echo "         'sutura ftetwild install'. Provide a Python 3.11 yourself" >&2
+    echo "         (python3.11 on PATH, or 'uv python install 3.11' if you use uv)." >&2
+}
+
+# A usable fallback interpreter is 3.10-3.14 AND able to build a virtualenv
+# (some distros ship python3.11 with no venv/ensurepip, PEP 668).
+python311_usable() {
+    [ -n "${1:-}" ] && [ -x "$1" ] || return 1
+    "$1" -c 'import sys, venv, ensurepip
+sys.exit(0 if (3, 10) <= sys.version_info[:2] < (3, 15) else 1)' \
+        >/dev/null 2>&1
 }
 
 # --- optional fTetWild runtime (only for an out-of-range $MAIN_PY) ----------
@@ -98,7 +104,7 @@ fetch_python311() {
     PBS_BASE="https://github.com/indygreg/python-build-standalone/releases/download/$PBS_TAG"
     PBS_TARBALL="cpython-${PBS_VERSION}+${PBS_TAG}-${pbs_arch}-unknown-linux-gnu-install_only.tar.gz"
 
-    echo "==> downloading standalone Python 3.11 (~30 MB download, ~100 MB installed)"
+    echo "==> downloading standalone Python 3.11 (~27 MB download, ~72 MB installed)"
     dl_dir="$(mktemp -d "${TMPDIR:-/tmp}/sutura-py311.XXXXXX")"
     if ! curl -fL --retry 3 -o "$dl_dir/$PBS_TARBALL" "$PBS_BASE/$PBS_TARBALL" \
        || ! curl -fL --retry 3 -o "$dl_dir/SHA256SUMS" "$PBS_BASE/SHA256SUMS"; then
@@ -134,14 +140,27 @@ fetch_python311() {
 
 VENV311_PY=""
 if [ "$WANT_FTETWILD" = "1" ] && [ "$FTETWILD_IN_MAIN" = "0" ]; then
-    VENV311_PY="$(command -v python3.11 || true)"
-    if [ -z "$VENV311_PY" ] && [ -x "$APP_DIR/python311/bin/python3.11" ]; then
-        # Reuse existing standalone Python 3.11 from a previous install run
-        VENV311_PY="$APP_DIR/python311/bin/python3.11"
+    # User-space ladder, never a sudo apt/dnf instruction:
+    #   python3.11 (capability-checked) -> $APP_DIR/python311 -> PBS download
+    #   -> a 3.11 already managed by uv (never install uv ourselves).
+    _cand="$(command -v python3.11 || true)"
+    if python311_usable "$_cand"; then
+        VENV311_PY="$_cand"
+    fi
+    _pbs_py="$APP_DIR/python311/bin/python3.11"
+    if [ -z "$VENV311_PY" ] && python311_usable "$_pbs_py"; then
+        VENV311_PY="$_pbs_py"   # reuse a Python from a previous install run
     fi
     if [ -z "$VENV311_PY" ] && [ "${SUTURA_NO_PYTHON_DOWNLOAD:-0}" != "1" ]; then
         if fetch_python311; then
             VENV311_PY="$APP_DIR/python311/bin/python3.11"
+        fi
+    fi
+    if [ -z "$VENV311_PY" ] && command -v uv >/dev/null 2>&1; then
+        echo "==> no python3.11; using uv to provide Python 3.11 (user space)"
+        if uv python install 3.11 >/dev/null 2>&1; then
+            _uvpy="$(uv python find 3.11 2>/dev/null || true)"
+            if python311_usable "$_uvpy"; then VENV311_PY="$_uvpy"; fi
         fi
     fi
     [ -n "$VENV311_PY" ] || warn_python311
@@ -200,6 +219,9 @@ fi
 echo "==> required: sutura_geom Rust extension (Graft #13, ~0.7 MB)"
 [ -f "$SRC/scripts/install_sutura_geom.sh" ] \
     || die "scripts/install_sutura_geom.sh is missing; sutura_geom is required"
+# Any Rust/cmake the source fallback fetches stays under APP_DIR (never
+# ~/.cargo) so uninstall removes exactly what this installer added.
+export SUTURA_TOOLS_DIR="$APP_DIR/tools"
 bash "$SRC/scripts/install_sutura_geom.sh" "$APP_DIR/venv/bin/python" "$SRC"
 if [ -x "$APP_DIR/venv311/bin/python" ]; then
     bash "$SRC/scripts/install_sutura_geom.sh" "$APP_DIR/venv311/bin/python" "$SRC"

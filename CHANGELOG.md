@@ -56,6 +56,28 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- **The installer needs no manual steps.** When no prebuilt `sutura_geom`
+  wheel exists for the platform, the installer now fetches what the source
+  build needs itself, non-interactively and only in user space: rustup + a
+  minimal Rust toolchain and cmake from its PyPI wheel, under
+  `~/.local/share/sutura/tools` (never `~/.cargo`), printing the sizes first
+  (~11 MB + ~90 MB download, ~460 MB on disk for Rust; ~54 MB / ~137 MB for
+  cmake). `SUTURA_NO_TOOLCHAIN_FETCH=1` refuses the download, and the toolchain
+  is never touched when `cargo` already works. cmake lives in a throwaway tools
+  directory and is not shipped in the runtime environment. The one prerequisite
+  that cannot be installed in user space is a C++20 compiler: if none is
+  present the installer prints a single line (macOS: `xcode-select --install`)
+  and stops. `uninstall.sh` removes the fetched toolchain. The fTetWild fallback
+  Python is likewise fetched in user space — a usable `python3.11`, a
+  standalone build (~27 MB), or a `uv`-managed 3.11 — and never via a
+  `sudo apt`/`dnf` instruction. Installer-only; no repair output change.
+- **macOS installer bootstrap fixed.** `install-macos.sh` now fetches the
+  Miniforge checksum from the versioned release asset (the unversioned
+  `*.sha256` is no longer published, which made a fresh install abort) and
+  installs the runtime dependencies (`requirements.txt`, e.g. numpy) into
+  `sutura-env` — without them the installer's own verify step failed. Found
+  while running the B5 local install test; both are needed for a working
+  installer.
 - **One verdict, in one line.** The report now shows a single headline verdict
   in both `--human` and the GUI — the Fidelity `repair_verdict`, with the
   topology verdict folded in — instead of two verdict lines. The

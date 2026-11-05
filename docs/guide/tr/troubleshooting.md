@@ -10,17 +10,20 @@
   dışındaysa kaldırıcı için `SUTURA_CONDA_BIN=/conda/yolu` ayarlayın.
 * **`python3.11` bulunamadı (yalnızca fTetWild yedek çalışma zamanı).**
   Aralık içinde bir `python3` ile normal kurulum Python 3.11 gerektirmez. Ana
-  yorumlayıcı 3.10–3.14 aralığının dışındaysa `install.sh`, fTetWild katmanı
-  için bir yedek çalışma zamanına ihtiyaç duyar ve
-  `~/.local/share/sutura/python311` dizinine bağımsız bir CPython 3.11 indirir
-  (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir) veya sistem
-  paketini kullanır:
-  * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
-  * Fedora: `sudo dnf install python3.11`
+  yorumlayıcı 3.10–3.14 aralığının dışındaysa `install.sh` bir yedek çalışma
+  zamanını tamamen kullanıcı alanında bulur — `PATH`'te kullanılabilir bir
+  `python3.11`, `~/.local/share/sutura/python311` dizinine indirdiği bağımsız
+  bir CPython 3.11 (~27 MB, `SUTURA_NO_PYTHON_DOWNLOAD=1` ile kapatılır) veya
+  `uv` ile yönetilen bir 3.11 — ve asla `sudo apt`/`dnf` komutu yazmaz.
   Hiç çalışma zamanı yoksa katmanı tamamen atlamak için `SUTURA_WITH_FTETWILD=0` verin.
-* **`sutura_geom` kaynak derlemesi başarısız.** Manifold çekirdeği C++ ile
-  derlenir: `cmake`, C++20 derleyicisi (g++/clang++) ve Rust >= 1.89 kurun.
-  Sürüm kurulumları normalde hazır wheel kullanır.
+* **`sutura_geom` kaynak derlemesi başarısız.** Kurulum artık Rust'ı (rustup +
+  minimal bir kararlı araç zinciri) ve cmake'i kendisi, kullanıcı alanında,
+  `~/.local/share/sutura/tools` altında indirir — kurulum kılavuzuna bakın.
+  Kuramadığı tek şey bir C++20 derleyicisidir (g++/clang++): macOS'ta
+  `xcode-select --install`; Linux'ta dağıtımınızın derleyicisini kurun. Rust >=
+  1.89 gerekir. Sürüm kurulumları normalde hazır wheel kullanır ve bunların
+  hiçbirine ihtiyaç duymaz. `SUTURA_NO_TOOLCHAIN_FETCH=1` araç zinciri indirmeyi
+  reddeder.
 * **PySide6 kurulumu başarısız.** GUI, `venv`'e PyPI'dan kurulan
   `PySide6-Essentials` gerektirir. Sürüm yorumlayıcıya göre seçilir:
   Python 3.12+ için `6.12.0`, Python 3.11 için `6.11.2`.
