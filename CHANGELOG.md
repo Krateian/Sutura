@@ -143,6 +143,11 @@ All notable changes to this project are documented here.
   panel's **Apply** (like the tier order), resets with **Reset Defaults** and
   refreshes when the config changes. The flag stays OFF by default and the
   flag-off output is unchanged.
+- **No area count next to an unavailable shape check.** When the Fidelity
+  measurement cannot run, the verdict is `unavailable` and the report no longer
+  carries a changed/low-confidence area count beside it (previously it could
+  show e.g. `99` areas next to `unavailable`). The count is reported only when
+  the measurement exists. Report-only; no repair output change.
 
 ## [0.9.8] - 2026-10-31
 

@@ -249,7 +249,7 @@ Sutura's "no worse" principle applies strictly to **candidate adoption guards du
 
 However, "no worse" is not a claim that every subtle curve or microscopic detail remains untouched on heavily damaged meshes:
 1. **Topological adoption guards (enforced at runtime):** Every candidate must ensure defect counts do not rise (candidate defects ≤ baseline, with several tiers requiring strictly zero holes and non-manifold edges) and stay within strict face, vertex, component, and volume caps. If a candidate fails any guard, it is discarded immediately.
-2. **Shape Fidelity (report-only):** If severe defects force Sutura into aggressive solid rebuilding (such as fTetWild, Splint, or large Tamponade plugs), the final mesh will be printable and manifold, but its surface shape may have shifted. The report-only **Fidelity score** measures this drift and flags `changed` or `guessed area(s) - check`. Fidelity never acts as an adoption blocker.
+2. **Shape Fidelity (report-only):** If severe defects force Sutura into aggressive solid rebuilding (such as fTetWild, Splint, or large Tamponade plugs), the final mesh will be printable and manifold, but its surface shape may have shifted. The report-only **Fidelity score** measures this drift and flags `changed` or `guessed area(s) - check`; the area count appears only when the measurement exists, so an unavailable shape check reports no count. Fidelity never acts as an adoption blocker.
 
 ### Per-tier adoption guards
 
