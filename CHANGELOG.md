@@ -77,7 +77,10 @@ All notable changes to this project are documented here.
   installs the runtime dependencies (`requirements.txt`, e.g. numpy) into
   `sutura-env` — without them the installer's own verify step failed. Found
   while running the B5 local install test; both are needed for a working
-  installer.
+  installer. The macOS source build also exports the SDK include path from
+  `xcrun --show-sdk-path` for the build (only when unset, only if xcrun
+  succeeds), so a partial Command Line Tools install no longer fails on
+  `<cstdint>`.
 - **One verdict, in one line.** The report now shows a single headline verdict
   in both `--human` and the GUI — the Fidelity `repair_verdict`, with the
   topology verdict folded in — instead of two verdict lines. The

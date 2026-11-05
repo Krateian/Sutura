@@ -222,6 +222,20 @@ if [ -f "$SRC/rust/sutura-geom/pyproject.toml" ]; then
                 finish_fail "cargo is not usable: $cargo_probe" ;;
         esac
     fi
+    # macOS: clang normally finds libc++ through the SDK, but a partial
+    # Command Line Tools install can leave <cstdint> unresolved. Export the SDK
+    # include path for this build only, only when the caller has not set it, and
+    # only when xcrun reports a usable SDK.
+    if [ "$(uname -s)" = "Darwin" ] && [ -z "${SDKROOT:-}" ] \
+            && command -v xcrun >/dev/null 2>&1; then
+        _sdk="$(xcrun --show-sdk-path 2>/dev/null || true)"
+        if [ -n "$_sdk" ] && [ -d "$_sdk" ]; then
+            export SDKROOT="$_sdk"
+            if [ -z "${CPATH:-}" ]; then
+                export CPATH="$_sdk/usr/include/c++/v1:$_sdk/usr/include"
+            fi
+        fi
+    fi
     note "building from rust/sutura-geom (cargo found; ~1 min, pulls maturin ~10 MB)"
     if "$PY" -m pip install --quiet --force-reinstall --no-deps "$SRC/rust/sutura-geom" && import_ok; then
         rm -rf "$TOOLS_DIR/cmake-venv"   # throwaway cmake tools dir
