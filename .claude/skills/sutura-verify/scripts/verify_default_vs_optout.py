@@ -250,34 +250,71 @@ def ftetwild_adopted(report):
     return bool(ft.get('adopted'))
 
 
-def judge_quality(b, c, tol):
-    """Candidate vs baseline: no mesh worse on the quality metrics."""
-    if b.get('si_output') is None or c.get('si_output') is None:
-        return 'ERROR', 'SI-after unavailable (hard fail)'
-    md5_changed = bool(b.get('md5') and c.get('md5') and b['md5'] != c['md5'])
+def _shape_regressions(b, c, tol):
+    """Shape metrics on which the candidate is worse than the baseline.
+
+    This is the non-SI half of the quality verdict: reload holes,
+    non-manifold edges, visible two-sided distance (max and p95), volume
+    error, parts, closed shells and leak. An empty list means shape is equal
+    or better. The order is the historical judge order, so the first reason
+    reported for a shape regression is unchanged.
+    """
+    out = []
     if c['reload_holes'] > b['reload_holes']:
-        return 'WORSE', 'more holes: %d vs %d' % (c['reload_holes'], b['reload_holes'])
+        out.append('more holes: %d vs %d' % (
+            c['reload_holes'], b['reload_holes']))
     if c['reload_non_manifold_edges'] > b['reload_non_manifold_edges']:
-        return 'WORSE', 'more NM edges: %d vs %d' % (
-            c['reload_non_manifold_edges'], b['reload_non_manifold_edges'])
-    if c['si_output'] > b['si_output']:
-        return 'WORSE', 'SI-after rose: %d vs %d' % (c['si_output'], b['si_output'])
+        out.append('more NM edges: %d vs %d' % (
+            c['reload_non_manifold_edges'],
+            b['reload_non_manifold_edges']))
     if c['two_sided_max_mm'] > b['two_sided_max_mm'] + tol:
-        return 'WORSE', 'two-sided max worse beyond tol: %s vs %s' % (
-            c['two_sided_max_mm'], b['two_sided_max_mm'])
+        out.append('two-sided max worse beyond tol: %s vs %s' % (
+            c['two_sided_max_mm'], b['two_sided_max_mm']))
     if c['two_sided_p95_mm'] > b['two_sided_p95_mm'] + tol:
-        return 'WORSE', 'two-sided p95 worse beyond tol: %s vs %s' % (
-            c['two_sided_p95_mm'], b['two_sided_p95_mm'])
+        out.append('two-sided p95 worse beyond tol: %s vs %s' % (
+            c['two_sided_p95_mm'], b['two_sided_p95_mm']))
     if c['volume_error_rel'] > b['volume_error_rel'] + 1e-3:
-        return 'WORSE', 'volume error rose: %.6f vs %.6f' % (
-            c['volume_error_rel'], b['volume_error_rel'])
+        out.append('volume error rose: %.6f vs %.6f' % (
+            c['volume_error_rel'], b['volume_error_rel']))
     bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
     cp = c['orca_number_of_parts'] if c['orca_number_of_parts'] is not None else c['components']
     if cp > bp:
-        return 'WORSE', 'more parts: %s vs %s' % (cp, bp)
+        out.append('more parts: %s vs %s' % (cp, bp))
     if c['closed_shells'] < b['closed_shells']:
-        return 'WORSE', 'fewer closed shells: %d vs %d' % (
-            c['closed_shells'], b['closed_shells'])
+        out.append('fewer closed shells: %d vs %d' % (
+            c['closed_shells'], b['closed_shells']))
+    lc_b = _num(b.get('leak_max_mm')) or 0.0
+    lc_c = _num(c.get('leak_max_mm')) or 0.0
+    n_b = _num(b.get('leak_count')) or 0
+    n_c = _num(c.get('leak_count')) or 0
+    if n_c > 0 and n_b == 0:
+        out.append('new leak: %s mm (%d pts)' % (lc_c, n_c))
+    elif lc_c > lc_b + tol:
+        out.append('worse leak: %s vs %s mm' % (lc_c, lc_b))
+    return out
+
+
+def judge_quality(b, c, tol):
+    """Candidate vs baseline: no mesh worse on the quality metrics.
+
+    A rise in SI-after with every shape metric equal or better is TRADE-SI:
+    the change keeps self-intersections on purpose (for example to avoid
+    moving visible surface) and must be reported as a deliberate trade, not
+    as a regression. Any shape regression is still WORSE.
+    """
+    if b.get('si_output') is None or c.get('si_output') is None:
+        return 'ERROR', 'SI-after unavailable (hard fail)'
+    md5_changed = bool(b.get('md5') and c.get('md5') and b['md5'] != c['md5'])
+    shape_worse = _shape_regressions(b, c, tol)
+    if shape_worse:
+        return 'WORSE', shape_worse[0]
+    si_delta = int(c['si_output']) - int(b['si_output'])
+    if si_delta > 0:
+        return 'TRADE-SI', ('SI-after rose %d -> %d (+%d) with no shape '
+                            'regression' % (b['si_output'], c['si_output'],
+                                            si_delta))
+    bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
+    cp = c['orca_number_of_parts'] if c['orca_number_of_parts'] is not None else c['components']
     if (c['reload_holes'] < b['reload_holes']
             or c['reload_non_manifold_edges'] < b['reload_non_manifold_edges']
             or c['si_output'] < b['si_output']
@@ -348,17 +385,17 @@ def _markdown_modes(results, mode, surface_budget='sweep'):
              'i2o all = the old all-face value; Buried = interior walls the '
              'output removed (faces / mm2).',
              '',
-             '| Mesh | Holes b/c | NM b/c | SI b/c | 2-sided max b/c | '
+             '| Mesh | Holes b/c | NM b/c | SI b/c | SI trade | 2-sided max b/c | '
              'i2o all b/c | Buried n b/c | Buried mm2 b/c | Vol err b/c | '
              'Parts b/c | Recall ext b/c | Recall all b/c | Fill b/c | '
              'Removed b/c | Surface | Verdict | Changed |',
-             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for r in results:
         b = r.get('baseline') or {}
         c = r.get('candidate') or {}
         if not b or not c:
             lines.append('| %s | %s | **%s** | - |' % (
-                r['name'], ' | '.join(['-'] * 14), r['verdict']))
+                r['name'], ' | '.join(['-'] * 15), r['verdict']))
             continue
         bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
         cp = c['orca_number_of_parts'] if c['orca_number_of_parts'] is not None else c['components']
@@ -382,10 +419,12 @@ def _markdown_modes(results, mode, surface_budget='sweep'):
         ba_c = _num(c.get('buried_area_mm2'))
         bur_a = ('%.3f/%.3f' % (ba_b, ba_c)
                  if ba_b is not None and ba_c is not None else '-')
-        lines.append('| %s | %d/%d | %d/%d | %s/%s | %.4f/%.4f | %s | %s | %s | %.6f/%.6f | %s/%s | %s | %s | %s | %s | %s | **%s** | %s |' % (
+        si_trade = ('+' + str(int(c['si_output']) - int(b['si_output']))
+                    if r['verdict'] == 'TRADE-SI' else '-')
+        lines.append('| %s | %d/%d | %d/%d | %s/%s | %s | %.4f/%.4f | %s | %s | %s | %.6f/%.6f | %s/%s | %s | %s | %s | %s | %s | **%s** | %s |' % (
             r['name'], b['reload_holes'], c['reload_holes'],
             b['reload_non_manifold_edges'], c['reload_non_manifold_edges'],
-            b['si_output'], c['si_output'],
+            b['si_output'], c['si_output'], si_trade,
             b['two_sided_max_mm'], c['two_sided_max_mm'],
             i2o_all, bur_n, bur_a,
             b['volume_error_rel'], c['volume_error_rel'], bp, cp,
@@ -640,10 +679,15 @@ def main():
     with open(os.path.join(out_dir, 'report.md'), 'w') as f:
         f.write(md)
     bad = [r['name'] for r in results if r['verdict'] in ('WORSE', 'CHANGED', 'ERROR', 'VISUAL-WORSE')]
+    trades = [(r['name'], r.get('verdict_reason', '')) for r in results
+              if r['verdict'] == 'TRADE-SI']
     skipped = [r['name'] for r in results if r['verdict'] == 'SKIPPED-NONDET']
     surface_bad = [r['name'] for r in results if r.get('surface_worse')]
     print('\nwrote %s/summary.json and report.md' % out_dir)
     print('FAIL: %s' % (', '.join(bad) if bad else 'none'))
+    if trades:
+        print('TRADE-SI (approved SI-for-shape trade, non-blocking): %s'
+              % '; '.join('%s (%s)' % t for t in trades))
     if skipped:
         print('SKIPPED-NONDET: %s' % ', '.join(skipped))
     if surface_bad:
