@@ -260,6 +260,15 @@ jobs:
       - name: "Test: triage presets"
         run: ./venv/bin/python tests/test_triage.py
 
+      # The CI mesh board must judge like the local one: TRADE-SI is its own
+      # non-failing verdict, and the visible two-sided values are shown next
+      # to the *_all_* ones.
+      - name: "Test: mesh-job board aggregation"
+        run: ./venv/bin/python tests/test_gh_mesh_board.py
+
+      - name: "Test: TRADE-SI quality verdict"
+        run: ./venv/bin/python tests/test_verify_trade_si.py
+
       - name: "Test: triage profiles"
         run: ./venv/bin/python tests/test_triage_profiles.py
 

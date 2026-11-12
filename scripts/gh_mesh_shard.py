@@ -1,48 +1,126 @@
 #!/usr/bin/env python3
-"""One shard: run the verify harness with per-side repos/pythons and real keys."""
-import json, os, subprocess, sys, tempfile, traceback
-VERIFY = os.environ.get('VERIFY_SCRIPT', 'base/.claude/skills/sutura-verify/scripts/verify_default_vs_optout.py')
-KEYS = ('reload_holes','reload_non_manifold_edges','components','closed_shells',
-        'orca_number_of_parts','orca_manifold','leak_max_mm','leak_count',
-        'two_sided_max_mm','two_sided_p95_mm')
+"""One shard: run the verify harness with per-side repos/pythons and real keys.
+
+Each row carries the baseline and the candidate metric record, so the board
+can show the visible two-sided values next to the ``*_all_*`` values and the
+SI-after pair that decides TRADE-SI.
+
+A missing OrcaSlicer is not a missing row: the harness reports
+``orca_number_of_parts=None`` / ``orca_manifold='unknown'`` and the judge falls
+back to the component count, so Orca is reported but never required.
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import traceback
+
+VERIFY = os.environ.get(
+    'VERIFY_SCRIPT',
+    'base/.claude/skills/sutura-verify/scripts/verify_default_vs_optout.py')
+SHAPE_REQUIRED = ('reload_holes', 'reload_non_manifold_edges', 'components',
+                  'closed_shells', 'two_sided_max_mm', 'two_sided_p95_mm',
+                  'leak_max_mm', 'leak_count', 'si_output')
+SHAPE_KEYS = SHAPE_REQUIRED + (
+    'orca_number_of_parts', 'orca_manifold', 'volume_error_rel',
+    'two_sided_max_all_mm', 'two_sided_p95_all_mm',
+    'i2o_max_all_mm', 'i2o_p95_all_mm')
+BYTE_KEYS = ('md5', 'ftetwild_adopted')
+# determinism is a byte comparison of two independent runs of the same ref,
+# with the stochastic fTetWild path excluded.
+FLAGS = {'byte': ['--byte', '--deterministic'],
+         'determinism': ['--byte', '--deterministic',
+                         '--exclude-nondeterministic'],
+         'quality_ab': ['--quality', '--no-visual'],
+         'single_side': ['--quality', '--no-visual']}
+QUALITY_MODES = ('quality_ab', 'single_side')
+
+
+def resolve_mesh(corpus, rel):
+    """Private-corpus path first, then the public checkout's own copy.
+
+    The derived sets (``data/derived/stl/...``) live in the private corpus
+    repo; ``samples40`` points at ``tests/real-world-samples``, which is
+    already tracked in the public repo.  Reading the input from the base
+    checkout keeps those 50 files out of the private repo.
+    """
+    for root in (corpus, os.path.join(os.getcwd(), 'base')):
+        p = os.path.join(root, rel)
+        if os.path.exists(p):
+            return p
+    return os.path.join(corpus, rel)
+
+
 def main():
-    set_name=os.environ['SET_NAME']; shard=int(os.environ['SHARD']); shards=int(os.environ['SHARDS'])
-    mode=os.environ['MODE']; env_c=os.environ.get('ENV_CAND',''); env_b=os.environ.get('ENV_BASE','')
+    set_name = os.environ['SET_NAME']
+    shard = int(os.environ['SHARD'])
+    shards = int(os.environ['SHARDS'])
+    mode = os.environ['MODE']
+    env_c = os.environ.get('ENV_CAND', '')
+    env_b = os.environ.get('ENV_BASE', '')
     if env_b:
-        raise SystemExit('ENV_BASE is not supported by the harness (candidate-side env only)')
-    corpus=os.path.join(os.getcwd(),'corpus'); sets=os.path.join(corpus,'sets')
-    files=[l.strip() for l in open(os.path.join(sets,set_name+'.txt')) if l.strip()]
-    files=files[shard::shards]
-    flags={'byte':['--byte','--deterministic'],'determinism':['--deterministic','--exclude-nondeterministic'],
-           'quality_ab':['--quality','--no-visual'],'single_side':['--quality','--no-visual']}[mode]
-    outdir=tempfile.mkdtemp(prefix='shard-')
-    cmd=[sys.executable,VERIFY]+[os.path.join(corpus,f) for f in files]+flags+[
-         '--baseline-repo',os.path.abspath('base'),'--baseline-python',os.path.abspath('base-venv/bin/python'),
-         '--repo',os.path.abspath('cand'),'--python',os.path.abspath('cand-venv/bin/python'),'--out-dir',outdir]
-    if env_c: cmd += ['--opt-out-env',env_c]
-    r=subprocess.run(cmd,capture_output=True,text=True)
-    rows=[]; err=None
-    sp=os.path.join(outdir,'summary.json')
+        raise SystemExit('ENV_BASE is not supported by the harness '
+                         '(candidate-side env only)')
+    quality = mode in QUALITY_MODES
+    keys = SHAPE_KEYS if quality else BYTE_KEYS
+    required = SHAPE_REQUIRED if quality else BYTE_KEYS
+    corpus = os.path.join(os.getcwd(), 'corpus')
+    sets = os.path.join(corpus, 'sets')
+    files = [l.strip() for l in open(os.path.join(sets, set_name + '.txt'))
+             if l.strip()]
+    files = files[shard::shards]
+    outdir = tempfile.mkdtemp(prefix='shard-')
+    cmd = [sys.executable, VERIFY] \
+        + [resolve_mesh(corpus, f) for f in files] + FLAGS[mode] + [
+            '--baseline-repo', os.path.abspath('base'),
+            '--baseline-python', os.path.abspath('base-venv/bin/python'),
+            '--repo', os.path.abspath('cand'),
+            '--python', os.path.abspath('cand-venv/bin/python'),
+            '--out-dir', outdir]
+    if env_c:
+        cmd += ['--opt-out-env', env_c]
+    if mode == 'determinism':
+        # The baseline half is cached by input SHA + flags + repo head, so a
+        # warmed cache would compare a run against itself.  A fresh cache keeps
+        # the two runs independent, which is the point of the check.
+        cmd += ['--cache-dir', os.path.join(outdir, 'cache')]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    rows = []
+    err = None
+    sp = os.path.join(outdir, 'summary.json')
     if os.path.exists(sp):
         for item in json.load(open(sp)):
-            cand=item.get('candidate') or {}
-            metrics={k:cand.get(k) for k in KEYS}
-            missing=[k for k,v in metrics.items() if v is None]
-            verdict=item.get('verdict') or 'MISSING'
-            if missing: verdict='MISSING'
-            rows.append({'id':item.get('name'),'verdict':verdict,'reason':item.get('verdict_reason'),
-                         'metrics':metrics,'missing':missing})
+            sides = {side: {k: (item.get(side) or {}).get(k) for k in keys}
+                     for side in ('baseline', 'candidate')}
+            missing = sorted({k for rec in sides.values() for k in required
+                              if rec.get(k) is None})
+            verdict = item.get('verdict') or 'MISSING'
+            rows.append({'id': item.get('name'), 'verdict': verdict,
+                         'reason': item.get('verdict_reason'),
+                         'baseline': sides['baseline'],
+                         'candidate': sides['candidate'],
+                         'missing': missing})
     else:
-        err={'rc':r.returncode,'error_type':'MissingSummary',
-             'tail':(r.stderr.strip().splitlines()[-1][:200] if r.stderr.strip() else '')}
+        err = {'rc': r.returncode, 'error_type': 'MissingSummary',
+               'tail': (r.stderr.strip().splitlines()[-1][:200]
+                        if r.stderr.strip() else '')}
     if err:
-        for f in files+[outdir]: pass
-        json.dump(err,open('error.json','w'),indent=1)
-    json.dump({'set':set_name,'shard':shard,'shards':shards,'mode':mode,'rc':r.returncode,
-               'meshes':len(files),'rows':rows,'error':err},open('shard-%s-%d.json'%(set_name,shard),'w'),indent=1)
+        json.dump(err, open('error.json', 'w'), indent=1)
+    json.dump({'set': set_name, 'shard': shard, 'shards': shards,
+               'mode': mode, 'rc': r.returncode, 'meshes': len(files),
+               'rows': rows, 'error': err},
+              open('shard-%s-%d.json' % (set_name, shard), 'w'), indent=1)
     sys.exit(0 if not err else 1)
-if __name__=='__main__':
-    try: main()
-    except SystemExit: raise
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except SystemExit:
+        raise
     except Exception as e:
-        json.dump({'rc':1,'error_type':type(e).__name__,'tail':''},open('error.json','w')); traceback.print_exc(); sys.exit(1)
+        json.dump({'rc': 1, 'error_type': type(e).__name__, 'tail': str(e)[:200]},
+                  open('error.json', 'w'))
+        traceback.print_exc()
+        sys.exit(1)

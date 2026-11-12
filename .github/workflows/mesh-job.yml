@@ -4,8 +4,8 @@ on:
     inputs:
       base_ref:      { description: 'Side A ref', required: true, default: origin/main }
       candidate_ref: { description: 'Side B ref (empty = single-side)', required: false, default: '' }
-      sets:          { description: 'samples40,oracle36,core150,core_clean,determinism', required: true, default: 'samples40,oracle36' }
-      mode:          { description: 'quality_ab | byte | determinism | single_side', required: true, default: 'quality_ab' }
+      sets:          { description: 'Comma list; each entry NAME or NAME@mode (quality_ab|byte|determinism|single_side)', required: true, default: 'samples40@quality_ab,oracle36@quality_ab' }
+      mode:          { description: 'Default mode for entries without @mode: quality_ab | byte | determinism | single_side', required: true, default: 'quality_ab' }
       env_base:      { description: 'Side A env (unsupported by the harness; candidate side only)', required: false, default: '' }
       env_candidate: { description: 'Side B env, e.g. SUTURA_SI_EXCISE=0', required: false, default: '' }
       shards:        { description: 'Shard count override (per set)', required: false, default: '' }
@@ -26,15 +26,24 @@ jobs:
         env:
           SETS: '${{ inputs.sets }}'
           SHARDS: '${{ inputs.shards }}'
+          MODE: '${{ inputs.mode }}'
         run: |
           python3 - <<'PY'
-          import json, os
+          import json, os, re
           counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5}
+          modes=('quality_ab','byte','determinism','single_side')
           override=int(os.environ.get('SHARDS') or 0)
+          default_mode=os.environ['MODE']
           inc=[]
-          for s in [x for x in os.environ['SETS'].split(',') if x]:
-              n=override or counts.get(s,4)
-              inc += [{'set':s,'shard':i,'shards':n} for i in range(n)]
+          for raw in [x.strip() for x in os.environ['SETS'].split(',') if x.strip()]:
+              name, _, mode = raw.partition('@')
+              mode = mode or default_mode
+              if mode not in modes:
+                  raise SystemExit('unknown mode: %s' % mode)
+              if not re.fullmatch(r'[A-Za-z0-9_]+', name):
+                  raise SystemExit('bad set name: %s' % name)
+              n=override or counts.get(name,4)
+              inc += [{'set':name,'mode':mode,'shard':i,'shards':n} for i in range(n)]
           out=json.dumps({'include':inc})
           with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('matrix='+out+'\n')
           PY
@@ -51,7 +60,7 @@ jobs:
         run: |
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
-          (cd rust/sutura-geom && ../..//venv/bin/maturin build --release --out dist)
+          (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
       - uses: actions/upload-artifact@v4
         with: { name: wheel-base, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
   build-cand:
@@ -73,7 +82,10 @@ jobs:
         with: { name: wheel-cand, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
   shard:
     needs: [preflight, build-base, build-cand]
-    if: always() && needs.preflight.result == 'success' && needs.build-base.result == 'success'
+    if: |
+      always() && needs.preflight.result == 'success'
+      && needs.build-base.result == 'success'
+      && (needs.build-cand.result == 'success' || needs.build-cand.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
@@ -86,9 +98,12 @@ jobs:
           echo "SHARD=$SHARD" >> "$GITHUB_ENV"; echo "SHARDS=$SHARDS" >> "$GITHUB_ENV"
           echo "ENV_CAND=$ENV_CAND" >> "$GITHUB_ENV"; echo "ENV_BASE=$ENV_BASE" >> "$GITHUB_ENV"
         env:
-          MODE: '${{ inputs.mode }}'; SET_NAME: '${{ matrix.set }}'
-          SHARD: '${{ matrix.shard }}'; SHARDS: '${{ matrix.shards }}'
-          ENV_CAND: '${{ inputs.env_candidate }}'; ENV_BASE: '${{ inputs.env_base }}'
+          MODE: '${{ matrix.mode }}'
+          SET_NAME: '${{ matrix.set }}'
+          SHARD: '${{ matrix.shard }}'
+          SHARDS: '${{ matrix.shards }}'
+          ENV_CAND: '${{ inputs.env_candidate }}'
+          ENV_BASE: '${{ inputs.env_base }}'
       - uses: actions/checkout@v7
         with: { path: base, ref: '${{ inputs.base_ref }}' }
       - uses: actions/checkout@v7
@@ -107,34 +122,50 @@ jobs:
       - name: Fresh venvs with their own wheel
         run: |
           python3 -m venv base-venv
-          base-venv/bin/pip install --quiet -r base/requirements.txt -r base/requirements-dev.txt wheels-base/*.whl
-          cp -r wheels-base wheels-cand 2>/dev/null || true
+          base-venv/bin/pip install --quiet -r base/requirements.txt wheels-base/*.whl
+          if [ -d wheels-cand ]; then cp wheels-cand/*.whl cand-wheel.whl; else cp wheels-base/*.whl cand-wheel.whl; fi
           python3 -m venv cand-venv
-          cand-venv/bin/pip install --quiet -r cand/requirements.txt -r cand/requirements-dev.txt wheels-cand/*.whl
+          mkdir -p cand-wheels && mv cand-wheel.whl cand-wheels/
+          cand-venv/bin/pip install --quiet -r cand/requirements.txt cand-wheels/*.whl
       - name: Run shard
         run: |
-          python3 scripts/gh_mesh_shard.py
+          base-venv/bin/python base/scripts/gh_mesh_shard.py
       - name: Sanitized error tail on failure
         if: failure()
         run: |
           [ -f error.json ] && cat error.json >> "$GITHUB_STEP_SUMMARY" || true
       - uses: actions/upload-artifact@v4
-        with: { name: 'summary-${{ matrix.set }}-${{ matrix.shard }}', path: 'shard-*.json', retention-days: 7 }
+        with: { name: 'summary-${{ matrix.set }}-${{ matrix.mode }}-${{ matrix.shard }}', path: 'shard-*.json', retention-days: 7 }
       - uses: actions/upload-artifact@v4
         if: failure()
-        with: { name: 'error-${{ matrix.set }}-${{ matrix.shard }}', path: error.json, retention-days: 7, if-no-files-found: ignore }
+        with: { name: 'error-${{ matrix.set }}-${{ matrix.mode }}-${{ matrix.shard }}', path: error.json, retention-days: 7, if-no-files-found: ignore }
   aggregate:
     needs: shard
     if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Recompute the plan (a dead shard uploads nothing)
+        env: { SETS: '${{ inputs.sets }}', SHARDS: '${{ inputs.shards }}', MODE: '${{ inputs.mode }}' }
+        run: |
+          python3 - <<'PY' > plan.json
+          import json, os
+          counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5}
+          override=int(os.environ.get('SHARDS') or 0)
+          inc=[]
+          for raw in [x.strip() for x in os.environ['SETS'].split(',') if x.strip()]:
+              name, _, mode = raw.partition('@')
+              mode = mode or os.environ['MODE']
+              n=override or counts.get(name,4)
+              inc += [{'set':name,'mode':mode,'shard':i,'shards':n} for i in range(n)]
+          print(json.dumps({'include':inc}))
+          PY
       - uses: actions/download-artifact@v4
         with: { pattern: 'summary-*', merge-multiple: true, path: summaries }
       - name: Board
         run: |
-          python3 scripts/gh_mesh_board.py summaries > board.md
+          python3 scripts/gh_mesh_board.py --plan plan.json summaries > board.md
           cat board.md >> "$GITHUB_STEP_SUMMARY"
-          python3 scripts/gh_mesh_board.py --check summaries
+          python3 scripts/gh_mesh_board.py --check --plan plan.json summaries
       - uses: actions/upload-artifact@v4
         with: { name: board, path: board.md, retention-days: 7 }
