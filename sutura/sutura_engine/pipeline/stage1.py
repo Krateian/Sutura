@@ -339,7 +339,9 @@ def _si_excise_new_face_max_mm(ref_v, ref_t, cand_v, cand_t, new_faces):
 
     The input-to-output metric cannot see material a re-cap adds across a
     concavity (39635: 261 mm3 of output-only volume), so the new faces are
-    checked in the opposite direction. Returns ``None`` when unavailable.
+    checked in the opposite direction. The re-cap triangles are small
+    ear-clipping/planar-cap faces, so their centroids sample them well. Returns
+    ``None`` when unavailable.
     """
     import sutura_geom
     nf = np.asarray(new_faces, dtype=bool)
