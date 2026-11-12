@@ -175,6 +175,56 @@ def _defect_face_mask(t):
     return mask
 
 
+def _buried_face_mask(vi, ti, defect_mask, delta=0.1):
+    """Input-alone interior walls (Case B) for the feature-recall denominator.
+
+    The Rust kernel uses the approved eight probes (centroid + each vertex
+    pulled 10 % toward it, both sides), integral winding and non-zero area.
+    The defect ring is applied here; debris and cavity walls are never in the
+    mask. Returns ``(mask, info)``.
+    """
+    ti = np.asarray(ti, dtype=np.int64)
+    mask = np.zeros(len(ti), dtype=bool)
+    info = {
+        'available': False,
+        'faces': 0,
+        'area_mm2': 0.0,
+        'debris_faces': 0,
+        'degenerate_faces': 0,
+        'note': None,
+    }
+    if sutura_geom is None or not hasattr(sutura_geom, 'buried_face_mask'):
+        info['note'] = 'sutura_geom lacks buried_face_mask'
+        return mask, info
+    try:
+        m, detail = sutura_geom.buried_face_mask(
+            np.asarray(vi, dtype=np.float64), ti.astype(np.int32),
+            float(delta))
+        mask = np.asarray(m, dtype=bool)
+        info.update({
+            'available': True,
+            'debris_faces': int(detail.get('debris_count', 0)),
+            'degenerate_faces': int(detail.get('degenerate_count', 0)),
+        })
+    except Exception as e:  # noqa: BLE001
+        info['note'] = 'buried_face_mask failed: %s' % e
+        return mask, info
+    if defect_mask is not None:
+        mask &= ~np.asarray(defect_mask, dtype=bool)
+    info['faces'] = int(np.count_nonzero(mask))
+    if info['faces']:
+        info['area_mm2'] = round(float(_face_areas(vi, ti)[mask].sum()), 6)
+    return mask, info
+
+
+def _masked_sharp_length(v, t, face_mask):
+    edges, _dih = _sharp_edges(v, t, face_mask=face_mask)
+    if len(edges) == 0:
+        return 0.0
+    return float(np.linalg.norm(
+        v[edges[:, 1]] - v[edges[:, 0]], axis=1).sum())
+
+
 def _area_samples(v, t, n_total, face_mask=None):
     """Deterministic area-weighted surface samples (points, normals, weights).
 
@@ -492,6 +542,7 @@ def compute(in_arrays, out_arrays, report=None, config=None):
         'repair_verdict_areas': 0,
         'repair_verdict_low_confidence': False,
         'repair_verdict_reasons': [],
+        'interior_walls_note': None,
     }
     try:
         cfg = load_config(config)
@@ -525,6 +576,17 @@ def compute(in_arrays, out_arrays, report=None, config=None):
         else:
             mask = np.zeros(len(ti), dtype=bool)
             note.append('healthy mask skipped (large mesh)')
+
+        if mask_available:
+            buried_mask, buried_info = _buried_face_mask(
+                vi, ti, mask, float(fc.get('interior_wall_delta', 0.1)))
+        else:
+            buried_mask = np.zeros(len(ti), dtype=bool)
+            buried_info = {
+                'available': False, 'faces': 0, 'area_mm2': 0.0,
+                'debris_faces': 0, 'degenerate_faces': 0,
+                'note': 'interior walls unavailable (large mesh)',
+            }
 
         # --- one distance query, reused by distance / invented area / areas
         if not reduced:
@@ -585,16 +647,32 @@ def compute(in_arrays, out_arrays, report=None, config=None):
 
         # --- feature recall (gated: full edge table on a very large mesh is
         # the most expensive part and scan noise makes it less informative)
-        if gated or max(len(ti), len(to)) > recall_max:
-            recall, rec_detail = None, {'note': 'feature recall skipped '
-                                                '(large mesh)'}
-        else:
+        recall = recall_all = None
+        rec_detail = {'note': 'feature recall skipped (large mesh)'}
+        buried_length = 0.0
+        buried_fraction = 0.0
+        if not (gated or max(len(ti), len(to)) > recall_max):
             rec_budget = dict(budgets)
             if reduced:
                 rec_budget['sharp_samples_per_edge'] = int(
                     budgets.get('reduced_sharp_samples_per_edge', 2))
-            recall, rec_detail = _feature_recall(
+            recall_all, all_detail = _feature_recall(
                 vi, ti, vo, to, mask, tol, rec_budget)
+            if buried_mask.any():
+                recall, rec_detail = _feature_recall(
+                    vi, ti, vo, to, mask | buried_mask, tol, rec_budget)
+            else:
+                recall, rec_detail = recall_all, dict(all_detail)
+            all_len = _masked_sharp_length(vi, ti, mask)
+            vis_len = (_masked_sharp_length(vi, ti, mask | buried_mask)
+                       if buried_mask.any() else all_len)
+            buried_length = max(all_len - vis_len, 0.0)
+            if all_len > 0.0:
+                buried_fraction = buried_length / all_len
+            rec_detail = dict(rec_detail or {})
+            rec_detail['recall_all'] = recall_all
+            rec_detail['buried_length_mm'] = round(buried_length, 6)
+            rec_detail['buried_fraction'] = round(buried_fraction, 6)
 
         # --- healthy volume
         fill = None
@@ -663,6 +741,48 @@ def compute(in_arrays, out_arrays, report=None, config=None):
         add('invented_area', min(1.0, invented_frac / iscale),
             {'fraction': round(invented_frac, 6)})
 
+        # --- interior-wall split (report-only; never feeds the distance)
+        in_area = _face_areas(vi, ti)
+        buried_faces = (int(np.count_nonzero(buried_mask))
+                        if buried_info['available'] else None)
+        buried_area = (round(float(in_area[buried_mask].sum()), 6)
+                       if buried_info['available'] else None)
+        removed_faces = None
+        removed_area = None
+        if buried_info['available']:
+            removed_faces = 0
+            removed_area = 0.0
+            if buried_mask.any():
+                try:
+                    _x, d_i2o, _f = sutura_geom.closest_points(
+                        vo, to.astype(np.int32), vi)
+                    face_out = np.asarray(d_i2o)[ti].max(axis=1)
+                    removed = buried_mask & (face_out > tol)
+                    removed_faces = int(np.count_nonzero(removed))
+                    removed_area = round(float(in_area[removed].sum()), 6)
+                except Exception as e:  # noqa: BLE001
+                    note.append('interior wall distance failed: %s' % e)
+        _pre = report.get('tamponade_shell_prepass') or {}
+        _cav = _pre.get('cavity_count')
+        cavity_faces = int(_cav) if isinstance(_cav, int) else None
+        wall_bits = []
+        if removed_faces:
+            wall_bits.append('%d interior wall face(s) removed (%.3f mm²)'
+                             % (removed_faces, removed_area or 0.0))
+        if buried_faces and removed_faces is not None:
+            kept = buried_faces - removed_faces
+            if kept > 0:
+                wall_bits.append('%d buried face(s) kept' % kept)
+        if buried_info['debris_faces']:
+            wall_bits.append('%d debris face(s) ignored'
+                             % buried_info['debris_faces'])
+        if cavity_faces:
+            wall_bits.append('%d cavity face(s) kept' % cavity_faces)
+        if not buried_info['available']:
+            wall_bits = ['interior walls unavailable (%s)'
+                         % (buried_info.get('note') or 'large mesh')]
+        interior_walls_note = '; '.join(wall_bits) or None
+
         score = None
         if max_pct is None:
             note.append('no healthy distance samples')
@@ -699,12 +819,23 @@ def compute(in_arrays, out_arrays, report=None, config=None):
             'repair_fidelity': score,
             'repair_fidelity_factors': factors,
             'repair_fidelity_note': '; '.join(note) if note else None,
+            'interior_walls_note': interior_walls_note,
             'repair_fidelity_metrics': {
                 'healthy_distance_max_pct': None if max_pct is None
                 else round(max_pct, 4),
                 'healthy_distance_mean_pct': None if mean_pct is None
                 else round(mean_pct, 4),
                 'feature_recall': recall,
+                'feature_recall_all': recall_all,
+                'feature_buried_length_mm': round(buried_length, 6),
+                'feature_buried_fraction': round(buried_fraction, 6),
+                'interior_walls_removed_faces': removed_faces,
+                'interior_walls_removed_area_mm2': removed_area,
+                'interior_walls_buried_faces': buried_faces,
+                'interior_walls_buried_area_mm2': buried_area,
+                'interior_walls_debris_faces': int(
+                    buried_info['debris_faces']),
+                'interior_walls_cavity_faces': cavity_faces,
                 'healthy_fill_fraction': None if not fill
                 else fill.get('fill_fraction'),
                 'healthy_removed_fraction': None if not fill

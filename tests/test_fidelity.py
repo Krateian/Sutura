@@ -411,6 +411,19 @@ def test_changed_area_distance_gate():
     code, _ = fidelity._verdict(90, {}, False, [], 2, cfg2, max_pct=0.3)
     assert code == 'changed', code
 
+def test_interior_walls_excluded_from_recall():
+    outer_v, outer_t = _box(size=10.0)
+    inner_v, inner_t = _box(size=4.0)
+    vi = np.vstack([outer_v, inner_v])
+    ti = np.vstack([outer_t, inner_t + len(outer_v)])
+    r = fidelity.compute((vi, ti), (outer_v, outer_t), _REPORT)
+    m = r['repair_fidelity_metrics']
+    assert m['interior_walls_buried_faces'] > 0, m
+    assert m['interior_walls_removed_faces'] > 0, m
+    assert r['interior_walls_note'], r
+    assert m['feature_buried_fraction'] > 0.0, m
+    assert m['feature_recall'] >= m['feature_recall_all'], m
+    assert 'interior_walls_removed_faces' not in r, r
 
 def main():
     tests = [v for k, v in sorted(globals().items())
