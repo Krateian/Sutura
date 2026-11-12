@@ -101,10 +101,16 @@ def test_excise_reduces_si_and_preserves_topology():
     v, t = _sphere_with_blade(3)
     si_before = _si(v, t)
     assert si_before > 0, 'fixture must self-intersect'
-    v, t, rep = pipeline_mod.si_excise_recap(v, t, time_budget=30.0)
+    # The blade sticks out of the sphere, so removing it moves VISIBLE surface
+    # (~0.42 mm) and the default shape budget rejects the round (covered by
+    # test_shape_guard_rejects_visible_slot). Pin the budget off here so this
+    # test keeps exercising the excision + re-cap mechanics it names.
+    v, t, rep = pipeline_mod.si_excise_recap(v, t, time_budget=30.0,
+                                            shape_guard=False)
     assert rep['applied'] and rep['rounds'] >= 1, rep
     assert rep['si_after'] == 0, rep
     assert rep['removed_si'] == rep['initial_si'], rep
+    assert 'shape_guard' not in rep, rep
     topo = topology.mesh_topology(v, t)
     assert topo['number_holes'] == 0, topo
     assert topo['non_two_manifold_edges'] == 0, topo
@@ -122,6 +128,75 @@ def test_rollback_on_failed_recap_restores_mesh():
     assert rep['rounds'] == 0, rep
     assert rep['reason'] in ('rollback', 'scope'), rep
     assert np.array_equal(v0, v1) and np.array_equal(t0, t1)
+
+
+def _sphere_with_bump(protrude, base=0.90, rad=0.12, subdiv=3):
+    """Clean icosphere plus a closed tetrahedron poking ``protrude`` above the
+    north pole. Unlike ``_sphere_with_blade`` the bump is shallow, so excising
+    it moves the visible surface by well under the 0.1 mm budget."""
+    m_v, m_t = _icosphere(subdiv)
+    v = np.asarray(m_v, np.float64).tolist()
+    t = [tuple(int(x) for x in f) for f in np.asarray(m_t, np.int64)]
+    b = len(v)
+    v += [(0.0, 0.0, 1.0 + protrude),
+          (rad, 0.0, base), (-rad * 0.5, rad * 0.866, base),
+          (-rad * 0.5, -rad * 0.866, base)]
+    t += [(b, b + 1, b + 2), (b, b + 2, b + 3), (b, b + 3, b + 1),
+          (b + 1, b + 3, b + 2)]
+    return np.asarray(v, np.float64), np.asarray(t, np.int64)
+
+
+def test_shape_guard_commits_a_round_within_the_budget():
+    v, t = _sphere_with_bump(0.02)
+    assert _si(v, t) > 0, 'fixture must self-intersect'
+    v, t, rep = pipeline_mod.si_excise_recap(v, t, time_budget=30.0)
+    assert rep['applied'] and rep['rounds'] >= 1, rep
+    sg = rep['shape_guard']
+    assert sg['enabled'] and sg['available'], sg
+    assert sg['rejected_round'] is None and sg['reason'] is None, sg
+    assert sg['final_vis_mm'] <= sg['budget_mm'], sg
+    assert rep['history'][0]['post_vis_mm'] <= sg['budget_mm']
+
+
+def test_shape_guard_rejects_visible_slot_and_restores_the_round():
+    """The blade sticks out of the sphere: excising it moves VISIBLE surface
+    by ~0.42 mm, so the round must be rolled back and the pass stopped while
+    the residual self-intersections stay reported."""
+    v, t = _sphere_with_blade(3)
+    v0, t0 = np.asarray(v, np.float64), np.asarray(t, np.int64)
+    si_before = _si(v0, t0)
+    v1, t1, rep = pipeline_mod.si_excise_recap(v0, t0, time_budget=30.0)
+    assert rep['applied'] is False and rep['rounds'] == 0, rep
+    assert rep['reason'] == 'shape_guard', rep
+    sg = rep['shape_guard']
+    assert sg['rejected_round'] == 1 and sg['rounds_rejected'] == 1, sg
+    assert sg['reason'] == 'shape_guard', sg
+    assert sg['post_vis_mm'] > sg['budget_mm'], sg
+    assert sg['si_remaining_after'] == si_before, sg
+    assert np.array_equal(v0, v1) and np.array_equal(t0, t1)
+    assert rep['history'][-1]['reason'] == 'shape_guard', rep['history']
+
+
+def test_shape_guard_off_reproduces_the_legacy_round():
+    v, t = _sphere_with_blade(3)
+    v_off, t_off, rep = pipeline_mod.si_excise_recap(
+        v, t, time_budget=30.0, shape_guard=False)
+    assert rep['applied'] and rep['reason'] == 'clean', rep
+    assert 'shape_guard' not in rep, rep
+
+
+def test_shape_guard_env_opt_out():
+    from sutura_engine.pipeline import stage1 as s1
+    os.environ['SUTURA_SI_EXCISE_GUARD'] = '0'
+    try:
+        assert s1.si_excise_shape_guard_enabled() is False
+        v, t = _sphere_with_blade(3)
+        _v, _t, rep = pipeline_mod.si_excise_recap(v, t, time_budget=30.0)
+        assert rep['applied'] and 'shape_guard' not in rep, rep
+    finally:
+        del os.environ['SUTURA_SI_EXCISE_GUARD']
+    assert s1.si_excise_shape_guard_enabled() is True
+    assert s1.SI_EXCISE_SHAPE_BUDGET_MM == 0.1
 
 
 def test_round_that_splits_the_mesh_is_rejected():

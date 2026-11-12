@@ -675,12 +675,16 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         _si_in_v, _si_in_t = cur_v, cur_t
         cur_v, cur_t, _si_rec = si_excise_recap(
             cur_v, cur_t, maxholesize=_p['maxholesize'],
-            time_budget=_si_excise_budget(triage_spec))
+            time_budget=_si_excise_budget(triage_spec),
+            ref_verts=_bu_raw_v, ref_tris=_bu_raw_t)
         # Only report when a round was actually accepted (self-intersections
-        # strictly reduced, holes/nm not worse); a mesh the excision cannot
-        # improve -- including any 0-SI mesh -- keeps the pre-existing report
-        # and output byte-identical.
-        if _si_rec.get('applied'):
+        # strictly reduced, holes/nm not worse) or when the visible-shape
+        # budget blocked a round; a mesh the excision cannot improve --
+        # including any 0-SI mesh -- keeps the pre-existing report and output
+        # byte-identical.
+        _si_guard_blocked = ((_si_rec.get('shape_guard') or {}).get('reason')
+                             == 'shape_guard')
+        if _si_rec.get('applied') or _si_guard_blocked:
             stats['si_excise'] = _si_rec
             after = topology.mesh_topology(cur_v, cur_t)
         if trace.is_active():

@@ -249,6 +249,14 @@ SI_EXCISE_MAX_FACE_FRACTION = 0.30  # scope brake: never excise > 30 % at once
 SI_EXCISE_DEFAULT_BUDGET = 5.0
 
 
+# Visible-surface movement budget of one SI-excise pass (millimetres). A round
+# may not move the visible input surface further than this from the frozen
+# original load, measured with the verifier's input-alone interior-wall rule;
+# without it a slot cut through the outer wall is committed as long as the
+# topology checks pass. Single source for code, tests and docs.
+SI_EXCISE_SHAPE_BUDGET_MM = 0.1
+
+
 SI_EXCISE_BUDGET_BY_INTENSITY = {
     'quick': 0.0,
     'balanced': 5.0,
@@ -275,6 +283,78 @@ def _si_excise_budget(spec):
     """SI-excise wall-clock budget (seconds) from the intensity preset."""
     key = getattr(spec, 'base', None) or getattr(spec, 'name', None)
     return SI_EXCISE_BUDGET_BY_INTENSITY.get(key, SI_EXCISE_DEFAULT_BUDGET)
+
+
+def si_excise_shape_guard_enabled(enabled=None):
+    """Resolve the SI-excise visible-shape budget (default on) from an explicit
+    value then ``SUTURA_SI_EXCISE_GUARD``."""
+    if enabled is None:
+        env = os.environ.get('SUTURA_SI_EXCISE_GUARD', '').strip().lower()
+        if env in ('0', 'false', 'no', 'off'):
+            enabled = False
+        elif env in ('1', 'true', 'yes', 'on'):
+            enabled = True
+        else:
+            enabled = True
+    return bool(enabled)
+
+
+def _si_excise_visible_metrics(ref_v, ref_t, cand_v, cand_t, *, buried=None,
+                               centroids=None):
+    """Verifier-rule visible movement of ``cand`` against the frozen ``ref``.
+
+    The rule matches the shape verifier on main: the visible input faces are
+    the ones ``sutura_geom.buried_face_mask`` does not mark (input alone), and
+    the distance is ``closest_points`` from their centroids to the candidate.
+    ``buried``/``centroids`` let the caller reuse the once-per-pass mask. Returns
+    ``(visible_mm, all_mm)`` or ``None`` when the geometry kernel cannot answer.
+    """
+    import sutura_geom
+    if not hasattr(sutura_geom, 'buried_face_mask'):
+        return None
+    try:
+        if buried is None:
+            buried, _detail = sutura_geom.buried_face_mask(
+                np.ascontiguousarray(ref_v, dtype=np.float64),
+                np.ascontiguousarray(ref_t, dtype=np.int32), 0.1)
+        buried = np.asarray(buried, dtype=bool)
+        if centroids is None:
+            centroids = np.asarray(ref_v, dtype=np.float64)[
+                np.asarray(ref_t, dtype=np.int64)].mean(axis=1)
+        d = np.asarray(sutura_geom.closest_points(
+            np.ascontiguousarray(cand_v, dtype=np.float64),
+            np.ascontiguousarray(cand_t, dtype=np.int32),
+            np.ascontiguousarray(centroids, dtype=np.float64))[1], dtype=np.float64)
+    except Exception:  # noqa: BLE001 - the guard must never crash the repair
+        return None
+    if d.size == 0:
+        return None
+    visible = ~buried
+    vis_mm = float(d[visible].max()) if visible.any() else 0.0
+    return vis_mm, float(d.max())
+
+
+def _si_excise_new_face_max_mm(ref_v, ref_t, cand_v, cand_t, new_faces):
+    """Max distance from the round's NEW re-cap faces back to the frozen input.
+
+    The input-to-output metric cannot see material a re-cap adds across a
+    concavity (39635: 261 mm3 of output-only volume), so the new faces are
+    checked in the opposite direction. Returns ``None`` when unavailable.
+    """
+    import sutura_geom
+    nf = np.asarray(new_faces, dtype=bool)
+    if nf.size == 0:
+        return None
+    try:
+        pts = np.asarray(cand_v, dtype=np.float64)[
+            np.asarray(cand_t, dtype=np.int64)[nf]].mean(axis=1)
+        d = np.asarray(sutura_geom.closest_points(
+            np.ascontiguousarray(ref_v, dtype=np.float64),
+            np.ascontiguousarray(ref_t, dtype=np.int32),
+            np.ascontiguousarray(pts, dtype=np.float64))[1], dtype=np.float64)
+    except Exception:  # noqa: BLE001
+        return None
+    return float(d.max()) if len(d) else None
 
 
 # Localized exact self-union of residual self-intersection clusters (after
@@ -328,7 +408,8 @@ def _should_run_local_exact(report, spec):
 def si_excise_recap(verts, tris, *, maxholesize=1000,
                     max_rounds=SI_EXCISE_MAX_ROUNDS,
                     time_budget=SI_EXCISE_DEFAULT_BUDGET,
-                    face_fraction=SI_EXCISE_MAX_FACE_FRACTION):
+                    face_fraction=SI_EXCISE_MAX_FACE_FRACTION,
+                    shape_guard=None, ref_verts=None, ref_tris=None):
     """Guarded SI excise + re-cap, array-only (no MeshSet).
 
     Starts with a one-ring dilation. On the native exact path a rejected
@@ -339,6 +420,17 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
     self-intersections strictly decrease, non-manifold edges and the
     connected-component count do not increase, and the mesh closes completely
     (``holes_after == 0``); otherwise the pre-round arrays are restored.
+
+    With the visible-shape budget (default on, ``SUTURA_SI_EXCISE_GUARD=0``
+    disables; ``shape_guard`` overrides) a round must also keep the visible
+    surface within ``SI_EXCISE_SHAPE_BUDGET_MM`` of the frozen reference
+    ``(ref_verts, ref_tris)`` -- the arrays as Stage 1 received them -- both
+    against the previous round's value and against the pass's initial value,
+    and the new re-cap faces must lie within the same budget of the reference.
+    A round that breaks the budget is rolled back and ends the pass with
+    ``reason='shape_guard'``; residual self-intersections stay reported.
+    Without a reference the function behaves exactly as before the budget.
+
     Returns ``(verts, tris, report)``.
     """
     v = np.asarray(verts, dtype=np.float64)
@@ -350,6 +442,12 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
         'budget_s': (None if time_budget is None else float(time_budget)),
         'seconds': 0.0, 'history': [],
     }
+    guard_on = si_excise_shape_guard_enabled(shape_guard)
+    guard_ref_v = guard_ref_t = None
+    guard_buried = guard_centroids = None
+    guard_available = False
+    initial_vis = None
+    last_vis = None
     init_mask = None
     with method_health.tier_guard('si_excise', 'tier') as _g0:
         init_mask, _si = topology.self_intersecting_faces(v, t)
@@ -365,6 +463,44 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
     if time_budget is not None and time_budget <= 0.0:
         report['reason'] = 'budget'
         return v, t, report
+
+    if guard_on:
+        guard_ref_v = np.ascontiguousarray(
+            np.asarray(verts if ref_verts is None else ref_verts,
+                       dtype=np.float64))
+        guard_ref_t = np.ascontiguousarray(
+            np.asarray(tris if ref_tris is None else ref_tris, dtype=np.int64))
+        # REF is fixed for the whole pass, so the mask and the centroids are
+        # built once; only the candidate BVH is rebuilt per evaluation.
+        try:
+            import sutura_geom
+            guard_available = hasattr(sutura_geom, 'buried_face_mask')
+        except ImportError:
+            guard_available = False
+        if guard_available:
+            guard_buried, _gd = sutura_geom.buried_face_mask(
+                guard_ref_v, guard_ref_t.astype(np.int32), 0.1)
+            guard_buried = np.asarray(guard_buried, dtype=bool)
+            guard_centroids = guard_ref_v[guard_ref_t].mean(axis=1)
+            _init = _si_excise_visible_metrics(
+                guard_ref_v, guard_ref_t, v, t, buried=guard_buried,
+                centroids=guard_centroids)
+            if _init is not None:
+                initial_vis = last_vis = float(_init[0])
+        report['shape_guard'] = {
+            'enabled': True,
+            'available': bool(guard_available),
+            'budget_mm': float(SI_EXCISE_SHAPE_BUDGET_MM),
+            'initial_vis_mm': (round(initial_vis, 4)
+                               if initial_vis is not None else None),
+            'final_vis_mm': None,
+            'rejected_round': None,
+            'rounds_rejected': 0,
+            'si_remaining_after': None,
+            'reason': None,
+        }
+        if not guard_available:
+            report['shape_guard']['reason'] = 'unavailable'
 
     report['ran'] = True
     t0 = time.perf_counter()
@@ -411,6 +547,12 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
                 v_work, t_work, _closed, _new = topology.close_holes(
                     v_work, t_work, maxholesize=maxholesize,
                     self_intersection=True, newfaceselected=False)
+                # close_holes appends the re-cap triangles after the kept ones
+                # (original faces are preserved bit-for-bit), so the new-face
+                # mask is the tail; the guard checks it against REF directly.
+                new_face_mask = np.zeros(len(t_work), dtype=bool)
+                if _new:
+                    new_face_mask[max(len(t_work) - int(_new), 0):] = True
                 v_work, t_work = topology.remove_unreferenced_vertices(
                     v_work, t_work)
                 topo_after = topology.mesh_topology(v_work, t_work)
@@ -427,23 +569,79 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
             holes_ok = holes_after == 0
             components_ok = comp_after <= comp_before
             si_ok = si_after is not None and si_after < current_si
-            if (si_ok and holes_ok and nm_after <= nm_before
-                    and components_ok):
+            topo_ok = bool(si_ok and holes_ok and nm_after <= nm_before
+                           and components_ok)
+            guard_ok = True
+            post_vis = new_face_mm = None
+            if topo_ok and guard_on and guard_available:
+                _post = _si_excise_visible_metrics(
+                    guard_ref_v, guard_ref_t, v_work, t_work,
+                    buried=guard_buried, centroids=guard_centroids)
+                if _post is not None:
+                    post_vis = float(_post[0])
+                    new_face_mm = _si_excise_new_face_max_mm(
+                        guard_ref_v, guard_ref_t, v_work, t_work,
+                        new_face_mask)
+                    budget = float(SI_EXCISE_SHAPE_BUDGET_MM)
+                    per_round_ok = (last_vis is None
+                                    or post_vis <= last_vis + budget)
+                    cumulative_ok = (initial_vis is None
+                                     or post_vis <= initial_vis + budget)
+                    new_face_ok = (new_face_mm is None
+                                   or new_face_mm <= budget)
+                    guard_ok = per_round_ok and cumulative_ok and new_face_ok
+            if topo_ok and guard_ok:
                 accepted = True
                 v, t = v_work, t_work
-                report['history'].append({
+                entry = {
                     'round': round_idx + 1,
                     'si_before': int(current_si),
                     'si_after': int(si_after),
                     'faces_after': int(topo_after.get('faces_number', 0) or 0),
                     'dilation_rings': rings,
-                })
+                }
+                if post_vis is not None:
+                    entry['pre_vis_mm'] = (round(last_vis, 4)
+                                           if last_vis is not None else None)
+                    entry['post_vis_mm'] = round(post_vis, 4)
+                    entry['new_face_mm'] = (round(new_face_mm, 4)
+                                            if new_face_mm is not None else None)
+                    last_vis = post_vis
+                report['history'].append(entry)
                 current_si = int(si_after)
                 report['rounds'] += 1
                 if current_si == 0:
                     report['reason'] = 'clean'
                 elif round_idx + 1 >= max_rounds:
                     report['reason'] = 'max_rounds'
+                break
+            if not guard_ok:
+                # The visible shape budget, not the topology check, rejected
+                # this round: restore and stop the whole pass so no later
+                # round can compound the movement. Residual SI stays reported.
+                v, t = saved_v.copy(), saved_t.copy()
+                sg = report['shape_guard']
+                sg['rounds_rejected'] = int(sg['rounds_rejected']) + 1
+                sg['rejected_round'] = round_idx + 1
+                sg['pre_vis_mm'] = (round(last_vis, 4)
+                                    if last_vis is not None else None)
+                sg['post_vis_mm'] = (round(post_vis, 4)
+                                     if post_vis is not None else None)
+                sg['new_face_mm'] = (round(new_face_mm, 4)
+                                     if new_face_mm is not None else None)
+                sg['reason'] = 'shape_guard'
+                report['history'].append({
+                    'round': round_idx + 1,
+                    'si_before': int(current_si),
+                    'si_after': int(si_after) if si_after is not None else None,
+                    'faces_after': int(topo_after.get('faces_number', 0) or 0),
+                    'dilation_rings': rings,
+                    'reason': 'shape_guard',
+                    'pre_vis_mm': sg.get('pre_vis_mm'),
+                    'post_vis_mm': sg.get('post_vis_mm'),
+                    'new_face_mm': sg.get('new_face_mm'),
+                })
+                report['reason'] = 'shape_guard'
                 break
             # Retry only the 40886-type rejection: the one-ring round reduced
             # the pre-existing boundary but could not close it.
@@ -454,7 +652,7 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
             v, t = saved_v.copy(), saved_t.copy()
             break
         if not accepted:
-            if report['reason'] not in ('no_selection', 'scope'):
+            if report['reason'] not in ('no_selection', 'scope', 'shape_guard'):
                 report['reason'] = 'rollback'
             break
         if report['reason'] in ('clean', 'max_rounds'):
@@ -463,6 +661,12 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
     report['removed_si'] = int(report['initial_si'] - current_si)
     report['applied'] = report['rounds'] > 0
     report['seconds'] = round(time.perf_counter() - t0, 3)
+    if guard_on:
+        sg = report.get('shape_guard')
+        if sg is not None:
+            sg['final_vis_mm'] = (round(last_vis, 4)
+                                  if last_vis is not None else None)
+            sg['si_remaining_after'] = int(current_si)
     return v, t, report
 
 
