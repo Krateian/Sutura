@@ -90,7 +90,6 @@ All notable changes to this project are documented here.
   notes") rather than claiming an unmeasured shape check. The GUI report details
   (behind the **Details** toggle) are now localized in English and Turkish.
   Display only: no repair output changes (core_clean byte gate 100/100).
-  Screenshots in the README/docs predate this change and need refreshing.
 - **The Tamponade switch now also controls the outer-shell pre-step.**
   `--no-tamponade` (and `SUTURA_TAMPONADE=0`, or the GUI checkbox) previously
   left the multi-part outer-shell union running before the first labelled

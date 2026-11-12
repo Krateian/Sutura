@@ -38,11 +38,11 @@
 
 ---
 
-Linux has no direct equivalent of Windows' right-click *Fix model* (3D Builder,
-Netfabb), and Bambu Studio's *Fix model* button does not work on Linux. Sutura
-fills that gap: pick a mesh, repair it, and get a repaired copy that slicers
-accept — from a GUI, the command line, a file-manager right-click or an
-OrcaSlicer plugin.
+The common one-click repair paths are Windows-only: 3D Builder's repair and
+Bambu Studio's *Fix model* (which calls Microsoft's Netfabb service) are not
+available on Linux or macOS. Sutura fills that gap on both: pick a mesh, repair
+it, and get a repaired copy that slicers accept — from a GUI, the command line,
+a file-manager right-click or an OrcaSlicer plugin.
 
 <p align="center">
   <img src="assets/screenshot.png" alt="Sutura main window" width="820">
@@ -63,12 +63,13 @@ OrcaSlicer plugin.
 - **One plain verdict.** A single headline verdict tells you if the model is
   ready to print, has caveats, or had its shape altered, with full health,
   risk, and fidelity scores behind **Details**.
-- **Many tools, one button.** Nineteen ranked repair methods sit behind a single
-  *Repair* button; the triage engine picks what a model needs.
+- **Many tools, one button.** Nineteen registered repair methods sit behind a
+  single *Repair* button; the triage engine picks from the enabled ones.
 - **Native and offline.** A Rust core (`sutura_geom`) does the geometry; no
   network access is needed after installation.
 - **Fits the workflow.** Dolphin service menu on KDE, Finder Quick Action on
-  macOS, an experimental OrcaSlicer plugin, batch repair and multi-object 3MF.
+  macOS, an experimental OrcaSlicer plugin (2.5.0+ / nightly, installed
+  separately), batch repair and multi-object 3MF.
 
 ## Install
 
@@ -112,17 +113,19 @@ sutura a.stl b.stl c.3mf         # batch
 - **KDE Dolphin:** right-click a model → **Repair with Sutura**.
 - **macOS Finder:** right-click → *Quick Actions* → **Sutura — Repair**.
 - **If something goes wrong:** a hard crash writes a capped `crash.log` in
-  Sutura's user-data folder (the GUI shows a short dialog); `sutura
-  --diagnostics out.zip` bundles a scrubbed copy for a bug report. The log never
-  leaves your machine unless you attach it. See
+  Sutura's user-data folder; uncaught errors also show a short dialog, while a
+  native crash leaves the log for the next launch. `sutura --diagnostics out.zip`
+  bundles a scrubbed copy for a bug report. The log never leaves your machine
+  unless you attach it. See
   [Troubleshooting](docs/guide/troubleshooting.md).
 - **3MF paint, seams and supports are preserved where possible.** They stay on
   triangles that survive unchanged; newly created triangles get none. When a
   repair loses them the report says so, with the kept / dropped / new counts.
   See [Usage](docs/guide/usage.md).
 - **Separate small parts are reported, never silently changed.** The report
-  lists the tiny components the repair removed (`< 8` faces) with their size and
-  distance to the main body, and lists small separate parts kept
+  lists the tiny components the repair removed (below the active Stage-1
+  small-part cutoff, `mincomponentsize`; 8 faces by default) with their size
+  and distance to the main body, and lists small separate parts kept
   (informational, no verdict change) — without deleting anything. See
   [Usage](docs/guide/usage.md).
 - **One verdict per repair.** Both the CLI and the GUI show a single headline
@@ -156,8 +159,8 @@ leaves healthy skin alone. In short:
 3. **Deeper steps run only when needed:** *Graft* rebuilds just the damaged
    region, *Coaptation* welds and joins folded or overlapping bodies, and the
    fallback tiers (*Splint*, *Dressing*, fTetWild) handle the hardest cases.
-4. **Stage 2** produces one closed, printable solid, and the result is reloaded
-   and checked before it is reported.
+4. **Stage 2** rebuilds a closed mesh as one watertight, printable solid; the
+   result is reloaded and checked before it is reported.
 
 The full walk-through is in [How Sutura works](docs/guide/how-it-works.md).
 

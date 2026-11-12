@@ -38,11 +38,12 @@
 
 ---
 
-Linux'ta Windows'un sağ tık *Fix model* özelliğinin (3D Builder, Netfabb)
-doğrudan bir karşılığı yoktur; Bambu Studio'nun *Fix model* düğmesi de Linux'ta
-çalışmaz. Sutura bu boşluğu doldurur: mesh'i seçin, onarın ve dilimleyicilerin
-kabul ettiği onarılmış bir kopya alın — GUI'den, komut satırından, dosya
-yöneticisinde sağ tıkla ya da bir OrcaSlicer eklentisiyle.
+Yaygın tek tıkla onarım yolları yalnızca Windows'ta çalışır: 3D Builder'ın
+onarımı ve Bambu Studio'nun *Fix model* özelliği (Microsoft'un Netfabb
+hizmetini çağırır) Linux veya macOS'ta kullanılamaz. Sutura bu boşluğu her iki
+platformda doldurur: mesh'i seçin, onarın ve dilimleyicilerin kabul ettiği
+onarılmış bir kopya alın — GUI'den, komut satırından, dosya yöneticisinde sağ
+tıkla ya da bir OrcaSlicer eklentisiyle.
 
 <p align="center">
   <img src="assets/screenshot.png" alt="Sutura ana penceresi" width="820">
@@ -53,7 +54,7 @@ yöneticisinde sağ tıkla ya da bir OrcaSlicer eklentisiyle.
 - **Yalnızca bozuk olanı onarır.** Delikler, yanlış birleşmiş kenarlar, ters
   yüzler, üst üste binen ya da kendini kesen parçalar ve kopuk döküntüler
   onarılır; temiz bir model değişmeden geçer.
-- **Topoloji ve şekil kontrollerinde geriye gitmez.** Her onarım adayı,
+- **Topoloji kötüleşmez; şekil değişimi raporlanır.** Her onarım adayı,
   yalnızca topolojik kusurlar kötüleşmediğinde (delik veya non-manifold kenar
   sayısı artmaz; birçok katmanda sıfır kusur şartı aranır) ve patlama sınırları
   aşılmadığında benimsenir; aksi halde reddedilir (bkz. ["Daha kötü yapmama" ilkesi neleri kapsar](docs/guide/tr/how-it-works.md#daha-kötü-yapmama-no-worse-ilkesi-neleri-kapsar)).
@@ -63,12 +64,13 @@ yöneticisinde sağ tıkla ya da bir OrcaSlicer eklentisiyle.
 - **Tek ve net hüküm.** Başlık hükmü modelin baskıya hazır olup olmadığını,
   notlar içerip içermediğini veya şeklinin değişip değişmediğini tek satırda
   söyler; Sağlık, Risk ve Sadakat puanları **Ayrıntılar** arkasında sunulur.
-- **Çok araç, tek düğme.** On dokuz sıralı onarım yöntemi tek bir *Onar*
-  düğmesinin arkasındadır; triage motoru modelin neye ihtiyaç duyduğunu seçer.
+- **Çok araç, tek düğme.** On dokuz kayıtlı onarım yöntemi tek bir *Onar*
+  düğmesinin arkasındadır; triage motoru etkin olanlar arasından seçer.
 - **Yerel ve çevrimdışı.** Geometriyi Rust çekirdeği (`sutura_geom`) yapar;
   kurulumdan sonra internet bağlantısı gerekmez.
 - **İş akışına uyar.** KDE'de Dolphin servis menüsü, macOS'ta Finder Quick
-  Action, deneysel bir OrcaSlicer eklentisi, toplu onarım ve çok nesneli 3MF.
+  Action, deneysel bir OrcaSlicer eklentisi (2.5.0+ / nightly, ayrıca kurulur),
+  toplu onarım ve çok nesneli 3MF.
 
 ## Kurulum
 
@@ -112,16 +114,18 @@ sutura a.stl b.stl c.3mf         # toplu onarım
 - **KDE Dolphin:** modele sağ tık → **Sutura ile Onar**.
 - **macOS Finder:** sağ tık → *Hızlı Eylemler* → **Sutura — Repair**.
 - **Bir şeyler ters giderse:** sert bir çökme, Sutura'nın kullanıcı verisi
-  klasörüne sınırlı boyutlu bir `crash.log` yazar (GUI kısa bir diyalog gösterir);
-  `sutura --diagnostics out.zip` hata bildirimi için temizlenmiş bir kopyasını
-  pakete ekler. Kayıt, siz eklemedikçe makinenizden çıkmaz.
+  klasörüne sınırlı boyutlu bir `crash.log` yazar; yakalanmamış hatalar ayrıca
+  kısa bir diyalog gösterir, yerel bir çökme ise kaydı bir sonraki açılışa
+  bırakır. `sutura --diagnostics out.zip` hata bildirimi için temizlenmiş bir
+  kopyasını pakete ekler. Kayıt, siz eklemedikçe makinenizden çıkmaz.
   Bkz. [Sorun giderme](docs/guide/tr/troubleshooting.md).
 - **3MF boya, dikiş ve destekleri mümkün olduğunca korunur.** Değişmeden kalan
   üçgenlerde kalır; yeni oluşturulan üçgenlere aktarılmaz. Bir onarım bunları
   kaybederse rapor, tutulan / bırakılan / yeni sayılarıyla bunu bildirir.
   Bkz. [Kullanım](docs/guide/tr/usage.md).
 - **Ayrı küçük parçalar raporlanır, sessizce değiştirilmez.** Rapor, onarımın
-  kaldırdığı küçük bileşenleri (`< 8` yüz) boyutları ve ana gövdeye uzaklıklarıyla
+  kaldırdığı küçük bileşenleri (etkin Aşama 1 küçük-parça eşiğinin altında,
+  `mincomponentsize`; varsayılan 8 yüz) boyutları ve ana gövdeye uzaklıklarıyla
   listeler ve korunan küçük ayrı parçaları (bilgilendirme amaçlı, hüküm
   değişmez) — hiçbir şey silinmeden. Bkz. [Kullanım](docs/guide/tr/usage.md).
 - **Onarım başına tek hüküm.** Hem CLI hem GUI tek bir başlık hükmü gösterir
@@ -157,8 +161,8 @@ sağlam deriye dokunmaz. Kısaca:
    bölgeyi yeniden kurar, *Coaptation* katlanmış ya da üst üste binmiş gövdeleri
    kaynaklayıp birleştirir, yedek katmanlar (*Splint*, *Dressing*,
    fTetWild) en zor durumları üstlenir.
-4. **Aşama 2** tek, kapalı ve basılabilir bir katı üretir; sonuç raporlanmadan
-   önce yeniden yüklenip kontrol edilir.
+4. **Aşama 2** kapalı bir mesh'i tek, su geçirmez ve basılabilir bir katı olarak
+   yeniden kurar; sonuç raporlanmadan önce yeniden yüklenip kontrol edilir.
 
 Ayrıntılı anlatım [Sutura nasıl çalışır](docs/guide/tr/how-it-works.md) sayfasındadır.
 
