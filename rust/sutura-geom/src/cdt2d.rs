@@ -799,9 +799,11 @@ impl Triangulation {
             }
         }
         let Some(t) = found else {
-            eprintln!("OUTSIDE: p=(s={}, t={}), s+t={}", p.s, p.t, &p.s + &p.t);
-            eprintln!("host_a={:?}, host_b={:?}, host_c={:?}", self.host.host_a, self.host.host_b, self.host.host_c);
-            eprintln!("vi provenance={:?}", self.verts[vi].provenance);
+            if std::env::var("SUTURA_SPLIT_PROFILE").is_ok() {
+                eprintln!("OUTSIDE: p=(s={}, t={}), s+t={}", p.s, p.t, &p.s + &p.t);
+                eprintln!("host_a={:?}, host_b={:?}, host_c={:?}", self.host.host_a, self.host.host_b, self.host.host_c);
+                eprintln!("vi provenance={:?}", self.verts[vi].provenance);
+            }
             return Err("inserted point outside host triangle".to_string());
         };
 
