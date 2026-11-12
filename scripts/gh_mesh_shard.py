@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One shard: run the verify harness with per-side repos/pythons and real keys."""
 import json, os, subprocess, sys, tempfile, traceback
-VERIFY = '.claude/skills/sutura-verify/scripts/verify_default_vs_optout.py'
+VERIFY = os.environ.get('VERIFY_SCRIPT', 'base/.claude/skills/sutura-verify/scripts/verify_default_vs_optout.py')
 KEYS = ('reload_holes','reload_non_manifold_edges','components','closed_shells',
         'orca_number_of_parts','orca_manifold','leak_max_mm','leak_count',
         'two_sided_max_mm','two_sided_p95_mm')
