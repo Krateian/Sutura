@@ -558,9 +558,9 @@ STRINGS = {
         'status_safe': 'Safe to inspect', 'status_review': 'Review recommended',
         'status_caution': 'Caution advised', 'status_failed': 'Failed / inspect',
         'status_unavailable': 'Scoring unavailable',
-        'health_risk_line': 'Health: %s/100 · Risk: %s/100 · %s',
-        'health_risk_fidelity_line': ('Health: %s/100 · Risk: %s/100 · '
-                                      'Fidelity: %s/100'),
+        'health_risk_line': 'Health: %s · Risk: %s · %s',
+        'health_risk_fidelity_line': ('Health: %s · Risk: %s · '
+                                      'Fidelity: %s'),
         'fidelity_verdict_preserved': 'Repaired, shape preserved',
         'fidelity_verdict_preserved_notes': ('Repaired with notes \u2014 shape '
                                              'preserved'),
@@ -1498,9 +1498,9 @@ STRINGS = {
         'status_safe': 'Kontrol için güvenli', 'status_review': 'İnceleme önerilir',
         'status_caution': 'Dikkatli olunmalı', 'status_failed': 'Başarısız / incele',
         'status_unavailable': 'Skorlama kullanılamıyor',
-        'health_risk_line': 'Sağlık: %s/100 · Risk: %s/100 · %s',
-        'health_risk_fidelity_line': ('Sağlık: %s/100 · Risk: %s/100 · '
-                                      'Sadakat: %s/100'),
+        'health_risk_line': 'Sağlık: %s · Risk: %s · %s',
+        'health_risk_fidelity_line': ('Sağlık: %s · Risk: %s · '
+                                      'Sadakat: %s'),
         'fidelity_verdict_preserved': 'Onarıldı, şekil korundu',
         'fidelity_verdict_preserved_notes': ('Notlarla onarıldı \u2014 şekil '
                                              'korundu'),
@@ -1941,6 +1941,11 @@ def _t(key, *args):
     return s % args if args else s
 
 
+def _score_text(value):
+    """Format one 0-100 score; an unavailable score prints plain n/a."""
+    return 'n/a' if value is None else '%s/100' % value
+
+
 def _print_impact_lines(pr):
     """Localize a ``print_report`` dict into repair-log lines (EN/TR)."""
     if not pr:
@@ -2336,11 +2341,9 @@ def format_report(data):
     if rf is not None or data.get('repair_verdict_code'):
         # Numbers only; the verdict itself is the single headline above.
         lines.append(_t('health_risk_fidelity_line',
-                        'n/a' if data.get('repair_health') is None
-                        else data.get('repair_health'),
-                        'n/a' if data.get('repair_risk') is None
-                        else data.get('repair_risk'),
-                        'n/a' if rf is None else rf))
+                        _score_text(data.get('repair_health')),
+                        _score_text(data.get('repair_risk')),
+                        _score_text(rf)))
         if data.get('repair_status'):
             lines.append(_t('detail_status', data.get('repair_status')))
     lines.append('')
@@ -6712,9 +6715,9 @@ class MainWindow(QMainWindow):
             # Numbers only; the single headline verdict is above.
             base += ' — ' + _t(
                 'health_risk_fidelity_line',
-                'n/a' if sc[0] is None else sc[0],
-                'n/a' if sc[1] is None else sc[1],
-                'n/a' if sc[4] is None else sc[4])
+                _score_text(sc[0]),
+                _score_text(sc[1]),
+                _score_text(sc[4]))
         self.defect_label.setText(base)
         lines = []
         # non-blocking unit warning (model may be authored in inches/cm)

@@ -130,6 +130,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- **Unavailable scores print `n/a`.** When Repair Health, Risk or Fidelity is
+  unavailable, the `--human` report and the GUI header print `Fidelity: n/a`
+  (and likewise `Health: n/a`, `Risk: n/a`) instead of the misleading
+  `n/a/100`. Display only; no report field or repair output changes.
 - **`final_summary` now describes the written output.** When a repair ran
   fallback attempts, the trace's `final_summary` could describe the last
   rejected internal candidate instead of the file that was saved (for example a

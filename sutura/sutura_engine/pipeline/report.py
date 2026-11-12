@@ -776,6 +776,11 @@ def fidelity_verdict_text(code, areas=0):
                                       _FIDELITY_VERDICT_TEXT['unavailable'])
 
 
+def _score_field(name, value):
+    """One Health/Risk/Fidelity field; an unavailable score prints plain n/a."""
+    return '%s: n/a' % name if value is None else '%s: %s/100' % (name, value)
+
+
 def human_report(r, show_defects=False, show_diff=False):
     if 'error' in r and 'stage1' not in r:
         return 'ERROR: %s' % r['error']
@@ -823,10 +828,10 @@ def human_report(r, show_defects=False, show_diff=False):
     rk = r.get('repair_risk')
     rf = r.get('repair_fidelity')
     if rh is not None or rk is not None or rf is not None:
-        lines.append('Health: %s/100   Risk: %s/100   Fidelity: %s/100' % (
-            'n/a' if rh is None else rh,
-            'n/a' if rk is None else rk,
-            'n/a' if rf is None else rf))
+        lines.append('%s   %s   %s' % (
+            _score_field('Health', rh),
+            _score_field('Risk', rk),
+            _score_field('Fidelity', rf)))
         if r.get('repair_fidelity_note'):
             lines.append('Fidelity note: %s' % r['repair_fidelity_note'])
     pr = r.get('print_report')

@@ -372,6 +372,30 @@ def test_human_report_headline():
         'Repaired, shape changed in 3 guessed area(s) - check')
 
 
+def test_human_report_unavailable_scores():
+    """An unavailable score prints 'n/a', never 'n/a/100'."""
+    from sutura_engine.pipeline.report import human_report
+    r = dict(_REPORT)
+    r.update({
+        'input': 'in.stl', 'output': 'out.stl',
+        'repair_health': 100, 'repair_risk': 100,
+        'repair_fidelity': None, 'repair_verdict_code': 'unavailable',
+    })
+    out = human_report(r)
+    assert 'Health: 100/100' in out, out
+    assert 'Risk: 100/100' in out, out
+    assert 'Fidelity: n/a' in out, out
+    assert 'n/a/100' not in out, out
+
+    r.update({'repair_health': None, 'repair_risk': None,
+              'repair_fidelity': 87, 'repair_verdict_code': 'preserved'})
+    out = human_report(r)
+    assert 'Health: n/a' in out, out
+    assert 'Risk: n/a' in out, out
+    assert 'Fidelity: 87/100' in out, out
+    assert 'n/a/100' not in out, out
+
+
 def test_changed_area_distance_gate():
     """A changed area counts only beyond the configured healthy-distance gate."""
     cfg = fidelity.load_config()

@@ -114,6 +114,7 @@ def main():
     print('ok  open in slicer command')
 
     test_format_report_localized()
+    test_unavailable_scores()
     test_crash_hooks()
     w.close()
 
@@ -183,6 +184,28 @@ def test_format_report_localized():
     finally:
         gui.STRINGS['en'] = en_tbl
     print('ok  format_report EN/TR + sparse report')
+
+
+def test_unavailable_scores():
+    """An unavailable score prints 'n/a', never 'n/a/100' (EN and TR)."""
+    data = {'output': 'a.stl', 'stage1': {},
+            'repair_health': 100, 'repair_risk': None,
+            'repair_fidelity': None, 'repair_verdict_code': 'unavailable'}
+    out = gui.format_report(data)
+    assert 'Health: 100/100' in out, out
+    assert 'Risk: n/a' in out, out
+    assert 'Fidelity: n/a' in out, out
+    assert 'n/a/100' not in out, out
+    en_tbl = gui.STRINGS['en']
+    try:
+        gui.STRINGS['en'] = gui.STRINGS['tr']
+        tr = gui.format_report(data)
+        assert 'Sağlık: 100/100' in tr, tr
+        assert 'Sadakat: n/a' in tr, tr
+        assert 'n/a/100' not in tr, tr
+    finally:
+        gui.STRINGS['en'] = en_tbl
+    print('ok  unavailable scores print n/a')
 
 
 if __name__ == '__main__':
