@@ -130,6 +130,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- **Saving to another filesystem works again (WSL `/mnt/c`, tmpfs `/tmp`).**
+  `sutura -o` failed with `[Errno 18] EXDEV` when the output directory was on
+  a different filesystem from the temporary directory. The finished mesh is
+  now copied into a hidden temporary file next to the destination, flushed and
+  fsynced, and only then atomically renamed onto the output path, so the final
+  save stays atomic and a failed copy leaves no truncated file. Reported by
+  @LordKhizir in #134.
 - **Unavailable scores print `n/a`.** When Repair Health, Risk or Fidelity is
   unavailable, the `--human` report and the GUI header print `Fidelity: n/a`
   (and likewise `Health: n/a`, `Risk: n/a`) instead of the misleading

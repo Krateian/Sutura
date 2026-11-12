@@ -197,6 +197,8 @@ JSON report), the command that was run and, if known, how the mesh was produced
 (slicer, scanner, CAD export). The issue template is in
 `.github/ISSUE_TEMPLATE/bug_report.md`; see also [CONTRIBUTING.md](CONTRIBUTING.md).
 
+Thanks to @LordKhizir for the cross-filesystem save bug report (#134).
+
 ## Sponsors
 
 If Sutura has saved time or a print,

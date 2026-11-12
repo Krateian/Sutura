@@ -199,6 +199,8 @@ kadar değerlidir. Bir mesh bildirirken lütfen `sutura <dosya> --human` çıkt�
 `.github/ISSUE_TEMPLATE/bug_report.md` dosyasındadır; ayrıca
 [CONTRIBUTING.md](CONTRIBUTING.md) dosyasına bakın.
 
+Dosya sistemleri arası kaydetme hatasını bildirdiği için @LordKhizir'e (#134) teşekkürler.
+
 ## Destekçiler
 
 Sutura zaman ya da bir baskı kazandırdıysa,

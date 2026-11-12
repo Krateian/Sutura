@@ -11,6 +11,7 @@ never overwritten; multi-object 3MF files are repaired per object.
 """
 import sys
 import os
+import errno
 import re
 import json
 import math
@@ -244,6 +245,41 @@ def _record_save_stage(out, gate):
                        gate=gate, out_measures=out_measures)
 
 
+def _move_output_into_place(tmp_out, out):
+    """Move the finished temp output onto the user's path, atomically.
+
+    ``os.replace`` is atomic only within one filesystem. When the temp dir is
+    on another filesystem (WSL /mnt/c, tmpfs /tmp), copy into a hidden temp
+    file next to the destination, fsync it, then replace that into place, so
+    a failure never leaves a truncated output.
+    """
+    try:
+        os.replace(tmp_out, out)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+    out_dir = os.path.dirname(os.path.abspath(out))
+    ext = os.path.splitext(out)[1]
+    fd, staged = tempfile.mkstemp(prefix='.sutura-', suffix=ext, dir=out_dir)
+    try:
+        with os.fdopen(fd, 'wb') as dst, open(tmp_out, 'rb') as src:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+            dst.flush()
+            os.fsync(dst.fileno())
+        try:
+            shutil.copystat(tmp_out, staged)
+        except OSError:
+            pass
+        os.replace(staged, out)
+    except BaseException:
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+        raise
+
+
 def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False, join_components=False,
@@ -424,7 +460,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             if force or _confirm_budget_save(budget):
                 raise_if_cancelled(cancel)
                 progress_stage(progress, 8, 'save')
-                os.replace(tmp_out, out)
+                _move_output_into_place(tmp_out, out)
                 _record_save_stage(out, {'status': 'written', 'path': out})
             else:
                 # Unambiguous, machine-detectable outcome: distinct from a
@@ -446,7 +482,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
         elif os.path.exists(tmp_out):
             raise_if_cancelled(cancel)
             progress_stage(progress, 8, 'save')
-            os.replace(tmp_out, out)
+            _move_output_into_place(tmp_out, out)
             _record_save_stage(out, {'status': 'written', 'path': out})
         else:
             _record_save_stage(out, {

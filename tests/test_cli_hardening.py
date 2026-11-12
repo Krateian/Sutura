@@ -108,6 +108,42 @@ def test_subcommand_human_error_is_text():
     assert 'error:' in r.stderr, r.stderr
 
 
+def test_output_move_survives_exdev(tmp):
+    """EXDEV on the final save stages next to the destination, then replaces."""
+    import errno
+    import unittest.mock as mock
+    if SUTURA not in sys.path:
+        sys.path.insert(0, SUTURA)
+    import repair
+    src_dir = os.path.join(tmp, 'tmp')
+    dst_dir = os.path.join(tmp, 'dest')
+    os.makedirs(src_dir)
+    os.makedirs(dst_dir)
+    src = os.path.join(src_dir, 'out.stl')
+    dst = os.path.join(dst_dir, 'model.stl')
+    payload = b'solid ok\nendsolid ok\n'
+    with open(src, 'wb') as f:
+        f.write(payload)
+
+    real_replace = os.replace
+    seen = []
+
+    def fake(path, target):
+        seen.append((path, target))
+        if len(seen) == 1:
+            raise OSError(errno.EXDEV, 'Invalid cross-device link')
+        return real_replace(path, target)
+
+    with mock.patch('os.replace', side_effect=fake):
+        repair._move_output_into_place(src, dst)
+
+    with open(dst, 'rb') as f:
+        assert f.read() == payload
+    assert len(seen) == 2, seen
+    assert os.path.dirname(seen[1][0]) == dst_dir, seen
+    assert not [n for n in os.listdir(dst_dir) if n.startswith('.sutura-')]
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix='sutura-cli-') as tmp:
         for name, fn in sorted(globals().items()):
