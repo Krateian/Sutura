@@ -320,7 +320,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             if force or _confirm_budget_save(budget):
                 raise_if_cancelled(cancel)
                 progress_stage(progress, 8, 'save')
-                os.replace(tmp_out, out)
+                shutil.move(tmp_out, out)
             else:
                 # Unambiguous, machine-detectable outcome: distinct from a
                 # generic 'error' (corrupt file, crash) so the GUI can offer
@@ -339,7 +339,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
         elif os.path.exists(tmp_out):
             raise_if_cancelled(cancel)
             progress_stage(progress, 8, 'save')
-            os.replace(tmp_out, out)
+            shutil.move(tmp_out, out)
     except CancelledError:
         result['status'] = 'cancelled'
         result['error'] = 'cancelled'

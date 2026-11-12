@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **`[Errno 18] Invalid cross-device link` when saving the output.** The
+  repaired file is built in a temp directory and then moved to its final path
+  with `os.replace()`, which fails when the two are on different filesystems
+  (for example WSL with the input on `/mnt/c`, or a tmpfs `/tmp`). It now uses
+  `shutil.move()`, which falls back to copy-and-delete across filesystems.
+
 ## [0.9.8] - 2026-10-31
 
 ### Added
