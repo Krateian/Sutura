@@ -161,9 +161,11 @@ jobs:
           print(json.dumps({'include':inc}))
           PY
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with: { pattern: 'summary-*', merge-multiple: true, path: summaries }
       - name: Board
         run: |
+          mkdir -p summaries
           python3 scripts/gh_mesh_board.py --plan plan.json summaries > board.md
           cat board.md >> "$GITHUB_STEP_SUMMARY"
           python3 scripts/gh_mesh_board.py --check --plan plan.json summaries
