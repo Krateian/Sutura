@@ -44,7 +44,7 @@ def resolve_mesh(corpus, rel):
     The derived sets (``data/derived/stl/...``) live in the private corpus
     repo; ``samples40`` points at ``tests/real-world-samples``, which is
     already tracked in the public repo.  Reading the input from the base
-    checkout keeps those 50 files out of the private repo.
+    checkout keeps those 40 files out of the private repo.
     """
     for root in (corpus, os.path.join(os.getcwd(), 'base')):
         p = os.path.join(root, rel)
