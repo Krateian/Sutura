@@ -518,24 +518,13 @@ fn collect_edge_points(
         };
         for seg in segs {
             for p in [&seg.p, &seg.q] {
-                let st = match frame.project(p) {
+                let mut st = match frame.project(p) {
                     Some(st) => st,
                     None => continue,
                 };
-                use num_traits::Signed;
-                let eps = BigRational::new(num_bigint::BigInt::from(1), num_bigint::BigInt::from(1_000_000_000));
-                let mut s = st.s;
-                let mut t_coord = st.t;
-                if s.abs() < eps {
-                    s = zero.clone();
-                }
-                if t_coord.abs() < eps {
-                    t_coord = zero.clone();
-                }
-                if (&one - &s - &t_coord).abs() < eps {
-                    let diff = &one - &s - &t_coord;
-                    t_coord = t_coord + diff;
-                }
+                frame.snap_near_boundary(&mut st);
+                let s = st.s;
+                let t_coord = st.t;
                 let on_ab = t_coord == zero;
                 let on_ac = s == zero;
                 let on_bc = &s + &t_coord == one;
@@ -765,10 +754,10 @@ pub(crate) fn arrangement_core(
             for seg in &segments[ti] {
                 // insert_vertex deduplicates against existing vertices.
                 let pi = cdt
-                    .insert_vertex(&seg.p)
+                    .insert_vertex_checked(&seg.p)?
                     .ok_or("unprojectable intersection point")?;
                 let qi = cdt
-                    .insert_vertex(&seg.q)
+                    .insert_vertex_checked(&seg.q)?
                     .ok_or("unprojectable intersection point")?;
                 constraint_segments.push(ConstrainedSegment {
                     endpoints: (pi, qi),
@@ -776,8 +765,17 @@ pub(crate) fn arrangement_core(
                 });
             }
             for p in &extra {
-                // insert_vertex deduplicates the host's own endpoints.
-                cdt.insert_vertex(p).ok_or("unprojectable edge point")?;
+                // insert_vertex_checked deduplicates the host's own endpoints.
+                // A conformance point that is still outside after the snap is
+                // skipped (it belongs to a neighbouring host), never a panic.
+                match cdt.insert_vertex_checked(p) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        *degenerate
+                            .entry("outside_host_point".to_string())
+                            .or_insert(0) += 1;
+                    }
+                }
             }
             cdt.add_constraints_batch(&constraint_segments);
 
@@ -868,6 +866,28 @@ mod tests {
             }
         }
         assert_eq!(si_after, 0);
+    }
+
+    /// Env-gated p9 reproducer: the 1910-face pin component must return a
+    /// clean shell_analyze result (ok or a non-panic fallback), never unwind.
+    /// Set SUTURA_P9_39635_COMPONENT to comp2_1910.stl to run it.
+    #[test]
+    fn comp2_1910_shell_analyze_does_not_panic() {
+        let Ok(path) = std::env::var("SUTURA_P9_39635_COMPONENT") else {
+            return;
+        };
+        let (v, t) = read_stl_welded(&path);
+        let tris: Vec<[u32; 3]> = t
+            .iter()
+            .map(|x| [x[0] as u32, x[1] as u32, x[2] as u32])
+            .collect();
+        let cfg = crate::shell::ShellConfig {
+            delta: 0.1,
+            ..Default::default()
+        };
+        let (_ov, _ot, res) =
+            crate::shell::shell_analyze_and_filter(&v, &tris, &cfg);
+        assert_ne!(res.reason, "panic");
     }
 
     /// Binary STL reader with exact vertex welding (test helper).

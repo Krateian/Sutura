@@ -6,12 +6,12 @@
 //! `incircle` can be evaluated with exact rational arithmetic.
 
 use crate::interval::Iv;
-use crate::point::{Point3, RatKey};
+use crate::point::{f64_to_rat, Point3, RatKey};
 use crate::profile_count;
 use std::cell::Cell;
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use num_traits::{Signed, Zero};
+use num_traits::{One, Signed, Zero};
 use std::collections::{HashMap, VecDeque};
 
 /// Experimental, output-changing CDT behaviours, all off by default (the
@@ -268,6 +268,71 @@ impl HostFrame {
             s: det_s / &self.det,
             t: det_t / &self.det,
         })
+    }
+
+    /// Snap a projected point that is within a scale-aware geometric
+    /// tolerance of a host edge onto that edge exactly.  The CDT locator is
+    /// exact, so a point left a few parameter ulps outside the host cannot be
+    /// inserted; the old fixed 1e-9 parameter clamp misses sliver hosts where
+    /// the same distance is much larger in `(s,t)`.
+    pub(crate) fn snap_near_boundary(&self, q: &mut Point2D) -> bool {
+        let host_scale = {
+            let u = sub_f64(self.host_b, self.host_a);
+            let v = sub_f64(self.host_c, self.host_a);
+            let w = sub_f64(self.host_b, self.host_c);
+            let len = |x: [f64; 3]| (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
+            len(u).max(len(v)).max(len(w)).max(1.0)
+        };
+        let tol = f64_to_rat(1e-9 * host_scale);
+        let tol2 = &tol * &tol;
+        if self.uu.is_zero() || self.vv.is_zero() {
+            return false;
+        }
+        let one = BigRational::one();
+        let s = q.s.clone();
+        let t = q.t.clone();
+        let rem = &one - &s - &t;
+        let d_ab2 = (&t * &t * &self.det) / &self.uu;
+        let d_ac2 = (&s * &s * &self.det) / &self.vv;
+        let den_bc = &self.uu + &self.vv
+            - BigRational::from_integer(BigInt::from(2)) * &self.uv;
+        if den_bc.is_zero() {
+            return false;
+        }
+        let d_bc2 = (&rem * &rem * &self.det) / den_bc;
+        let ab = d_ab2 <= tol2;
+        let ac = d_ac2 <= tol2;
+        let bc = d_bc2 <= tol2;
+        match (ab, ac, bc) {
+            (true, true, false) => {
+                q.s = BigRational::zero();
+                q.t = BigRational::zero();
+                true
+            }
+            (true, false, true) => {
+                q.s = one;
+                q.t = BigRational::zero();
+                true
+            }
+            (false, true, true) => {
+                q.s = BigRational::zero();
+                q.t = one;
+                true
+            }
+            (true, false, false) => {
+                q.t = BigRational::zero();
+                true
+            }
+            (false, true, false) => {
+                q.s = BigRational::zero();
+                true
+            }
+            (false, false, true) => {
+                q.t = &one - &q.s;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Return a (non-unit) normal vector of the host plane, computed from the
@@ -587,33 +652,55 @@ impl Triangulation {
     /// Insert a new point (projected from a 3D point) into the triangulation.
     /// Returns the index of the new vertex.
     pub fn insert_vertex(&mut self, p: &Point3) -> Option<usize> {
+        // Keep the historical infallible API for the shell/test callers: an
+        // unprojectable or outside point is skipped instead of panicking.
+        self.insert_vertex_checked(p).ok().flatten()
+    }
+
+    /// Fallible insertion used by the arrangement, where an outside point is
+    /// a real error and must fall back to the caller instead of unwinding.
+    pub(crate) fn insert_vertex_checked(
+        &mut self,
+        p: &Point3,
+    ) -> Result<Option<usize>, String> {
         // Dedup against existing vertices by provenance or (s,t); the
         // projection computed for the lookup is reused for the insertion.
         let q = match self.lookup_vertex(p) {
-            Ok(vi) => return Some(vi),
-            Err(q) => q?,
+            Ok(vi) => return Ok(Some(vi)),
+            Err(q) => q,
         };
+        let Some(q) = q else {
+            return Ok(None);
+        };
+        // The exact locator is authoritative; check before mutating the
+        // vertex tables so a rejected point cannot leave an orphan vertex.
+        if self.locate(&q).is_none() {
+            return Err("inserted point outside host triangle".to_string());
+        }
         let vi = self.push_vertex(CdtVertex {
             st: q,
             provenance: Some(p.clone()),
         });
-        self.insert_vertex_at(vi);
-        Some(vi)
+        self.insert_vertex_at(vi)?;
+        Ok(Some(vi))
     }
 
     /// Insert a vertex given only by exact 2D parameter coordinates (no 3D
     /// provenance).  Used as the exact fallback when no original-data
     /// construction is available.  Deduplicates by `(s,t)`.
-    fn insert_vertex_2d(&mut self, q: Point2D) -> usize {
+    fn insert_vertex_2d(&mut self, q: Point2D) -> Option<usize> {
         if let Some(&vi) = self.st_index.get(&st_key(&q)) {
-            return vi;
+            return Some(vi);
+        }
+        if self.locate(&q).is_none() {
+            return None;
         }
         let vi = self.push_vertex(CdtVertex {
             st: q,
             provenance: None,
         });
-        self.insert_vertex_at(vi);
-        vi
+        self.insert_vertex_at(vi).ok()?;
+        Some(vi)
     }
 
     /// Return the index of an existing vertex whose projected 2D coordinates
@@ -662,6 +749,8 @@ impl Triangulation {
             }
             None => return Err(None),
         };
+        let mut q = q;
+        self.host.snap_near_boundary(&mut q);
         match self.st_index.get(&st_key(&q)) {
             Some(&vi) => Ok(vi),
             None => {
@@ -677,16 +766,14 @@ impl Triangulation {
         }
     }
 
-    fn insert_vertex_at(&mut self, vi: usize) {
+    fn insert_vertex_at(&mut self, vi: usize) -> Result<(), String> {
         let p = self.verts[vi].st.clone();
-        let t = self.locate(&p);
-        if t.is_none() {
+        let Some(t) = self.locate(&p) else {
             eprintln!("OUTSIDE: p=(s={}, t={}), s+t={}", p.s, p.t, &p.s + &p.t);
             eprintln!("host_a={:?}, host_b={:?}, host_c={:?}", self.host.host_a, self.host.host_b, self.host.host_c);
             eprintln!("vi provenance={:?}", self.verts[vi].provenance);
-        }
-        assert!(t.is_some(), "inserted point outside host triangle");
-        let t = t.unwrap();
+            return Err("inserted point outside host triangle".to_string());
+        };
 
         // Check for point on an edge.
         let mut on_edge: Option<usize> = None;
@@ -714,6 +801,7 @@ impl Triangulation {
         // optimization can be added later once constraint insertion handles
         // all degenerate cases.
         let _ = to_legalize;
+        Ok(())
     }
 
     fn split_triangle(&mut self, t: usize, p: usize, stack: &mut Vec<(usize, usize)>) {
@@ -1251,7 +1339,9 @@ impl Triangulation {
                             &self.verts[u].st,
                             &self.verts[v].st,
                         );
-                        let vi = self.insert_vertex_2d(q);
+                        let Some(vi) = self.insert_vertex_2d(q) else {
+                            return;
+                        };
                         self.add_constraint(a, vi);
                         self.add_constraint(vi, b);
                         if self.tris[t].constrained[e] {
@@ -1343,7 +1433,10 @@ impl Triangulation {
                             &self.verts[c].st,
                             &self.verts[d].st,
                         );
-                        self.insert_vertex_2d(q)
+                        match self.insert_vertex_2d(q) {
+                            Some(vi) => vi,
+                            None => continue,
+                        }
                     }
                 };
                 self.diag_record_crossing(vi, n_initial);
@@ -2170,6 +2263,22 @@ mod tests {
 
     use super::*;
     use crate::point::f64_to_rat;
+
+    /// The p9-shell-panic four-point reproducer: the point projects to
+    /// t = -5.66e-9 on a 3.276e-7 sliver host, 7.1e-16 mm outside edge a-b.
+    /// The exact locator must see it after the scale-aware snap, not panic.
+    #[test]
+    fn insert_near_edge_point_in_sliver_host_snaps() {
+        use num_traits::Zero;
+        let a = Point3::Explicit([14.976719856262207, -4.2990708948309475e-7, 0.0]);
+        let b = Point3::Explicit([13.828669548034668, -2.7716360092163086, 0.0]);
+        let c = Point3::Explicit([14.976719856262207, -1.0229079805412766e-7, 0.0]);
+        let p = Point3::Explicit([14.976719730889196, -7.3258398358329e-7, 0.0]);
+        let mut cdt = Triangulation::from_host(&a, &b, &c).expect("valid host");
+        let vi = cdt.insert_vertex(&p).expect("near-edge point must insert");
+        assert!(cdt.verts[vi].st.t.is_zero(), "must snap onto edge a-b");
+        assert!(cdt.locate(&cdt.verts[vi].st).is_some());
+    }
 
     fn tri_right() -> (Point3, Point3, Point3) {
         (
