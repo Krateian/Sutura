@@ -28,6 +28,7 @@ sutura model.stl --mode aggressive   # agresif onarım modunu kullan
 sutura model.stl --classifier-engine classic  # classic sınıflandırıcı motorunu zorla
 sutura model.stl --max-geometry-change 10 --max-risk 40   # onarım bütçeleri (aşağıya bakın)
 sutura model.stl --max-risk 30 --force                    # bütçe aşılsa da sorunsuz kaydet
+sutura model.stl --no-fidelity                            # şekil skorunu atla (yalnızca rapor)
 sutura validate model.stl   # onarmadan ANALİZ (salt-okunur rapor)
 sutura model.stl --dry-run  # onarımın ne yapacağını raporlar, HİÇBİR ŞEY yazmaz
 sutura a.stl b.3mf c.stl    # batch: her dosya bir _fixed çıktı alır
@@ -125,6 +126,8 @@ eşikleri sürmez:
 Seçilen profil raporlanır (`repair_profile` JSON'da, `Profile:` `--human`da).
 Varsayılan (no `--profile`) eskisiyle bayt-birebir aynıdır. GUI, aynı
 profilleri bir **Profil** açılır listesiyle sunar (batch geneli).
+`sutura model.stl --profile scan`, eski `--mode aggressive` tarzı tarama
+işlemeye eşdeğerdir ancak modu `auto` olarak korur.
 
 **Birim uyarısı.** STL/OBJ dosyaları birim meta verisi taşımaz ve boyut
 temelli onarım eşikleri (delik boyutu, döküntü kesimi) milimetreyi varsayar.
@@ -179,14 +182,22 @@ validate ve `--dry-run` `estimated_confidence` taşır ve
 `Estimated confidence: X/100 (Label) — actual result may differ after repair`
 yazdırır.
 
-Her onarım raporu ayrıca **Onarım Sağlığı / Onarım Riski** taşır — klasik güven
-skorundan bağımsız, ayrı bir skorlama sistemi (`sutura/repair_score_config.json`
-ile yapılandırılabilir):
+Her onarım raporu ayrıca **Onarım Sağlığı / Onarım Riski / Sadakat** taşır —
+klasik güven skorundan bağımsız, ayrı bir skorlama sistemi
+(`sutura/repair_score_config.json` ile yapılandırılabilir):
 - `repair_health` (0–100) — final mesh'in geometrik sağlamlığı: su geçirmezlik
   (aşama 2 doğruladı), non-manifold kenar yok, self-intersection yok, kalan
   delik yok faktörlerinin ağırlıklı toplamı.
 - `repair_risk` (0–100) — onarımın mesh'i ne kadar değiştirdiği: yüz/vertex
   delta %, bileşen değişimi ve hacim delta %.
+- `repair_fidelity` (0–100) — onarımın *şekli* ne kadar koruduğu: sonucun
+  sağlıklı (kusursuz) girdi yüzeyine tek yönlü uzaklığı, keskin kenar geri
+  kazanımı, sağlıklı bölgede eklenen/kaldırılan hacim, hacim ve sınır kutusu
+  değişimi ve yeni oluşturulan yüzey alanı. Yalnızca nihai sonuçta, tüm aday
+  kararları verildikten sonra ölçülür ve hangi adayın benimseneceğini asla
+  değiştirmez. Eksik faktörler atlanır (ağırlıkları diğerlerine dağıtılır);
+  böylece keskin kenar terimi uygulanmayan pürüzsüz modellerde de skor anlamlı
+  kalır.
 - `repair_status` / `repair_status_code` — Sağlık/Risk tier kombinasyonundan
   bir config lookup tablosuyla türetilen iki-eksenli etiket: `safe`
   ("Kontrol için güvenli"), `review` ("İnceleme önerilir"), `caution`
@@ -194,13 +205,139 @@ ile yapılandırılabilir):
   Sağlık ve Risk bağımsız eksenlerdir; yüksek-sağlık + düşük-risk (`safe`) bir
   onarım, orta-sağlık + yüksek-risk (`caution`) ile asla aynı statüye
   çökmez. Faktör başına katkılar da raporlanır
-  (`repair_health_factors` / `repair_risk_factors`).
+  (`repair_health_factors` / `repair_risk_factors` /
+  `repair_fidelity_factors`).
+- `repair_verdict_code` / `repair_verdict_areas` — JSON raporundaki Sadakat
+  **şekil** hükmü ve değişen alan sayısı: `preserved` ("Onarıldı, şekil
+  korundu"), `changed` ("Onarıldı, N bölgede şekil değişti - kontrol edin"),
+  `low_confidence` ("... N bölge tahminle yeniden oluşturuldu ..."),
+  `not_repaired` ("Tam onarılmadı") veya `unavailable`. JSON alanı, yalnızca
+  gösterim için olan `ready` / `notes` kodlarını asla içermez. CLI `--human` ve
+  GUI bunu topoloji hükmüyle TEK bir başlıkta birleştirir: başarısız bir onarım
+  (veya orta katmanın altındaki Sağlık) `not_repaired` okunur; topolojide notlar
+  varken şekil korunduysa başlık "Notlarla onarıldı — şekil korundu" olur, asla
+  temiz bir "şekil korundu" değil; Sadakat ölçülmediğinde ise sade hükme döner
+  ("Baskıya hazır" / "Notlarla onarıldı"). Büyük tahmini alanlar
+  (büyük delik kapağı, fTetWild/Splint yeniden inşası)
+  `repair_verdict_low_confidence` bayrağını açar: oradaki yeniden oluşturma bir
+  tahmindir, ölçüm değildir. Alan başına sayımlar ve düşük-güvenilirlik küme
+  ayrıntısı analiz bütçesinin altındaki mesh'lerde ölçülür; daha büyük
+  mesh'ler skoru ve hükmü korur ama alan sayısını kullanılamaz olarak bildirir;
+  aynı nedenle çok büyük mesh'lerde keskin kenar terimi de atlanır ve
+  `repair_fidelity_note` bunu belirtir. Girdide ölçülebilir sağlıklı yüzey
+  yoksa (veya tüm en-yakın-nokta sonuçları geçersizse) skor `unavailable`
+  olur, asla yapay bir 100 değil. Çok nesneli dosyalarda düşük-güvenilirlikli
+  nesne dosya başlığını belirler. 0,1 mm ayrıntı toleransı sınır kutusu
+  köşegeninin `%0,2`'siyle sınırlanır; minyatürler ve metre ölçekli dışa
+  aktarımlar doğru ölçeklenir.
 
-`--human` bunları `Health: X/100   Risk: Y/100   Status: <label>` olarak
-gösterir. Skorlama fail-silent'tir: eksik/geçersiz metrik atlanır (ağırlığı
-diğerlerine dağıtılır) ve skorlama onarımı asla bozmaz. Çok nesneli 3MF
-raporları bunları nesne başına taşır. GUI kusur paneli seçili dosyanın başlık
-satırında gösterir.
+`--human` bu tek hükmü kendi satırında, ardından sayıları
+(`Health: X/100   Risk: Y/100   Fidelity: Z/100`) yazdırır; sayılar artık hükmü
+tekrarlamaz ve `repair_status` bir sonraki ayrıntı satırında kalır.
+`--no-fidelity` (veya Options onay kutusu) ölçümü atlar; yalnızca raporlama
+amaçlıdır, kaydedilen mesh'i asla değiştirmez. Skorlama fail-silent'tir:
+eksik/geçersiz metrik atlanır (ağırlığı diğerlerine dağıtılır) ve skorlama
+onarımı asla bozmaz. Çok nesneli 3MF raporları bunları nesne başına taşır; dosya
+düzeyi Sadakat en kötü nesnedir ve değişen/düşük-güvenilirlik alan sayıları
+toplanır. GUI, rapor özetinde aynı tek başlığı gösterir ve tam raporu — artık
+İngilizce ve Türkçe yerelleştirilmiş — **Ayrıntılar** düğmesinin arkasına
+katlar.
+
+### Onarım raporunu anlama
+
+#### Puanlama özet tablosu (Cheat Sheet)
+
+Her onarım raporu, tanılama güven skoruyla birlikte üç bağımsız 0–100 şekil ve ağ göstergesi sunar:
+
+| Puan | Ölçek | İyi yön | Neyi ölçer |
+|---|---|---|---|
+| **Sağlık** | 0 – 100 | **YÜKSEK olması iyidir** (100 idealdir) | **Topolojik ve yapısal bütünlük.** 100 puan, sıfır delik, sıfır non-manifold kenar, sıfır bozuk yüz, sıfır artık kendini-kesişim ve doğru yüz yönlenmesine sahip, tamamen kapalı, su geçirmez 2-manifold bir katıyı gösterir. Düşük puanlar kalan kusurları ifade eder. |
+| **Risk** | 0 – 100 | **DÜŞÜK olması iyidir** (0 idealdir) | **Ağdaki değişiklik derecesi.** Onarımın orijinal geometriyi ne kadar değiştirdiğini ölçer (yüz/vertex farkları, hacim kaymaları, kabuk budama veya katı remesh). Düşük risk puanı (0–25) modelin nazikçe yamandığını; yüksek risk (> 60) agresif bir yeniden inşa uygulandığını gösterir. |
+| **Sadakat** | 0 – 100 | **YÜKSEK olması iyidir** (100 idealdir) | **Sağlıklı bölgelerde şeklin korunma doğruluğu.** Girdiye doğru tek yönlü Hausdorff sapmasını, keskin kenar hatırlamasını (dihedral açılar) ve sağlıklı dolgu/kaldırma oranını ölçer. **Yalnızca raporlama amaçlıdır:** aday yöntemlerin benimsenmesini engellemez. Büyük hasarlı bölümler sıfırdan inşa edildiyse başlıkta `tahmini alanlar - kontrol edin` uyarısı verilir. |
+| **Güvenilirlik** | 0 – 100 / Yüksek-Orta-Düşük | *Tanılama kesinliği* | **Triage sınıflandırıcı güveni.** Sutura'nın girdi ağındaki kusur kategorisini teşhis ederken ve ilk onarım stratejisini seçerken ne kadar emin olduğunu gösterir. Çıktının geometrik kalitesinden bağımsız bir girdi analiz kesinliğidir. |
+
+> [!TIP]
+> **Risk puanının ters ölçekli olduğunu unutmayın:** Sağlık ve Sadakat puanlarında "yüksek puan iyidir" kuralı geçerliyken, **Risk puanı bir ceza metriğidir; 0 dokunulmamış ideali, 100 ise ağır müdahaleyi gösterir**. `Sağlık: 100   Risk: 1   Sadakat: 100` değerlerine sahip bir onarım neredeyse kusursuzdur!
+
+#### Başlık hükümleri ve inceleme önerileri
+
+CLI `--human` modu ve GUI, topoloji özeti ile Sadakat şekil kontrolünü **tek bir başlıkta** birleştirir:
+- `Baskıya hazır` / `Onarıldı, şekil korundu`: Topoloji kapalı ve sağlam; orijinal yüzey ayrıntıları korundu.
+- `Notlarla onarıldı — şekil korundu`: Topoloji kapatıldı ancak bilgilendirme notları var (örn. ince duvarlar veya zararsız kozmetik kendini-kesişmeler); yüzey şekli korundu.
+- `Onarıldı, N bölgede şekil değişti - kontrol edin`: Topoloji sağlamdır ancak agresif yedek onarım gerekti ve sağlıklı yüzey sınır kutusu köşegeninin %1,0'inden fazla kaydı (ve Sadakat 85'in altındadır).
+- `Onarıldı, N bölge tahminle yeniden oluşturuldu - kontrol edin`: Eksik veya parçalanmış bölümler katı yeniden inşasıyla (fTetWild, Splint veya büyük Tamponade kapağı) sıfırdan oluşturuldu; bu bölgelerdeki geometri algoritmik bir tahmindir. Bir modelde hem sağlıklı yüzey kayması hem de büyük yeniden inşa varsa, başlığı `low_confidence` ("tahminle yeniden oluşturuldu") kazanır.
+- `Tam onarılmadı` / `Başarısız`: Kusurlar güvenli sınırlar içinde tamamen su geçirmez manifold duruma getirilemedi.
+
+Başlık `kontrol edin` uyarısı verdiğinde:
+- **GUI'de:** Yüzeyin kaydığı veya yama yapıldığı yerleri görsel olarak görmek için **Önce / Sonra** karşılaştırma görünümünü veya **Isı Haritası (Heatmap)** sekmesini açın.
+- **CLI'da:** Vertex, yüz ve yüzey alanı değişimlerini görmek için `--human --diff` ile, kusur konumlarını listelemek için `--human --defects` ile çalıştırın.
+
+#### Örnek `--human` çıktısı
+
+Aşağıdaki çıktı, sınır deliği ve ince duvarlar içeren kusurlu bir modelin (`tests/real-world-samples/thingi10k_100173.stl`) gerçek onarım raporunu göstermektedir:
+
+```text
+Repaired with notes — shape preserved
+  Holes closed: 1 · Orientation: already correct · Parts: 1 kept · Shape change: 0.00%
+  Note: thin walls: ~8.0% of the surface is thinner than 0.5% of the model size (thinnest ~0.21 mm) [estimated]
+
+Input : model.stl
+Output: model_fixed.stl
+Mode  : auto
+Classifier: experimental
+Intensity: balanced
+Type  : organic (confidence 0.67) - default thresholds (below confidence gate)
+Confidence: 87/100 (High)
+Health: 100/100   Risk: 1/100   Fidelity: 100/100
+
+Print impact:
+  Fixed : 1 hole(s) closed
+  Remaining: none
+  Geometry: deviation max 0.0% of size
+  Not assessed: volume
+Methods: 19/19 OK
+Repair status: Safe to inspect
+
+Stage 1 (MeshLab):
+  Holes closed            : 1
+  Holes remaining         : 0
+  Non-manifold edges fixed: 0
+  Faces removed           : 0
+  Connected components    : 1
+  Two-manifold            : YES
+  Tamponade (plug)        : 1 plugs, 2 plug faces, holes=0 nm=0, healthy kept 250 in 0.00s adopted
+  Volume change          : n/a (input volume not measurable)
+
+Stage 2 (Manifold):
+  input_vertices: 128
+  input_faces: 252
+  input_watertight: True
+  construct_status: Error.NoError
+  ok: True
+  volume_before: 10070.636131079196
+  shells_found: 1
+  output_vertices: 128
+  output_faces: 252
+  volume_after: 10070.636131079196
+  shells: 1
+```
+
+#### Geometri terimleri sözlüğü
+
+- **Non-manifold (kenarlar / vertex'ler):** Bir ağın gerçek dünyadaki geçerli bir 2-manifold fiziksel yüzey gibi davranmasını engelleyen geometrik kusurlar — örneğin 3 veya daha fazla yüz tarafından paylaşılan bir kenar (T-birleşimi), tek bir yüze bağlı açık sınır kenarı ya da kum saati gibi tek bir izole noktada veya çizgide birbirine değen iki ayrı hacim.
+- **Yüz yönlenmesi (Winding orientation):** Bir üçgenin hangi tarafının boşluğa ("dış"), hangi tarafının katı gövdeye ("iç") baktığını belirleyen, üçgen köşe noktalarının (vertex) saat yönünde veya tersindeki tutarlı sıralanışı.
+- **fTetWild (Fast Tetrahedral Meshing in the Wild):** Bozuk yüzey üçgenlerini 3 boyutlu hacimsel bir tetrahedral katı gövdeye dönüştürerek yüzeyler ağır hasarlı olsa dahi su geçirmez çıktıyı güvenceye alan agresif bir kurtarma motoru.
+- **CDT (Constrained Delaunay Triangulation / Kısıtlı Delaunay Üçgenlemesi):** Kısıtlanmamış özellikleri bozmadan, tam olarak verilen sınır segmentlerine veya kısıtlamalarına uyan üçgenler yerleştiren kesin bir üçgenleme yöntemi.
+- **Sub-ULP (Unit in the Last Place / Son Basamak Birimi altı):** Ardışık kayan noktalı (floating-point) sayılar arasındaki en küçük aralıktan daha hassas aritmetik; kesin geometrik önermelerde (predicates) sayısal yuvarlama hataları olmadan sağlam yön ve kesişim testleri yapmak için kullanılır.
+- **Hausdorff mesafesi:** Bir yüzeydeki herhangi bir noktadan diğer yüzeydeki en yakın noktaya olan maksimum mesafe; orijinal ve onarılan şekiller arasındaki en kötü durum geometrik sapmasının matematiksel ölçüsü.
+- **Dihedral açı:** Bir kenarı paylaşan bitişik iki üçgen yüzün düzlemleri arasındaki iç açı; onarım sırasında keskin hatları tespit etmek ve mekanik kenarları korumak için kullanılır.
+
+Otomatik **yedek** sırası, isteğe bağlı olarak model başına `--auto-reorder`
+(veya Seçenekler → Yöntemler içindeki *Otomatik yeniden sıralama* onay kutusu)
+ile yeniden sıralanabilir. Model başına önerilen yöntem sıralamasını kullanır;
+temel işlem hattı ve derin onarım sırası değişmez ve Graft yine fTetWild’dan önce
+gelir. Kapalı gelir ve samples40 + oracle36 gate kümelerinde nötr kaldı (hiçbir
+mesh değişmedi).
 
 ### Baskı-etkisi raporu
 
@@ -208,7 +345,7 @@ Her onarım raporu, sonucu tek tek koşullara ayıran ve her birinin bir FDM
 baskısını nasıl etkilediğini belirten bir `print_report` bloğu taşır. Bu blok
 yalnızca zaten hesaplanmış ölçümlerin bir görünümüdür — mesh'i asla yeniden
 ölçmez — ve bilinçli olarak rakip bir "iyi mi" hükmü eklemez: tek üst-düzey
-yargı yukarıdaki Onarım Sağlığı / Riski / Durumu olarak kalır. Blok dört
+yargı yukarıdaki Onarım Sağlığı / Riski / Sadakati hükmüdür. Blok dört
 parçadan oluşur:
 
 - `fixed` — onarımın gerçekte ne yaptığı, sayılarla: kapatılan delikler,
@@ -267,6 +404,23 @@ dosyalarında nesne başına gösterilir; `--human --diff` bunları da yazdırı
 GUI kusur paneli tek satırlık bir özet gösterir ("Volume: +0.12% · Surface:
 -2.37% · Vertex: 12→9").
 
+Aynı `stage1` bloğu, **ayrı küçük parçalara** ne olduğunu kaydeder (mevcut
+`< mincomponentsize` kuralının ötesinde hiçbir şey silinmez):
+
+- `removed_small_parts` — Aşama 1'in `< mincomponentsize`-yüz kuralının
+  kaldırdığı bileşenler: `count`, `faces_total` ve sınırlı bir `parts` listesi;
+  her biri `faces`, `size_mm` (ve modelin `size_pct` değeri) ve ana gövdeye
+  `distance_mm` taşır.
+- `possible_debris` — onarılan mesh'te korunan küçük ayrı parça(lar) (ayrı,
+  kapalı, dejenere olmayan ve en büyük parçanın hacminin %0,5'inden küçük);
+  `faces`, `volume_pct`, `size_pct` ve `distance_mm` ile birlikte. Bu **yalnızca
+  bilgilendirmedir**: hükmü asla değiştirmez ve hiçbir şey kaldırılmaz.
+
+Her ikisi de çok nesneli 3MF dosyalarında nesne başına, `--human` raporunda
+(`Small parts removed …` / `Small separate part(s) kept: N (check if intended)`
+bloğu) ve GUI sonuç ayrıntılarında görünür. Korunan-parça satırı bilgilendirme
+amaçlıdır ve hazır bir onarımı notlu hale getirmez.
+
 Bir mesh yalnızca aşama 2 gerçekten çalışıp kapalı katıyı doğruladığında
 **su geçirmez** sayılır. Aşama 1 bir meshi kapatır ama aşama 2 atlanır, hata
 verir veya hiç çalışmazsa (ör. macOS/conda yerinde geri dönüşün kullanılamaması)
@@ -313,7 +467,13 @@ alanı bildirimleri korunur. Aşama 1 ayrıca köşe koordinatları değişmeyen
 `pid`/`p1`, ...) korur; yeni oluşturulan üçgenlere boya aktarılmaz. JSON raporu
 nesne başına `triangle_attributes` (`original_attributed`, `kept`, `dropped`,
 `output_triangles`) ve çok nesneli 3MF için toplam bir dosya düzeyi değeri
-taşır. `tests/test_3mf_roundtrip.py` ile regresyon testi yapılır.
+taşır. `tests/test_3mf_roundtrip.py` ile regresyon testi yapılır. Bu ayrıca
+kullanıcıya gösterilir: onarılan bir 3MF'de sağ kalan üçgenlerde öznitelik
+kaybolduysa, `--human` raporu ve GUI tutulan / bırakılan / özniteliksiz yeni
+üçgen sayılarını içeren tek bir uyarı satırı gösterir (çok nesneli dosyada nesne
+başına); yalnızca yeni oluşturulan üçgenler özniteliksizse — ki bu beklenen bir
+durumdur — aynı sayılar nötr bir not olarak gösterilir. Girdide hiç
+boya/dikiş/destek özniteliği yoksa hiçbir şey gösterilmez.
 
 GUI:
 
@@ -509,13 +669,15 @@ Kurulum (OrcaSlicer 2.5.0+ / nightly):
 İzinler: `register_capabilities()` var olan Sutura CLI yolunu
 `request_permissions(fs_read=...)` ile, ayrıca `threading` ile ve önceden
 adlandırabildiği iki kararlı süreç hedefiyle (OrcaSlicer süreç sayımı yoklaması
-ve sabit klasör gösterme komutu) önceden beyan eder. Bu anahtar sözcükleri kabul
-eden bir sürüm yüklemede yalnızca bir kez istem gösterir. Gönderilen
-**2.5.0-alpha** yalnızca `fs_read` kabul eder; bu yüzden eklenti fs_read-yalnız
-beyana geri düşer (okuma izni korunur) ve kullanıcı **yüklemede bir dosya okuma
-istemi** ile **ilk kullanımda bir kez, tetiklendiğinde "bir iş parçacığı
-oluştur" istemi** ile karşılaşır; onaylandığında izin kalıcı olur ve sonraki
-Repair, Analyze ve Show file çalıştırmaları başka istem göstermez. Repair ve
+ve sabit klasör gösterme komutu) önceden beyan eder. 2.5.0 RC ve sonrasında
+`request_permissions()` bu beyanları kabul eder; bu yüzden eklenti **yüklemede
+yalnızca bir kez** (dosya okumalarını, iş parçacığı oluşturmayı ve iki süreç
+hedefini kapsayan tek bir birleşik diyalog) istem gösterir ve bir daha
+göstermez. Yalnızca `fs_read` kabul eden daha eski bir nightly'de eklenti
+fs_read-yalnız beyana geri düşer (okuma izni korunur) ve kullanıcı **yüklemede
+bir dosya okuma istemi** ile **ilk kullanımda bir kez, tetiklendiğinde "bir iş
+parçacığı oluştur" istemi** ile karşılaşır; onaylandığında izin kalıcı olur ve
+sonraki Repair, Analyze ve Show file çalıştırmaları başka istem göstermez. Repair ve
 Analyze başlatmaları eklentinin oluşturduğu çalışan iş parçacıklarında
 gerçekleşir ve bu iş parçacıklarının denetim bağlamı boştur, dolayısıyla 2.5'te
 denetlenmezler. Bir ret, panelde başarısız olan işlemi adlandırarak bildirilir —

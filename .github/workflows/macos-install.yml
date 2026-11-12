@@ -216,3 +216,85 @@ jobs:
           ./uninstall.sh --purge
           test ! -e "$APP/data"
           test ! -e "$HOME/.config/sutura"
+
+  macos-source-bootstrap:
+    name: macOS source bootstrap (no prebuilt wheel, no Rust)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Miniforge (conda base, Python 3.11)
+        uses: conda-incubator/setup-miniconda@v4
+        with:
+          miniforge-variant: Miniforge3
+          python-version: "3.11"
+          use-only-tar-bz2: true
+
+      - name: Hide the runner's Rust toolchain and force the source path
+        run: |
+          # macOS runners install Rust through Homebrew; /opt/homebrew/bin
+          # must stay on PATH (brew/cmake/python), so unlink the formulae.
+          if command -v brew >/dev/null 2>&1; then
+            brew unlink rustup >/dev/null 2>&1 || true
+            brew unlink rust >/dev/null 2>&1 || true
+          fi
+          # Drop every PATH entry that still exposes a rustup/cargo binary.
+          # System dirs and Homebrew's prefix stay: if one still has a
+          # toolchain the strict check below must fail instead of losing a
+          # path the rest of the job needs.
+          keep_dir() {
+            case "$1" in
+              /opt/homebrew/bin|/usr/bin|/bin|/usr/local/bin|/usr/sbin|/sbin)
+                return 0
+                ;;
+            esac
+            if [ -x "$1/rustup" ] || [ -x "$1/cargo" ]; then
+              return 1
+            fi
+            return 0
+          }
+          CLEAN_PATH="$(printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r d; do
+            d="${d%/}"
+            if keep_dir "$d"; then printf '%s\n' "$d"; fi
+          done | paste -sd: -)"
+          export PATH="$CLEAN_PATH"
+          hash -r
+          echo "PATH=$CLEAN_PATH" >> "$GITHUB_ENV"
+          if FOUND="$(command -v rustup || command -v cargo)"; then
+            echo "::error::rustup/cargo still on PATH at '$FOUND'; the bootstrap test is invalid"
+            exit 1
+          fi
+          mkdir -p /tmp/fresh-home
+          echo "HOME=/tmp/fresh-home" >> "$GITHUB_ENV"
+          echo "SUTURA_RELEASE_BASE=file:///tmp/no-such-releases" >> "$GITHUB_ENV"
+
+      - name: Run installer (bootstraps Rust + cmake itself; Xcode CLT provides the compiler)
+        env:
+          SUTURA_WITH_FTETWILD: "0"
+          SHELL: /bin/zsh
+        run: ./install-macos.sh
+
+      - name: Assert the toolchain is APP_DIR-scoped and cmake is not shipped
+        run: |
+          test -x "$HOME/.local/share/sutura/tools/cargo/bin/cargo"
+          ENV_PY="$(conda run -n sutura-env which python)"
+          echo "ENV_PY=$ENV_PY" >> "$GITHUB_ENV"
+          test ! -e "$(dirname "$ENV_PY")/cmake"
+          test ! -e "$HOME/.cargo"
+          "$ENV_PY" -c "import sutura_geom; assert hasattr(sutura_geom, 'stage2_rebuild')"
+
+      - name: CLI smoke on the built-from-source install
+        run: |
+          python3 tests/make_broken_stl.py /tmp/broken.stl
+          "$HOME/.local/bin/sutura" /tmp/broken.stl > /tmp/broken.json 2>&1 || true
+          "$ENV_PY" -c "import json; d=json.load(open('/tmp/broken.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
+
+      - name: Uninstall removes the bootstrapped toolchain
+        run: |
+          ./uninstall.sh
+          test ! -e "$HOME/.local/share/sutura/tools"
+          test ! -e "$HOME/.cargo"

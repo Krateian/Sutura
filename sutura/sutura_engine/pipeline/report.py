@@ -657,13 +657,144 @@ def _brief_note_lines(b):
     return out
 
 
+def _small_parts_section(s1):
+    """Small-part block for one mesh's Stage-1 dict (report-only)."""
+    s1 = s1 or {}
+    lines = []
+
+    def _dist(v):
+        return ('%.3g mm' % v) if v is not None else 'n/a'
+
+    rem = s1.get('removed_small_parts')
+    if rem and rem.get('count'):
+        lines.append('')
+        lines.append('Small parts removed (< %d faces): %d component(s), %d face(s)'
+                     % (rem.get('min_faces', 8), rem['count'],
+                        rem.get('faces_total', 0)))
+        for p in rem.get('parts', []):
+            pct = (' (%.3g%% of model)' % p['size_pct']
+                   if p.get('size_pct') is not None else '')
+            lines.append('  %d face(s), size %.3g mm%s, %s from the main body'
+                         % (p['faces'], p.get('size_mm', 0.0), pct,
+                            _dist(p.get('distance_mm'))))
+        extra = rem['count'] - len(rem.get('parts', []))
+        if extra > 0:
+            lines.append('  ... (%d more not listed)' % extra)
+    pd = s1.get('possible_debris')
+    if pd and pd.get('count'):
+        lines.append('')
+        lines.append('Small separate part(s) kept: %d (check if intended)'
+                     % pd['count'])
+        for p in pd.get('parts', []):
+            lines.append('  %d face(s), %.3g%% of the largest volume, %s from '
+                         'the main body'
+                         % (p['faces'], p.get('volume_pct') or 0.0,
+                            _dist(p.get('distance_mm'))))
+        extra = pd['count'] - len(pd.get('parts', []))
+        if extra > 0:
+            lines.append('  ... (%d more not listed)' % extra)
+    return lines
+
+
+def _small_parts_lines(r):
+    """Small-part visibility for --human, per object for a multi-object 3MF.
+
+    (a) components the Stage-1 ``< N faces`` rule dropped, (b) small separate
+    part(s) kept in the repaired mesh. Informational only.
+    """
+    reps = [x for x in (r.get('object_reports') or []) if isinstance(x, dict)]
+    if reps:
+        out = []
+        for i, rep in enumerate(reps):
+            block = _small_parts_section(rep.get('stage1') or {})
+            if not block:
+                continue
+            if block and block[0] == '':
+                block = block[1:]
+            out.append('')
+            out.append('Small parts (%s):'
+                       % (rep.get('model') or ('object %d' % i)))
+            out.extend(block)
+        return out
+    return _small_parts_section(r.get('stage1') or {})
+
+
+def _attribute_lines(r):
+    """3MF triangle-attribute keep/drop lines for --human output.
+
+    A warning when attributed triangles were dropped; a neutral note when only
+    newly created triangles lack attributes (which is expected); nothing when
+    the input had no attributes.
+    """
+    stats = classification.attribute_stats(r)
+    if stats is None:
+        return []
+    if stats['dropped'] > 0:
+        head = ('WARNING: %d painted/seam/support triangle attribute(s) were '
+                'lost; new triangles have none (kept %d, dropped %d, new '
+                'without attributes %d).'
+                % (stats['dropped'], stats['kept'], stats['dropped'],
+                   stats['new_without']))
+    elif stats['new_without'] > 0:
+        head = ('Note: triangle attributes were kept where possible; new '
+                'triangles have none (kept %d, dropped %d, new without '
+                'attributes %d).'
+                % (stats['kept'], stats['dropped'], stats['new_without']))
+    else:
+        return []
+    lines = ['', head]
+    for o in stats['objects']:
+        lines.append('  %s: kept %d, dropped %d, new without attributes %d'
+                     % (o.get('model') or 'object', o['kept'], o['dropped'],
+                        o['new_without']))
+    return lines
+
+
+_FIDELITY_VERDICT_TEXT = {
+    'preserved': 'Repaired, shape preserved',
+    'preserved_notes': 'Repaired with notes \u2014 shape preserved',
+    'changed': 'Repaired, shape changed in %d area(s) - check',
+    'changed_no_area': 'Repaired, shape changed - check',
+    'low_confidence': ('Repaired, shape changed in %d guessed area(s) '
+                       '- check'),
+    'low_confidence_no_area': ('Repaired, shape may be rebuilt '
+                               '- check'),
+    'not_repaired': 'Not fully repaired',
+    'unavailable': 'Shape check unavailable',
+}
+
+
+def fidelity_verdict_text(code, areas=0):
+    """Plain-language Fidelity verdict (English; the GUI localizes it)."""
+    code = code or 'unavailable'
+    if code in ('changed', 'low_confidence'):
+        n = int(areas or 0)
+        if n <= 0:
+            return _FIDELITY_VERDICT_TEXT[code + '_no_area']
+        return _FIDELITY_VERDICT_TEXT[code] % n
+    return _FIDELITY_VERDICT_TEXT.get(code,
+                                      _FIDELITY_VERDICT_TEXT['unavailable'])
+
+
+def _score_field(name, value):
+    """One Health/Risk/Fidelity field; an unavailable score prints plain n/a."""
+    return '%s: n/a' % name if value is None else '%s: %s/100' % (name, value)
+
+
 def human_report(r, show_defects=False, show_diff=False):
     if 'error' in r and 'stage1' not in r:
         return 'ERROR: %s' % r['error']
     brief = classification.brief(r)
     s1 = r.get('stage1', {})
     lines = []
-    lines.append(classification.VERDICT_LABELS[brief['verdict']])
+    # ONE headline verdict: the Fidelity repair_verdict with the topology brief
+    # folded in (classification.headline_verdict). The old brief label is not
+    # printed as a second verdict.
+    _hv = classification.headline_verdict(r)
+    if _hv['code'] in classification.VERDICT_LABELS:
+        lines.append(classification.VERDICT_LABELS[_hv['code']])
+    else:
+        lines.append(fidelity_verdict_text(_hv['code'], _hv['areas']))
     lines.append(_brief_count_line(brief))
     lines.extend(_brief_note_lines(brief))
     if brief['verdict'] == 'failed' and brief.get('error'):
@@ -695,11 +826,14 @@ def human_report(r, show_defects=False, show_diff=False):
                      % (rc, str(r.get('repair_confidence_label', '?')).title()))
     rh = r.get('repair_health')
     rk = r.get('repair_risk')
-    if rh is not None or rk is not None:
-        lines.append('Health: %s/100   Risk: %s/100   Status: %s' % (
-            'n/a' if rh is None else rh,
-            'n/a' if rk is None else rk,
-            r.get('repair_status', 'n/a')))
+    rf = r.get('repair_fidelity')
+    if rh is not None or rk is not None or rf is not None:
+        lines.append('%s   %s   %s' % (
+            _score_field('Health', rh),
+            _score_field('Risk', rk),
+            _score_field('Fidelity', rf)))
+        if r.get('repair_fidelity_note'):
+            lines.append('Fidelity note: %s' % r['repair_fidelity_note'])
     pr = r.get('print_report')
     if pr:
         block = human_print_report(pr, include_advisories=False)
@@ -728,6 +862,15 @@ def human_report(r, show_defects=False, show_diff=False):
     if r.get('material_discarded'):
         lines.append('Material: input OBJ has mtllib/usemtl references which '
                      'are not preserved in the repaired output.')
+    lines.extend(_attribute_lines(r))
+    lines.extend(_small_parts_lines(r))
+    if r.get('repair_status'):
+        lines.append('Repair status: %s' % r.get('repair_status'))
+    if (r.get('repair_fidelity_metrics') or {}).get('changed_areas'):
+        lines.append('Shape areas: %d changed, %d low-confidence' % (
+            (r.get('repair_fidelity_metrics') or {}).get('changed_areas') or 0,
+            (r.get('repair_fidelity_metrics') or {}).get(
+                'low_confidence_areas') or 0))
     lines.append('')
     lines.append('Stage 1 (MeshLab):')
     lines.append('  Holes closed            : %d' % s1.get('holes_closed', 0))

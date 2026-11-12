@@ -75,6 +75,7 @@ def test_trace_schema_and_content(tmp_path):
 
     expected_stages = [
         "load",
+        "outer_shell",
         "tamponade_prepass",
         "flap_prepass",
         "stage1_chain",
@@ -91,6 +92,7 @@ def test_trace_schema_and_content(tmp_path):
         "stage2",
         "p_weld",
         "validate",
+        "save",
     ]
     recorded_stage_names = [s["stage"] for s in stages]
     assert recorded_stage_names == expected_stages
@@ -111,8 +113,12 @@ def test_trace_schema_and_content(tmp_path):
             assert "verts" in s["output"]
             assert "sha256" in s["output"]
 
-    # Final summary should match final stage output
+    # The save stage measures the written file; final_summary follows it, not
+    # the last internal candidate.
+    assert stages[-1]["stage"] == "save"
+    assert stages[-1]["gate"]["status"] == "written"
     assert data["final_summary"]["sha256"] == stages[-1]["sha256"]
+    assert data["final_summary"] == stages[-1]["output"]
 
 
 def test_trace_on_vs_off_byte_identical(tmp_path):
@@ -148,6 +154,99 @@ def test_trace_on_vs_off_byte_identical(tmp_path):
             bytes_on = f2.read()
 
         assert bytes_off == bytes_on, f"Byte divergence with trace ON for {model}!"
+
+
+def test_trace_final_summary_is_the_written_output(tmp_path, monkeypatch):
+    """Regression for the 39635 class of bug: a rejected candidate recorded
+    after the output was written must not become ``final_summary``.
+
+    The repair registry is replaced with a fake that writes a known mesh to
+    the trial output and then records a larger rejected candidate, mirroring a
+    baseline repair followed by a fallback attempt. The save stage must
+    describe the written file, not the last internal record.
+    """
+    import numpy as np
+    import repair
+    from sutura_engine import trace as trace_mod
+
+    verts = np.array([
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], dtype=np.float64)
+    tris = np.array([
+        [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
+        [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+        [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]], dtype=np.int32)
+
+    def fake_repair(src, out, tmpdir, **kwargs):
+        repair.save_mesh(out, verts, tris)
+        rejected_v = np.vstack([verts, verts])
+        rejected_t = np.vstack([tris, tris + len(verts)])
+        trace_mod.record_stage(
+            "stage1_chain", "fake.rejected_candidate",
+            rejected_v, rejected_t, rejected_v, rejected_t,
+            gate={"status": "rejected"})
+        return {"input": src, "output": out}
+
+    monkeypatch.setattr(repair.method_registry, "repair_with_methods",
+                        fake_repair)
+    src = str(tmp_path / "in.stl")
+    out = str(tmp_path / "out.stl")
+    trace_path = str(tmp_path / "trace.json")
+    repair.save_mesh(src, verts, tris)
+
+    result, _category = repair.process_file(
+        src, False, out=out, trace_path=trace_path, no_history=True,
+        fidelity_enabled=False)
+    assert "error" not in result
+
+    with open(trace_path, "r") as f:
+        data = json.load(f)
+    stages = data["stages"]
+    assert stages[-1]["stage"] == "save"
+    assert stages[-1]["gate"]["status"] == "written"
+    assert stages[-1]["output"]["faces"] == len(tris)
+    assert data["final_summary"]["faces"] == len(tris)
+    # The rejected candidate exists in the trace but is not the final summary.
+    assert any(s["stage"] == "stage1_chain"
+               and s["output"]["faces"] == 2 * len(tris) for s in stages)
+
+
+def test_trace_outer_shell_follows_tamponade(tmp_path):
+    """The outer-shell pre-step is part of Tamponade and gets its own stage.
+
+    Default: adopted on thingi10k_55772 (4,408 -> 3,938 faces). With
+    ``--no-tamponade`` the pre-step is disabled, so its input and output are
+    the same mesh; only the opt-out path changes.
+    """
+    sample = "tests/real-world-samples/thingi10k_55772.stl"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "sutura:sutura/sutura_engine:" + env.get("PYTHONPATH", "")
+
+    def _run(extra, name):
+        out = str(tmp_path / name)
+        trace_path = str(tmp_path / (name + ".json"))
+        cmd = [sys.executable, "sutura/repair.py", sample, "-o", out,
+               "--trace", trace_path] + extra
+        res = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        assert res.returncode == 0, f"Repair failed: {res.stderr}"
+        with open(trace_path, "r") as f:
+            data = json.load(f)
+        stage = next(s for s in data["stages"] if s["stage"] == "outer_shell")
+        return out, stage
+
+    out_on, shell_on = _run([], "on.stl")
+    out_off, shell_off = _run(["--no-tamponade"], "off.stl")
+
+    assert shell_on["gate"]["status"] == "adopted"
+    assert shell_on["input"]["faces"] == 4408
+    assert shell_on["output"]["faces"] == 3938
+
+    assert shell_off["gate"]["status"] == "disabled"
+    assert shell_off["gate"]["reason"] == "tamponade_disabled"
+    assert shell_off["input"]["faces"] == shell_off["output"]["faces"] == 4408
+
+    with open(out_on, "rb") as f_on, open(out_off, "rb") as f_off:
+        assert f_on.read() != f_off.read()
 
 
 def test_trace_diff_tool_identical(tmp_path):

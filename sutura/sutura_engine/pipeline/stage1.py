@@ -126,13 +126,18 @@ def _non_manifold_edge_faces(tris):
     return selected
 
 
-def apply_chain(verts, tris, chain):
+def apply_chain(verts, tris, chain, sink=None):
     """Run a Stage-1 chain on plain arrays and return ``(v, t, applied, skipped)``.
 
     Every filter used by the Stage-1 chains is native; no MeshSet is created.
     ``set_selection_none`` is a no-op and a preceding
     ``compute_selection_by_non_manifold_edges_per_face`` writes a mask consumed
     by ``meshing_remove_selected_faces``.
+
+    ``sink`` (optional dict): when given, the
+    ``meshing_remove_connected_component_by_face_number`` step records what it
+    dropped under ``sink['removed_small_parts']`` (read-only measurement, never
+    changes the removal itself).
     """
     v = np.asarray(verts, dtype=np.float64)
     t = np.asarray(tris, dtype=np.int64)
@@ -152,6 +157,13 @@ def apply_chain(verts, tris, chain):
             elif name == 'meshing_remove_unreferenced_vertices':
                 v, t = topology.remove_unreferenced_vertices(v, t)
             elif name == 'meshing_remove_connected_component_by_face_number':
+                if sink is not None:
+                    try:
+                        from sutura_engine import debris as _debris
+                        sink['removed_small_parts'] = _debris.removed_small_parts(
+                            v, t, params.get('mincomponentsize', 8))
+                    except Exception:
+                        sink['removed_small_parts'] = None
                 v, t = topology.remove_connected_components(
                     v, t, min_faces=params.get('mincomponentsize', 8),
                     remove_unref=params.get('removeunref', True))

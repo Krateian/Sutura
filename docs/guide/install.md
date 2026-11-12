@@ -10,8 +10,12 @@ Linux:
   Python cannot create a venv, the installer downloads a standalone Python
   3.11 automatically.
 * `sutura_geom` is installed from a verified prebuilt wheel, so no Rust,
-  cmake or C++ compiler is needed on supported platforms. A source build is
-  only a fallback when the toolchain is already present.
+  cmake or C++ compiler is needed on supported platforms. When no wheel exists
+  for the platform, the installer fetches what the source build needs on its
+  own, in user space: rustup + a minimal Rust toolchain and cmake
+  (~11 MB + ~90 MB download, ~460 MB + ~137 MB on disk; opt out with
+  `SUTURA_NO_TOOLCHAIN_FETCH=1`). The one prerequisite it cannot install is a
+  C++20 compiler; on macOS `xcode-select --install` shows the system dialog.
 * KDE Plasma for the Dolphin service menu (optional; CLI and GUI work anywhere)
 
 macOS (Apple Silicon / Intel):
@@ -23,11 +27,10 @@ macOS (Apple Silicon / Intel):
 
 Python 3.11 is used as a fallback runtime for the fTetWild tier only when the
 main interpreter is outside 3.10–3.14; a normal install with a recent
-`python3` does not need it.
-
-* Arch: Python 3.11 is not in the official repositories; `install.sh` downloads a standalone fallback runtime automatically when needed (`SUTURA_NO_PYTHON_DOWNLOAD=1` to opt out)
-* Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
-* Fedora: `sudo dnf install python3.11`
+`python3` does not need it. When it is needed, `install.sh` finds one entirely
+in user space — an existing usable `python3.11`, a standalone build it downloads
+itself (~27 MB), or a Python 3.11 already managed by `uv` — and never prints a
+`sudo apt`/`dnf` command. `SUTURA_NO_PYTHON_DOWNLOAD=1` disables the download.
 
 ## Install
 
@@ -93,17 +96,23 @@ see below).
 is installed automatically by `install.sh` and `install-macos.sh` from a
 verified prebuilt abi3 wheel. The installer retries the release asset briefly
 and then uses the latest compatible abi3 wheel; no Rust or cmake is needed on
-supported platforms. A source build from `rust/sutura-geom` runs only when no
-wheel is available and the toolchain is already present. AppImage and macOS
-.app/.dmg bundles include the extension. It accelerates Method #13 Graft (morphology shell wrap),
+supported platforms. When no wheel is available (a new architecture, a failed
+or offline release asset, or a branch checkout), the installer builds it from
+`rust/sutura-geom` and fetches what the build needs itself, in user space only,
+printing the sizes first: rustup + a minimal Rust toolchain (~11 MB + ~90 MB
+download, ~460 MB on disk) and cmake from its PyPI wheel (~54 MB download,
+~137 MB on disk). They live under `~/.local/share/sutura/tools` — never
+`~/.cargo` — and `uninstall.sh` removes them; `SUTURA_NO_TOOLCHAIN_FETCH=1`
+refuses the download. cmake is installed into a throwaway tools directory and is
+not shipped in the runtime environment. The one prerequisite the installer
+cannot provide is a C++20 compiler: if none is present it prints a single line
+(on macOS `xcode-select --install`, which shows the system dialog) and stops.
+AppImage and macOS .app/.dmg bundles include the extension. It accelerates Method #13 Graft (morphology shell wrap),
 the Flap surface-hole fill (`flap_fill`), the Dressing coat
 (`dressing_coat`) and the Tamponade interior plug (`tamponade`), and carries the
-exact indirect predicates. **The extension is required:** when neither a
-prebuilt wheel nor an existing source toolchain is available, the installer
-stops with one named platform message; startup and `sutura --self-check`
-likewise fail hard and name the missing extension instead of degrading
-silently. Use `SUTURA_GEOM_WHEEL=<path>` for a local wheel, or
-`SUTURA_GEOM_FROM_SOURCE=1` to force compilation when the toolchain exists.
+exact indirect predicates. **The extension is required.** Use
+`SUTURA_GEOM_WHEEL=<path>` for a local wheel, or
+`SUTURA_GEOM_FROM_SOURCE=1` to force compilation.
 Source builds require Rust >= 1.89 (the `kiddo` 6.3 MSRV).
 The former `SUTURA_NO_GEOM=1` opt-out has been removed.
 
@@ -128,7 +137,7 @@ Sutura environment only, showing the download and on-disk sizes first. Both
 refuse to change a bundled or system layout (AppImage, `.dmg`, system Python)
 and report why.
 
-On Arch, `install.sh` automatically downloads a standalone Python 3.11 runtime only as the fTetWild fallback interpreter when no in-range `python3` is present (set `SUTURA_NO_PYTHON_DOWNLOAD=1` to disable).
+When the fTetWild fallback needs a Python 3.11 and none is available, `install.sh` gets one in user space (an existing `python3.11`, a standalone build it downloads itself ~27 MB, or a `uv`-managed 3.11 if `uv` is already installed) — never a `sudo apt`/`dnf` command. `SUTURA_NO_PYTHON_DOWNLOAD=1` disables the download.
 
 ### macOS
 

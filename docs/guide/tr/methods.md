@@ -18,6 +18,10 @@ preset'te önceki davranışını korur. Seçilen yoğunluk raporda
 olarak görünür; `--list-intensities` presetleri ve profilleri etkin
 değerleriyle yazdırıp çıkar.
 
+`--deep-repair` ayrıca `SUTURA_DEEP_REPAIR` ve `~/.config/sutura/config.json`
+içindeki `deep_repair` anahtarından varsayılan alır (GUI'nin yazmadığı açık bir
+elle geçersiz kılma; bayrak kazanır), aksi halde `full`.
+
 - **Quick** — derin-onarım merdivenini ve fTetWild katmanını tamamen atlar
   (`deep_repair=off`, fTetWild kapalı) ve sadeleştirme merdiveni boştur: en
   hızlı çalışma; zor ağları açık bırakır.
@@ -265,6 +269,13 @@ etiketlerini doldurur ve CLI bu tam sırayı `--methods` olarak alır. Panel,
 elle sırayı ilkeye kaydetmez. Güvenlik kapıları, `[si_escalation]` ve katman
 kapı tabloları kilitli ve salt okunur gösterilir.
 
+**Otomatik yeniden sıralama** (isteğe bağlı), *Otomatik* panelindeki bir onay
+kutusu ve CLI `--auto-reorder` bayrağıdır: **otomatik yedek** yöntemleri model
+başına öneri sıralamasına göre yeniden sıralar. Yalnızca yedek deneme sırası
+değişir — temel işlem hattı ve derin onarım sırası değişmez ve Graft yine
+fTetWild’dan önce gelir (çok nesneli 3MF’de de). Varsayılan olarak KAPALI gelir
+ve herhangi bir varsayılan değişikliğinden önce ölçülür.
+
 ![Yöntem denetim paneli: salt okunur otomatik sıra, elle sıra ve kilitli kapılar](../../../assets/methods-panel.png)
 
 ### Yinelenen öge onarımı (otomatik/elle seçici)
@@ -431,7 +442,10 @@ katmanlarından önce ikinci bir şans** alır.
 
 **Varsayılan olarak açıktır**: kapatmak için `--no-tamponade` (veya
 `SUTURA_TAMPONADE=0`) ya da Seçenekler → Onarım sekmesindeki **Tamponad
-(delikleri içeriden doldur)** onay kutusu. Çalışmadan önce katman düzeyinde bir
+(delikleri içeriden doldur)** onay kutusu. Aynı anahtar dış-kabuk ön-geçişini de
+atlar: ilk etiketli aşamadan önce iç duvarları eriten çok parçalı dış-kabuk
+birleşimi yalnızca Tamponad açıkken çalışır; bu yüzden `--no-tamponade` girdi
+geometrisini bu noktada değiştirmez. Çalışmadan önce katman düzeyinde bir
 **şekil uygunluk kartı** modelin gerçek bir iç hacmi olup olmadığını denetler.
 İnce kabuk / açık yüzey (düşük kompaktlık, büyük açık sınır alanı ve ince-duvar
 oranı) *iç hacim yok; Flap'e bırakıldı* gerekçesiyle atlanır; tıkaç denenmez.

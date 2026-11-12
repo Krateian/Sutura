@@ -156,6 +156,45 @@ def test_multi_object_3mf_reports_flap_aggregate(tmp):
     assert agg['adopted'] <= agg['ran'] <= agg['objects'], agg
 
 
+def test_multi_object_aggregate_scores(tmp):
+    """File-level Health/Risk/Fidelity must agree with the worst object."""
+    path = os.path.join(tmp, 'layered_scores.3mf')
+    _make_layered(path)
+    r = _run([path])
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    d = _json(r)
+    reps = [o for o in d.get('object_reports') or [] if isinstance(o, dict)]
+    assert reps, d
+
+    hs = [o['repair_health'] for o in reps
+          if isinstance(o.get('repair_health'), (int, float))]
+    rs = [o['repair_risk'] for o in reps
+          if isinstance(o.get('repair_risk'), (int, float))]
+    fs = [o['repair_fidelity'] for o in reps
+          if isinstance(o.get('repair_fidelity'), (int, float))]
+    assert hs and rs and fs, d
+    assert d.get('repair_health') == min(hs), (d.get('repair_health'), hs)
+    assert d.get('repair_risk') == max(rs), (d.get('repair_risk'), rs)
+    if any(o.get('repair_fidelity') is None for o in reps):
+        assert d.get('repair_fidelity') is None, d
+    else:
+        assert d.get('repair_fidelity') == min(fs), (d.get('repair_fidelity'), fs)
+
+    # The file verdict follows the semantic worst object, not the numeric one:
+    # not_repaired > low_confidence > changed > preserved > unavailable.
+    sev = {'not_repaired': 4, 'low_confidence': 3, 'changed': 2,
+           'preserved': 1, 'unavailable': 0}
+    codes = [o.get('repair_verdict_code') or 'unavailable' for o in reps]
+    worst_code = max(codes, key=lambda c: sev.get(c, 0))
+    if any(o.get('repair_verdict_low_confidence') for o in reps) and \
+            worst_code not in ('not_repaired', 'unavailable'):
+        worst_code = 'low_confidence'
+    assert d.get('repair_verdict_code') == worst_code, (
+        d.get('repair_verdict_code'), codes, reps)
+    assert bool(d.get('repair_verdict_low_confidence')) == any(
+        o.get('repair_verdict_low_confidence') for o in reps), d
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix='sutura-stage2-3mf-') as tmp:
         failed = 0

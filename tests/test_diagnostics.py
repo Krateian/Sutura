@@ -30,6 +30,19 @@ def test_sanitize_value():
     assert cleaned['nested']['path'] == '~/.config/sutura'
 
 
+def test_sanitize_case_insensitive_and_mounts():
+    home = '/Users/testuser'
+    user = 'testuser'
+    s = diagnostics.sanitize_value
+    assert s('/Users/TestUser/x.stl', home, user) == '~/x.stl'
+    assert s('by TestUser', home, user) == 'by <user>'
+    assert s('/Volumes/Secret/part.stl', home, user) == \
+        '/Volumes/<name>/part.stl'
+    assert s('/media/testuser/p.stl', home, user) == '/media/<user>/p.stl'
+    assert s('/run/media/testuser/p.stl', home, user) == \
+        '/run/media/<user>/p.stl'
+
+
 def test_collect_system_info():
     info = diagnostics.collect_system_info()
     assert 'sutura_version' in info

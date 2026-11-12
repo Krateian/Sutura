@@ -74,7 +74,7 @@ def main():
     failed.pop('stage2', None)
     w._render_report_brief('/tmp/in.stl', failed, 'ERROR: broken')
     assert '✗' in w.report_verdict.text()
-    assert 'Could not fully repair' in w.report_verdict.text()
+    assert 'Not fully repaired' in w.report_verdict.text()
     assert 'hole(s) remain' in w.report_notes.text(), w.report_notes.text()
     print('ok  failed verdict')
 
@@ -112,7 +112,100 @@ def main():
         gui.subprocess.Popen = old_popen
     assert launched and launched[0] == ['orca-slicer', out], launched
     print('ok  open in slicer command')
+
+    test_format_report_localized()
+    test_unavailable_scores()
+    test_crash_hooks()
     w.close()
+
+
+def test_crash_hooks():
+    """An uncaught exception writes crash.log and still chains to stderr; the
+    modal dialog never appears on a headless/CI platform."""
+    os.environ['SUTURA_DATA_DIR'] = os.path.join(_TMP, 'data')
+    try:
+        from sutura.diagnostics import crash_log_path
+    except ImportError:
+        from diagnostics import crash_log_path
+    p = crash_log_path()
+    if os.path.exists(p):
+        os.remove(p)
+    chained = []
+    old_prev = gui._PREV_EXCEPTHOOK
+    gui._PREV_EXCEPTHOOK = lambda *a: chained.append(a)
+    try:
+        try:
+            raise RuntimeError('boom-hook')
+        except Exception:
+            gui._gui_excepthook(*sys.exc_info())
+    finally:
+        gui._PREV_EXCEPTHOOK = old_prev
+    with open(p, encoding='utf-8') as f:
+        text = f.read()
+    assert 'RuntimeError: boom-hook' in text, text
+    assert chained, 'excepthook must chain to the previous hook'
+    # No modal under offscreen/CI.
+    shown = []
+
+    class _MB:
+        @staticmethod
+        def warning(*a, **k):
+            shown.append(a)
+    old_mb = gui.QMessageBox
+    gui.QMessageBox = _MB
+    try:
+        gui._CRASH_DIALOG_SHOWN = False
+        gui._show_crash_dialog()
+    finally:
+        gui.QMessageBox = old_mb
+    assert not shown, 'modal crash dialog must not appear headless/CI'
+    print('ok  crash excepthook logs + chains; no headless dialog')
+
+
+def test_format_report_localized():
+    """format_report runs in EN and TR and survives a sparse report.
+
+    Exercises the real details-body formatter (not a hardcoded string) with
+    None stage1/stage2/objects and a 3MF report whose object lists are None.
+    """
+    sparse = {'output': 'a.stl', 'stage1': None, 'stage2': None, 'objects': None}
+    en = gui.format_report(sparse)
+    assert 'Output file:' in en, en
+    multi = {'output': 'a.3mf', 'stage1': {}, 'objects': 2,
+             'objects_watertight': 1, 'object_reports': None}
+    assert '3MF objects repaired' in gui.format_report(multi)
+    en_tbl = gui.STRINGS['en']
+    try:
+        gui.STRINGS['en'] = gui.STRINGS['tr']
+        tr = gui.format_report(sparse)
+        assert 'Çıktı dosyası:' in tr, tr
+        assert 'Aşama 1' in tr, tr
+        assert 'Onarılan 3MF nesnesi' in gui.format_report(multi)
+    finally:
+        gui.STRINGS['en'] = en_tbl
+    print('ok  format_report EN/TR + sparse report')
+
+
+def test_unavailable_scores():
+    """An unavailable score prints 'n/a', never 'n/a/100' (EN and TR)."""
+    data = {'output': 'a.stl', 'stage1': {},
+            'repair_health': 100, 'repair_risk': None,
+            'repair_fidelity': None, 'repair_verdict_code': 'unavailable'}
+    out = gui.format_report(data)
+    assert 'Health: 100/100' in out, out
+    assert 'Risk: n/a' in out, out
+    assert 'Fidelity: n/a' in out, out
+    assert 'n/a/100' not in out, out
+    en_tbl = gui.STRINGS['en']
+    try:
+        gui.STRINGS['en'] = gui.STRINGS['tr']
+        tr = gui.format_report(data)
+        assert 'Sağlık: 100/100' in tr, tr
+        assert 'Sadakat: n/a' in tr, tr
+        assert 'n/a/100' not in tr, tr
+    finally:
+        gui.STRINGS['en'] = en_tbl
+    print('ok  unavailable scores print n/a')
 
 
 if __name__ == '__main__':

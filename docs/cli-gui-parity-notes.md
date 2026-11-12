@@ -223,6 +223,10 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   (EN/TR), and the repair-log panel renders the adopted / not-adopted verdict.
   The library default (`TAMPONADE_DEFAULT_ENABLED = True`) runs the tier on every
   path; `--no-tamponade` / `SUTURA_TAMPONADE=0` / the GUI checkbox disable it.
+  The same switch also disables the outer-shell pre-step (the multi-part
+  outer-shell union that runs before the first labelled stage); the trace
+  records it as the `outer_shell` stage with status `disabled` under the
+  opt-out.
   Its prepass/seal budget is deterministic cut-grid-cell work
   (`TAMPONADE_PREPASS_WORK_BY_INTENSITY`); the env override
   `SUTURA_TAMPONADE_PREPASS_BUDGET` is now interpreted in work units (the former

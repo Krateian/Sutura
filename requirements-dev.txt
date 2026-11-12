@@ -7,7 +7,7 @@
 # oracle/builder, so it is installed for development and CI test runs only.
 # The runtime guard tests/test_no_trimesh.py enforces that sutura/ imports
 # no trimesh.
-trimesh==5.1.1
+trimesh==5.2.0
 
 # PyMeshLab is NOT a Sutura runtime dependency either: Stage 1 topology, hole
 # closing, self-intersection classification and decimation now run natively in
@@ -17,6 +17,9 @@ trimesh==5.1.1
 # that sutura/ imports no pymeshlab.  On Linux it installs from PyPI; on Apple
 # Silicon there is no PyPI wheel, so macOS developers must install it from
 # conda-forge (conda install -c conda-forge pymeshlab).
+# Still imported as an optional oracle by scripts/benchmark_repair_corpus.py
+# and scripts/experiments/alpha_wrap_prototype.py; it must not be re-added to
+# the runtime dependency set.
 pymeshlab==2025.7.post1
 
 # pytest is NOT a Sutura runtime dependency.  The CI test job runs every suite
@@ -24,4 +27,4 @@ pymeshlab==2025.7.post1
 # tests/test_solid_engine.py) delegate their __main__ block to pytest.main and
 # use pytest fixtures (tmp_path, monkeypatch), so pytest must be installed for
 # that job.  Every other suite is a dependency-free plain script.
-pytest==9.1.1
+pytest==9.2.0

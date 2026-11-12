@@ -160,7 +160,8 @@ açıktır:
   (örneğin Rubik küpü tarzı montajlar), **dış kabuk çıkarma** ön adımı hafif bir
   genişletmeyle (`5e-4 * bbox_diagonal`, 100 mm'lik nesne için ~0,05 mm) ve
   boolean birleşimle iç arayüzleri çözerek iç yüzeyleri ve kendini kesmeleri
-  ana onarım geçişlerinden önce yok eder.
+  ana onarım geçişlerinden önce yok eder. Bu ön adım Tamponad anahtarına
+  bağlıdır: Tamponad'ı kapatmak onu da atlar.
 * *Stage 1'den sonra, son çare olarak:* fTetWild yedek katmanı (orijinal
   girdiyi fTetWild ile tetrahedralize edip su geçirmez bir yüzey çıkarır;
   varsayılan olarak kurulur, ~6 MB, bkz. Kurulum). Varsayılan olarak
@@ -219,8 +220,8 @@ sırasını değiştirir, temel onarımı asla; önceki sırayı geri getirmek i
 `SUTURA_TRIAGE_PRUNE=0` ayarlayın.
 
 **Self-intersection politikası** `--si-mode {repair,report,off}` ile seçilir
-(ya da `SUTURA_SI_MODE`, ya da GUI Seçenekler → Onarım açılır listesi *Kendisiyle-kesişim*
-[*Yalnızca bildir* / *Onar* / *Ölçme*]).
+(ya da `SUTURA_SI_MODE`, ya da GUI Seçenekler → Onarım → Self-intersection'lar
+[*Yalnızca raporla* / *Onar* / *Ölçme*]).
 `report` (varsayılan) kalan self-intersection sayısını ölçüp bildirmeye devam
 eder, ancak self-intersection'lar artık kapalı bir 2-manifold yüzeyde
 `watertight` sınıflandırma kararını engellemez ve tek başına derin onarım
@@ -241,9 +242,108 @@ raporda `si_mode` (ve `deep_repair.si_mode`) olarak yer alır. Otomatik
 metrikleri ve `tolerance_mm`. Çalışmadıysa `triggered` false ve `reason`
 nedenini söyler. Açık `--methods` çalışmaları otomatik yükseltme yapmaz.
 
-Her katman ancak sonucu, delik ve non-manifold kenar açısından düz
-aşamalı sonuçtan kötü değilse benimsenir; yani çekirdek aşamalı yol her zaman
-güvenlik ağı olarak kalır. Benimsenen bir fTetWild sonucunun çıktıdan
+Her katman ancak sonucu aşağıda açıklanan benimseme korumalarından geçerse
+benimsenir; yani aşamalı işlem hattı her zaman güvenilir bir güvenlik ağı olarak kalır.
+
+## "Daha kötü yapmama" (no-worse) ilkesi neleri kapsar
+
+Sutura'nın "daha kötü yapmama" (no-worse) ilkesi, doğrudan **onarım süreci sırasındaki aday benimseme korumalarını** kapsar: onarım adayları yalnızca topolojik kusurlar kötüleşmediğinde (kusur sayılarında artış olmaması; Graft, Dressing, Splint, Coaptation ve CDT gibi katmanlar kesinlikle sıfır kusur, Flap ve Tamponade ise kusurların kesin azalmasını şart koşar) ve ağ karmaşıklığı patlamadığında benimsenir; topoloji ve şekil kontrollerinde geriye gitmez. Böylece otomatik bir onarım adımının, modeli önceki halinden daha fazla delikli veya non-manifold kenarlı bırakması engellenir.
+
+Ancak "daha kötü yapmama" ilkesi, ağır hasarlı modellerde her mikroskobik yüzey ayrıntısının veya boyutsal toleransın mutlak korunacağı anlamına gelen genel bir vaat değildir:
+1. **Topolojik benimseme korumaları (çalışma anında zorunlu):** Her ara adım kusurların artmamasını güvenceye almalı (aday kusur sayısı ≤ taban; birçok katmanda kesinlikle sıfır delik ve non-manifold kenar aranır) ve katı yüz, vertex, bileşen ve hacim sınırları içinde kalmalıdır. Aday korumalardan herhangi birine takılırsa derhal reddedilir.
+2. **Şekil Sadakati (yalnızca raporlama):** Ağır hasarlar Sutura'yı agresif katı yeniden inşasına zorlarsa (örneğin fTetWild, Splint veya büyük Tamponade tıkaçları), nihai ağ basılabilir ve manifold hale gelir ancak şekli kaymış olabilir. Yalnızca raporlama amaçlı **Sadakat puanı** bu sapmayı ölçer ve başlıkta `şekil değişti` ya da `tahmini alanlar - kontrol edin` uyarısı verir; alan sayısı yalnızca ölçüm mevcut olduğunda gösterilir, bu yüzden çalışamayan bir şekil kontrolü sayı olmadan görünür. Sadakat puanı bir benimseme engeli değildir.
+
+### Katman bazında benimseme korumaları
+
+| Katman / Yöntem | Delik ve Non-Manifold Kenarlar | Self-Intersection (SI) Kuralı | Yüz ve Vertex Patlama Koruması | Bileşen ve Şekil Korumaları |
+|---|---|---|---|---|
+| **Flap** (döngü ilerletme) | Yeniden yükleme hasarını (`delik + nm`) kesinlikle azaltmalı | Zincir-öncesi denetim SI'yi göz ardı eder; pipeline güvenlik ağı flap-açık ve flap-kapalı nihai karşılaştırmasını çalıştırır | Üst sınır: maks(4× girdi, girdi + 1.000 + 4× döngü vertex'i) | Sınırla uyumlu teğetsel yüzey devamı |
+| **Tamponade (prepass)** | Delikler kesinlikle düşmeli; deliklerde artış olmamalı | `non_rise` (SI artışına izin verilmez) | Üst sınır: maks(4× girdi, girdi + 1.000 + 4× tıkaç yüzü) | Parça sayısı artamaz; ≥ %99 sağlıklı yüz korunur; katı model dışına sıfır tıkaç taşması |
+| **Tamponade (aşama 1 sonrası)** | Delik/nm kesinlikle düşmeli (veya yerel SI düşmeli); kusur artamaz | `flag` (yalnızca rapor; dilimleyiciler örtüşen hacimleri birleştirir) | Üst sınır: maks(4× girdi, girdi + 1.000 + 4× tıkaç yüzü) | Parça sayısı artamaz; ≥ %99 sağlıklı yüz korunur; katı model dışına sıfır tıkaç taşması |
+| **Local Mend** (yerel remesh) | Delik ve nm kesinlikle iyileşmeli, kusur artışı olmamalı | Katmanın kendi iç kapısı artış-yok kuralını zorunlu kılar (aday SI ≤ taban SI; genel benimseme denetiminde yalnızca rapor) | Hasarlı bölge yüz üst sınırı ile sınırlı | Hasarlı bölge dışındaki yüzler birebir korunur |
+| **Graft** (kabuk sarma) | Kesinlikle 0 delik ve 0 non-manifold kenar | `improved_flag` (SI artışına yalnızca delik/nm azaldıysa izin verilir) | Üst sınır: maks(4× girdi, girdi + 1.000) | Sağlıklı bölge Hausdorff ≤ eşik; girdi kapsamı onaylı |
+| **Dressing** (hacimsel kabuk) | Kesinlikle 0 delik ve 0 non-manifold kenar | `strict_zero` (0 self-intersection zorunlu) | Üst sınır: maks(4× girdi, girdi + 1.000) | Sağlıklı bölge Hausdorff ≤ eşik; hacim değişimi ≤ %2; parça toleransı ≤ 1; normal açısı p95 ≤ 35° |
+| **Splint** (exact katı yeniden kurma) | Kesinlikle 0 delik ve 0 non-manifold kenar | `non_rise` (aday SI ≤ taban SI) | Üst sınır: maks(4× girdi, girdi + 1.000) | Manifold son-işleme ancak kusurlar artmıyorsa korunur |
+| **Coaptation** (dikiş kaynağı) | Kesinlikle 0 delik ve 0 non-manifold kenar | `strict_zero` (self-intersection'ları kesinlikle 0'a indirir) | Üst sınır: maks(4× girdi, girdi + 1.000) | Bileşen sayısı artamaz (`parts <= base_parts`) |
+| **CDT** (exact katı motoru) | Kesinlikle 0 delik ve 0 non-manifold kenar | Yeniden inşa kapısınca artış-yok kuralı zorunlu kılınır (aday SI ≤ taban SI; genel benimseme denetiminde yalnızca rapor) | Üst sınır: maks(4× girdi, girdi + 1.000) | Çıktı tek bir katı parça olmalıdır (`parts == 1`) |
+| **fTetWild** (tetrahedral katı) | Delikler ve non-manifold kenarlar ≤ taban | `improved_flag` (SI artışına yalnızca delik/nm azaldıysa izin verilir) | Taban 5.120 yüz/vertex; iyileşme varsa büyümeye izin verilir | Çıktıdan girdiye Hausdorff izlenir (kutu köşegeninin > %1'i ise `shape_changed` olarak işaretlenir) |
+| **Transplant (Otomatik/Manuel)** | Kesinlikle 0 delik ve 0 non-manifold kenar | `non_rise` (aday SI ≤ taban SI) | Desen sınır kutuları ile sınırlı | Onarılan kutuların dışındaki dokunulmamış geometri kımıldamaz (Hausdorff ≤ 0,05 mm) |
+| **Wall Thicken** | Kesinlikle 0 delik ve 0 non-manifold kenar | `non_rise` (aday SI ≤ taban SI) | Yerel kalınlaştırma genişlemesi ile sınırlı | Toplam kusur (`delik + nm`) ≤ taban |
+| **Generative Triage Yöntemleri** (Balloon #8, Backplate #9, Scaffold #10, Mirror #14, Join #4) | Kesinlikle 0 delik ve 0 non-manifold kenar | `flag` (yalnızca rapor; triage'da SI kapısına tabi değildir) | Üst sınır: maks(4× girdi, girdi + 1.000) | Girdiye tek yönlü Hausdorff mesafesi ≤ sınır kutusu köşegeninin %1'i |
+
+### Self-intersection kurallarının açıklaması
+
+Ağır non-manifold topolojiyi veya derin sınır deliklerini kapatmak bazen yerel
+yüzey örtüşmelerine yol açabileceğinden Sutura, self-intersection korumalarını
+dört açık kurala ayırır:
+
+- **`strict_zero`:** Aday tamamen self-intersection'dan arındırılmış olmalıdır.
+  Tek bir kesişim bile adayın hemen reddedilmesine yol açar (Dressing ve Coaptation
+  için zorunlu kılınır).
+- **`non_rise`:** Adayın self-intersecting yüz sayısı, yerine geçtiği mesh'ten
+  fazla olamaz. Splint, Transplant/Transplant+, Wall Thicken, CDT ve Local Mend
+  için geçerlidir.
+- **`improved_flag`:** Aday delikleri veya non-manifold kenarları kesinlikle
+  ortadan kaldırıyorsa, self-intersection sayısındaki bir artış makul bir ödünleşim
+  olarak kabul edilir ve onarım raporunda işaretlenir. Topolojik bir kazanım
+  yoksa aday reddedilir (Graft ve fTetWild için yapılandırılmıştır).
+- **`flag` (yalnızca rapor):** Self-intersection'lar ölçülür ve raporlanır, ancak
+  bir artış adayın reddedilmesine neden olmaz. Örtüşen hacimler kabul edilir;
+  çünkü modern 3D dilimleyiciler dilimleme sırasında örtüşen kabukları otomatik
+  olarak boolean birleşime tabi tutar. Bu kural, özel bir SI kapısı bulunmayan
+  yöntemler (triage'daki Balloon, Backplate, Scaffold, Mirror ve Join dahil) ile
+  aşama-1 sonrası Tamponade için geçerlidir. Flap, zincir-öncesi geçişinde SI
+  kontrolünü atlar ve pipeline güvenlik ağı olarak flap-açık ile flap-kapalı
+  arasında nihai bir karşılaştırma kullanır.
+
+> [!NOTE]
+> **Geliştiriciler için:** Katman benimseme denetimleri ve self-intersection politikaları, `sutura_engine/pipeline/adopt_guard.py` dosyasında ve `sutura/sutura_engine/tiers/` altındaki ilgili katman modüllerinde tanımlanmıştır.
+
+### Üç denetim düzeyi
+
+1. **Çalışma zamanında her aday için kontrol edilenler:**
+   - Yeniden yükleme dürüstü topoloji: kapalı çıktılarda sıfır delik ve sıfır
+     non-manifold kenar veya yeniden yükleme hasarında kesin azalma.
+   - Karmaşıklık patlaması sınırları: yüz ve vertex sayıları oransal ve mutlak
+     eşiklerin ötesine fırlayamaz.
+   - Katman başına exact self-intersection kuralı (`strict_zero`, `non_rise`,
+     `improved_flag` veya `flag`).
+   - Ayrık bileşen korumaları: bileşen sayıları izin verilen toleransların
+     ötesine geçemez (ve CDT tam olarak tek bir parça gerektirir).
+   - Katmana özgü şekil sınırları: sağlıklı bölge sapması ve kapsamı (Graft),
+     hacim değişimi ve normal varyasyonu (Dressing), katı dışına tıkaç sızıntısı
+     kontrolü (Tamponade) ve %1 kutu köşegeni tek yönlü Hausdorff eşikleri
+     (generative triage yöntemleri ve Join).
+
+2. **Yalnızca sürüm doğrulamasında kontrol edilenler:**
+   - Keskin kenar korunumu (feature-edge recall): onarımda eşleşen dihedral açılarla
+     korunan orijinal keskin özellik kenarlarının oranı.
+   - Sağlıklı bölge dolgusu ve eksiltmesi: etkilenmemiş yüzey bölgelerinin dışına
+     eklenen veya buralardan çıkarılan hacim.
+   - Çok kameralı görsel kalite kontrol (visual QA) render'ı: yüzey distorsiyonunu,
+     voksel basamaklanmasını, eksik ön planı veya aşırı döküntüyü tespit eden
+     otomatik küresel görsel inceleme.
+   - Başsız dilimleyici doğrulaması: dilimleyicilerin mesh'i geçerli ve manifold bir
+     baskı olarak tanıdığının doğrulanması.
+   - Genelleştirilmiş winding sayısı integrasyonu ile girdi dışına sızıntı tespiti.
+
+3. **Yalnızca raporlananlar veya henüz ölçülmeyenler:**
+   - **Sadakat (Fidelity) puanı (yalnızca rapor):** Rapor artık yüzey sadakatini
+     ölçmektedir (sağlıklı yüzey mesafesi, keskin kenar korunumu, sağlıklı bölge
+     dolgusu/eksiltmesi ve düşük güvenli tahmin alanları); ancak bu skor **yalnızca
+     raporlama amaçlıdır**, bir benimseme koruması DEĞİLDİR. Kullanıcı şeffaflığı
+     için nihai mesh'i değerlendirir ve bir onarım adayının benimsenip reddedileceğini
+     asla belirlemez. Bir şekil değişikliği artık yalnızca sağlıklı yüzey sınır
+     kutusu köşegeninin %1,0'inden fazla hareket ettiğinde `changed` okunur
+     (`repair_score_config.json` içindeki `changed_min_healthy_distance_pct`);
+     samples40 + oracle36 kalibrasyonunda bu, altı yanlış alarmı kaldırdı ve
+     sessiz (görsel olarak daha kötü) vaka bırakmadı (61 korundu / 2 değişti /
+     0 sessiz).
+   - **İç boşlukların ve iç kabuk geometrisinin korunması:** Çalışma zamanında
+     ölçülmez veya korunmaz (katı yeniden kurma katmanları iç boşlukları
+     birleştirebilir, basitleştirebilir veya doldurabilir).
+
+Benimsenen bir fTetWild sonucunun çıktıdan
 girdiye tek yönlü Hausdorff mesafesi sınır kutusu köşegeninin %1'ini aşarsa
 (geçici eşik) sonuç korunur ama işaretlenir: rapor `shape_changed: true` ve
 `shape_changed` sorun kodunu ("Şekil fTetWild yedek katmanıyla değişti")

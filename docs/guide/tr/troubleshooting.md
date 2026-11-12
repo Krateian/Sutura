@@ -10,17 +10,20 @@
   dışındaysa kaldırıcı için `SUTURA_CONDA_BIN=/conda/yolu` ayarlayın.
 * **`python3.11` bulunamadı (yalnızca fTetWild yedek çalışma zamanı).**
   Aralık içinde bir `python3` ile normal kurulum Python 3.11 gerektirmez. Ana
-  yorumlayıcı 3.10–3.14 aralığının dışındaysa `install.sh`, fTetWild katmanı
-  için bir yedek çalışma zamanına ihtiyaç duyar ve
-  `~/.local/share/sutura/python311` dizinine bağımsız bir CPython 3.11 indirir
-  (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir) veya sistem
-  paketini kullanır:
-  * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
-  * Fedora: `sudo dnf install python3.11`
+  yorumlayıcı 3.10–3.14 aralığının dışındaysa `install.sh` bir yedek çalışma
+  zamanını tamamen kullanıcı alanında bulur — `PATH`'te kullanılabilir bir
+  `python3.11`, `~/.local/share/sutura/python311` dizinine indirdiği bağımsız
+  bir CPython 3.11 (~27 MB, `SUTURA_NO_PYTHON_DOWNLOAD=1` ile kapatılır) veya
+  `uv` ile yönetilen bir 3.11 — ve asla `sudo apt`/`dnf` komutu yazmaz.
   Hiç çalışma zamanı yoksa katmanı tamamen atlamak için `SUTURA_WITH_FTETWILD=0` verin.
-* **`sutura_geom` kaynak derlemesi başarısız.** Manifold çekirdeği C++ ile
-  derlenir: `cmake`, C++20 derleyicisi (g++/clang++) ve Rust >= 1.89 kurun.
-  Sürüm kurulumları normalde hazır wheel kullanır.
+* **`sutura_geom` kaynak derlemesi başarısız.** Kurulum artık Rust'ı (rustup +
+  minimal bir kararlı araç zinciri) ve cmake'i kendisi, kullanıcı alanında,
+  `~/.local/share/sutura/tools` altında indirir — kurulum kılavuzuna bakın.
+  Kuramadığı tek şey bir C++20 derleyicisidir (g++/clang++): macOS'ta
+  `xcode-select --install`; Linux'ta dağıtımınızın derleyicisini kurun. Rust >=
+  1.89 gerekir. Sürüm kurulumları normalde hazır wheel kullanır ve bunların
+  hiçbirine ihtiyaç duymaz. `SUTURA_NO_TOOLCHAIN_FETCH=1` araç zinciri indirmeyi
+  reddeder.
 * **PySide6 kurulumu başarısız.** GUI, `venv`'e PyPI'dan kurulan
   `PySide6-Essentials` gerektirir. Sürüm yorumlayıcıya göre seçilir:
   Python 3.12+ için `6.12.0`, Python 3.11 için `6.11.2`.
@@ -63,9 +66,18 @@
   Graft, Tamponad, Dressing ve SDF üretiminde varsayılan olarak hızlandırılmış
   antipodal genelleştirilmiş sarım sayısını kullanır. Olağandışı bir modelde
   istenmeyen bir davranış görülürse veya klasik sarım sayısı orakılı ile tam
-  uyum gerekirse, ortamda `SUTURA_ANTIPODAL=0` tanımlayarak klasik sarım yoluna
-  dönebilirsiniz (Python'daki `antipodal=False` parametresi yalnızca Graft'ın
-  `shell_wrap` işlevine ulaşır, `dressing.py`'de ise bir anahtar bulunmaz).
+  uyum gerekirse, ortamda `SUTURA_ANTIPODAL=0` tanımlayarak tüm katmanlarda klasik
+  sarım yoluna dönebilirsiniz.
+* **Sert bir çökme mesaj bırakmadı ama bir çökme kaydı var.** Sutura (CLI veya
+  GUI) çöktüğünde — yerel geometri ya da Qt katmanında bir segfault veya
+  yakalanmamış bir Python hatası — Sutura'nın kullanıcı verisi klasörüne bir
+  `crash.log` yazar; GUI ayrıca Tanılama'ya işaret eden kısa bir diyalog gösterir.
+  Kayıt yalnızca en son bölümünü (~200 KB) tutar. İşletim sistemine göre konum:
+  Linux ve macOS'ta `~/.local/share/sutura/data/crash.log`; `SUTURA_DATA_DIR`
+  ortam değişkeni ayarlıysa bunun yerine `$SUTURA_DATA_DIR/crash.log`. (Sutura'nın
+  Windows derlemesi yoktur.) Dosya kendiliğinden makinenizden çıkmaz — hiçbir
+  şey yüklenmez; `sutura --diagnostics out.zip` temizlenmiş bir kopyasını pakete
+  ekler, onu kendiniz bir hata bildirimine ekleyebilirsiniz.
 
 Bir onarım başarısız olursa veya bir yöntem kullanılamıyor görünürse, üç komut
 kurulumu tanılamaya ve kurtarmaya yardımcı olur:
@@ -80,10 +92,11 @@ kurulumu tanılamaya ve kurtarmaya yardımcı olur:
   kullanılamıyorsa kapatılabilir bir uyarı şeridi gösterir.
 * **`sutura --diagnostics out.zip`** sistem ve Python çalışma zamanı
   bilgilerini, `sutura_geom` uzantısının durumunu, on dokuz yöntemin tümünün
-  kullanılabilirliğini, kullanıcı ayarlarını ve en son onarım kaydını içeren
-  tek bir ZIP arşivi yazar. Kişisel yollar ve kullanıcı adları arşivden
-  temizlenir ve arşive hiçbir dosya adı konmaz; böylece bir hata raporuna
-  eklenebilir.
+  kullanılabilirliğini, kullanıcı ayarlarını, en son onarım kaydını ve çökme
+  kaydının temizlenmiş bir kopyasını (`crash_log.txt`; yalnızca bir çökme kaydı
+  varsa) içeren tek bir ZIP arşivi yazar. Kişisel yollar ve kullanıcı adları
+  arşivden temizlenir ve arşive hiçbir dosya adı konmaz; böylece bir hata
+  raporuna eklenebilir.
 * **`sutura --self-repair`** kurulu uygulama dosyalarını, kurulu sürüme ait
   sürüm bildirimine (manifest) göre denetler ve eksik ya da değişmiş bir
   dosyayı onarır. Her zaman değiştirmeden önce sorar, değiştirdiği dosyaları

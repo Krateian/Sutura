@@ -18,6 +18,10 @@ their previous behaviour in every preset. The chosen intensity is reported as
 `--list-intensities` prints the presets and profiles with their effective
 values and exits.
 
+`--deep-repair` also defaults from `SUTURA_DEEP_REPAIR` and the `deep_repair`
+key of `~/.config/sutura/config.json` (an explicit manual override that the GUI
+does not write; the flag wins), otherwise `full`.
+
 - **Quick** — skips the deep-repair ladder and the fTetWild tier entirely
   (`deep_repair=off`, fTetWild off) and has an empty decimation ladder: the
   fastest run, which leaves hard meshes open.
@@ -267,6 +271,13 @@ sequence as `--methods`. The panel does not save a manual sequence in the
 policy. Safety gates, `[si_escalation]` and tier gate tables are shown
 read-only with a lock.
 
+**Auto-reorder** (opt-in) is a checkbox in the *Automatic* panel, and the CLI
+flag `--auto-reorder`: it reorders the **automatic fallback** methods per model
+from the suggested-method ranking. Only the fallback attempt order changes — the
+baseline pipeline and the deep-repair ladder are unchanged, and Graft still
+precedes fTetWild (also in multi-object 3MF). It ships OFF and is measured
+before any default change.
+
 ![Method control panel: read-only automatic ladder, manual sequence and locked gates](../../assets/methods-panel.png)
 
 ### Repeated-element repair (auto/manual picker)
@@ -438,7 +449,11 @@ Graft/fTetWild tiers**.
 
 It is **on by default**: disable it with `--no-tamponade` (or
 `SUTURA_TAMPONADE=0`), or the Options → Repair checkbox **Tamponade (fill holes
-from inside)**. Before it runs, a tier-level **shape-suitability card** checks
+from inside)**. The same switch also skips the outer-shell pre-step: the
+multi-part outer-shell union that dissolves internal walls before the first
+labelled stage runs only while Tamponade is enabled, so `--no-tamponade`
+leaves the input geometry untouched at that point. Before it runs, a
+tier-level **shape-suitability card** checks
 whether the model has a real interior. A thin shell / open sheet (low
 compactness, a large open boundary area and a thin-wall fraction) is skipped
 with the plain-language reason *no interior volume; left to Flap* instead of

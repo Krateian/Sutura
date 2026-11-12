@@ -779,12 +779,18 @@ def _evaluate(result, path, multi, in_objs, method):
     return rec
 
 
+# Triage-only kwargs: consumed here (e.g. the opt-in fallback reorder) and NOT
+# forwarded to the repair pipeline, which does not accept them.
+_TRIAGE_ONLY_KWARGS = ('auto_reorder',)
+
+
 def _attempt(src, out, tmpdir, kwargs, multi):
     repair = _repair_mod()
+    kw = {k: v for k, v in kwargs.items() if k not in _TRIAGE_ONLY_KWARGS}
     with method_health.tier_guard('pipeline', 'attempt') as _g:
         if multi:
-            return repair.repair_3mf(src, out, tmpdir, **kwargs)
-        return repair.repair_file(src, out, tmpdir, **kwargs)
+            return repair.repair_3mf(src, out, tmpdir, **kw)
+        return repair.repair_file(src, out, tmpdir, **kw)
     if _g.error is not None:
         if isinstance(_g.error, getattr(repair, 'ExtremeRemovedAllError', ())):
             raise _g.error
@@ -871,6 +877,34 @@ def _replace_3mf_meshes(in_3mf, out_3mf, mesh_list, tmpdir=None,
         attr_source=attr_source or in_3mf)
 
 
+def _auto_reorder_recs(recs, analysis):
+    """Order the automatic fallback recs by the suggested-method ranking.
+
+    Opt-in (``ctx['auto_reorder']``). Keeps the same set of recommendations;
+    only their attempt order changes, using the D13 per-model suggestion order.
+    Methods the suggestions omit keep their previous relative order at the end.
+    Never raises: on any problem the input order is returned unchanged.
+    """
+    try:
+        sug = _methods_mod().suggest_methods(analysis, top_n=max(len(recs), 3))
+        order = [s.get('num') for s in sug if s.get('num') is not None]
+    except Exception:
+        return recs
+    if not order:
+        return recs
+    rank = {n: i for i, n in enumerate(order)}
+    tail = len(rank)
+    return sorted(recs, key=lambda r: rank.get(r.num, tail))
+
+
+def _apply_auto_reorder(recs, analysis):
+    """Opt-in fallback order: suggestion ranking, then the documented
+    Graft-before-fTetWild invariant (re-applied so a suggestion that ranks
+    fTetWild above Graft cannot starve Graft in the multi-object 3MF path)."""
+    from sutura_engine.pipeline.order import order_graft_before_ftetwild
+    return order_graft_before_ftetwild(_auto_reorder_recs(recs, analysis))
+
+
 def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
     repair = _repair_mod()
     in_objs = _safe_load(src) if os.path.exists(src) else []
@@ -919,12 +953,15 @@ def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
                 extra_features=ctx.get('extra_features', False))
 
         recs = rank_fn(obj_analysis)
-        # NOTE: unlike single-mesh _auto, this multi-object path does NOT
-        # re-order Graft (#13) before fTetWild (#7) nor apply the shared
-        # healthy-deviation tie-break. The deep-repair ladder runs per object
-        # in the baseline, so no in-repo fixture reaches #13/#7 here; the
-        # divergence is documented rather than changed without a measurement
-        # (see the C6 feasibility gate in P1b findings).
+        if ctx.get('auto_reorder'):
+            recs = _apply_auto_reorder(recs, obj_analysis)
+        # NOTE: the baseline multi-object path does NOT re-order Graft (#13)
+        # before fTetWild (#7) nor apply the shared healthy-deviation tie-break;
+        # the deep-repair ladder runs per object, so no in-repo fixture reaches
+        # #13/#7 here and the divergence is documented rather than changed
+        # without a measurement (see the C6 feasibility gate in P1b findings).
+        # When auto-reorder is on, _apply_auto_reorder re-establishes the
+        # Graft-before-fTetWild invariant so the documented contract holds.
         attempts = 0
         adopted = False
 
@@ -1705,6 +1742,8 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
     combined = _analysis_mod().combine(analysis_objects) if analysis_objects \
         else _analysis_mod().ObjectAnalysis()
     recs = rank_fn(combined)
+    if ctx.get('auto_reorder'):
+        recs = _apply_auto_reorder(recs, combined)
     # Graft (#13) is the primary last-resort tier and must be attempted before
     # fTetWild (#7); the templates already prefer it, this guarantees the order
     # even without a template match (the tier order lives in pipeline.order).

@@ -10,16 +10,19 @@
   `PATH`, set `SUTURA_CONDA_BIN=/path/to/conda` for the uninstaller.
 * **`python3.11` not found (fTetWild fallback runtime only).** A normal install
   with an in-range `python3` does not need Python 3.11. When the main
-  interpreter is outside 3.10–3.14, `install.sh` needs a fallback runtime for
-  the fTetWild tier and downloads a standalone CPython 3.11 build into
-  `~/.local/share/sutura/python311` (disable with
-  `SUTURA_NO_PYTHON_DOWNLOAD=1`) or uses the system package:
-  * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
-  * Fedora: `sudo dnf install python3.11`
+  interpreter is outside 3.10–3.14, `install.sh` finds a fallback runtime
+  entirely in user space — a usable `python3.11` on `PATH`, a standalone
+  CPython 3.11 it downloads into `~/.local/share/sutura/python311` (~27 MB,
+  disable with `SUTURA_NO_PYTHON_DOWNLOAD=1`), or a 3.11 already managed by
+  `uv` — and never prints a `sudo apt`/`dnf` command.
   Set `SUTURA_WITH_FTETWILD=0` to skip the tier entirely if no runtime is available.
-* **`sutura_geom` source build fails.** The Manifold kernel is compiled from
-  C++: install `cmake` and a C++20 compiler (g++/clang++), and Rust >= 1.89.
-  Release installs normally use the prebuilt wheel and need none of these.
+* **`sutura_geom` source build fails.** The installer now fetches Rust (rustup +
+  a minimal stable toolchain) and cmake itself, in user space, under
+  `~/.local/share/sutura/tools` — see the install guide. The one thing it
+  cannot install is a C++20 compiler (g++/clang++): on macOS run
+  `xcode-select --install`; on Linux install your distro's compiler. Rust >=
+  1.89 is required. Release installs normally use the prebuilt wheel and need
+  none of these. `SUTURA_NO_TOOLCHAIN_FETCH=1` refuses the toolchain download.
 * **PySide6 install fails.** The GUI needs `PySide6-Essentials`, which is
   installed into the `venv` from PyPI. The version follows the interpreter:
   `6.12.0` on Python 3.12+, `6.11.2` on Python 3.11. On distros where `pip install
@@ -62,8 +65,17 @@
   Graft, Tamponade, Dressing, and SDF generation. If an unusual mesh exhibits
   unwanted behaviour or you need exact parity with the classic winding number
   oracle, set `SUTURA_ANTIPODAL=0` in the environment to opt out and restore the
-  classic winding path globally (the `antipodal=False` Python argument only
-  reaches Graft's `shell_wrap`, whereas `dressing.py` has no switch).
+  classic winding path globally across all tiers.
+* **A hard crash left no message, but there is a crash log.** When Sutura (CLI
+  or GUI) crashes — a segfault in the native geometry or Qt layer, or an
+  uncaught Python error — it writes a `crash.log` in Sutura's user-data folder,
+  and the GUI also shows a short dialog pointing at Diagnostics. The log keeps
+  only its most recent part (~200 KB). Location by OS: on Linux and macOS it is
+  `~/.local/share/sutura/data/crash.log`; when the `SUTURA_DATA_DIR` environment
+  variable is set, it is `$SUTURA_DATA_DIR/crash.log` instead. (Sutura has no
+  Windows build.) The file never leaves your machine on its own — nothing is
+  uploaded; `sutura --diagnostics out.zip` bundles a scrubbed copy that you can
+  attach to a bug report yourself.
 
 If a repair fails, or a method looks unavailable, three commands help diagnose
 and recover the installation:
@@ -77,9 +89,11 @@ and recover the installation:
   starts and shows a dismissible banner if a method is unavailable.
 * **`sutura --diagnostics out.zip`** writes a single ZIP archive with the system
   and Python runtime information, the state of the `sutura_geom` extension, the
-  availability of all nineteen methods, the user settings, and the most recent
-  repair record. Personal paths and user names are scrubbed from the archive,
-  and no file names are included, so it can be attached to a bug report.
+  availability of all nineteen methods, the user settings, the most recent
+  repair record, and a scrubbed copy of the crash log (`crash_log.txt`, present
+  only when a crash log exists). Personal paths and user names are scrubbed from
+  the archive, and no file names are included, so it can be attached to a bug
+  report.
 * **`sutura --self-repair`** checks the installed application files against the
   release manifest for the installed version and repairs a missing or modified
   one. It always asks before replacing anything, backs up the files it changes

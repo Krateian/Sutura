@@ -11,6 +11,7 @@ never overwritten; multi-object 3MF files are repaired per object.
 """
 import sys
 import os
+import errno
 import re
 import json
 import math
@@ -32,6 +33,7 @@ from confidence import (estimate_confidence_pre_repair, repair_confidence)
 from defects import detect as detect_defects
 from mesh_classifier import classify_mesh
 import repair_score
+import fidelity
 import history
 from sutura_engine.progress import (
     CancelledError, CancelToken, make_progress, progress_stage, raise_if_cancelled,
@@ -165,7 +167,7 @@ from sutura_engine.pipeline.cli import (
 )
 
 
-VERSION = "0.9.8"
+VERSION = "0.9.9"
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -191,11 +193,99 @@ def _unique_output_path(src):
         n += 1
 
 
+def _aggregate_written_meshes(meshes):
+    """Summed topology of every object block in the written multi-object file.
+
+    A multi-object 3MF cannot be described by one ``measure_mesh`` call, so the
+    save stage reports an aggregate (sum of faces/verts/components, worst
+    holes/non-manifold counts) instead of pretending the first object is the
+    whole file.
+    """
+    from sutura_engine import trace
+    agg = {'faces': 0, 'verts': 0, 'holes': 0, 'nm_edges': 0,
+           'nm_verts': 0, 'components': 0, 'volume': None}
+    hashes = []
+    for _name, v, t in meshes:
+        m = trace.measure_mesh(v, t)
+        if not m:
+            continue
+        for key in ('faces', 'verts', 'holes', 'nm_edges', 'nm_verts',
+                    'components'):
+            agg[key] += int(m.get(key) or 0)
+        hashes.append(str(m.get('sha256') or ''))
+    agg['objects'] = len(meshes)
+    agg['sha256'] = hashlib.sha256(
+        '|'.join(hashes).encode('ascii')).hexdigest()
+    return agg
+
+
+def _measure_written_output(out):
+    """Measure the file actually on disk, for the trace save stage."""
+    meshes = load_meshes(out)
+    if len(meshes) == 1:
+        _name, v, t = meshes[0]
+        return v, t, None
+    return None, None, _aggregate_written_meshes(meshes)
+
+
+def _record_save_stage(out, gate):
+    """Record the save stage against the written output (trace only)."""
+    from sutura_engine import trace
+    if not trace.is_active():
+        return
+    v_out = t_out = None
+    out_measures = None
+    gate = dict(gate)
+    if gate.get('status') == 'written':
+        try:
+            v_out, t_out, out_measures = _measure_written_output(out)
+        except Exception as e:
+            gate['measure_error'] = str(e)
+    trace.record_stage('save', 'repair.save_output', None, None, v_out, t_out,
+                       gate=gate, out_measures=out_measures)
+
+
+def _move_output_into_place(tmp_out, out):
+    """Move the finished temp output onto the user's path, atomically.
+
+    ``os.replace`` is atomic only within one filesystem. When the temp dir is
+    on another filesystem (WSL /mnt/c, tmpfs /tmp), copy into a hidden temp
+    file next to the destination, fsync it, then replace that into place, so
+    a failure never leaves a truncated output.
+    """
+    try:
+        os.replace(tmp_out, out)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+    out_dir = os.path.dirname(os.path.abspath(out))
+    ext = os.path.splitext(out)[1]
+    fd, staged = tempfile.mkstemp(prefix='.sutura-', suffix=ext, dir=out_dir)
+    try:
+        with os.fdopen(fd, 'wb') as dst, open(tmp_out, 'rb') as src:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+            dst.flush()
+            os.fsync(dst.fileno())
+        try:
+            shutil.copystat(tmp_out, staged)
+        except OSError:
+            pass
+        os.replace(staged, out)
+    except BaseException:
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+        raise
+
+
 def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False, join_components=False,
                  autorefine=False, ftetwild=False, indirect_autorefine=False,
-                 extra_features=False, deep_repair=None, triage_spec=None,
+                 extra_features=False, deep_repair=None, auto_reorder=False,
+                 triage_spec=None,
                  engines=None, engine_chain=None, engine_warnings=None,
                  methods=None, engine_filter=None, repeat_source=None,
                  repeat_target=None, wall_min_thickness=None, graft=False,
@@ -207,6 +297,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  splint=False, splint_adaptive=None,
                  solid_engine='ftetwild',
                  coaptation=False,
+                 fidelity_enabled=True,
                  trace_path=None, progress=None, cancel=None):
     """Repair one file. Returns (result_dict, category).
 
@@ -275,6 +366,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             autorefine=autorefine, ftetwild=ftetwild,
             indirect_autorefine=indirect_autorefine,
             extra_features=extra_features, deep_repair=deep_repair,
+            auto_reorder=auto_reorder,
             triage_spec=triage_spec, engines=engines,
             engine_chain=engine_chain, repeat_source=repeat_source,
             repeat_target=repeat_target, wall_min_thickness=wall_min_thickness,
@@ -290,6 +382,14 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             solid_engine=solid_engine,
             coaptation=coaptation,
             dressing_force_adopt=dressing_force_adopt))
+
+        # Fidelity is report-only and is measured once for the FINAL result,
+        # after every candidate decision has been made (never for a losing
+        # candidate). Fail-silent; it cannot influence adoption or saving.
+        if fidelity_enabled and 'error' not in result:
+            _fout = tmp_out if os.path.exists(tmp_out) else out
+            if _fout and os.path.exists(_fout):
+                result = fidelity.attach_file(result, src, _fout)
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -309,6 +409,46 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                 result['repair_status_code'] = _rs['status_code']
             except Exception:
                 pass
+        else:
+            # Multi-object 3MF: each object carries its own scores; the file
+            # level shows the worst object so one ruined object is not hidden
+            # by the healthy ones. Fail-silent.
+            try:
+                _objs = [o for o in result.get('object_reports') or []
+                         if isinstance(o, dict)]
+
+                def _rank(o, key, worst_is_max=False):
+                    v = o.get(key)
+                    missing = v is None
+                    v = 100 if missing else v
+                    return (missing, -v if worst_is_max else v)
+
+                _hs = [o.get('repair_health') for o in _objs
+                       if isinstance(o.get('repair_health'), (int, float))]
+                _rs = [o.get('repair_risk') for o in _objs
+                       if isinstance(o.get('repair_risk'), (int, float))]
+                if _hs:
+                    _wh = min(_objs, key=lambda o: _rank(o, 'repair_health'))
+                    result['repair_health'] = min(_hs)
+                    result['repair_health_factors'] = _wh.get(
+                        'repair_health_factors')
+                if _rs:
+                    _wr = min(_objs, key=lambda o: _rank(o, 'repair_risk',
+                                                         worst_is_max=True))
+                    result['repair_risk'] = max(_rs)
+                    result['repair_risk_factors'] = _wr.get(
+                        'repair_risk_factors')
+                if _hs and _rs:
+                    _worst = min(
+                        _objs, key=lambda o: (
+                            _rank(o, 'repair_health')[0],
+                            _rank(o, 'repair_health')[1],
+                            -(_rank(o, 'repair_risk')[1])))
+                    result['repair_status'] = _worst.get('repair_status')
+                    result['repair_status_code'] = _worst.get(
+                        'repair_status_code')
+            except Exception:
+                pass
 
         # Repair budget: compare actual geometry change + risk against the
         # user's budgets; an exceeded budget requires confirmation before the
@@ -320,7 +460,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             if force or _confirm_budget_save(budget):
                 raise_if_cancelled(cancel)
                 progress_stage(progress, 8, 'save')
-                os.replace(tmp_out, out)
+                _move_output_into_place(tmp_out, out)
+                _record_save_stage(out, {'status': 'written', 'path': out})
             else:
                 # Unambiguous, machine-detectable outcome: distinct from a
                 # generic 'error' (corrupt file, crash) so the GUI can offer
@@ -336,19 +477,31 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                     result['repair_confidence'] = _rc['score']
                     result['repair_confidence_label'] = _rc['label']
                     result['repair_confidence_factors'] = _rc['factors']
+                _record_save_stage(out, {'status': 'not_written',
+                                         'reason': 'budget_declined'})
         elif os.path.exists(tmp_out):
             raise_if_cancelled(cancel)
             progress_stage(progress, 8, 'save')
-            os.replace(tmp_out, out)
+            _move_output_into_place(tmp_out, out)
+            _record_save_stage(out, {'status': 'written', 'path': out})
+        else:
+            _record_save_stage(out, {
+                'status': 'not_written',
+                'reason': 'error' if 'error' in result else 'no_output'})
     except CancelledError:
         result['status'] = 'cancelled'
         result['error'] = 'cancelled'
+        _record_save_stage(out, {'status': 'not_written',
+                                 'reason': 'cancelled'})
         raise
     except ExtremeRemovedAllError as e:
         result['error'] = str(e)
         result['extreme_removed_object'] = True
+        _record_save_stage(out, {'status': 'not_written',
+                                 'reason': 'extreme_removed_all'})
     except Exception as e:
         result['error'] = 'repair failed: %s' % e
+        _record_save_stage(out, {'status': 'not_written', 'reason': 'error'})
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     # Central method-health section: availability of every registered method
@@ -484,6 +637,11 @@ def _main(argv=None):
     parser.add_argument('--list-methods', action='store_true',
                         help='list the repair methods (num, id, family, '
                              'availability) and exit (no repair)')
+    parser.add_argument('--auto-reorder', action='store_true',
+                        help='opt-in: reorder the automatic fallback methods '
+                             'per model from the suggested-method ranking. The '
+                             'baseline pipeline and the deep-repair ladder are '
+                             'unchanged, and Graft still precedes fTetWild.')
     parser.add_argument('--analyze', action='store_true',
                         help='analyze the input object(s) -- defects, mesh '
                              'type, self-intersection load -- and print the '
@@ -553,6 +711,10 @@ def _main(argv=None):
                         help='with --max-geometry-change/--max-risk: save the '
                              'output even when the budget is exceeded, without '
                              'asking')
+    parser.add_argument('--no-fidelity', action='store_true',
+                        help='skip the Fidelity shape score (it is measured '
+                             'by default and is report-only; cannot change the '
+                             'repair result)')
     parser.add_argument('--last', type=int, default=0, metavar='N',
                         help='export-history: only the last N records')
     parser.add_argument('--clear', action='store_true',
@@ -1140,6 +1302,7 @@ def _main(argv=None):
                 join_components=args.experimental_join_components,
                 autorefine=args.experimental_autorefine,
                 ftetwild=_ft_arg, deep_repair=_dr_mode,
+                auto_reorder=args.auto_reorder,
                 graft=_graft_arg, flap=_flap_arg,
                 tamponade=_tamponade_arg,
                 dressing=_dressing_arg,
@@ -1162,6 +1325,7 @@ def _main(argv=None):
                 repeat_source=repeat_source,
                 repeat_target=repeat_target,
                 wall_min_thickness=args.wall_min_thickness,
+                fidelity_enabled=not args.no_fidelity,
                 trace_path=args.trace,
                 progress=reporter, cancel=cancel)
             results.append(result)
@@ -1223,6 +1387,16 @@ def main(argv=None):
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     debug = '--debug' in argv or os.environ.get('SUTURA_DEBUG') == '1'
+    # faulthandler into the shared crash log before any work, so a segfault in
+    # the Rust extension leaves a trace (see sutura.diagnostics).
+    try:
+        try:
+            from sutura.diagnostics import enable_crash_logging
+        except ImportError:
+            from diagnostics import enable_crash_logging
+        enable_crash_logging()
+    except Exception:
+        pass
     try:
         _main(argv)
     except CancelledError:

@@ -73,6 +73,11 @@ remove_path "$HOME/.local/share/icons/hicolor/64x64/apps/sutura.png"
 remove_path "$HOME/.local/share/icons/hicolor/128x128/apps/sutura.png"
 remove_path "$HOME/.local/share/icons/hicolor/256x256/apps/sutura.png"
 
+# Rust/cmake the installer fetched for a source build live under $APP_DIR/tools
+# (never ~/.cargo); the APP_DIR cleanup below removes them. Spelled out so a
+# normal uninstall clears the toolchain even if the general cleanup is skipped.
+remove_path "$APP_DIR/tools"
+
 # Dedicated conda environment (not user repair data). It is removed only when
 # the install-ownership marker says this installer created it, and only after
 # an interactive confirmation or an explicit --remove-env / --purge.

@@ -47,12 +47,30 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
   mesh as a solid, which resolves interior/overlapping geometry, but the
   rebuild can slightly reshape features in pathological cases. Always check
   the result in a slicer.
-* **Large hole patches.** The stage-1 closer fills holes with flat triangulated patches; for
-  very large holes the fill is a simple patch, not a smart reconstruction.
-  It closes the mesh, but the patch quality is average and may need smoothing.
-* **Tiny disconnected debris.** Components with fewer than 8 faces are
-  removed. A small legitimate part that is not connected to the main body
-  will be removed too.
+* **Large hole patches.** The Flap tier advances boundary curvature and
+  tangent continuity across holes to reconstruct smooth surface geometry. However,
+  for very large holes where boundary curvature cannot reliably span the opening,
+  the repair falls back to a plain flat triangulated patch, which closes the
+  opening topologically but may require smoothing or solid remeshing.
+* **Tiny disconnected debris.** Disconnected components with fewer triangles
+  than the Stage-1 `mincomponentsize` cutoff are removed during Stage 1 cleanup
+  (`sutura.topology.remove_connected_components`); separate, disconnected parts
+  at or above the cutoff are kept intact. The cutoff is 8 triangles by default.
+  Deviations are brief: `--mode aggressive` raises it to 12 and `--mode extreme`
+  to 20 (low/medium stay at 8); the `organic` Stage-1 profile and the detected
+  organic type raise it to 12, the `scan` profile lowers it to 4, and
+  `--profile miniature` lowers it to 1. The report makes this visible:
+  `stage1.removed_small_parts` (and the `--human` report and GUI details) lists
+  how many components the cutoff dropped, their total face count and, for a
+  capped list, each component's face count, size and distance from the main body.
+* **Small separate parts are listed, never removed.**
+  `stage1.possible_debris` lists small separate parts kept in the repaired mesh
+  (a separate, closed, non-degenerate part under 0.5% of the largest part's
+  volume) with their face count, volume share and distance to the main body.
+  This is informational only — nothing is deleted and it does not change the
+  verdict — because a stray small part is geometrically indistinguishable from a
+  legitimate one (a pin, a nut, an eye). The `--human` report and the GUI details
+  show the same counts, per object for a multi-object 3MF.
 * **Dense coplanar contacts are analysed with a bounded exact pass.** For a
   mechanical part with very many coincident faces on one contact patch, the
   exact coplanar shell analysis is capped at 512 triangles / 1,024 constraint
@@ -119,4 +137,8 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
   and namespaces. No object is lost, even when several meshes share one
   `.model` entry. The per-object result (including each object's stage-2 verdict
   and the `triangle_attributes` keep/drop counts) is reported in the CLI output
-  and the GUI.
+  and the GUI. When painted/seam/support attributes were lost on surviving
+  triangles, the CLI (`--human`) and the GUI show a warning with the kept,
+  dropped and new-triangles-without-attributes counts; when only newly created
+  triangles lack them, the same counts appear as a neutral note rather than a
+  warning.

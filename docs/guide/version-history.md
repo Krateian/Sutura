@@ -6,6 +6,23 @@
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](../../CHANGELOG.md).
 
+- **v0.9.9 — 2026-11-12** — A **Fidelity** score joins Repair Health and
+  Repair Risk: it compares the repaired surface with the parts of the input
+  that were already healthy and gives one plain verdict ("Repaired, shape
+  preserved", "shape changed in N area(s) - check", "Not fully repaired").
+  Large rebuilt areas are marked as guesses, the score is report-only, and it
+  says "Shape check unavailable" when there is not enough healthy surface to
+  measure; the thresholds are experimental (calibrated on a 40-sample and
+  36-mesh check set). The report and GUI show one headline verdict, list
+  separately removed small parts and kept possible debris, and report lost
+  3MF paint/seam/support attributes; the details are localized in English and
+  Turkish. A hard crash now leaves a capped local crash log, included
+  (scrubbed) in Diagnostics. `--auto-reorder` can reorder the automatic
+  fallbacks per model (opt-in, experimental, measured neutral). The installer
+  fetches its own Rust toolchain and cmake in user space and removes them on
+  uninstall; a C++20 compiler is still required. Saving to another filesystem
+  (WSL `/mnt/c`, tmpfs `/tmp`) works again, and unavailable scores print
+  `n/a`.
 - **v0.9.8 — 2026-10-31** — Faster Flap repairs: the two slowest verified
   cases dropped from about 822 s to 26 s and from about 655 s to 12 s, and the
   155-mesh check kept the same repairs. Tamponade also skips thin shells, open

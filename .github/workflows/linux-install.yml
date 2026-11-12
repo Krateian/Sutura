@@ -342,3 +342,79 @@ jobs:
             done < <(grep -E '^[[:space:]]*Exec=' "$f")
           done
           EOF
+
+  ubuntu-source-bootstrap:
+    name: Ubuntu source bootstrap (no prebuilt wheel, no Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system GL/Qt libraries and zsh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopengl0 libgl1 libglu1-mesa libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3 desktop-file-utils zsh
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Hide the runner's Rust toolchain and force the source path
+        run: |
+          # Drop every PATH entry that still exposes a rustup/cargo binary.
+          # System dirs stay: if one still has a toolchain the strict check
+          # below must fail instead of losing a path the rest of the job
+          # needs. The list matches the macOS job (/opt/homebrew/bin is
+          # simply absent here).
+          keep_dir() {
+            case "$1" in
+              /opt/homebrew/bin|/usr/bin|/bin|/usr/local/bin|/usr/sbin|/sbin)
+                return 0
+                ;;
+            esac
+            if [ -x "$1/rustup" ] || [ -x "$1/cargo" ]; then
+              return 1
+            fi
+            return 0
+          }
+          CLEAN_PATH="$(printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r d; do
+            d="${d%/}"
+            if keep_dir "$d"; then printf '%s\n' "$d"; fi
+          done | paste -sd: -)"
+          export PATH="$CLEAN_PATH"
+          hash -r
+          echo "PATH=$CLEAN_PATH" >> "$GITHUB_ENV"
+          if FOUND="$(command -v rustup || command -v cargo)"; then
+            echo "::error::rustup/cargo still on PATH at '$FOUND'; the bootstrap test is invalid"
+            exit 1
+          fi
+          mkdir -p /tmp/fresh-home
+          echo "HOME=/tmp/fresh-home" >> "$GITHUB_ENV"
+          echo "SUTURA_RELEASE_BASE=file:///tmp/no-such-releases" >> "$GITHUB_ENV"
+
+      - name: Run installer (bootstraps Rust + cmake itself)
+        env:
+          SUTURA_WITH_FTETWILD: "0"
+          SHELL: /bin/zsh
+        run: ./install.sh
+
+      - name: Assert the toolchain is APP_DIR-scoped and cmake is not shipped
+        run: |
+          test -x "$HOME/.local/share/sutura/tools/cargo/bin/cargo"
+          test ! -e "$HOME/.local/share/sutura/venv/bin/cmake"
+          test ! -e "$HOME/.cargo"
+          "$HOME/.local/share/sutura/venv/bin/python" -c "import sutura_geom; assert hasattr(sutura_geom, 'stage2_rebuild')"
+
+      - name: CLI smoke on the built-from-source install
+        run: |
+          python3 tests/make_broken_stl.py /tmp/broken.stl
+          "$HOME/.local/bin/sutura" /tmp/broken.stl > /tmp/broken.json 2>&1 || true
+          cat /tmp/broken.json
+          "$HOME/.local/share/sutura/venv/bin/python" -c "import json; d=json.load(open('/tmp/broken.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
+
+      - name: Uninstall removes the bootstrapped toolchain
+        run: |
+          SUTURA_DRY_RUN=1 ./uninstall.sh | grep -q 'would remove'
+          ./uninstall.sh
+          test ! -e "$HOME/.local/share/sutura/tools"
+          test ! -e "$HOME/.cargo"

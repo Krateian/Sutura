@@ -4,18 +4,135 @@
 
 Generates a zip archive containing:
   - system_info.json: platform, python, environment, and sutura_geom symbol audit
-  - methods_availability.json: status and availability reason for all 19 methods
+  - methods_availability.json: status and availability reason for every
+    registered repair method
   - config_sanitized.json: configuration with home paths and usernames scrubbed
   - last_repair_history.json: latest repair metrics record from history.jsonl
+  - crash_log.txt: scrubbed tail of crash.log (present only when it exists)
   - README.txt: description of diagnostic contents
+
+Also owns the shared crash log: both the CLI and the GUI enable ``faulthandler``
+and uncaught-exception hooks into a single bounded ``crash.log`` in the runtime
+user-data directory (see ``crash_log_path``), so a hard crash leaves a trace
+instead of dying silently.
 """
 import getpass
 import json
 import os
 import platform
+import re
 import sys
 import zipfile
 from typing import Any, Dict, List, Optional
+
+CRASH_LOG_NAME = 'crash.log'
+# Bound the crash log so it can never grow without limit; trim keeps the tail
+# (the most recent crash is what matters).
+CRASH_LOG_MAX_BYTES = 200 * 1024
+
+# Keeps the faulthandler file object alive: faulthandler requires the file it
+# writes to stay open, so it must outlive the call that enables it.
+_CRASH_LOG_FH = None
+
+
+def crash_log_path() -> str:
+    """Absolute path of the crash log in the runtime user-data directory.
+
+    Uses the shared user-data helper (``sutura_engine.paths``) so the log sits
+    beside history.jsonl; falls back to the same default location when that
+    module cannot be imported.
+    """
+    try:
+        from sutura_engine import paths
+        return paths.data_file(CRASH_LOG_NAME)
+    except Exception:
+        base = os.environ.get(
+            'SUTURA_DATA_DIR', os.path.expanduser('~/.local/share/sutura/data'))
+        return os.path.join(base, CRASH_LOG_NAME)
+
+
+def _trim_crash_log(path: str, max_bytes: int = CRASH_LOG_MAX_BYTES) -> None:
+    """Keep only the tail of the crash log; never raises.
+
+    When the file exceeds ``max_bytes`` it is replaced by a short marker plus
+    its last ``max_bytes``; the newest crash (last written) is preserved.
+    """
+    try:
+        if not os.path.isfile(path):
+            return
+        size = os.path.getsize(path)
+        if size <= max_bytes:
+            return
+        with open(path, 'rb') as f:
+            f.seek(size - max_bytes)
+            tail = f.read()
+        # Start at a clean line/UTF-8 boundary: a raw byte cut can split a
+        # multi-byte character and leave the file unreadable as UTF-8.
+        nl = tail.find(b'\n')
+        if 0 <= nl < 1024:
+            tail = tail[nl + 1:]
+        else:
+            tail = tail.decode('utf-8', errors='replace').encode('utf-8')
+        with open(path, 'wb') as f:
+            f.write(b'... crash log trimmed to the last %d bytes ...\n'
+                    % max_bytes)
+            f.write(tail)
+    except Exception:
+        pass
+
+
+def enable_crash_logging():
+    """Enable ``faulthandler`` writing to a bounded ``crash.log``.
+
+    Returns the log path, or None when faulthandler is unavailable. Never
+    raises: a crash reporter must not break startup. The file object is kept
+    open in a module global because faulthandler requires it.
+    """
+    global _CRASH_LOG_FH
+    try:
+        import faulthandler
+    except Exception:
+        return None
+    path = crash_log_path()
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    except Exception:
+        pass
+    _trim_crash_log(path)
+    try:
+        # No startup banner: crash.log must stay empty on a normal run and only
+        # gain content when faulthandler actually catches a fatal signal (or a
+        # hook logs an uncaught exception).
+        fh = open(path, 'ab')
+        faulthandler.enable(file=fh, all_threads=True)
+    except Exception:
+        return None
+    _CRASH_LOG_FH = fh
+    return path
+
+
+def crash_log_tail(max_bytes: int = CRASH_LOG_MAX_BYTES) -> Optional[str]:
+    """Scrubbed tail of the crash log for the diagnostics archive, or None.
+
+    Reuses ``sanitize_value`` so the same home/user scrubbing applied to the
+    rest of the archive also covers tracebacks (which may embed input paths).
+    """
+    path = crash_log_path()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read()
+        text = data.decode('utf-8', errors='replace')
+    except Exception:
+        return None
+    if not text.strip():
+        return None
+    home, user = _get_home_and_user()
+    return sanitize_value(text, home, user)
 
 
 def _get_home_and_user():
@@ -28,13 +145,24 @@ def _get_home_and_user():
 
 
 def sanitize_value(val: Any, home: str, user: str) -> Any:
-    """Recursively scrub personal paths and usernames from diagnostic data."""
+    """Recursively scrub personal paths and usernames from diagnostic data.
+
+    Matching is case-insensitive (macOS APFS/HFS+ is case-preserving, so a home
+    path can differ in case from ``getpass.getuser()``), and external drive /
+    mount roots (``/Volumes/<name>``, ``/media/<user>``, ``/run/media/<user>``)
+    keep their directory name out of the archive too.
+    """
     if isinstance(val, str):
         res = val
-        if home and home in res:
-            res = res.replace(home, '~')
-        if user and user in res:
-            res = res.replace(user, '<user>')
+        if home:
+            res = re.sub(re.escape(home), '~', res, flags=re.IGNORECASE)
+        if user:
+            res = re.sub(re.escape(user), '<user>', res, flags=re.IGNORECASE)
+        res = re.sub(r'(/run/media/)[^/\s]+', r'\1<user>', res,
+                     flags=re.IGNORECASE)
+        res = re.sub(r'(/media/)[^/\s]+', r'\1<user>', res, flags=re.IGNORECASE)
+        res = re.sub(r'(/Volumes/)[^/\s]+', r'\1<name>', res,
+                     flags=re.IGNORECASE)
         return res
     if isinstance(val, dict):
         return {sanitize_value(k, home, user): sanitize_value(v, home, user) for k, v in val.items()}
@@ -163,18 +291,28 @@ def create_diagnostics_zip(out_path: str) -> Dict[str, Any]:
     methods_avail = collect_methods_availability()
     config_clean = collect_sanitized_config()
     last_history = collect_last_repair_history()
+    crash_tail = crash_log_tail()
+    # Method count comes from the registry-backed availability list, never a
+    # hard-coded literal (methods are added over time).
+    method_count = sum(1 for m in methods_avail if 'num' in m)
 
+    _files = [
+        "  - system_info.json: OS, Python runtime, and sutura_geom extension symbols\n",
+        "  - methods_availability.json: Availability audit across all %d methods\n"
+        % method_count,
+        "  - config_sanitized.json: Cleaned user settings\n",
+        "  - last_repair_history.json: Technical metrics from the last repair run\n",
+    ]
+    if crash_tail is not None:
+        _files.append(
+            "  - crash_log.txt: Scrubbed tail of the crash log (crash traces)\n")
     readme_text = (
         "Sutura Diagnostics Archive\n"
         "==========================\n\n"
         "This archive contains diagnostic metadata for troubleshooting Sutura.\n"
         "All personal paths and usernames have been scrubbed.\n\n"
         "Files included:\n"
-        "  - system_info.json: OS, Python runtime, and sutura_geom extension symbols\n"
-        "  - methods_availability.json: Availability audit across methods 1-17\n"
-        "  - config_sanitized.json: Cleaned user settings\n"
-        "  - last_repair_history.json: Technical metrics from the last repair run\n"
-    )
+    ) + ''.join(_files)
 
     out_dir = os.path.dirname(os.path.abspath(out_path))
     if out_dir and not os.path.exists(out_dir):
@@ -186,6 +324,8 @@ def create_diagnostics_zip(out_path: str) -> Dict[str, Any]:
         zf.writestr('methods_availability.json', json.dumps(methods_avail, indent=2))
         zf.writestr('config_sanitized.json', json.dumps(config_clean, indent=2))
         zf.writestr('last_repair_history.json', json.dumps(last_history, indent=2))
+        if crash_tail is not None:
+            zf.writestr('crash_log.txt', crash_tail)
 
     size_bytes = os.path.getsize(out_path)
     return {

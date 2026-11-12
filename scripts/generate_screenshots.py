@@ -15,16 +15,19 @@ no prior install is required:
     # or: python3 scripts/generate_screenshots.py   (if PySide6 + trimesh are present)
 
 Outputs (overwrites in assets/):
-  screenshot.png     - main GUI: batch summary strip + defect panel, a
-                       broken mesh selected (shows mm diameters + type)
-  defect-panel.png   - defect detail panel with the selected file's defects
-  analyze-panel.png  - pre-repair analysis: the new 3-row button layout plus
-                       the Analysis pane (type/mode/tuning, defect counts,
-                       watertight verdict, estimated confidence + warning,
-                       mode suggestions)
-  before-after-panel.png - the before/after dialog (static view): the
-                       Static/Interactive mode switch, the main
-                       original/repaired image, the worst-defect detail
+  screenshot.png     - main GUI: a realistic curved part with two small holes
+                       selected after repair (measured Fidelity, low Risk,
+                       plain verdict, batch summary + defect panel)
+  defect-panel.png   - the honest warning case: the broken cube selected, with
+                       holes, non-manifold edges, mm diameters and the unit
+                       warning explained in docs/guide/usage.md
+  analyze-panel.png  - pre-repair analysis of the realistic part: the new
+                       3-row button layout plus the Analysis pane (type/mode/
+                       tuning, defect counts, watertight verdict, estimated
+                       confidence + warning, mode suggestions)
+  before-after-panel.png - the before/after dialog (static view) on the
+                       realistic part: the Static/Interactive mode switch, the
+                       main original/repaired image, the worst-defect detail
                        close-up and the toggle button
   method-menu.png    - the file-list right-click menu (Analyze, Recommended
                        methods, Use method, External engines, Clear tags)
@@ -92,13 +95,26 @@ def _repo_cli_wrapper():
 def make_meshes(tmp):
     broken = os.path.join(tmp, 'broken.stl')
     clean = os.path.join(tmp, 'clean.stl')
+    sample = os.path.join(tmp, 'sample_broken.stl')
+    sample_clean = os.path.join(tmp, 'sample_clean.stl')
     subprocess.run([sys.executable,
                     os.path.join(REPO, 'tests', 'make_broken_stl.py'), broken],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run([sys.executable, '-c',
                     "import trimesh; trimesh.creation.box().export(%r)" % clean],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return broken, clean
+    # A realistic curved part (60 mm across) with two small holes. It keeps
+    # plenty of healthy skin, so the report has a measured Fidelity and a low
+    # Risk instead of the cube's "shape check unavailable" worst case.
+    import numpy as np
+    import trimesh
+    part = trimesh.creation.icosphere(subdivisions=4, radius=30.0)
+    keep = np.ones(len(part.faces), dtype=bool)
+    keep[0] = keep[1] = False
+    part.update_faces(keep)
+    part.export(sample)
+    trimesh.creation.icosphere(subdivisions=2, radius=20.0).export(sample_clean)
+    return broken, clean, sample, sample_clean
 
 
 def run(m, files, size, select_broken, out_path, show_heatmap=False):
@@ -372,17 +388,18 @@ def main():
     sample_dir = os.path.join('/tmp', 'models') if os.path.exists('/tmp') else os.path.join(tempfile.gettempdir(), 'models')
     os.makedirs(sample_dir, exist_ok=True)
     try:
-        broken, clean = make_meshes(sample_dir)
+        broken, clean, sample, sample_clean = make_meshes(sample_dir)
         files = [broken, clean]
-        run(m, files, MAIN_SIZE, select_broken=True, show_heatmap=True,
+        sample_files = [sample, sample_clean]
+        run(m, sample_files, MAIN_SIZE, select_broken=True, show_heatmap=True,
             out_path=os.path.join(ASSETS, 'screenshot.png'))
         run(m, files, PANEL_SIZE, select_broken=True, show_heatmap=True,
             out_path=os.path.join(ASSETS, 'defect-panel.png'))
-        run_analyze(m, files, ANALYZE_SIZE, select_broken=True,
+        run_analyze(m, sample_files, ANALYZE_SIZE, select_broken=True,
                     out_path=os.path.join(ASSETS, 'analyze-panel.png'))
-        run_before_after(m, files, MAIN_SIZE,
+        run_before_after(m, sample_files, MAIN_SIZE,
                          out_path=os.path.join(ASSETS, 'before-after-panel.png'))
-        run_context_menu(m, files,
+        run_context_menu(m, sample_files,
                          out_path=os.path.join(ASSETS, 'method-menu.png'))
         run_options_dialog(m, os.path.join(ASSETS, 'options-dialog.png'))
         run_methods_panel(m, os.path.join(ASSETS, 'methods-panel.png'))

@@ -38,11 +38,11 @@
 
 ---
 
-Linux has no direct equivalent of Windows' right-click *Fix model* (3D Builder,
-Netfabb), and Bambu Studio's *Fix model* button does not work on Linux. Sutura
-fills that gap: pick a mesh, repair it, and get a repaired copy that slicers
-accept — from a GUI, the command line, a file-manager right-click or an
-OrcaSlicer plugin.
+The common one-click repair paths are Windows-only: 3D Builder's repair and
+Bambu Studio's *Fix model* (which calls Microsoft's Netfabb service) are not
+available on Linux or macOS. Sutura fills that gap on both: pick a mesh, repair
+it, and get a repaired copy that slicers accept — from a GUI, the command line,
+a file-manager right-click or an OrcaSlicer plugin.
 
 <p align="center">
   <img src="assets/screenshot.png" alt="Sutura main window" width="820">
@@ -53,18 +53,23 @@ OrcaSlicer plugin.
 - **Repairs only what is broken.** Holes, wrongly joined edges, flipped faces,
   overlapping or self-intersecting parts and loose debris are treated; a clean
   model passes through unchanged.
-- **Never worse than the input.** Every repair step is adopted only when its
-  result is at least as good as what the repair already had; otherwise it is
-  discarded.
-- **Honest verdict.** The result is reloaded and re-checked before it is called
-  watertight, and a report shows what was fixed, what remains and how much the
-  shape moved.
-- **Many tools, one button.** Nineteen ranked repair methods sit behind a single
-  *Repair* button; the triage engine picks what a model needs.
+- **Topology guaranteed not to worsen.** Every repair candidate is adopted only
+  when defect counts do not rise (no increase in holes or non-manifold edges,
+  with many tiers requiring zero remaining defects) without mesh blow-ups;
+  otherwise it is discarded (see [what "no worse" covers](docs/guide/how-it-works.md#what-no-worse-covers)).
+- **Shape transparency.** If severe damage forces an aggressive solid rebuild
+  (such as fTetWild), the report-only **Fidelity score** alerts you exactly
+  where and how much the surface moved.
+- **One plain verdict.** A single headline verdict tells you if the model is
+  ready to print, has caveats, or had its shape altered, with full health,
+  risk, and fidelity scores behind **Details**.
+- **Many tools, one button.** Nineteen registered repair methods sit behind a
+  single *Repair* button; the triage engine picks from the enabled ones.
 - **Native and offline.** A Rust core (`sutura_geom`) does the geometry; no
   network access is needed after installation.
 - **Fits the workflow.** Dolphin service menu on KDE, Finder Quick Action on
-  macOS, an experimental OrcaSlicer plugin, batch repair and multi-object 3MF.
+  macOS, an experimental OrcaSlicer plugin (2.5.0+ / nightly, installed
+  separately), batch repair and multi-object 3MF.
 
 ## Install
 
@@ -98,6 +103,7 @@ in [Install and requirements](docs/guide/install.md).
 sutura model.stl                 # writes model_fixed.stl
 sutura model.3mf -o fixed.3mf    # choose the output name
 sutura model.stl --human         # readable report of what was fixed
+sutura model.stl --no-fidelity   # skip the shape-fidelity score (report only)
 sutura validate model.stl        # analyse only, change nothing
 sutura a.stl b.stl c.3mf         # batch
 ```
@@ -106,6 +112,26 @@ sutura a.stl b.stl c.3mf         # batch
   (or drag and drop) and press **Repair**.
 - **KDE Dolphin:** right-click a model → **Repair with Sutura**.
 - **macOS Finder:** right-click → *Quick Actions* → **Sutura — Repair**.
+- **If something goes wrong:** a hard crash writes a capped `crash.log` in
+  Sutura's user-data folder; uncaught errors also show a short dialog, while a
+  native crash leaves the log for the next launch. `sutura --diagnostics out.zip`
+  bundles a scrubbed copy for a bug report. The log never leaves your machine
+  unless you attach it. See
+  [Troubleshooting](docs/guide/troubleshooting.md).
+- **3MF paint, seams and supports are preserved where possible.** They stay on
+  triangles that survive unchanged; newly created triangles get none. When a
+  repair loses them the report says so, with the kept / dropped / new counts.
+  See [Usage](docs/guide/usage.md).
+- **Separate small parts are reported, never silently changed.** The report
+  lists the tiny components the repair removed (below the active Stage-1
+  small-part cutoff, `mincomponentsize`; 8 faces by default) with their size
+  and distance to the main body, and lists small separate parts kept
+  (informational, no verdict change) — without deleting anything. See
+  [Usage](docs/guide/usage.md).
+- **One verdict per repair.** Both the CLI and the GUI show a single headline
+  verdict (shape check folded in), with the full report available behind
+  **Details** and localized in English and Turkish. See
+  [Usage](docs/guide/usage.md).
 - **Last-resort solid engine (experimental):** `--solid-engine cdt|ftetwild`
   chooses the rebuild used when everything else failed (also under Options →
   Repair and inherited by the integrations). The default stays **fTetWild**;
@@ -133,8 +159,8 @@ leaves healthy skin alone. In short:
 3. **Deeper steps run only when needed:** *Graft* rebuilds just the damaged
    region, *Coaptation* welds and joins folded or overlapping bodies, and the
    fallback tiers (*Splint*, *Dressing*, fTetWild) handle the hardest cases.
-4. **Stage 2** produces one closed, printable solid, and the result is reloaded
-   and checked before it is reported.
+4. **Stage 2** rebuilds a closed mesh as one watertight, printable solid; the
+   result is reloaded and checked before it is reported.
 
 The full walk-through is in [How Sutura works](docs/guide/how-it-works.md).
 
@@ -173,6 +199,8 @@ When reporting a mesh, please include the `sutura <file> --human` output (or the
 JSON report), the command that was run and, if known, how the mesh was produced
 (slicer, scanner, CAD export). The issue template is in
 `.github/ISSUE_TEMPLATE/bug_report.md`; see also [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Thanks to @LordKhizir for the cross-filesystem save bug report (#134).
 
 ## Sponsors
 

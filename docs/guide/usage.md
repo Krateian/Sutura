@@ -28,6 +28,7 @@ sutura model.stl --mode aggressive   # use the aggressive repair mode
 sutura model.stl --classifier-engine classic  # force the classic classifier engine
 sutura model.stl --max-geometry-change 10 --max-risk 40   # repair budgets (see below)
 sutura model.stl --max-risk 30 --force                    # save even past the budget, no prompt
+sutura model.stl --no-fidelity                            # skip the shape score (report only)
 sutura validate model.stl   # analyze WITHOUT repairing (read-only report)
 sutura model.stl --dry-run  # report what a repair would do, write NOTHING
 sutura a.stl b.3mf c.stl    # batch: each file gets a _fixed output
@@ -180,14 +181,22 @@ instead, because the post-repair signals are not known yet: validate and
 `--dry-run` carry `estimated_confidence` and print
 `Estimated confidence: X/100 (Label) — actual result may differ after repair`.
 
-Every repair report also carries **Repair Health / Repair Risk** — a separate
-scoring system (independent of the classic confidence score, configurable via
-`sutura/repair_score_config.json`):
+Every repair report also carries **Repair Health / Repair Risk / Fidelity** —
+a separate scoring system (independent of the classic confidence score,
+configurable via `sutura/repair_score_config.json`):
 - `repair_health` (0–100) — how geometrically sound the final mesh is: a
   weighted sum of watertight (stage 2 confirmed), no non-manifold edges, no
   self-intersections, no remaining holes.
 - `repair_risk` (0–100) — how much the repair altered the mesh: face/vertex
   delta %, component changes, and volume delta %.
+- `repair_fidelity` (0–100) — how much the repair kept the *shape*: the
+  one-sided distance of the result to the input on the healthy (non-defect)
+  surface, feature-edge recall, healthy fill/removal volume, volume and
+  bounding-box change, and the area of newly created surface. It is measured
+  once on the final result, after every candidate decision, and never changes
+  which candidate is adopted. Missing factors are skipped (their weight is
+  redistributed), so the score stays meaningful on smooth models where the
+  sharp-edge term does not apply.
 - `repair_status` / `repair_status_code` — a two-axis label derived from the
   Health/Risk tier combination via a config lookup table: `safe` ("Safe to
   inspect"), `review` ("Review recommended"), `caution` ("Caution advised"),
@@ -195,13 +204,139 @@ scoring system (independent of the classic confidence score, configurable via
   independent axes, so a high-health + low-risk repair (`safe`) never
   collapses to the same status as a mid-health + high-risk one (`caution`).
   The per-factor contributions are also reported
-  (`repair_health_factors` / `repair_risk_factors`).
+  (`repair_health_factors` / `repair_risk_factors` /
+  `repair_fidelity_factors`).
+- `repair_verdict_code` / `repair_verdict_areas` — the Fidelity **shape**
+  verdict in the JSON report and its changed-area count: `preserved`
+  ("Repaired, shape preserved"), `changed` ("Repaired, shape changed in N
+  area(s) - check"), `low_confidence` ("... in N guessed area(s) ..."),
+  `not_repaired` ("Not fully repaired") or `unavailable`. The JSON field never
+  contains the display-only `ready` / `notes` codes. The CLI `--human` and the
+  GUI fold it with the topology verdict into ONE headline: a failed repair (or
+  Health below the mid tier) reads `not_repaired` even if the untouched parts
+  still match; with topology caveats but a preserved shape the headline is
+  "Repaired with notes — shape preserved", never a clean "shape preserved"; and
+  when Fidelity is not measured it falls back to the plain brief verdict
+  ("Ready to print" / "Repaired with notes").
+  Large invented areas (a big hole cap, fTetWild/Splint rebuild) set
+  `repair_verdict_low_confidence`: the reconstruction there is a guess, not a
+  measurement. The per-area counts and low-confidence cluster detail are
+  measured on meshes below the analysis budget; larger meshes keep the score
+  and the verdict but report the area count as unavailable; the sharp-edge
+  term is also skipped on very large meshes for the same reason, and
+  `repair_fidelity_note` says so. If the input has no measurable healthy skin
+  (or every closest-point result is invalid) the score is `unavailable`, never
+  a fabricated 100. On multi-object files a low-confidence object wins the
+  file headline. The 0.1 mm detail tolerance is capped by
+  `0.2 %` of the bounding-box diagonal, so miniatures and metre-scale exports
+  scale correctly.
 
-`--human` shows them as `Health: X/100   Risk: Y/100   Status: <label>`.
-Scoring is fail-silent: any missing/invalid metric is skipped (its weight
-redistributed), and scoring never breaks a repair. Multi-object 3MF reports
-carry these per object. The GUI defect panel shows them in the selected
-file's header line.
+`--human` prints that one verdict on its own line, then
+`Health: X/100   Risk: Y/100   Fidelity: Z/100` as the numbers (the numbers no
+longer repeat the verdict); `repair_status` stays on the following details line.
+`--no-fidelity` (or the Options checkbox) skips the measurement; it is
+reporting-only, so it never changes the saved mesh. Scoring is fail-silent: any
+missing/invalid metric is skipped (its weight redistributed), and scoring never
+breaks a repair. Multi-object 3MF reports carry these per object; the file-level
+Fidelity is the worst object and the changed/low-confidence area counts are
+summed. The GUI shows the same single headline in the report summary, with the
+full report — now localized in English and Turkish — folded behind the
+**Details** toggle.
+
+### Understanding the repair report
+
+#### Score cheat sheet
+
+Every repair report presents three independent 0–100 shape and mesh indicators alongside the triage confidence score:
+
+| Score | Scale | Good direction | What it measures |
+|---|---|---|---|
+| **Health** | 0 – 100 | **HIGHER is better** (100 is ideal) | **Topological & structural integrity.** 100 indicates a fully closed, watertight 2-manifold solid with zero holes, zero non-manifold edges, zero bad faces, zero residual self-intersections, and correct face winding orientation. Lower scores indicate remaining defects. |
+| **Risk** | 0 – 100 | **LOWER is better** (0 is ideal) | **Degree of mesh alteration.** Measures how much the repair altered the original geometry (face/vertex count deltas, volume shifts, shell pruning, or solid remeshing). A low risk score (0–25) means the part was gently patched; high risk (> 60) signals aggressive reconstruction. |
+| **Fidelity** | 0 – 100 | **HIGHER is better** (100 is ideal) | **Shape preservation on healthy regions.** Measures one-sided Hausdorff deviation, sharp feature-edge recall (dihedral angles), and healthy fill/removal. **Report-only:** does not block candidate adoption. If large damaged sections were reconstructed from scratch, the headline warns `guessed area(s) - check`. |
+| **Confidence** | 0 – 100 / High-Med-Low | *Diagnostic certainty* | **Triage classifier confidence.** Indicates how confident Sutura was when diagnosing the input mesh defect category and selecting the initial repair strategy. It reflects input analysis certainty, independent of the geometric quality of the output. |
+
+> [!TIP]
+> **Remember the Risk inversion:** While Health and Fidelity follow the common "higher is better" rule, **Risk is a penalty metric where 0 is untouched and 100 is severe alteration**. A repair with `Health: 100   Risk: 1   Fidelity: 100` is nearly perfect!
+
+#### Headline verdicts & inspection advice
+
+The CLI `--human` mode and the GUI collapse the topology brief and Fidelity shape check into **one headline**:
+- `Ready to print` / `Repaired, shape preserved`: Topology is closed and sound; original surface details are intact.
+- `Repaired with notes — shape preserved`: Topology was closed, but with informational notes (e.g., thin walls or residual cosmetic self-intersections); surface shape was preserved.
+- `Repaired, shape changed in N area(s) - check`: Topology is sound, but aggressive fallback repair was required and shifted the healthy surface by more than 1.0% of the bounding-box diagonal (and Fidelity is below the 85 high tier).
+- `Repaired, shape changed in N guessed area(s) - check`: Missing or destroyed sections were rebuilt by solid reconstruction (such as fTetWild, Splint, or a large Tamponade cap); the geometry in those areas is an algorithmic estimate. If a model exhibits both healthy-surface drift and large reconstructed areas, `low_confidence` wins the headline over `changed`.
+- `Not fully repaired` / `Failed`: Defect counts could not be fully resolved to a watertight manifold state within safe limits.
+
+When a report headline advises `check`:
+- In the **GUI**: Open the **Before / After** comparison view or the **Heatmap** tab to visually inspect regions where the surface moved or where hole patches were grafted.
+- In the **CLI**: Re-run with `--human --diff` to see vertex, face, and surface-area deltas, or `--human --defects` to review the exact defect locations.
+
+#### Example `--human` output
+
+The following output shows a genuine repair of an imperfect model (`thingi10k_100173.stl` from the test corpus) containing a boundary hole and thin walls:
+
+```text
+Repaired with notes — shape preserved
+  Holes closed: 1 · Orientation: already correct · Parts: 1 kept · Shape change: 0.00%
+  Note: thin walls: ~8.0% of the surface is thinner than 0.5% of the model size (thinnest ~0.21 mm) [estimated]
+
+Input : model.stl
+Output: model_fixed.stl
+Mode  : auto
+Classifier: experimental
+Intensity: balanced
+Type  : organic (confidence 0.67) - default thresholds (below confidence gate)
+Confidence: 87/100 (High)
+Health: 100/100   Risk: 1/100   Fidelity: 100/100
+
+Print impact:
+  Fixed : 1 hole(s) closed
+  Remaining: none
+  Geometry: deviation max 0.0% of size
+  Not assessed: volume
+Methods: 19/19 OK
+Repair status: Safe to inspect
+
+Stage 1 (MeshLab):
+  Holes closed            : 1
+  Holes remaining         : 0
+  Non-manifold edges fixed: 0
+  Faces removed           : 0
+  Connected components    : 1
+  Two-manifold            : YES
+  Tamponade (plug)        : 1 plugs, 2 plug faces, holes=0 nm=0, healthy kept 250 in 0.00s adopted
+  Volume change          : n/a (input volume not measurable)
+
+Stage 2 (Manifold):
+  input_vertices: 128
+  input_faces: 252
+  input_watertight: True
+  construct_status: Error.NoError
+  ok: True
+  volume_before: 10070.636131079196
+  shells_found: 1
+  output_vertices: 128
+  output_faces: 252
+  volume_after: 10070.636131079196
+  shells: 1
+```
+
+#### Geometry terms glossary
+
+- **Non-manifold (edges / vertices):** Geometrical defects where a mesh does not behave like a physical 2-manifold surface — e.g. an edge shared by 3 or more faces (T-junction), an open boundary edge with only 1 face, or two separate volumes touching only at an isolated point or line like an hourglass.
+- **Winding orientation:** The consistent clockwise or counter-clockwise ordering of face vertices that determines which side of a triangle faces "outside" towards empty space and which side faces "inside" the solid interior.
+- **fTetWild (Fast Tetrahedral Meshing in the Wild):** An aggressive fallback engine that converts broken surface triangles into a 3D volumetric tetrahedral solid, guaranteeing a watertight output even when surfaces are severely corrupted.
+- **CDT (Constrained Delaunay Triangulation):** An exact triangulation method that inserts triangles conforming exactly to given boundary segments or constraints without altering unconstrained features.
+- **Sub-ULP (Unit in the Last Place):** Floating-point arithmetic precision smaller than the distance between consecutive floating-point numbers; used in exact geometric predicates to guarantee robust orientation and intersection tests without numerical rounding errors.
+- **Hausdorff distance:** The maximum distance from any point on one surface to the closest point on another surface; a rigorous measure of the worst-case geometric deviation between the original and repaired shapes.
+- **Dihedral angle:** The internal angle between the planes of two adjoining triangular faces sharing an edge; used to detect sharp features and preserve mechanical edges during repair.
+
+The automatic **fallback** order can be reordered per model, opt-in, with
+`--auto-reorder` (or the *Auto-reorder* checkbox in Options → Methods). It uses
+the per-model suggested-method ranking; the baseline pipeline and the deep-repair
+ladder are unchanged, and Graft still precedes fTetWild. It ships off, and on the
+samples40 + oracle36 gate sets it was neutral (no mesh changed).
 
 ### Print-impact report
 
@@ -209,7 +344,7 @@ Every repair report carries a `print_report` block that decomposes the outcome
 into individual conditions and states how each one affects an FDM print. It is
 a pure view over already-computed measurements — it never re-measures the mesh
 — and it deliberately adds no rival "is it good" verdict: the single top-line
-judgement stays the existing Repair Health / Risk / Status above. The block has
+judgement is the Repair Health / Risk / Fidelity verdict above. The block has
 four parts:
 
 - `fixed` — what the repair actually did, with counts: holes closed,
@@ -270,6 +405,23 @@ multi-object 3MF files; `--human --diff` prints them too, and the GUI defect
 panel shows a one-line summary ("Volume: +0.12% · Surface: -2.37% · Vertex:
 12→9").
 
+The same `stage1` block records what happened to **separate small parts**
+(nothing is deleted beyond the existing `< mincomponentsize` rule):
+
+- `removed_small_parts` — the components the Stage-1 `< mincomponentsize`-face
+  rule dropped: `count`, `faces_total` and a capped `parts` list, each with
+  `faces`, `size_mm` (and `size_pct` of the model) and `distance_mm` to the main
+  body.
+- `possible_debris` — small separate part(s) kept in the repaired mesh (a
+  separate, closed, non-degenerate part under 0.5% of the largest part's
+  volume), with `faces`, `volume_pct`, `size_pct` and `distance_mm`. This is
+  **informational only**: it never changes the verdict, and nothing is removed.
+
+Both appear per object for multi-object 3MF files, in the `--human` report
+(a `Small parts removed …` / `Small separate part(s) kept: N (check if
+intended)` block) and in the GUI result details. The kept-part line is
+informational and does not turn a ready repair into one with notes.
+
 A mesh is only counted as **watertight** when stage 2 ran and
 validated the closed solid. If stage 1 closes a mesh but stage 2 is skipped,
 errors, or never runs (for example the macOS/conda in-process fallback being
@@ -317,7 +469,12 @@ that survive with unchanged vertex coordinates; newly created triangles are not
 given inherited paint. The JSON report carries `triangle_attributes` per object
 (`original_attributed`, `kept`, `dropped`, `output_triangles`) and a summed
 file-level value for multi-object 3MF. Regression-tested in
-`tests/test_3mf_roundtrip.py`.
+`tests/test_3mf_roundtrip.py`. This is also shown to the user: when a repaired
+3MF lost attributes on surviving triangles, the `--human` report and the GUI
+show one warning line with the kept / dropped / new-triangles-without-attributes
+counts (per object for a multi-object file); when only newly created triangles
+lack attributes — which is expected — the same counts are shown as a neutral
+note. Nothing is shown when the input had no painted/seam/support attributes.
 
 GUI:
 
@@ -512,12 +669,14 @@ Install (OrcaSlicer 2.5.0+ / nightly):
 Permissions: `register_capabilities()` pre-declares the existing Sutura CLI
 path with `request_permissions(fs_read=...)`, plus `threading` and the two
 stable process targets it can name up front (the OrcaSlicer process-count probe
-and the fixed-folder reveal command). A build that accepts those keywords
-prompts once at load. The shipped **2.5.0-alpha** accepts only `fs_read`, so the
-plugin falls back to the fs_read-only declaration (the read grant is preserved)
-and the user gets a **file-read prompt at load** plus **one reactive "create a
-thread" prompt on first use**; approving it persists the grant, and later
-Repair, Analyze and Show file runs raise no further prompts. Repair and Analyze
+and the fixed-folder reveal command). On 2.5.0 RC and later,
+`request_permissions()` accepts those declarations, so the plugin prompts
+**once at load** (one combined dialog covering the file reads, thread creation
+and the two process targets) and never again. On an older nightly that accepts
+only `fs_read`, the plugin falls back to the fs_read-only declaration (the read
+grant is preserved) and the user gets a **file-read prompt at load** plus **one
+reactive "create a thread" prompt on first use**; approving it persists the
+grant, and later Repair, Analyze and Show file runs raise no further prompts. Repair and Analyze
 spawns run on plugin-created worker threads, whose audit context is empty, so
 they are not audited on 2.5. A denial is surfaced in the panel naming the
 operation that failed — a red banner only when the repair or Analyze job itself

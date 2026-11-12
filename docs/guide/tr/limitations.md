@@ -49,12 +49,30 @@ güvenilir şekilde algılayabilir.
   olarak yeniden kurar, bu iç/örtüşen geometriyi çözer, ama patolojik
   durumlarda yeniden kurma, özellikleri hafifçe yeniden şekillendirebilir.
   Sonucu her zaman bir dilimleyicide kontrol edin.
-* **Büyük delik yamaları.** Aşama 1 kapatıcısı, delikleri düz üçgen yamalarla doldurur; çok
-  büyük delikler için dolgu basit bir yamadır, akıllı bir yeniden yapılandırma
-  değildir. Meshi kapatır ama yama kalitesi ortalamadır ve yumuşatma
-  gerektirebilir.
-* **Küçük bağlantısız döküntüler.** 8 yüzden az olan bileşenler kaldırılır.
-  Ana gövdeye bağlı olmayan küçük, meşru bir parça da kaldırılır.
+* **Büyük delik yamaları.** Flap katmanı, pürüzsüz yüzey geometrisini yeniden
+  kurmak için delikler boyunca sınır eğriliğini ve teğet sürekliliğini ilerletir.
+  Ancak sınır eğriliğinin açıklığı güvenilir biçimde bağlayamadığı çok büyük
+  deliklerde onarım, açıklığı topolojik olarak kapatan ancak yumuşatma veya katı
+  yeniden örme gerektirebilen düz üçgensel bir yamaya geri döner.
+* **Küçük bağlantısız döküntüler.** Aşama 1 `mincomponentsize` eşiğinden daha
+  az üçgene sahip bağlantısız bileşenler Aşama 1 temizliğinde kaldırılır
+  (`sutura.topology.remove_connected_components`); eşiğe eşit veya daha fazla
+  üçgeni olan ayrık parçalar korunur. Eşik varsayılan olarak 8 üçgendir.
+  Sapmalar kısaca: `--mode aggressive` eşiği 12'ye, `--mode extreme` 20'ye
+  çıkarır (low/medium 8'de kalır); `organic` Aşama 1 profili ve algılanan
+  organic türü eşiği 12'ye çıkarır, `scan` profili 4'e, `--profile miniature`
+  1'e indirir. Rapor bunu görünür kılar: `stage1.removed_small_parts` (ve
+  `--human` raporu ile GUI ayrıntıları) eşiğin kaç bileşen kaldırdığını, toplam
+  yüz sayısını ve sınırlı bir liste için her bileşenin yüz sayısını, boyutunu ve
+  ana gövdeye uzaklığını verir.
+* **Küçük ayrı parçalar listelenir, asla kaldırılmaz.**
+  `stage1.possible_debris`, onarılan mesh'te korunan küçük ayrı parçaları (ayrı,
+  kapalı, dejenere olmayan ve en büyük parçanın hacminin %0,5'inden küçük) yüz
+  sayısı, hacim payı ve ana gövdeye uzaklığıyla listeler. Bu yalnızca
+  bilgilendirmedir — hiçbir şey silinmez ve hüküm değişmez — çünkü başıboş küçük
+  bir parça, meşru bir parçadan (bir pim, somun, göz) geometrik olarak ayırt
+  edilemez. `--human` raporu ve GUI ayrıntıları aynı sayıları, çok nesneli 3MF'de
+  nesne başına gösterir.
 * **Yoğun eş düzlemli temaslar sınırlı bir exact geçişle analiz edilir.**
   Tek bir temas yamasında çok sayıda çakışık yüz bulunan mekanik bir parçada
   exact eş düzlemli kabuk analizi, temas kümesi başına 512 üçgen / 1.024
@@ -122,4 +140,8 @@ güvenilir şekilde algılayabilir.
   alanlarıyla birlikte korunur. Birden fazla mesh aynı `.model` girdisini
   paylaşsa bile hiçbir nesne kaybolmaz. Nesne başına sonuç (her nesnenin aşama 2
   kararı ve `triangle_attributes` tutulan/bırakılan sayıları dahil) CLI
-  çıktısında ve GUI'de raporlanır.
+  çıktısında ve GUI'de raporlanır. Sağ kalan üçgenlerde boya/dikiş/destek
+  öznitelikleri kaybolduysa, CLI (`--human`) ve GUI tutulan, bırakılan ve
+  özniteliksiz yeni üçgen sayılarını içeren bir uyarı gösterir; yalnızca yeni
+  oluşturulan üçgenler özniteliksizse, aynı sayılar uyarı yerine nötr bir not
+  olarak görünür.

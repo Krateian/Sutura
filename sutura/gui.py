@@ -12,6 +12,7 @@ import math
 import shutil
 import tempfile
 import threading
+import traceback
 import importlib.util
 import subprocess
 import webbrowser
@@ -321,6 +322,9 @@ STRINGS = {
         'brief_note_reload_nm': 'The saved file reopens with a topology problem.',
         'brief_note_unit': 'The model may not be in millimetres.',
         'brief_note_material': 'OBJ material references were not preserved.',
+        'brief_note_attr_loss': ('Painted/seam/support attributes were lost on '
+                                 '%d triangle(s); %d kept, %d new triangles '
+                                 'have none.'),
         'brief_note_budget': 'The result was not saved because the repair went over its size or risk limit.',
         'brief_note_thin_wall': ('Some walls are thin: ~%s%% of the surface is '
                                  'thinner than %s%% of the model size'),
@@ -412,7 +416,8 @@ STRINGS = {
                         'level set of the generalized-winding field. '
                         '2-manifold and self-intersection-free by '
                         'construction; tried after Graft and before fTetWild. '
-                        'Off by default until measured on the corpus.',
+                        'Off by default: it can flatten fine detail; enable it '
+                        'deliberately.',
         'dressing_force_adopt_label': 'Dressing: force adopt (may deform)',
         'dressing_force_adopt_tip': 'Skip Dressing\'s shape-preservation gates '
                                     '(volume / component count / healthy-surface '
@@ -439,7 +444,8 @@ STRINGS = {
                           'count; a mesh that does not benefit is unchanged.',
         'tamponade_label': 'Tamponade (fill holes from inside)',
         'tamponade_tip': 'Tamponade (#17) \u2014 on by default; turn it off here '
-                         'or with --no-tamponade / SUTURA_TAMPONADE=0. Runs '
+                         'or with --no-tamponade / SUTURA_TAMPONADE=0. This '
+                         'also skips the outer-shell union pre-step. Runs '
                          'first as a pre-pass on the cleaned input before Flap '
                          'and Stage 1 hole closing, with a second chance after '
                          'Flap and before Graft/fTetWild. Plugs each open hole '
@@ -553,7 +559,69 @@ STRINGS = {
         'status_safe': 'Safe to inspect', 'status_review': 'Review recommended',
         'status_caution': 'Caution advised', 'status_failed': 'Failed / inspect',
         'status_unavailable': 'Scoring unavailable',
-        'health_risk_line': 'Health: %s/100 · Risk: %s/100 · %s',
+        'health_risk_line': 'Health: %s · Risk: %s · %s',
+        'health_risk_fidelity_line': ('Health: %s · Risk: %s · '
+                                      'Fidelity: %s'),
+        'fidelity_verdict_preserved': 'Repaired, shape preserved',
+        'fidelity_verdict_preserved_notes': ('Repaired with notes \u2014 shape '
+                                             'preserved'),
+        'fidelity_verdict_changed': ('Repaired, shape changed in %d area(s) '
+                                     '- check'),
+        'fidelity_verdict_changed_no_area': 'Repaired, shape changed - check',
+        'fidelity_verdict_low_confidence': (
+            'Repaired, shape changed in %d guessed area(s) - check'),
+        'fidelity_verdict_low_confidence_no_area': (
+            'Repaired, shape may be rebuilt - check'),
+        'fidelity_verdict_not_repaired': 'Not fully repaired',
+        'fidelity_verdict_unavailable': 'Shape check unavailable',
+        # Details body (the collapsible report); values stay verbatim.
+        'detail_output': 'Output file: %s',
+        'detail_status': 'Status: %s',
+        'detail_stage1': 'Stage 1 (native):',
+        'detail_holes_closed': '  Holes closed              : %d',
+        'detail_holes_remaining': '  Holes remaining           : %d',
+        'detail_nm_fixed': '  Non-manifold edges fixed  : %d',
+        'detail_faces_removed': '  Faces removed             : %d',
+        'detail_components': '  Connected components      : %d',
+        'detail_two_manifold': '  Two-manifold              : %s',
+        'detail_yes': 'YES', 'detail_no': 'NO',
+        'detail_budget': ('  Budget                   : geometry change %s%% '
+                          '(limit %s) · risk %s (limit %s) · %s'),
+        'detail_stage2': 'Stage 2 (Manifold):',
+        'detail_skipped': '  SKIPPED: %s',
+        'detail_err': '  ERROR: %s',
+        'detail_input_triangles': '  Input triangles : %d',
+        'detail_output_triangles': '  Output triangles: %d',
+        'detail_shells_merged': '  Shells merged   : %d',
+        'detail_volume_after': '  Volume (after)  : %.4f',
+        'detail_objects': '3MF objects repaired: %d',
+        'detail_objects_watertight': 'Objects watertight: %d/%d',
+        'detail_object_line': ('  object %d: %s (%d hole(s) remaining, '
+                               'two-manifold=%s)'),
+        'detail_obj_watertight': 'watertight',
+        'detail_obj_partial': 'partial',
+        'detail_obj_s2_skipped': 'stage 2 skipped',
+        'detail_obj_s2_error': 'stage 2 error',
+        'detail_warning': 'WARNING: %s',
+        'detail_error_line': 'ERROR: %s',
+        'detail_small_removed': ('Small parts removed (< %d faces): %d '
+                                 'component(s), %d face(s)'),
+        'detail_small_part': ('  %d face(s), size %.3g mm%s, %s from the main '
+                              'body'),
+        'detail_small_part_pct': ' (%.3g%% of model)',
+        'detail_small_more': '  ... (%d more not listed)',
+        'detail_suspicious': 'Small separate part(s) kept: %d (check if intended)',
+        'detail_small_obj': 'Small parts (%s):',
+        'detail_suspicious_part': ('  %d face(s), %.3g%% of the largest volume, '
+                                   '%s from the main body'),
+        'detail_attr_warn': ('WARNING: %d painted/seam/support triangle '
+                             'attribute(s) were lost; new triangles have none '
+                             '(kept %d, dropped %d, new without attributes %d).'),
+        'detail_attr_note': ('Note: triangle attributes were kept where '
+                             'possible; new triangles have none (kept %d, '
+                             'dropped %d, new without attributes %d).'),
+        'detail_attr_obj': ('  %s: kept %d, dropped %d, new without attributes '
+                            '%d'),
         'diff_line': 'Volume: %s \u00b7 Surface: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Show heatmap',
         'heatmap_rendering': 'Rendering heatmap…',
@@ -652,6 +720,13 @@ STRINGS = {
         'method_panel_mode_auto': 'Automatic (policy order)',
         'method_panel_mode_manual': 'Manual (exact order)',
         'method_panel_auto_ladder': 'Automatic ladder',
+        'method_panel_auto_reorder': 'Auto-reorder the fallback order per model (opt-in)',
+        'method_panel_auto_reorder_tip': ('Reorder the automatic fallback '
+                                          'methods from the per-model suggestion '
+                                          'ranking. The baseline pipeline and '
+                                          'the deep-repair ladder are '
+                                          'unchanged, and Graft still precedes '
+                                          'fTetWild.'),
         'method_panel_manual_sequence': 'Manual sequence',
         'method_panel_auto_hint': 'The automatic order is fixed. Check a tier '
                                   'to run it; use Manual mode for a custom order.',
@@ -710,6 +785,10 @@ STRINGS = {
                                     'result is not worse than the default chain, '
                                     'but it can make a repair much slower.',
         'opt_history': 'Keep an anonymous usage history (no file names or paths)',
+        'opt_fidelity': 'Show the Fidelity shape score (report only)',
+        'opt_fidelity_tip': 'Compares the repaired shape with the input on '
+            'healthy surface. It only adds a report line; it never changes '
+            'the repaired mesh.',
         'opt_learning': 'Learning triage: rank methods from the local repair history',
         'opt_learning_note': 'A small, bounded bonus from the anonymised '
             '(object type, method) success and time recorded locally. No network.',
@@ -909,6 +988,11 @@ STRINGS = {
         'save_diagnostics_title': 'Save Diagnostics Archive',
         'diagnostics_saved': 'Diagnostics written to %s',
         'diagnostics_failed': 'Could not write diagnostics: %s',
+        'crash_status': 'Sutura hit an unexpected error (a crash log was written).',
+        'crash_dialog_msg': ('Sutura hit an unexpected error and wrote a crash '
+                             'log.\nTo report it, use Diagnostics to save an '
+                             'archive and attach it to a bug report. The log '
+                             'stays on this machine until you share it.'),
     },
     'tr': {
         'app_title': 'Sutura',
@@ -1170,6 +1254,9 @@ STRINGS = {
         'brief_note_reload_nm': 'Kaydedilen dosyada yeniden açılışta bir yapı sorunu var.',
         'brief_note_unit': 'Model milimetre cinsinde olmayabilir.',
         'brief_note_material': 'OBJ malzeme referansları korunmadı.',
+        'brief_note_attr_loss': ('%d üçgende boya/dikiş/destek özniteliği '
+                                 'kayboldu; %d korundu, %d yeni üçgen '
+                                 'özniteliksiz.'),
         'brief_note_budget': 'Onarım boyut veya risk sınırını aştığı için sonuç kaydedilmedi.',
         'brief_note_thin_wall': ('Yüzeyin ~%s%% kadarı model boyutunun %s%% '
                                  'değerinden ince'),
@@ -1263,8 +1350,8 @@ STRINGS = {
                         'alanın değişken viskoziteli dar bantlı seviye '
                         'kümesiyle kaplar. Yapısı gereği two-manifold ve '
                         'kendisiyle-kesişimsizdir; Graft sonrası ve fTetWild '
-                        'öncesi denenir. Korpus üzerinde ölçülene kadar '
-                        'varsayılan olarak kapalıdır.',
+                        'öncesi denenir. Varsayılan olarak kapalıdır: ince '
+                        'ayrıntıları düzleştirebilir; bilerek açın.',
         'dressing_force_adopt_label': 'Pansuman (Dressing): zorla benimse (deforme olabilir)',
         'dressing_force_adopt_tip': 'Pansuman (Dressing)\'in şekil koruma kapılarını '
                                     '(hacim / bileşen sayısı / sağlıklı yüzey '
@@ -1296,7 +1383,8 @@ STRINGS = {
         'tamponade_label': 'Tamponad (delikleri içeriden doldur)',
         'tamponade_tip': 'Tamponad (#17) \u2014 varsayılan olarak açık; buradan '
                          'ya da --no-tamponade / SUTURA_TAMPONADE=0 ile '
-                         'kapatın. Önce temizlenmiş girdi üzerinde Flap ve '
+                         'kapatın. Bu, dış-kabuk birleştirme ön-geçişini de '
+                         'atlar. Önce temizlenmiş girdi üzerinde Flap ve '
                          'Aşama 1 delik kapatmadan önce bir ön-geçiş olarak '
                          'çalışır; Flap sonrası ve Graft/fTetWild öncesi ikinci '
                          'bir şansı vardır. Her açık deliği içeriden tıkar '
@@ -1411,7 +1499,69 @@ STRINGS = {
         'status_safe': 'Kontrol için güvenli', 'status_review': 'İnceleme önerilir',
         'status_caution': 'Dikkatli olunmalı', 'status_failed': 'Başarısız / incele',
         'status_unavailable': 'Skorlama kullanılamıyor',
-        'health_risk_line': 'Sağlık: %s/100 · Risk: %s/100 · %s',
+        'health_risk_line': 'Sağlık: %s · Risk: %s · %s',
+        'health_risk_fidelity_line': ('Sağlık: %s · Risk: %s · '
+                                      'Sadakat: %s'),
+        'fidelity_verdict_preserved': 'Onarıldı, şekil korundu',
+        'fidelity_verdict_preserved_notes': ('Notlarla onarıldı \u2014 şekil '
+                                             'korundu'),
+        'fidelity_verdict_changed': ('Onarıldı, %d bölgede şekil değişti '
+                                     '- kontrol edin'),
+        'fidelity_verdict_changed_no_area': (
+            'Onarıldı, şekil değişti - kontrol edin'),
+        'fidelity_verdict_low_confidence': (
+            'Onarıldı, %d bölge tahminle yeniden oluşturuldu - kontrol edin'),
+        'fidelity_verdict_low_confidence_no_area': (
+            'Onarıldı, şekil tahminle yeniden oluşturulmuş olabilir - kontrol '
+            'edin'),
+        'fidelity_verdict_not_repaired': 'Tam onarılmadı',
+        'fidelity_verdict_unavailable': 'Şekil kontrolü kullanılamıyor',
+        'detail_output': 'Çıktı dosyası: %s',
+        'detail_status': 'Durum: %s',
+        'detail_stage1': 'Aşama 1 (yerel):',
+        'detail_holes_closed': '  Kapatılan delik           : %d',
+        'detail_holes_remaining': '  Kalan delik               : %d',
+        'detail_nm_fixed': '  Düzeltilen non-manifold kenar: %d',
+        'detail_faces_removed': '  Kaldırılan yüz            : %d',
+        'detail_components': '  Bağlı bileşen             : %d',
+        'detail_two_manifold': '  İki-manifold              : %s',
+        'detail_yes': 'EVET', 'detail_no': 'HAYIR',
+        'detail_budget': ('  Bütçe                     : geometri değişimi %s%% '
+                          '(sınır %s) · risk %s (sınır %s) · %s'),
+        'detail_stage2': 'Aşama 2 (Manifold):',
+        'detail_skipped': '  ATLANDI: %s',
+        'detail_err': '  HATA: %s',
+        'detail_input_triangles': '  Girdi üçgenleri : %d',
+        'detail_output_triangles': '  Çıktı üçgenleri : %d',
+        'detail_shells_merged': '  Birleşen kabuk  : %d',
+        'detail_volume_after': '  Hacim (sonra)   : %.4f',
+        'detail_objects': 'Onarılan 3MF nesnesi: %d',
+        'detail_objects_watertight': 'Su geçirmez nesne: %d/%d',
+        'detail_object_line': ('  nesne %d: %s (%d delik kaldı, '
+                               'iki-manifold=%s)'),
+        'detail_obj_watertight': 'su geçirmez',
+        'detail_obj_partial': 'kısmi',
+        'detail_obj_s2_skipped': 'aşama 2 atlandı',
+        'detail_obj_s2_error': 'aşama 2 hatası',
+        'detail_warning': 'UYARI: %s',
+        'detail_error_line': 'HATA: %s',
+        'detail_small_removed': ('Kaldırılan küçük parçalar (< %d yüz): %d '
+                                 'bileşen, %d yüz'),
+        'detail_small_part': ('  %d yüz, boyut %.3g mm%s, ana gövdeden %s'),
+        'detail_small_part_pct': ' (modelin %.3g%% kadarı)',
+        'detail_small_more': '  ... (%d tanesi listelenmedi)',
+        'detail_suspicious': 'Küçük ayrı parça korundu: %d (amaçlanan mı diye kontrol edin)',
+        'detail_small_obj': 'Küçük parçalar (%s):',
+        'detail_suspicious_part': ('  %d yüz, en büyük hacmin %.3g%% kadarı, '
+                                   'ana gövdeden %s'),
+        'detail_attr_warn': ('UYARI: %d boya/dikiş/destek üçgen özniteliği '
+                             'kayboldu; yeni üçgenlerde yok (korunan %d, '
+                             'bırakılan %d, özniteliksiz yeni %d).'),
+        'detail_attr_note': ('Not: üçgen öznitelikleri mümkün olduğunca '
+                             'korundu; yeni üçgenlerde yok (korunan %d, '
+                             'bırakılan %d, özniteliksiz yeni %d).'),
+        'detail_attr_obj': ('  %s: korunan %d, bırakılan %d, özniteliksiz '
+                            'yeni %d'),
         'diff_line': 'Hacim: %s \u00b7 Y\u00fczey: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Isı haritası göster',
         'heatmap_rendering': 'Isı haritası çiziliyor…',
@@ -1509,6 +1659,12 @@ STRINGS = {
         'method_panel_mode_auto': 'Otomatik (ilke sırası)',
         'method_panel_mode_manual': 'Elle (tam sıra)',
         'method_panel_auto_ladder': 'Otomatik sıra',
+        'method_panel_auto_reorder': 'Yedek sırasını model başına otomatik sırala (isteğe bağlı)',
+        'method_panel_auto_reorder_tip': ('Otomatik yedek yöntemleri model '
+                                          'başına öneri sıralamasına göre '
+                                          'yeniden sıralar. Temel işlem hattı ve '
+                                          'derin onarım sırası değişmez; Graft '
+                                          'yine fTetWild’dan önce gelir.'),
         'method_panel_manual_sequence': 'Elle yöntem sırası',
         'method_panel_auto_hint': 'Otomatik sıra sabittir. Çalışması için bir '
                                   'katmanı işaretleyin; özel sıra için Elle modu.',
@@ -1567,6 +1723,10 @@ STRINGS = {
                                     'zincirden kötü değilse uygulanır, ama onarımı '
                                     'belirgin şekilde yavaşlatabilir.',
         'opt_history': 'Anonim kullanım geçmişi tut (dosya adı veya yol yok)',
+        'opt_fidelity': 'Şekil sadakati skorunu göster (yalnızca rapor)',
+        'opt_fidelity_tip': 'Onarılan şekli sağlıklı yüzeyde girdiyle '
+            'karşılaştırır. Yalnızca bir rapor satırı ekler; onarılan mesh\'i '
+            'asla değiştirmez.',
         'opt_learning': 'Öğrenen triyaj: yöntemleri yerel onarım geçmişine göre sırala',
         'opt_learning_note': 'Yerel olarak kaydedilen anonimleştirilmiş (nesne '
             'tipi, yöntem) başarı ve süre verisinden küçük, sınırlı bir bonus. '
@@ -1766,6 +1926,11 @@ STRINGS = {
         'save_diagnostics_title': 'Tanılama Arşivini Kaydet',
         'diagnostics_saved': 'Tanılama %s konumuna yazıldı',
         'diagnostics_failed': 'Tanılama yazılamadı: %s',
+        'crash_status': 'Sutura beklenmeyen bir hatayla karşılaştı (çökme kaydı yazıldı).',
+        'crash_dialog_msg': ('Sutura beklenmeyen bir hatayla karşılaştı ve bir '
+                             'çökme kaydı yazdı.\nBildirmek için Tanılama ile bir '
+                             'arşiv kaydedip hata bildirimine ekleyin. Kayıt, siz '
+                             'paylaşana kadar bu makinede kalır.'),
     },
 }
 
@@ -1775,6 +1940,11 @@ def _t(key, *args):
     table = STRINGS.get(lang, STRINGS['en'])
     s = table.get(key, STRINGS['en'].get(key, key))
     return s % args if args else s
+
+
+def _score_text(value):
+    """Format one 0-100 score; an unavailable score prints plain n/a."""
+    return 'n/a' if value is None else '%s/100' % value
 
 
 def _print_impact_lines(pr):
@@ -2106,73 +2276,159 @@ def summarize(data):
     return label
 
 
+def _small_parts_section(s1):
+    """Small-part block for one mesh's Stage-1 dict (defensive)."""
+    s1 = s1 or {}
+    lines = []
+
+    def _dist(v):
+        return ('%.3g mm' % v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 'n/a'
+
+    def _parts(block):
+        return [p for p in (block.get('parts') or []) if isinstance(p, dict)]
+
+    rem = s1.get('removed_small_parts')
+    if isinstance(rem, dict) and (rem.get('count') or 0):
+        parts = _parts(rem)
+        lines.append(_t('detail_small_removed', int(rem.get('min_faces') or 8),
+                        int(rem.get('count') or 0),
+                        int(rem.get('faces_total') or 0)))
+        for p in parts:
+            pct = (_t('detail_small_part_pct', p['size_pct'])
+                   if p.get('size_pct') is not None else '')
+            lines.append(_t('detail_small_part', int(p.get('faces') or 0),
+                            float(p.get('size_mm') or 0.0), pct,
+                            _dist(p.get('distance_mm'))))
+        extra = int(rem.get('count') or 0) - len(parts)
+        if extra > 0:
+            lines.append(_t('detail_small_more', extra))
+    pd = s1.get('possible_debris')
+    if isinstance(pd, dict) and (pd.get('count') or 0):
+        parts = _parts(pd)
+        lines.append(_t('detail_suspicious', int(pd.get('count') or 0)))
+        for p in parts:
+            lines.append(_t('detail_suspicious_part', int(p.get('faces') or 0),
+                            float(p.get('volume_pct') or 0.0),
+                            _dist(p.get('distance_mm'))))
+        extra = int(pd.get('count') or 0) - len(parts)
+        if extra > 0:
+            lines.append(_t('detail_small_more', extra))
+    return lines
+
+
+def _small_parts_report_lines(data):
+    """Small-part visibility for the GUI details, per object for multi-object 3MF."""
+    data = data or {}
+    reps = [r for r in (data.get('object_reports') or []) if isinstance(r, dict)]
+    if reps:
+        out = []
+        for i, rep in enumerate(reps):
+            block = _small_parts_section(rep.get('stage1') or {})
+            if block:
+                out.append(_t('detail_small_obj',
+                              rep.get('model') or ('object %d' % i)))
+                out.extend(block)
+        return out
+    return _small_parts_section(data.get('stage1') or {})
+
+
 def format_report(data):
     if data.get('error') and 'stage1' not in data:
-        return 'ERROR: %s' % data['error']
-    s1 = data.get('stage1', {})
+        return _t('detail_error_line', data['error'])
+    s1 = data.get('stage1') or {}
     lines = []
-    lines.append('Output file: %s' % data.get('output'))
+    lines.append(_t('detail_output', data.get('output')))
+    rf = data.get('repair_fidelity')
+    if rf is not None or data.get('repair_verdict_code'):
+        # Numbers only; the verdict itself is the single headline above.
+        lines.append(_t('health_risk_fidelity_line',
+                        _score_text(data.get('repair_health')),
+                        _score_text(data.get('repair_risk')),
+                        _score_text(rf)))
+        if data.get('repair_status'):
+            lines.append(_t('detail_status', data.get('repair_status')))
     lines.append('')
     if data.get('unit_warning'):
         lines.append(_t('unit_warning', data.get('unit_hint', '')))
         lines.append('')
-    if data.get('status') == 'budget_declined':
-        lines.append('ERROR: %s' % data.get('error'))
+    _attrs = classification.attribute_stats(data)
+    if _attrs is not None and (_attrs['dropped'] > 0 or _attrs['new_without'] > 0):
+        if _attrs['dropped'] > 0:
+            lines.append(_t('detail_attr_warn', _attrs['dropped'], _attrs['kept'],
+                            _attrs['dropped'], _attrs['new_without']))
+        else:
+            lines.append(_t('detail_attr_note', _attrs['kept'], _attrs['dropped'],
+                            _attrs['new_without']))
+        for o in _attrs['objects']:
+            lines.append(_t('detail_attr_obj', o.get('model') or 'object',
+                            o['kept'], o['dropped'], o['new_without']))
         lines.append('')
-    lines.append('Stage 1 (native):')
-    lines.append('  Holes closed              : %d' % s1.get('holes_closed', 0))
-    lines.append('  Holes remaining           : %d' % s1.get('holes_remaining', 0))
-    lines.append('  Non-manifold edges fixed  : %d' % s1.get('non_manifold_edges_fixed', 0))
-    lines.append('  Faces removed             : %d' % s1.get('faces_removed', 0))
-    lines.append('  Connected components      : %d' % s1.get('components', 0))
-    lines.append('  Two-manifold              : %s' % ('YES' if s1.get('two_manifold') else 'NO'))
+    _sp = _small_parts_report_lines(data)
+    if _sp:
+        lines.extend(_sp)
+        lines.append('')
+    if data.get('status') == 'budget_declined':
+        lines.append(_t('detail_error_line', data.get('error')))
+        lines.append('')
+    lines.append(_t('detail_stage1'))
+    lines.append(_t('detail_holes_closed', int(s1.get('holes_closed') or 0)))
+    lines.append(_t('detail_holes_remaining', int(s1.get('holes_remaining') or 0)))
+    lines.append(_t('detail_nm_fixed', int(s1.get('non_manifold_edges_fixed') or 0)))
+    lines.append(_t('detail_faces_removed', int(s1.get('faces_removed') or 0)))
+    lines.append(_t('detail_components', int(s1.get('components') or 0)))
+    lines.append(_t('detail_two_manifold',
+                    _t('detail_yes') if s1.get('two_manifold')
+                    else _t('detail_no')))
     b = data.get('budget')
     if b is not None:
-        lines.append('  Budget                   : geometry change %s%% (limit %s) · risk %s (limit %s) · %s' % (
+        lines.append(_t('detail_budget',
             'n/a' if b.get('geometry_change_pct') is None else b.get('geometry_change_pct'),
             'n/a' if b.get('max_geometry_change_pct') is None else b.get('max_geometry_change_pct'),
             'n/a' if b.get('risk_score') is None else b.get('risk_score'),
             'n/a' if b.get('max_risk_score') is None else b.get('max_risk_score'),
             _t('budget_status_exceeded') if not b.get('within_budget')
             else _t('budget_status_within')))
-    if 'stage2' in data:
-        s2 = data['stage2']
+    s2 = data.get('stage2')
+    if isinstance(s2, dict):
         lines.append('')
-        lines.append('Stage 2 (Manifold):')
-        if 'error' in s2:
-            if s2['error'].startswith('Stage 2 skipped'):
-                lines.append('  SKIPPED: %s' % s2['error'])
+        lines.append(_t('detail_stage2'))
+        err = s2.get('error')
+        if err:
+            if isinstance(err, str) and err.startswith('Stage 2 skipped'):
+                lines.append(_t('detail_skipped', err))
             else:
-                lines.append('  ERROR: %s' % s2['error'])
+                lines.append(_t('detail_err', str(err)))
         else:
-            lines.append('  Input triangles : %d' % s2.get('input_faces', 0))
-            lines.append('  Output triangles: %d' % s2.get('output_faces', 0))
+            lines.append(_t('detail_input_triangles', int(s2.get('input_faces') or 0)))
+            lines.append(_t('detail_output_triangles', int(s2.get('output_faces') or 0)))
             if s2.get('shells_merged'):
-                lines.append('  Shells merged   : %d' % s2['shells_merged'])
-            lines.append('  Volume (after)  : %.4f' % s2.get('volume_after', 0))
-    if 'objects' in data:
+                lines.append(_t('detail_shells_merged', int(s2['shells_merged'] or 0)))
+            lines.append(_t('detail_volume_after', float(s2.get('volume_after') or 0.0)))
+    if data.get('objects') is not None:
+        reps = [r for r in (data.get('object_reports') or []) if isinstance(r, dict)]
         lines.append('')
-        lines.append('3MF objects repaired: %d' % data.get('objects', 0))
+        lines.append(_t('detail_objects', int(data.get('objects') or 0)))
         if data.get('objects_watertight') is not None:
-            lines.append('Objects watertight: %d/%d' % (
-                data.get('objects_watertight'),
-                len(data.get('object_reports', []))))
-        for i, rep in enumerate(data.get('object_reports', [])):
-            s1o = rep.get('stage1', {})
+            lines.append(_t('detail_objects_watertight',
+                int(data.get('objects_watertight') or 0), len(reps)))
+        for i, rep in enumerate(reps):
+            s1o = rep.get('stage1') or {}
             s2o = rep.get('stage2') or {}
+            s2_err = s2o.get('error')
+            skipped = isinstance(s2_err, str) and s2_err.startswith('Stage 2 skipped')
             if s2o.get('ok'):
-                label = 'watertight'
-            elif s1o.get('two_manifold') and s1o.get('holes_remaining', 0) == 0:
-                label = ('stage 2 skipped'
-                         if s2o.get('error', '').startswith('Stage 2 skipped')
-                         else 'stage 2 error')
+                label = _t('detail_obj_watertight')
+            elif s1o.get('two_manifold') and int(s1o.get('holes_remaining') or 0) == 0:
+                label = _t('detail_obj_s2_skipped' if skipped
+                           else 'detail_obj_s2_error')
             else:
-                label = 'partial'
-            lines.append('  object %d: %s (%d hole(s) remaining, two-manifold=%s)' % (
-                i, label,
-                s1o.get('holes_remaining', 0), 'YES' if s1o.get('two_manifold') else 'NO'))
+                label = _t('detail_obj_partial')
+            lines.append(_t('detail_object_line', i, label,
+                            int(s1o.get('holes_remaining') or 0),
+                            _t('detail_yes') if s1o.get('two_manifold')
+                            else _t('detail_no')))
             if rep.get('unit_warning'):
-                lines.append('    WARNING: %s' % rep.get('unit_hint'))
+                lines.append(_t('detail_warning', str(rep.get('unit_hint') or '')))
     mu = data.get('method_used') or {}
     tried = data.get('methods_tried') or []
     if mu.get('num') is not None or tried:
@@ -2289,6 +2545,7 @@ class RepairWorker(QThread):
     file_done = Signal(str, str, str, object)   # path, summary, report, data
     progress = Signal(int, int)          # current, total
     all_done = Signal(bool)              # cancelled
+    internal_error = Signal(str)         # traceback text (worker thread crash)
 
     def __init__(self, files, mode='auto', profile=None, force=False,
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
@@ -2340,6 +2597,8 @@ class RepairWorker(QThread):
         self._no_history = not bool(cfg.get('history_enabled', True))
         self._no_cache = not bool(cfg.get('cache_enabled', True))
         self._no_learning = not bool(cfg.get('learning_triage', True))
+        self._no_fidelity = not bool(cfg.get('fidelity_enabled', True))
+        self._auto_reorder = bool(cfg.get('auto_reorder', False))
 
     def cancel(self):
         self._cancelled = True
@@ -2347,6 +2606,17 @@ class RepairWorker(QThread):
             self._proc.terminate()
 
     def run(self):
+        # A crash here (an exception escaping the loop) must not vanish into the
+        # Qt thread boundary: log it, surface it, and still signal completion.
+        try:
+            self._run_loop()
+        except Exception:
+            tb = traceback.format_exc()
+            _crash_log('repair worker crashed:\n' + tb)
+            self.internal_error.emit(tb)
+            self.all_done.emit(False)
+
+    def _run_loop(self):
         n = len(self._files)
         for idx, path in enumerate(self._files, 1):
             if self._cancelled:
@@ -2383,6 +2653,8 @@ class RepairWorker(QThread):
                 args.append('--no-cache')
             if self._no_learning:
                 args.append('--no-learning-triage')
+            if self._no_fidelity:
+                args.append('--no-fidelity')
             if self._edge_tiebreak:
                 args.append('--experimental-edge-tiebreak')
             if self._join_components:
@@ -2399,6 +2671,8 @@ class RepairWorker(QThread):
                 args.append('--ftetwild-optimize')
             if self._si_mode and self._si_mode != 'report':
                 args += ['--si-mode', self._si_mode]
+            if self._auto_reorder:
+                args.append('--auto-reorder')
             if self._flap:
                 args.append('--flap')
             else:
@@ -2450,13 +2724,25 @@ class RepairWorker(QThread):
             return {'error': 'could not start sutura: %s' % e}
         try:
             out, err = self._proc.communicate(timeout=600)
+            rc = self._proc.returncode
         except subprocess.TimeoutExpired:
             self._proc.kill()
             out, err = self._proc.communicate()
             return {'error': 'timeout while repairing'}
         finally:
             self._proc = None
-        return parse_cli_output(out, err)
+        result = parse_cli_output(out, err)
+        if isinstance(rc, int) and rc < 0:
+            # The CLI process was killed by a signal (segfault/abort): its own
+            # faulthandler already wrote to the shared crash log. Make the
+            # failure visible in the result too.
+            _crash_log('sutura CLI killed by signal %d\nstdout:\n%s\nstderr:\n%s'
+                       % (-rc, out, err))
+            if not result.get('error'):
+                result['error'] = ('sutura process crashed (signal %d); see the '
+                                   'crash log' % -rc)
+            result['crashed'] = True
+        return result
 
 
 class AnalyzeWorker(QThread):
@@ -3791,6 +4077,12 @@ class MethodControlPanel(QWidget):
         self.auto_hint = QLabel(_t('method_panel_auto_hint'))
         self.auto_hint.setWordWrap(True)
         a.addWidget(self.auto_hint)
+        self.chk_auto_reorder = QCheckBox(_t('method_panel_auto_reorder'))
+        self.chk_auto_reorder.setToolTip(_t('method_panel_auto_reorder_tip'))
+        self.chk_auto_reorder.setChecked(
+            bool(updater.load_config().get('auto_reorder', False)))
+        self.chk_auto_reorder.toggled.connect(lambda _on: self._update_apply())
+        a.addWidget(self.chk_auto_reorder)
         self.lst_auto = QListWidget()
         self.lst_auto.setSelectionMode(QAbstractItemView.SingleSelection)
         self.lst_auto.itemChanged.connect(lambda _i: self._update_apply())
@@ -3908,6 +4200,10 @@ class MethodControlPanel(QWidget):
         return True if widget is None else bool(widget.isChecked())
 
     def reload(self):
+        self.chk_auto_reorder.blockSignals(True)
+        self.chk_auto_reorder.setChecked(
+            bool(updater.load_config().get('auto_reorder', False)))
+        self.chk_auto_reorder.blockSignals(False)
         self.lst_auto.clear()
         self._auto_items = {}
         order = []
@@ -4078,6 +4374,15 @@ class MethodControlPanel(QWidget):
         self.manual_box.setEnabled(not auto)
         self._update_apply()
 
+    def _save_auto_reorder(self, on):
+        """Persist the opt-in per-model auto-reorder toggle to config.json."""
+        try:
+            cfg = updater.load_config()
+            cfg['auto_reorder'] = bool(on)
+            updater.save_config(cfg)
+        except Exception:
+            pass
+
     def _update_apply(self):
         if self._policy_mod is None:
             self.btn_apply.setEnabled(False)
@@ -4113,6 +4418,7 @@ class MethodControlPanel(QWidget):
                 self._effective = self._policy_mod.write_user_policy(
                     {'order': {'deep_tier_order': tiers}})
                 self._user_written = True
+                self._save_auto_reorder(self.chk_auto_reorder.isChecked())
                 self.warn.setText(_t('method_panel_saved'))
                 self._refresh_status()
             except Exception as exc:
@@ -4138,6 +4444,7 @@ class MethodControlPanel(QWidget):
         except Exception as exc:
             self._show_write_error(exc)
             return
+        self._save_auto_reorder(False)
         self.reload()
         if getattr(self._policy_mod, 'LAST_WRITE_WARNING', None):
             self.warn.setText(_t('method_panel_reset_recovered'))
@@ -4210,6 +4517,14 @@ class OptionsDialog(QDialog):
         cache_row.addWidget(self.btn_clear_cache)
         g.addLayout(cache_row)
         self._update_cache_size_label()
+
+        # Fidelity shape score: report-only (never changes the mesh). It is on
+        # by default; unchecking it or the CLI --no-fidelity skips it.
+        main.chk_fidelity.setChecked(bool(cfg.get('fidelity_enabled', True)))
+        main.chk_fidelity.setToolTip(_t('opt_fidelity_tip'))
+        main.chk_fidelity.toggled.connect(
+            lambda on: self._save_key('fidelity_enabled', bool(on)))
+        g.addWidget(main.chk_fidelity)
 
         # Learning triage: a small, bounded ranking bonus derived from the
         # local usage history. Resettable here without touching the history.
@@ -4943,6 +5258,9 @@ class MainWindow(QMainWindow):
         self.chk_ftetwild_si.setToolTip(_t('ftetwild_si_tip'))
         self.chk_ftetwild_optimize = QCheckBox(_t('ftetwild_opt_label'))
         self.chk_ftetwild_optimize.setToolTip(_t('ftetwild_opt_tip'))
+        # Fidelity shape score (report-only, on by default): opt out here or
+        # with --no-fidelity; it can never change the repaired mesh.
+        self.chk_fidelity = QCheckBox(_t('opt_fidelity'))
         self.chk_fallback_ftetwild.toggled.connect(self._sync_ftetwild)
         self.chk_ftetwild_si.toggled.connect(self._sync_ftetwild)
         self._sync_ftetwild()
@@ -5056,6 +5374,7 @@ class MainWindow(QMainWindow):
             (self.chk_fallback_ftetwild, True),
             (self.chk_ftetwild_si, False),
             (self.chk_ftetwild_optimize, False),
+            (self.chk_fidelity, True),
             (self.chk_autorefine, False),
             (self.chk_indirect_autorefine, False),
             (self.chk_join_components, False),
@@ -5826,6 +6145,7 @@ class MainWindow(QMainWindow):
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
         self.worker.all_done.connect(self._on_all_done)
+        self.worker.internal_error.connect(self._on_worker_error)
         self.worker.start()
 
     def analyze(self):
@@ -6182,6 +6502,9 @@ class MainWindow(QMainWindow):
                 out.append(_t('brief_note_unit'))
             elif code == 'material_discarded':
                 out.append(_t('brief_note_material'))
+            elif code == 'attribute_loss':
+                out.append(_t('brief_note_attr_loss', a.get('dropped', 0),
+                              a.get('kept', 0), a.get('new_without', 0)))
             elif code == 'budget':
                 out.append(_t('brief_note_budget'))
             elif code == 'thin_wall':
@@ -6219,10 +6542,24 @@ class MainWindow(QMainWindow):
             self.report_details.setVisible(False)
             return
         b = classification.brief(data)
-        symbol = {'ready': '✓', 'notes': '⚠', 'failed': '✗'}.get(
-            b['verdict'], '')
-        self.report_verdict.setText(
-            '%s %s' % (symbol, _t('brief_' + b['verdict'])))
+        # ONE headline verdict: the Fidelity repair_verdict with the topology
+        # brief folded in (classification.headline_verdict).
+        hv = classification.headline_verdict(data)
+        code = hv['code']
+        symbol = {'ready': '✓', 'notes': '⚠', 'preserved': '✓',
+                  'preserved_notes': '⚠', 'changed': '⚠',
+                  'low_confidence': '⚠', 'not_repaired': '✗',
+                  'unavailable': '⚠'}.get(code, '')
+        if code in ('ready', 'notes'):
+            _verdict_text = _t('brief_' + code)
+        elif code in ('changed', 'low_confidence'):
+            if int(hv['areas'] or 0) > 0:
+                _verdict_text = _t('fidelity_verdict_' + code, hv['areas'])
+            else:
+                _verdict_text = _t('fidelity_verdict_' + code + '_no_area')
+        else:
+            _verdict_text = _t('fidelity_verdict_' + code)
+        self.report_verdict.setText('%s %s' % (symbol, _verdict_text))
         parts = [_t('brief_holes', b.get('holes_closed', 0)),
                  _t('brief_orientation_corrected'
                     if b.get('orientation_corrected')
@@ -6303,7 +6640,11 @@ class MainWindow(QMainWindow):
             self._score_by_path[path] = (data.get('repair_health'),
                                          data.get('repair_risk'),
                                          data.get('repair_status'),
-                                         data.get('repair_status_code'))
+                                         data.get('repair_status_code'),
+                                         data.get('repair_fidelity'),
+                                         data.get('repair_verdict_code'),
+                                         data.get('repair_verdict_areas'),
+                                         data.get('repair_verdict_low_confidence'))
             self._diff_by_path[path] = data.get('stage1', {})
             self._unit_by_path[path] = (data.get('unit_warning'),
                                         data.get('unit_hint'))
@@ -6366,14 +6707,18 @@ class MainWindow(QMainWindow):
             if rc is not None:
                 base += ' — ' + _t('confidence_score', rc,
                                    _t('confidence_' + (dt[4] or 'medium')))
-        # Repair Health / Risk / Status (separate from classic confidence;
-        # localized via the status_code, like the issue_* codes)
+        # Repair Health / Risk / Fidelity and the plain verdict (separate from
+        # classic confidence; localized via codes, like the issue_* codes).
+        # repair_status stays in the details/report log.
         sc = self._score_by_path.get(path)
-        if sc is not None and (sc[0] is not None or sc[1] is not None):
-            base += ' — ' + _t('health_risk_line',
-                               'n/a' if sc[0] is None else sc[0],
-                               'n/a' if sc[1] is None else sc[1],
-                               _t('status_' + (sc[3] or 'unavailable')))
+        if sc is not None and (sc[0] is not None or sc[1] is not None
+                               or sc[4] is not None):
+            # Numbers only; the single headline verdict is above.
+            base += ' — ' + _t(
+                'health_risk_fidelity_line',
+                _score_text(sc[0]),
+                _score_text(sc[1]),
+                _score_text(sc[4]))
         self.defect_label.setText(base)
         lines = []
         # non-blocking unit warning (model may be authored in inches/cm)
@@ -7198,6 +7543,14 @@ class MainWindow(QMainWindow):
         _stop_viewer()
         viewport.shutdown()
 
+    def _on_worker_error(self, traceback_text):
+        """A crash escaped the repair worker: it is logged; tell the user.
+
+        Runs on the GUI thread (queued from the worker signal); the shared
+        dialog is shown once."""
+        self.status.setText(_t('crash_status'))
+        _show_crash_dialog()
+
     def _on_all_done(self, cancelled):
         self.status.setText(_t('done_stopped') if cancelled else _t('done'))
         self.btn_stop.setEnabled(False)
@@ -7312,6 +7665,146 @@ class MainWindow(QMainWindow):
         self.btn_analyze.setEnabled(bool(self.files) and not busy)
 
 
+# --- crash reporting --------------------------------------------------------
+# A hard crash (a segfault in the Rust/Qt layer, or an uncaught Python
+# exception) must leave a trace: faulthandler plus uncaught-exception hooks all
+# write to the shared bounded crash.log owned by sutura.diagnostics, and the
+# user gets one short dialog pointing at the Diagnostics export.
+
+_CRASH_DIALOG_SHOWN = False
+# Chained to in _install_crash_hooks so uncaught tracebacks still reach the
+# terminal / the default thread handler.
+_PREV_EXCEPTHOOK = None
+_PREV_THREADING_EXCEPTHOOK = None
+
+
+def _env_truthy(name):
+    """True for a non-empty, non-off environment flag."""
+    v = os.environ.get(name)
+    return bool(v) and v.strip().lower() not in ('0', 'false', 'no', 'off')
+
+
+def _crash_log(text):
+    """Append one entry to the shared crash log; never raises."""
+    try:
+        try:
+            from sutura.diagnostics import crash_log_path
+        except ImportError:
+            from diagnostics import crash_log_path
+        path = crash_log_path()
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, 'a', encoding='utf-8', errors='replace') as f:
+            f.write(text.rstrip('\n') + '\n')
+    except Exception:
+        pass
+
+
+def _on_gui_thread():
+    """True when called on the QApplication's main thread."""
+    try:
+        app = QApplication.instance()
+        return app is not None and QThread.currentThread() == app.thread()
+    except Exception:
+        return False
+
+
+def _show_crash_dialog():
+    """Show the crash dialog once, on the GUI thread; never raises.
+
+    Skipped on a windowless Qt platform (offscreen/minimal, e.g. headless CI),
+    where a modal dialog would block with nobody to answer it -- the crash is
+    still logged there.
+    """
+    global _CRASH_DIALOG_SHOWN
+    if _CRASH_DIALOG_SHOWN or not _on_gui_thread():
+        return
+    try:
+        if QApplication.platformName() in HEADLESS_QPA_PLATFORMS:
+            return
+    except Exception:
+        pass
+    # No real user to dismiss a modal under CI / headless / xcb-under-Xvfb or
+    # when explicitly disabled: log only.
+    if any(_env_truthy(n) for n in ('CI', 'HEADLESS', 'SUTURA_NO_DIALOG')):
+        return
+    _CRASH_DIALOG_SHOWN = True
+    try:
+        QMessageBox.warning(None, _t('app_title'), _t('crash_dialog_msg'))
+    except Exception:
+        pass
+
+
+def _gui_excepthook(exc_type, exc, tb):
+    _crash_log('uncaught exception:\n' + ''.join(
+        traceback.format_exception(exc_type, exc, tb)))
+    # Chain: still print the traceback to stderr as Python normally would.
+    prev = _PREV_EXCEPTHOOK or sys.__excepthook__
+    try:
+        prev(exc_type, exc, tb)
+    except Exception:
+        try:
+            traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
+        except Exception:
+            pass
+    _show_crash_dialog()
+
+
+def _gui_threading_excepthook(args):
+    _crash_log('uncaught exception in thread %s:\n%s' % (
+        getattr(args.thread, 'name', '?'),
+        ''.join(traceback.format_exception(
+            args.exc_type, args.exc_value, args.exc_traceback))))
+    prev = _PREV_THREADING_EXCEPTHOOK or threading.__excepthook__
+    try:
+        prev(args)
+    except Exception:
+        pass
+    _show_crash_dialog()
+
+
+def _gui_qt_message_handler(mode, context, message):
+    # Only critical/fatal Qt messages reach the log: routine warnings (font
+    # fallbacks, stylesheet notes, resize chatter) must not write to disk.
+    try:
+        from PySide6.QtCore import QtMsgType
+        if mode not in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+            return
+    except Exception:
+        pass
+    try:
+        _crash_log('Qt[%s] %s' % (mode, message))
+    except Exception:
+        pass
+
+
+def _install_crash_hooks():
+    """Enable faulthandler and uncaught-exception hooks into crash.log."""
+    try:
+        try:
+            from sutura.diagnostics import enable_crash_logging
+        except ImportError:
+            from diagnostics import enable_crash_logging
+        enable_crash_logging()
+    except Exception:
+        pass
+    global _PREV_EXCEPTHOOK, _PREV_THREADING_EXCEPTHOOK
+    try:
+        _PREV_EXCEPTHOOK = sys.excepthook
+        sys.excepthook = _gui_excepthook
+    except Exception:
+        pass
+    try:
+        _PREV_THREADING_EXCEPTHOOK = threading.excepthook
+        threading.excepthook = _gui_threading_excepthook
+    except Exception:
+        pass
+    try:
+        from PySide6.QtCore import qInstallMessageHandler
+        qInstallMessageHandler(_gui_qt_message_handler)
+    except Exception:
+        pass
+
+
 def main():
     try:
         from sutura_engine import paths as _paths
@@ -7320,6 +7813,7 @@ def main():
             sys.stderr.write('sutura: user-data migration warning: %s\n' % _err)
     except Exception:
         pass
+    _install_crash_hooks()
     app = QApplication(sys.argv)
     apply_dark_theme(app)
     win = MainWindow()
