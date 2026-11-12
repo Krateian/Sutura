@@ -672,16 +672,20 @@ impl Triangulation {
         let Some(q) = q else {
             return Ok(None);
         };
-        // The exact locator is authoritative; check before mutating the
-        // vertex tables so a rejected point cannot leave an orphan vertex.
-        if self.locate(&q).is_none() {
-            return Err("inserted point outside host triangle".to_string());
-        }
+        let key = st_key(&q);
+        let prov_key = p.canonical_key();
         let vi = self.push_vertex(CdtVertex {
             st: q,
             provenance: Some(p.clone()),
         });
-        self.insert_vertex_at(vi)?;
+        if let Err(e) = self.insert_vertex_at(vi) {
+            self.verts.pop();
+            self.viv.pop();
+            self.vert_tri.pop();
+            self.st_index.remove(&key);
+            self.vertex_index.remove(&prov_key);
+            return Err(e);
+        }
         Ok(Some(vi))
     }
 
@@ -692,14 +696,18 @@ impl Triangulation {
         if let Some(&vi) = self.st_index.get(&st_key(&q)) {
             return Some(vi);
         }
-        if self.locate(&q).is_none() {
-            return None;
-        }
+        let key = st_key(&q);
         let vi = self.push_vertex(CdtVertex {
             st: q,
             provenance: None,
         });
-        self.insert_vertex_at(vi).ok()?;
+        if self.insert_vertex_at(vi).is_err() {
+            self.verts.pop();
+            self.viv.pop();
+            self.vert_tri.pop();
+            self.st_index.remove(&key);
+            return None;
+        }
         Some(vi)
     }
 
@@ -749,15 +757,18 @@ impl Triangulation {
             }
             None => return Err(None),
         };
-        let mut q = q;
-        self.host.snap_near_boundary(&mut q);
         match self.st_index.get(&st_key(&q)) {
             Some(&vi) => Ok(vi),
             None => {
                 use num_traits::Signed;
-                let tol = BigRational::new(num_bigint::BigInt::from(1), num_bigint::BigInt::from(10_000_000));
+                let tol = BigRational::new(
+                    num_bigint::BigInt::from(1),
+                    num_bigint::BigInt::from(10_000_000),
+                );
                 for (vi, v) in self.verts.iter().enumerate() {
-                    if (&q.s - &v.st.s).abs() < tol && (&q.t - &v.st.t).abs() < tol {
+                    if (&q.s - &v.st.s).abs() < tol
+                        && (&q.t - &v.st.t).abs() < tol
+                    {
                         return Ok(vi);
                     }
                 }
@@ -767,8 +778,27 @@ impl Triangulation {
     }
 
     fn insert_vertex_at(&mut self, vi: usize) -> Result<(), String> {
-        let p = self.verts[vi].st.clone();
-        let Some(t) = self.locate(&p) else {
+        let mut p = self.verts[vi].st.clone();
+        let mut found = self.locate(&p);
+        if found.is_none() {
+            // The p9 sliver case: a touch endpoint projects a few parameter
+            // ulps outside.  Snap it exactly onto the nearest host edge and
+            // retry before giving up.  This branch is reached only when the
+            // historical code would have panicked, so healthy-mesh output is
+            // unchanged.
+            let mut snapped = p.clone();
+            if self.host.snap_near_boundary(&mut snapped) {
+                if let Some(t) = self.locate(&snapped) {
+                    self.st_index.remove(&st_key(&p));
+                    self.verts[vi].st = snapped.clone();
+                    self.st_index.insert(st_key(&snapped), vi);
+                    self.viv[vi] = st_interval(&snapped);
+                    p = snapped;
+                    found = Some(t);
+                }
+            }
+        }
+        let Some(t) = found else {
             eprintln!("OUTSIDE: p=(s={}, t={}), s+t={}", p.s, p.t, &p.s + &p.t);
             eprintln!("host_a={:?}, host_b={:?}, host_c={:?}", self.host.host_a, self.host.host_b, self.host.host_c);
             eprintln!("vi provenance={:?}", self.verts[vi].provenance);

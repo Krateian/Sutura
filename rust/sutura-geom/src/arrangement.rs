@@ -518,13 +518,27 @@ fn collect_edge_points(
         };
         for seg in segs {
             for p in [&seg.p, &seg.q] {
-                let mut st = match frame.project(p) {
+                let st = match frame.project(p) {
                     Some(st) => st,
                     None => continue,
                 };
-                frame.snap_near_boundary(&mut st);
-                let s = st.s;
-                let t_coord = st.t;
+                use num_traits::Signed;
+                let eps = BigRational::new(
+                    num_bigint::BigInt::from(1),
+                    num_bigint::BigInt::from(1_000_000_000),
+                );
+                let mut s = st.s;
+                let mut t_coord = st.t;
+                if s.abs() < eps {
+                    s = zero.clone();
+                }
+                if t_coord.abs() < eps {
+                    t_coord = zero.clone();
+                }
+                if (&one - &s - &t_coord).abs() < eps {
+                    let diff = &one - &s - &t_coord;
+                    t_coord = t_coord + diff;
+                }
                 let on_ab = t_coord == zero;
                 let on_ac = s == zero;
                 let on_bc = &s + &t_coord == one;
@@ -769,7 +783,10 @@ pub(crate) fn arrangement_core(
                 // A conformance point that is still outside after the snap is
                 // skipped (it belongs to a neighbouring host), never a panic.
                 match cdt.insert_vertex_checked(p) {
-                    Ok(_) => {}
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        return Err("unprojectable edge point".to_string());
+                    }
                     Err(_) => {
                         *degenerate
                             .entry("outside_host_point".to_string())
