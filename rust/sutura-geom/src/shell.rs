@@ -117,6 +117,114 @@ pub struct ShellAnalysisResult {
     pub reason: String,
 }
 
+/// Input-alone interior-wall classification (Case B of `analyze_shells`).
+///
+/// The mask marks only non-zero-area faces whose two `±eps` probes along the
+/// face normal both lie in the input solid union (`min(w) >= 1 - delta`) and
+/// whose winding is integral on both sides.  Case C (floating debris in the
+/// void) and cavity walls are deliberately not marked; the caller ANDs the
+/// mask with its defect mask because that state lives in the Python pipeline.
+#[derive(Clone, Debug, Default)]
+pub struct BuriedFaceMask {
+    pub mask: Vec<bool>,
+    pub buried_count: usize,
+    pub buried_area_mm2: f64,
+    pub debris_count: usize,
+    pub debris_area_mm2: f64,
+    pub degenerate_count: usize,
+    pub epsilon_mm: f64,
+}
+
+/// Classify every face as an interior wall (Case B) on the input alone.
+///
+/// This is the lightweight mask/area accessor for the shape metric, not a new
+/// classification rule: it uses the same `w_min >= 1 - delta` criterion as
+/// `analyze_shells`, with `delta = 0.1` by default.  Two winding queries per
+/// non-zero-area face; no coplanar clustering, no filter pass.
+pub fn buried_face_mask(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    delta: f64,
+) -> BuriedFaceMask {
+    let mut out = BuriedFaceMask {
+        mask: vec![false; tris.len()],
+        ..Default::default()
+    };
+    if tris.is_empty() || verts.is_empty() {
+        return out;
+    }
+
+    let rt: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
+    let bvh = MeshBvh::from_arrays(verts, &rt);
+
+    let mut lo = verts[0];
+    let mut hi = verts[0];
+    for v in verts {
+        for k in 0..3 {
+            lo[k] = lo[k].min(v[k]);
+            hi[k] = hi[k].max(v[k]);
+        }
+    }
+    let eps = (1e-4 * norm3(sub3(hi, lo))).max(1e-6);
+    out.epsilon_mm = eps;
+    let d = delta.max(0.0);
+
+    // 0 = buried, 1 = debris, 2 = degenerate, 3 = other (outer/cavity/ambiguous).
+    let results: Vec<(u8, f64)> = (0..tris.len())
+        .into_par_iter()
+        .map(|i| {
+            let t = tris[i];
+            let v0 = verts[t[0] as usize];
+            let v1 = verts[t[1] as usize];
+            let v2 = verts[t[2] as usize];
+
+            let normal = cross3(sub3(v1, v0), sub3(v2, v0));
+            let area2 = norm3(normal);
+            if area2 < 1e-14 {
+                return (2u8, 0.0);
+            }
+            let area = 0.5 * area2;
+            let unorm = scale3(normal, 1.0 / area2);
+            let c = scale3(add3(add3(v0, v1), v2), 1.0 / 3.0);
+
+            let w_front = bvh.winding_at(add3(c, scale3(unorm, eps)));
+            let w_back = bvh.winding_at(sub3(c, scale3(unorm, eps)));
+            let w_min = w_front.min(w_back);
+            let w_max = w_front.max(w_back);
+            let integral = (w_front - w_front.round()).abs() <= d
+                && (w_back - w_back.round()).abs() <= d;
+
+            if w_min >= 1.0 - d && integral {
+                (0u8, area)
+            } else if w_max < d {
+                (1u8, area)
+            } else {
+                (3u8, 0.0)
+            }
+        })
+        .collect();
+
+    for (i, (class, area)) in results.iter().enumerate() {
+        match *class {
+            0 => {
+                out.mask[i] = true;
+                out.buried_count += 1;
+                out.buried_area_mm2 += *area;
+            }
+            1 => {
+                out.debris_count += 1;
+                out.debris_area_mm2 += *area;
+            }
+            2 => out.degenerate_count += 1,
+            _ => {}
+        }
+    }
+    out
+}
+
 #[inline]
 fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
@@ -3301,5 +3409,80 @@ mod tests {
         assert_eq!(res.reason, "budget_exceeded");
         assert_eq!(out_v, verts);
         assert_eq!(out_t, tris);
+    }
+
+    #[test]
+    fn buried_face_mask_matches_case_b_and_excludes_debris() {
+        // Two overlapping cubes: the overlap walls are Case B interior walls.
+        let a = unit_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let b = unit_box([0.25, 0.25, 0.25], [1.0, 1.0, 1.0]);
+        let (verts, tris) = combine_meshes(a, b);
+
+        let mask = buried_face_mask(&verts, &tris, 0.1);
+        let res = analyze_shells(&verts, &tris, &ShellConfig::default());
+
+        assert!(mask.buried_count > 0, "overlap must have interior walls");
+        assert!(mask.buried_area_mm2 > 0.0);
+        assert_eq!(mask.debris_count, 0);
+        assert_eq!(mask.mask.len(), tris.len());
+        for i in 0..tris.len() {
+            assert_eq!(
+                mask.mask[i],
+                res.classes[i] == FaceClass::Buried,
+                "face {i} must match shell_analyze Case B"
+            );
+        }
+
+        // A floating inverted cube in the void is Case C debris, which
+        // shell_analyze calls Buried but the metric mask must not.
+        let (mut dv, mut dt) = unit_box([10.0, 10.0, 10.0], [1.0, 1.0, 1.0]);
+        for tri in dt.iter_mut() {
+            tri.swap(1, 2);
+        }
+        let offset = verts.len() as u32;
+        let mut verts2 = verts.clone();
+        verts2.extend(dv);
+        let mut tris2 = tris.clone();
+        for tri in dt {
+            tris2.push([
+                tri[0] + offset,
+                tri[1] + offset,
+                tri[2] + offset,
+            ]);
+        }
+        let res2 = analyze_shells(&verts2, &tris2, &ShellConfig::default());
+        let mask2 = buried_face_mask(&verts2, &tris2, 0.1);
+        let debris = tris2.len() - 12;
+        assert_eq!(
+            res2.classes[debris],
+            FaceClass::Buried,
+            "Case C is Buried"
+        );
+        assert!(!mask2.mask[debris], "debris must not be an interior wall");
+        assert_eq!(mask2.debris_count, 12);
+        assert_eq!(mask2.buried_count, mask.buried_count);
+    }
+
+    #[test]
+    fn buried_face_mask_keeps_cavity_walls_visible() {
+        // Outer cube encloses a reversed inner cube: the inner faces bound a
+        // cavity, so both probes are not inside the solid union.
+        let outer = unit_box([0.0, 0.0, 0.0], [2.0, 2.0, 2.0]);
+        let mut inner = unit_box([0.5, 0.5, 0.5], [1.0, 1.0, 1.0]);
+        for t in inner.1.iter_mut() {
+            t.swap(1, 2);
+        }
+        let offset = outer.0.len() as u32;
+        let mut verts = outer.0.clone();
+        let mut tris = outer.1.clone();
+        verts.extend(inner.0);
+        for t in inner.1 {
+            tris.push([t[0] + offset, t[1] + offset, t[2] + offset]);
+        }
+        let mask = buried_face_mask(&verts, &tris, 0.1);
+        assert_eq!(mask.buried_count, 0, "cavity walls stay visible");
+        for i in 12..tris.len() {
+            assert!(!mask.mask[i], "inner cavity face {i} must stay visible");
+        }
     }
 }

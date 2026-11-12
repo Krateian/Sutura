@@ -1307,6 +1307,40 @@ fn shell_analyze_py<'py>(
     Ok((verts_np, tris_np, d))
 }
 
+/// Input-alone interior-wall (buried/embedded face) mask for reporting metrics.
+///
+/// Returns `(mask, info)` where `mask` is a bool array of length `len(tris)`
+/// and `info` carries the buried/debris/degenerate counts, their areas and the
+/// probe epsilon.  Case B only (`min(w+, w-) >= 1 - delta` on the input alone);
+/// floating debris (Case C) and cavity walls are never marked.  The defect mask
+/// and integrality gate live with the caller, so this stays stateless.
+#[pyfunction]
+#[pyo3(name = "buried_face_mask")]
+#[pyo3(signature = (verts, tris, delta=0.1))]
+fn buried_face_mask_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    delta: f64,
+) -> PyResult<(Bound<'py, PyArray1<bool>>, Bound<'py, PyDict>)> {
+    let (rv, rt_usize) = parse_mesh(&verts, &tris)?;
+    let rt: Vec<[u32; 3]> = rt_usize
+        .iter()
+        .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+        .collect();
+    let res = shell::buried_face_mask(&rv, &rt, delta);
+
+    let d = PyDict::new(py);
+    d.set_item("buried_count", res.buried_count)?;
+    d.set_item("buried_area_mm2", res.buried_area_mm2)?;
+    d.set_item("debris_count", res.debris_count)?;
+    d.set_item("debris_area_mm2", res.debris_area_mm2)?;
+    d.set_item("degenerate_count", res.degenerate_count)?;
+    d.set_item("epsilon_mm", res.epsilon_mm)?;
+    d.set_item("delta", delta)?;
+    Ok((PyArray1::from_vec(py, res.mask), d))
+}
+
 fn parse_point_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]>> {
     let view = arr.as_array();
     if view.ncols() != 3 {
@@ -2539,6 +2573,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;
     m.add_function(wrap_pyfunction!(shell_analyze_py, m)?)?;
+    m.add_function(wrap_pyfunction!(buried_face_mask_py, m)?)?;
     m.add_function(wrap_pyfunction!(splint_cut_py, m)?)?;
     m.add_class::<PyMeshBvh>()?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;
