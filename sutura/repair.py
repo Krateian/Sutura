@@ -192,6 +192,58 @@ def _unique_output_path(src):
         n += 1
 
 
+def _aggregate_written_meshes(meshes):
+    """Summed topology of every object block in the written multi-object file.
+
+    A multi-object 3MF cannot be described by one ``measure_mesh`` call, so the
+    save stage reports an aggregate (sum of faces/verts/components, worst
+    holes/non-manifold counts) instead of pretending the first object is the
+    whole file.
+    """
+    from sutura_engine import trace
+    agg = {'faces': 0, 'verts': 0, 'holes': 0, 'nm_edges': 0,
+           'nm_verts': 0, 'components': 0, 'volume': None}
+    hashes = []
+    for _name, v, t in meshes:
+        m = trace.measure_mesh(v, t)
+        if not m:
+            continue
+        for key in ('faces', 'verts', 'holes', 'nm_edges', 'nm_verts',
+                    'components'):
+            agg[key] += int(m.get(key) or 0)
+        hashes.append(str(m.get('sha256') or ''))
+    agg['objects'] = len(meshes)
+    agg['sha256'] = hashlib.sha256(
+        '|'.join(hashes).encode('ascii')).hexdigest()
+    return agg
+
+
+def _measure_written_output(out):
+    """Measure the file actually on disk, for the trace save stage."""
+    meshes = load_meshes(out)
+    if len(meshes) == 1:
+        _name, v, t = meshes[0]
+        return v, t, None
+    return None, None, _aggregate_written_meshes(meshes)
+
+
+def _record_save_stage(out, gate):
+    """Record the save stage against the written output (trace only)."""
+    from sutura_engine import trace
+    if not trace.is_active():
+        return
+    v_out = t_out = None
+    out_measures = None
+    gate = dict(gate)
+    if gate.get('status') == 'written':
+        try:
+            v_out, t_out, out_measures = _measure_written_output(out)
+        except Exception as e:
+            gate['measure_error'] = str(e)
+    trace.record_stage('save', 'repair.save_output', None, None, v_out, t_out,
+                       gate=gate, out_measures=out_measures)
+
+
 def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False, join_components=False,
@@ -373,6 +425,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                 raise_if_cancelled(cancel)
                 progress_stage(progress, 8, 'save')
                 os.replace(tmp_out, out)
+                _record_save_stage(out, {'status': 'written', 'path': out})
             else:
                 # Unambiguous, machine-detectable outcome: distinct from a
                 # generic 'error' (corrupt file, crash) so the GUI can offer
@@ -388,19 +441,31 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                     result['repair_confidence'] = _rc['score']
                     result['repair_confidence_label'] = _rc['label']
                     result['repair_confidence_factors'] = _rc['factors']
+                _record_save_stage(out, {'status': 'not_written',
+                                         'reason': 'budget_declined'})
         elif os.path.exists(tmp_out):
             raise_if_cancelled(cancel)
             progress_stage(progress, 8, 'save')
             os.replace(tmp_out, out)
+            _record_save_stage(out, {'status': 'written', 'path': out})
+        else:
+            _record_save_stage(out, {
+                'status': 'not_written',
+                'reason': 'error' if 'error' in result else 'no_output'})
     except CancelledError:
         result['status'] = 'cancelled'
         result['error'] = 'cancelled'
+        _record_save_stage(out, {'status': 'not_written',
+                                 'reason': 'cancelled'})
         raise
     except ExtremeRemovedAllError as e:
         result['error'] = str(e)
         result['extreme_removed_object'] = True
+        _record_save_stage(out, {'status': 'not_written',
+                                 'reason': 'extreme_removed_all'})
     except Exception as e:
         result['error'] = 'repair failed: %s' % e
+        _record_save_stage(out, {'status': 'not_written', 'reason': 'error'})
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     # Central method-health section: availability of every registered method

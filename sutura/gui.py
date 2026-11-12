@@ -443,7 +443,8 @@ STRINGS = {
                           'count; a mesh that does not benefit is unchanged.',
         'tamponade_label': 'Tamponade (fill holes from inside)',
         'tamponade_tip': 'Tamponade (#17) \u2014 on by default; turn it off here '
-                         'or with --no-tamponade / SUTURA_TAMPONADE=0. Runs '
+                         'or with --no-tamponade / SUTURA_TAMPONADE=0. This '
+                         'also skips the outer-shell union pre-step. Runs '
                          'first as a pre-pass on the cleaned input before Flap '
                          'and Stage 1 hole closing, with a second chance after '
                          'Flap and before Graft/fTetWild. Plugs each open hole '
@@ -1381,7 +1382,8 @@ STRINGS = {
         'tamponade_label': 'Tamponad (delikleri içeriden doldur)',
         'tamponade_tip': 'Tamponad (#17) \u2014 varsayılan olarak açık; buradan '
                          'ya da --no-tamponade / SUTURA_TAMPONADE=0 ile '
-                         'kapatın. Önce temizlenmiş girdi üzerinde Flap ve '
+                         'kapatın. Bu, dış-kabuk birleştirme ön-geçişini de '
+                         'atlar. Önce temizlenmiş girdi üzerinde Flap ve '
                          'Aşama 1 delik kapatmadan önce bir ön-geçiş olarak '
                          'çalışır; Flap sonrası ve Graft/fTetWild öncesi ikinci '
                          'bir şansı vardır. Her açık deliği içeriden tıkar '

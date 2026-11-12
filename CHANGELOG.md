@@ -91,6 +91,16 @@ All notable changes to this project are documented here.
   (behind the **Details** toggle) are now localized in English and Turkish.
   Display only: no repair output changes (core_clean byte gate 100/100).
   Screenshots in the README/docs predate this change and need refreshing.
+- **The Tamponade switch now also controls the outer-shell pre-step.**
+  `--no-tamponade` (and `SUTURA_TAMPONADE=0`, or the GUI checkbox) previously
+  left the multi-part outer-shell union running before the first labelled
+  stage. The whole outer-shell block now sits under the same switch: disabling
+  Tamponade also skips the outer-shell pre-pass, so the opt-out path leaves the
+  input geometry untouched there. The default path (Tamponade on) is unchanged;
+  the `core_clean` byte gate stays 100/100. The trace gains an `outer_shell`
+  stage (`adopted` / `skipped` / `rejected` / `disabled`) so the geometry change
+  is visible. Documentation updated in English and Turkish (methods and
+  CLI/GUI parity notes), including the GUI Tamponade tooltip.
 
 ### Documentation
 
@@ -120,6 +130,15 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- **`final_summary` now describes the written output.** When a repair ran
+  fallback attempts, the trace's `final_summary` could describe the last
+  rejected internal candidate instead of the file that was saved (for example a
+  17,748-face scaffold candidate versus the 2,230-face written result). A
+  `save` stage is now recorded after the output is put in place, measured from
+  the written file (single STL/OBJ) or from a summed aggregate over the object
+  blocks (multi-object 3MF); budget-declined and error paths record
+  `written=false` with the reason and never point at an unwritten candidate.
+  Trace-only when tracing is inactive; no repair output change.
 - **Stale documentation text.** The Turkish version history now says the v0.7.0
   registry had 15 methods (matching the English page), the Turkish usage guide
   gains the `--profile scan` equivalence sentence, and the September security
