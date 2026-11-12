@@ -149,16 +149,17 @@ advance:
   `str(argv_list)`, so each target is built the same way here and at the call
   site.
 
-**What the user actually sees.** On a build whose `request_permissions()`
-accepts the `threading`/`process` keywords, the plugin prompts **once at load**
-and never again. The shipped **2.5.0-alpha** accepts **only `fs_read`**, so the
-declaration above raises `TypeError` and the plugin falls back to an
-`fs_read`-only call that preserves the read grant; on that build the user sees
-a **file-read prompt at load** and then **one reactive "create a thread" prompt
-on the first thread start**. Approving the thread prompt persists the grant
-(`.install_state.json` then records the thread grant and no process grants);
-after that, **Repair, Analyze and Show file run with no further prompts**. (The
-same fallback keeps older nightlies working.)
+**What the user actually sees.** On 2.5.0 RC and later, `request_permissions()`
+accepts the `threading` and `process` declarations above, so the plugin asks
+**once at load** (one combined dialog covering the file reads, thread creation
+and the two process targets) and never again. On an older nightly that accepts
+only `fs_read`, the declaration above raises `TypeError` and the plugin falls
+back to an `fs_read`-only call that preserves the read grant; on that build the
+user sees a **file-read prompt at load** and then **one reactive "create a
+thread" prompt on the first thread start**. Approving the thread prompt
+persists the grant (`.install_state.json` then records the thread grant and no
+process grants); after that, **Repair, Analyze and Show file run with no further
+prompts**. (The same fallback keeps older nightlies working.)
 
 CLI repair/analyze spawns are **not** declared: they execute inside
 plugin-created worker threads, whose audit context is empty, so on OrcaSlicer
