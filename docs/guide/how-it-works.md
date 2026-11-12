@@ -185,7 +185,13 @@ fTetWild fallback is installed and on by default:
   component is ever dropped, at most three rounds run (the round count and a
   30 % face-fraction brake bound the work; the time shown in the report is only
   a measurement), and the step is a no-op on meshes without self-intersections.
-  Disable it with `SUTURA_SI_EXCISE=0`.
+  A round is also rejected, and the pass stops, when it would move the visible
+  input surface by more than 0.1 mm (measured from the frozen original load, and
+  the new re-cap faces within the same budget of it), so the repair never
+  trades a visible surface for a lower self-intersection count; the remaining
+  self-intersections stay in the report. Disable the excise with
+  `SUTURA_SI_EXCISE=0`, and its visible-shape budget with
+  `SUTURA_SI_EXCISE_GUARD=0`.
 
 These after-stage-1 tiers form the **deep-repair ladder**, selected with
 `--deep-repair {off,local,full}` (or `SUTURA_DEEP_REPAIR`, or the

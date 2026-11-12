@@ -196,6 +196,8 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 - **Guarded SI excise + Stage-1 hole fill (unreleased):** the Full-Mend
   self-intersection excise is automatic pipeline behaviour (both CLI and GUI get it, so
   parity holds) with an env opt-out only (`SUTURA_SI_EXCISE=0`), like the ray-stab vote.
+  Its visible-shape budget is the same kind of automatic behaviour and carries its own
+  env opt-out (`SUTURA_SI_EXCISE_GUARD=0`), so it needs no separate control either.
   The experimental refined Stage-1 hole fill (`SUTURA_REFINE_HOLE=1`, a Liepa-style
   `refinehole=True`) was REMOVED in Phase 4 W3d: it was OFF by default and measured to worsen
   an open mesh (thingi10k_100827: 9 -> 23 holes, SI 29 -> 77), so the plain native

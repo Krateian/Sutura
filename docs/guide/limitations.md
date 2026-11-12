@@ -47,6 +47,12 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
   mesh as a solid, which resolves interior/overlapping geometry, but the
   rebuild can slightly reshape features in pathological cases. Always check
   the result in a slicer.
+* **Some self-intersections may remain after excision.** The Full-Mend
+  self-intersection excise stops when the repair would move the visible
+  surface by more than 0.1 mm from the original load, so a mesh whose
+  self-intersections can only be removed by cutting visible geometry keeps
+  them; the report shows the remaining count instead of a fabricated zero.
+  The budget is on by default and its opt-out is `SUTURA_SI_EXCISE_GUARD=0`.
 * **Large hole patches.** The Flap tier advances boundary curvature and
   tangent continuity across holes to reconstruct smooth surface geometry. However,
   for very large holes where boundary curvature cannot reliably span the opening,

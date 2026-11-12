@@ -49,6 +49,12 @@ güvenilir şekilde algılayabilir.
   olarak yeniden kurar, bu iç/örtüşen geometriyi çözer, ama patolojik
   durumlarda yeniden kurma, özellikleri hafifçe yeniden şekillendirebilir.
   Sonucu her zaman bir dilimleyicide kontrol edin.
+* **Kesme sonrası bazı kendisiyle kesişimler kalabilir.** Full Mend
+  kendisiyle-kesişim kesmesi, onarım görünür yüzeyi orijinal yüklemeden
+  0,1 mm'den fazla oynatacaksa durur; yani kendisiyle kesişimleri yalnızca
+  görünür geometriyi keserek giderilebilen bir mesh onları korur. Rapor,
+  uydurma bir sıfır yerine kalan sayıyı gösterir. Bütçe varsayılan olarak
+  açıktır ve `SUTURA_SI_EXCISE_GUARD=0` ile kapatılır.
 * **Büyük delik yamaları.** Flap katmanı, pürüzsüz yüzey geometrisini yeniden
   kurmak için delikler boyunca sınır eğriliğini ve teğet sürekliliğini ilerletir.
   Ancak sınır eğriliğinin açıklığı güvenilir biçimde bağlayamadığı çok büyük

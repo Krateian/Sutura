@@ -188,7 +188,12 @@ açıktır:
   sınıflandırıcısını kullanır. Hiçbir bağlı bileşen düşürülmez, en fazla üç tur
   çalışır (işi tur sayısı ve tur başına %30 yüz freni sınırlar; raporda
   gösterilen süre yalnızca bir ölçümdür) ve self-intersection içermeyen ağlarda
-  no-op'tur. `SUTURA_SI_EXCISE=0` ile kapatılır.
+  no-op'tur. Bir tur, görünür girdi yüzeyini dondurulmuş orijinal yüklemeden
+  0,1 mm'den fazla oynatacaksa da reddedilir ve geçiş durdurulur (yeni yeniden
+  kapatma yüzleri de aynı bütçe içinde kalmalıdır); böylece onarım, daha düşük
+  bir self-intersection sayısı için görünür yüzeyi asla feda etmez ve kalan
+  self-intersection'lar raporda kalır. Kesme `SUTURA_SI_EXCISE=0` ile, görünür
+  şekil bütçesi ise `SUTURA_SI_EXCISE_GUARD=0` ile kapatılır.
 
 Stage 1'den sonraki bu katmanlar **derin onarım merdivenini** oluşturur ve
 `--deep-repair {off,local,full}` ile seçilir (ya da `SUTURA_DEEP_REPAIR` veya
