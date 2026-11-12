@@ -17,8 +17,8 @@ def main():
            'quality_ab':['--quality','--no-visual'],'single_side':['--quality','--no-visual']}[mode]
     outdir=tempfile.mkdtemp(prefix='shard-')
     cmd=[sys.executable,VERIFY]+[os.path.join(corpus,f) for f in files]+flags+[
-         '--baseline-repo','base','--baseline-python','base-venv/bin/python',
-         '--repo','cand','--python','cand-venv/bin/python','--out-dir',outdir]
+         '--baseline-repo',os.path.abspath('base'),'--baseline-python',os.path.abspath('base-venv/bin/python'),
+         '--repo',os.path.abspath('cand'),'--python',os.path.abspath('cand-venv/bin/python'),'--out-dir',outdir]
     if env_c: cmd += ['--opt-out-env',env_c]
     r=subprocess.run(cmd,capture_output=True,text=True)
     rows=[]; err=None
