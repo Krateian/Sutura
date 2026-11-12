@@ -669,12 +669,14 @@ Install (OrcaSlicer 2.5.0+ / nightly):
 Permissions: `register_capabilities()` pre-declares the existing Sutura CLI
 path with `request_permissions(fs_read=...)`, plus `threading` and the two
 stable process targets it can name up front (the OrcaSlicer process-count probe
-and the fixed-folder reveal command). A build that accepts those keywords
-prompts once at load. The shipped **2.5.0-alpha** accepts only `fs_read`, so the
-plugin falls back to the fs_read-only declaration (the read grant is preserved)
-and the user gets a **file-read prompt at load** plus **one reactive "create a
-thread" prompt on first use**; approving it persists the grant, and later
-Repair, Analyze and Show file runs raise no further prompts. Repair and Analyze
+and the fixed-folder reveal command). On 2.5.0 RC and later,
+`request_permissions()` accepts those declarations, so the plugin prompts
+**once at load** (one combined dialog covering the file reads, thread creation
+and the two process targets) and never again. On an older nightly that accepts
+only `fs_read`, the plugin falls back to the fs_read-only declaration (the read
+grant is preserved) and the user gets a **file-read prompt at load** plus **one
+reactive "create a thread" prompt on first use**; approving it persists the
+grant, and later Repair, Analyze and Show file runs raise no further prompts. Repair and Analyze
 spawns run on plugin-created worker threads, whose audit context is empty, so
 they are not audited on 2.5. A denial is surfaced in the panel naming the
 operation that failed — a red banner only when the repair or Analyze job itself

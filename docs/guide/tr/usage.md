@@ -669,13 +669,15 @@ Kurulum (OrcaSlicer 2.5.0+ / nightly):
 İzinler: `register_capabilities()` var olan Sutura CLI yolunu
 `request_permissions(fs_read=...)` ile, ayrıca `threading` ile ve önceden
 adlandırabildiği iki kararlı süreç hedefiyle (OrcaSlicer süreç sayımı yoklaması
-ve sabit klasör gösterme komutu) önceden beyan eder. Bu anahtar sözcükleri kabul
-eden bir sürüm yüklemede yalnızca bir kez istem gösterir. Gönderilen
-**2.5.0-alpha** yalnızca `fs_read` kabul eder; bu yüzden eklenti fs_read-yalnız
-beyana geri düşer (okuma izni korunur) ve kullanıcı **yüklemede bir dosya okuma
-istemi** ile **ilk kullanımda bir kez, tetiklendiğinde "bir iş parçacığı
-oluştur" istemi** ile karşılaşır; onaylandığında izin kalıcı olur ve sonraki
-Repair, Analyze ve Show file çalıştırmaları başka istem göstermez. Repair ve
+ve sabit klasör gösterme komutu) önceden beyan eder. 2.5.0 RC ve sonrasında
+`request_permissions()` bu beyanları kabul eder; bu yüzden eklenti **yüklemede
+yalnızca bir kez** (dosya okumalarını, iş parçacığı oluşturmayı ve iki süreç
+hedefini kapsayan tek bir birleşik diyalog) istem gösterir ve bir daha
+göstermez. Yalnızca `fs_read` kabul eden daha eski bir nightly'de eklenti
+fs_read-yalnız beyana geri düşer (okuma izni korunur) ve kullanıcı **yüklemede
+bir dosya okuma istemi** ile **ilk kullanımda bir kez, tetiklendiğinde "bir iş
+parçacığı oluştur" istemi** ile karşılaşır; onaylandığında izin kalıcı olur ve
+sonraki Repair, Analyze ve Show file çalıştırmaları başka istem göstermez. Repair ve
 Analyze başlatmaları eklentinin oluşturduğu çalışan iş parçacıklarında
 gerçekleşir ve bu iş parçacıklarının denetim bağlamı boştur, dolayısıyla 2.5'te
 denetlenmezler. Bir ret, panelde başarısız olan işlemi adlandırarak bildirilir —
