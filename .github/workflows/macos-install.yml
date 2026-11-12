@@ -236,6 +236,13 @@ jobs:
 
       - name: Hide the runner's Rust toolchain and force the source path
         run: |
+          # macOS runners install Rust through Homebrew; /opt/homebrew/bin
+          # must stay on PATH (brew/cmake/python), so unlink the formulae.
+          if command -v brew >/dev/null 2>&1; then
+            brew unlink rustup >/dev/null 2>&1 || true
+            brew unlink rust >/dev/null 2>&1 || true
+          fi
+          hash -r
           CLEAN_PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '/\.cargo/bin' | paste -sd: -)"
           export PATH="$CLEAN_PATH"
           echo "PATH=$CLEAN_PATH" >> "$GITHUB_ENV"
