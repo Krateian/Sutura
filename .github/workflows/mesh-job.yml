@@ -2,7 +2,7 @@ name: Mesh job (sharded, owner-only)
 on:
   workflow_dispatch:
     inputs:
-      base_ref:      { description: 'Side A ref', required: true, default: origin/main }
+      base_ref:      { description: 'Side A ref (branch, tag or SHA)', required: true, default: 'main' }
       candidate_ref: { description: 'Side B ref (empty = single-side)', required: false, default: '' }
       sets:          { description: 'Comma list; each entry NAME or NAME@mode (quality_ab|byte|determinism|single_side)', required: true, default: 'samples40@quality_ab,oracle36@quality_ab' }
       mode:          { description: 'Default mode for entries without @mode: quality_ab | byte | determinism | single_side', required: true, default: 'quality_ab' }
@@ -111,7 +111,7 @@ jobs:
       - name: Corpus (private repo, secret PAT)
         uses: actions/checkout@v7
         with:
-          repository: ${{ vars.GATE_CORPUS_REPO }}
+          repository: ${{ vars.GATE_CORPUS_REPO || 'Krateian/sutura-gate-corpus' }}
           token: ${{ secrets.GATE_CORPUS_TOKEN }}
           path: corpus
       - uses: actions/download-artifact@v4

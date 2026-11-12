@@ -9,6 +9,7 @@ A missing OrcaSlicer is not a missing row: the harness reports
 ``orca_number_of_parts=None`` / ``orca_manifold='unknown'`` and the judge falls
 back to the component count, so Orca is reported but never required.
 """
+import glob
 import json
 import os
 import subprocess
@@ -52,6 +53,24 @@ def resolve_mesh(corpus, rel):
     return os.path.join(corpus, rel)
 
 
+def manifest(sets, set_name):
+    """The set's manifest, tolerating the count suffix in the file name.
+
+    The private corpus names its three-mesh nondeterminism set
+    ``determinism3.txt``; the workflow set is called ``determinism``.  An
+    exact name wins; otherwise a unique ``<name>*.txt`` match is used, and
+    an ambiguous or missing name is an error rather than a silent empty run.
+    """
+    exact = os.path.join(sets, set_name + '.txt')
+    if os.path.exists(exact):
+        return exact
+    matches = sorted(glob.glob(os.path.join(sets, set_name + '*.txt')))
+    if len(matches) == 1:
+        return matches[0]
+    raise SystemExit('no unique manifest for set %r in %s (matches: %s)'
+                     % (set_name, sets, [os.path.basename(m) for m in matches]))
+
+
 def main():
     set_name = os.environ['SET_NAME']
     shard = int(os.environ['SHARD'])
@@ -67,8 +86,7 @@ def main():
     required = SHAPE_REQUIRED if quality else BYTE_KEYS
     corpus = os.path.join(os.getcwd(), 'corpus')
     sets = os.path.join(corpus, 'sets')
-    files = [l.strip() for l in open(os.path.join(sets, set_name + '.txt'))
-             if l.strip()]
+    files = [l.strip() for l in open(manifest(sets, set_name)) if l.strip()]
     files = files[shard::shards]
     outdir = tempfile.mkdtemp(prefix='shard-')
     cmd = [sys.executable, VERIFY] \
