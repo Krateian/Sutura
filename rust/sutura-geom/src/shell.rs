@@ -1368,7 +1368,7 @@ fn conforming_edge_split(
     constraint_edges: &mut HashSet<(u32, u32)>,
 ) -> Vec<[u32; 3]> {
     let tol = 1e-5;
-    let mut all_edges: HashMap<(u32, u32), Vec<(f64, u32)>> = HashMap::new();
+    let mut all_edges: BTreeMap<(u32, u32), Vec<(f64, u32)>> = BTreeMap::new();
 
     for t in tris {
         for k in 0..3 {
@@ -1427,7 +1427,7 @@ fn conforming_edge_split(
         return tris.to_vec();
     }
 
-    let mut edge_splits: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    let mut edge_splits: BTreeMap<(u32, u32), Vec<u32>> = BTreeMap::new();
     for ((u, v), mut splits) in all_edges {
         if !splits.is_empty() {
             splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -1444,7 +1444,9 @@ fn conforming_edge_split(
         chain.push(v);
         for w in chain.windows(2) {
             let sub_key = (w[0].min(w[1]), w[0].max(w[1]));
-            constraint_edges.insert(sub_key);
+            if !edge_splits.contains_key(&sub_key) {
+                constraint_edges.insert(sub_key);
+            }
         }
     }
 
@@ -3308,6 +3310,34 @@ mod tests {
         assert_eq!(pass1.len(), 4, "a 6-gon splits into 4 faces");
         let pass2 = conforming_edge_split(&verts, &pass1, &mut ce);
         assert_eq!(pass2, pass1, "second pass must return the same faces");
+    }
+
+    /// A split parent's sub-edge can itself qualify for splitting when a
+    /// vertex sits inside the parent's 1e-4 endpoint band. The parent is
+    /// replaced by its own children, so that child parent must not be
+    /// re-added by the parent's update; otherwise the next pass depends on
+    /// which parent was visited first.
+    #[test]
+    fn test_conforming_split_does_not_readd_split_parent_child() {
+        let verts = vec![
+            [0.5, 0.0, 0.0],     // 0 z, interior of A-B
+            [0.99992, 0.0, 0.0], // 1 x, inside the 1e-4 endpoint band of A-B
+            [0.0, 0.0, 0.0],     // 2 A
+            [1.0, 0.0, 0.0],     // 3 B
+            [0.0, 1.0, 0.0],     // 4 C
+        ];
+        let tris = vec![[2u32, 3, 4], [0, 3, 4]];
+        let mut ce = all_edges(&tris);
+
+        let _ = conforming_edge_split(&verts, &tris, &mut ce);
+        assert!(
+            !ce.contains(&(0, 3)),
+            "split-parent child (0,3) was re-added: {:?}",
+            ce
+        );
+        for e in [(0u32, 1u32), (1, 3), (0, 2)] {
+            assert!(ce.contains(&e), "missing replacement sub-edge {:?}", e);
+        }
     }
 
     /// Three identical coplanar triangles: every edge has 3 incident faces
