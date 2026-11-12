@@ -442,7 +442,10 @@ katmanlarından önce ikinci bir şans** alır.
 
 **Varsayılan olarak açıktır**: kapatmak için `--no-tamponade` (veya
 `SUTURA_TAMPONADE=0`) ya da Seçenekler → Onarım sekmesindeki **Tamponad
-(delikleri içeriden doldur)** onay kutusu. Çalışmadan önce katman düzeyinde bir
+(delikleri içeriden doldur)** onay kutusu. Aynı anahtar dış-kabuk ön-geçişini de
+atlar: ilk etiketli aşamadan önce iç duvarları eriten çok parçalı dış-kabuk
+birleşimi yalnızca Tamponad açıkken çalışır; bu yüzden `--no-tamponade` girdi
+geometrisini bu noktada değiştirmez. Çalışmadan önce katman düzeyinde bir
 **şekil uygunluk kartı** modelin gerçek bir iç hacmi olup olmadığını denetler.
 İnce kabuk / açık yüzey (düşük kompaktlık, büyük açık sınır alanı ve ince-duvar
 oranı) *iç hacim yok; Flap'e bırakıldı* gerekçesiyle atlanır; tıkaç denenmez.

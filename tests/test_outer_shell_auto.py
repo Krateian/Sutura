@@ -56,9 +56,15 @@ def test_should_extract_outer_shell():
 
 
 def test_outer_shell_repair_3x3_assembly():
-    # Synthetic 3x3 cube assembly (27 touching cubies, Rubik-style)
+    # Synthetic 3x3 cube assembly. The cubies are rotated 20 deg about a
+    # diagonal axis so they penetrate instead of meeting on coincident planes:
+    # a face-touching assembly is classified as disjoint and adopted by the
+    # P-a branch without a union, which Stage 1 cannot repair on its own.
+    R = trimesh.transformations.rotation_matrix(
+        np.deg2rad(20.0), [0.3, 0.5, 0.8])
     cubes = [
-        trimesh.creation.box(extents=(1.0, 1.0, 1.0)).apply_translation([x, y, z])
+        trimesh.creation.box(extents=(1.0, 1.0, 1.0)).apply_transform(R)
+        .apply_translation([x, y, z])
         for x in [-1.0, 0.0, 1.0]
         for y in [-1.0, 0.0, 1.0]
         for z in [-1.0, 0.0, 1.0]
@@ -69,12 +75,16 @@ def test_outer_shell_repair_3x3_assembly():
 
     with tempfile.TemporaryDirectory() as td:
         t0 = time.perf_counter()
-        rep, out_v, out_t = repair.repair_mesh_from_arrays(v, t, td, mode='auto')
+        rep, out_v, out_t = repair.repair_mesh_from_arrays(
+            v, t, td, mode='auto', tamponade=True)
         out_v, out_t = repair.maybe_run_stage2(rep, out_v, out_t, td)
         repair.enforce_reload_verdict(rep, out_v, out_t)
         elapsed = time.perf_counter() - t0
 
-        assert rep.get('outer_shell_extracted') is True, rep
+        # The outer-shell pre-step is part of Tamponade: here the penetrating
+        # bodies are clipped and stitched by the P-c phase.
+        assert rep.get('shell_adopted') is True, rep
+        assert rep.get('shell_phase') == 'P-c_penetrating', rep
         s1 = rep.get('stage1', {})
         assert s1.get('two_manifold') is True, s1
         assert s1.get('holes_remaining', 0) == 0, s1
@@ -82,6 +92,15 @@ def test_outer_shell_repair_3x3_assembly():
         s2 = rep.get('stage2', {})
         assert s2.get('ok') is True, s2
         assert elapsed < 5.0, 'Outer shell repair took too long: %.2f s' % elapsed
+
+        # The same geometry with the Tamponade switch OFF skips the whole
+        # outer-shell block; Stage 1 sees the input unchanged.
+        with tempfile.TemporaryDirectory() as off_td:
+            off_rep, off_v, off_t = repair.repair_mesh_from_arrays(
+                v, t, off_td, mode='auto', tamponade=False)
+        assert off_rep.get('outer_shell_skipped') == 'tamponade_disabled', off_rep
+        assert off_rep.get('shell_phase') is None, off_rep
+        assert len(off_t) == len(t), (len(off_t), len(t))
 
     print('test_outer_shell_repair_3x3_assembly passed (%.2f s)' % elapsed)
 
@@ -93,8 +112,9 @@ def test_outer_shell_healthy_multipart_not_pruned():
     # should_extract_outer_shell returns True - overlapping bboxes) while the
     # bodies themselves keep a clear gap. The input is therefore a healthy
     # mechanical multi-part solid with reload-equivalent (holes, nm) == (0, 0).
-    # The fallback used to reach extract_outer_shell -> largest_component() and
-    # delete three of the four bodies; Guard A must keep all four.
+    # The shell pre-step must adopt it through P-a without a union and keep all
+    # four bodies (the old fallback used to reach largest_component() and drop
+    # three of them).
     R = trimesh.transformations.rotation_matrix(np.deg2rad(45.0), [0, 0, 1])
     centers = [(0.0, 0.0, 0.0), (1.4, 1.4, 0.0),
                (-1.4, 1.4, 0.0), (0.0, -1.4, 1.4)]
@@ -112,11 +132,14 @@ def test_outer_shell_healthy_multipart_not_pruned():
     in_vol = sum(abs(float(m.volume)) for m in cubes)
 
     with tempfile.TemporaryDirectory() as td:
-        rep, out_v, out_t = repair.repair_mesh_from_arrays(v, t, td, mode='auto')
+        rep, out_v, out_t = repair.repair_mesh_from_arrays(
+            v, t, td, mode='auto', tamponade=True)
         s1 = rep.get('stage1', {})
 
+        prepass = rep.get('tamponade_shell_prepass') or {}
         assert rep.get('outer_shell_extracted') is not True, rep
-        assert rep.get('outer_shell_skipped') == 'healthy_multipart_input', rep
+        assert prepass.get('shell_adopted') is True, rep
+        assert prepass.get('shell_phase') == 'P-a_disjoint', rep
         assert s1.get('components', 0) == 4, s1
         assert s1.get('holes_remaining', 0) == 0, s1
         assert len(out_t) > 0

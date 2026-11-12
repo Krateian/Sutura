@@ -221,7 +221,17 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # For inputs with multiple overlapping/nested closed components (e.g. Rubik-style
     # assemblies), dissolves internal interfaces via slight dilation
     # (dilation = 5e-4 * bbox_diagonal, ~0.05 mm for 100 mm object) and boolean union.
-    if mode == 'auto' and should_extract_outer_shell(verts, tris, mesh_type=_cls['type']):
+    _shell_considered = (
+        mode == 'auto'
+        and should_extract_outer_shell(verts, tris, mesh_type=_cls['type']))
+    _shell_trace_v = _shell_trace_t = None
+    if trace.is_active():
+        _shell_trace_v, _shell_trace_t = v, t
+    if _shell_considered and not tamponade:
+        # The outer-shell pre-step is part of the Tamponade feature: the same
+        # switch (--no-tamponade / SUTURA_TAMPONADE=0 / GUI checkbox) skips it.
+        stats['outer_shell_skipped'] = 'tamponade_disabled'
+    if _shell_considered and tamponade:
         _shell_adopted = False
         _shell_budget_exceeded = False
         _shell_phase = None
@@ -386,6 +396,40 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                         else:
                             stats['outer_shell_rejected'] = 'topology_regressed'
             # on error the guard records it and the input is kept unchanged
+
+    if trace.is_active():
+        _pre = stats.get('tamponade_shell_prepass') or {}
+        if not _shell_considered:
+            _shell_gate = {
+                'status': 'skipped',
+                'reason': 'not_needed' if mode == 'auto' else 'mode_not_auto'}
+        elif not tamponade:
+            _shell_gate = {'status': 'disabled',
+                           'reason': 'tamponade_disabled'}
+        elif stats.get('outer_shell_extracted'):
+            _shell_gate = {'status': 'adopted',
+                           'reason': 'outer_shell_extracted'}
+        elif _pre.get('shell_adopted'):
+            _shell_gate = {'status': 'adopted',
+                           'reason': _pre.get('shell_reason') or 'shell_adopted'}
+        elif stats.get('outer_shell_rejected'):
+            _shell_gate = {'status': 'rejected',
+                           'reason': stats.get('outer_shell_rejected')}
+        elif stats.get('outer_shell_skipped'):
+            _shell_gate = {'status': 'skipped',
+                           'reason': stats.get('outer_shell_skipped')}
+        else:
+            _shell_gate = {'status': 'skipped',
+                           'reason': _pre.get('shell_reason') or 'no_change'}
+        _shell_gate.update({
+            'phase': _pre.get('shell_phase'),
+            'outer_count': _pre.get('outer_count', 0),
+            'buried_count': _pre.get('buried_count', 0),
+            'coincident_opp_count': _pre.get('coincident_opp_count', 0),
+        })
+        trace.record_stage('outer_shell', 'pipeline.extract_outer_shell',
+                           _shell_trace_v, _shell_trace_t, v, t,
+                           gate=_shell_gate)
 
     before = topology.mesh_topology(v, t)
     before_geom = topology.mesh_geometric_measures(v, t)

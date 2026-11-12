@@ -449,7 +449,11 @@ Graft/fTetWild tiers**.
 
 It is **on by default**: disable it with `--no-tamponade` (or
 `SUTURA_TAMPONADE=0`), or the Options → Repair checkbox **Tamponade (fill holes
-from inside)**. Before it runs, a tier-level **shape-suitability card** checks
+from inside)**. The same switch also skips the outer-shell pre-step: the
+multi-part outer-shell union that dissolves internal walls before the first
+labelled stage runs only while Tamponade is enabled, so `--no-tamponade`
+leaves the input geometry untouched at that point. Before it runs, a
+tier-level **shape-suitability card** checks
 whether the model has a real interior. A thin shell / open sheet (low
 compactness, a large open boundary area and a thin-wall fraction) is skipped
 with the plain-language reason *no interior volume; left to Flap* instead of
