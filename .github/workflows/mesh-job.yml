@@ -6,9 +6,9 @@ on:
       candidate_ref: { description: 'Side B ref (empty = single-side)', required: false, default: '' }
       sets:          { description: 'samples40,oracle36,core150,core_clean,determinism', required: true, default: 'samples40,oracle36' }
       mode:          { description: 'quality_ab | byte | determinism | single_side', required: true, default: 'quality_ab' }
-      env_base:      { description: 'Side A env, e.g. SUTURA_SI_EXCISE=0', required: false, default: '' }
-      env_candidate: { description: 'Side B env', required: false, default: '' }
-      shards:        { description: 'Shard count override', required: false, default: '' }
+      env_base:      { description: 'Side A env (unsupported by the harness; candidate side only)', required: false, default: '' }
+      env_candidate: { description: 'Side B env, e.g. SUTURA_SI_EXCISE=0', required: false, default: '' }
+      shards:        { description: 'Shard count override (per set)', required: false, default: '' }
 permissions:
   contents: read
 jobs:
@@ -19,18 +19,24 @@ jobs:
     steps:
       - name: Owner-only guard
         run: |
-          if [ "${{ github.actor }}" != "Krateian" ]; then
-            echo "::error::release gate is owner-only"; exit 1
-          fi
+          if [ "$ACTOR" != "Krateian" ]; then echo "::error::mesh job is owner-only"; exit 1; fi
+        env: { ACTOR: '${{ github.actor }}' }
       - name: Plan matrix
         id: plan
+        env:
+          SETS: '${{ inputs.sets }}'
+          SHARDS: '${{ inputs.shards }}'
         run: |
           python3 - <<'PY'
           import json, os
-          sets=[s for s in "${{ inputs.sets }}".split(',') if s]
-          n=int("${{ inputs.shards }}" or 0) or {'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2}.get(sets[0],4)
-          inc=[{'set':s,'shard':i,'shards':n} for s in sets for i in range(n)]
-          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('matrix='+json.dumps({'include':inc})+'\n')
+          counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5}
+          override=int(os.environ.get('SHARDS') or 0)
+          inc=[]
+          for s in [x for x in os.environ['SETS'].split(',') if x]:
+              n=override or counts.get(s,4)
+              inc += [{'set':s,'shard':i,'shards':n} for i in range(n)]
+          out=json.dumps({'include':inc})
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('matrix='+out+'\n')
           PY
   build-base:
     needs: preflight
@@ -41,14 +47,13 @@ jobs:
       - uses: actions/setup-python@v7
         with: { python-version: '3.11' }
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build base
+      - name: Build wheel
         run: |
           python -m venv venv
-          ./venv/bin/pip install --quiet --upgrade pip
-          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
-          SUTURA_GEOM_FROM_SOURCE=1 scripts/install_sutura_geom.sh ./venv/bin/python
+          ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
+          (cd rust/sutura-geom && ../..//venv/bin/maturin build --release --out dist)
       - uses: actions/upload-artifact@v4
-        with: { name: build-base, path: venv, retention-days: 3 }
+        with: { name: wheel-base, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
   build-cand:
     needs: preflight
     if: inputs.candidate_ref != ''
@@ -59,14 +64,13 @@ jobs:
       - uses: actions/setup-python@v7
         with: { python-version: '3.11' }
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build candidate
+      - name: Build wheel
         run: |
           python -m venv venv
-          ./venv/bin/pip install --quiet --upgrade pip
-          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
-          SUTURA_GEOM_FROM_SOURCE=1 scripts/install_sutura_geom.sh ./venv/bin/python
+          ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
+          (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
       - uses: actions/upload-artifact@v4
-        with: { name: build-cand, path: venv, retention-days: 3 }
+        with: { name: wheel-cand, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
   shard:
     needs: [preflight, build-base, build-cand]
     if: always() && needs.preflight.result == 'success' && needs.build-base.result == 'success'
@@ -76,10 +80,19 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
     steps:
-      - name: Owner-only guard
+      - name: Inputs to env
         run: |
-          if [ "${{ github.actor }}" != "Krateian" ]; then echo "::error::owner-only"; exit 1; fi
+          echo "MODE=$MODE" >> "$GITHUB_ENV"; echo "SET_NAME=$SET_NAME" >> "$GITHUB_ENV"
+          echo "SHARD=$SHARD" >> "$GITHUB_ENV"; echo "SHARDS=$SHARDS" >> "$GITHUB_ENV"
+          echo "ENV_CAND=$ENV_CAND" >> "$GITHUB_ENV"; echo "ENV_BASE=$ENV_BASE" >> "$GITHUB_ENV"
+        env:
+          MODE: '${{ inputs.mode }}'; SET_NAME: '${{ matrix.set }}'
+          SHARD: '${{ matrix.shard }}'; SHARDS: '${{ matrix.shards }}'
+          ENV_CAND: '${{ inputs.env_candidate }}'; ENV_BASE: '${{ inputs.env_base }}'
       - uses: actions/checkout@v7
+        with: { path: base, ref: '${{ inputs.base_ref }}' }
+      - uses: actions/checkout@v7
+        with: { path: cand, ref: '${{ inputs.candidate_ref || inputs.base_ref }}' }
       - name: Corpus (private repo, secret PAT)
         uses: actions/checkout@v7
         with:
@@ -87,20 +100,29 @@ jobs:
           token: ${{ secrets.GATE_CORPUS_TOKEN }}
           path: corpus
       - uses: actions/download-artifact@v4
-        with: { name: build-base, path: build-base }
+        with: { name: wheel-base, path: wheels-base }
       - uses: actions/download-artifact@v4
         if: inputs.candidate_ref != ''
-        with: { name: build-cand, path: build-cand }
-      - name: Run shard
-        env:
-          ENV_BASE: ${{ inputs.env_base }}
-          ENV_CAND: ${{ inputs.env_candidate }}
+        with: { name: wheel-cand, path: wheels-cand }
+      - name: Fresh venvs with their own wheel
         run: |
-          python3 scripts/gh_mesh_shard.py --set "${{ matrix.set }}" --shard ${{ matrix.shard }} \
-            --shards ${{ matrix.shards }} --mode "${{ inputs.mode }}" \
-            --out shard-${{ matrix.set }}-${{ matrix.shard }}.json > shard.log 2>&1
+          python3 -m venv base-venv
+          base-venv/bin/pip install --quiet -r base/requirements.txt -r base/requirements-dev.txt wheels-base/*.whl
+          cp -r wheels-base wheels-cand 2>/dev/null || true
+          python3 -m venv cand-venv
+          cand-venv/bin/pip install --quiet -r cand/requirements.txt -r cand/requirements-dev.txt wheels-cand/*.whl
+      - name: Run shard
+        run: |
+          python3 scripts/gh_mesh_shard.py
+      - name: Sanitized error tail on failure
+        if: failure()
+        run: |
+          [ -f error.json ] && cat error.json >> "$GITHUB_STEP_SUMMARY" || true
       - uses: actions/upload-artifact@v4
-        with: { name: summary-${{ matrix.set }}-${{ matrix.shard }}, path: 'shard-*.json', retention-days: 7 }
+        with: { name: 'summary-${{ matrix.set }}-${{ matrix.shard }}', path: 'shard-*.json', retention-days: 7 }
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with: { name: 'error-${{ matrix.set }}-${{ matrix.shard }}', path: error.json, retention-days: 7, if-no-files-found: ignore }
   aggregate:
     needs: shard
     if: always()
@@ -114,3 +136,5 @@ jobs:
           python3 scripts/gh_mesh_board.py summaries > board.md
           cat board.md >> "$GITHUB_STEP_SUMMARY"
           python3 scripts/gh_mesh_board.py --check summaries
+      - uses: actions/upload-artifact@v4
+        with: { name: board, path: board.md, retention-days: 7 }
