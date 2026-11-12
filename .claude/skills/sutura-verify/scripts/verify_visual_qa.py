@@ -547,50 +547,80 @@ def create_diff_map(norm_ref, sil_ref, norm_cand, sil_cand):
 # --------------------------------------------------------------------------- #
 # Zoomed Detail Render (512 px) on Defect / Changed Region
 # --------------------------------------------------------------------------- #
+def _nearest_vertex_distances(src, dst):
+    """Exact nearest-vertex distance from each ``src`` point to ``dst``.
+
+    The KdTree path is the same metric (nearest destination vertex), not a
+    surface query; the chunk scan is the fallback when the extension lacks it.
+    """
+    src = np.asarray(src, dtype=np.float64)
+    dst = np.asarray(dst, dtype=np.float64)
+    if len(src) == 0 or len(dst) == 0:
+        return np.zeros(len(src), dtype=np.float64)
+    if HAS_SUTURA_GEOM and hasattr(sutura_geom, "KdTree"):
+        try:
+            tree = sutura_geom.KdTree(dst)
+            d, _ = tree.query(src, k=1)
+            return np.asarray(d, dtype=np.float64)
+        except Exception:  # noqa: BLE001
+            pass
+    src_sq = np.sum(src ** 2, axis=1)
+    min_sq = np.full(len(src), np.inf, dtype=np.float64)
+    chunk_size = 8000
+    for i in range(0, len(dst), chunk_size):
+        chunk = dst[i:i + chunk_size]
+        ref_sq = np.sum(chunk ** 2, axis=1)
+        dot = src @ chunk.T
+        d_sq = src_sq[:, None] - 2.0 * dot + ref_sq[None, :]
+        min_sq = np.minimum(min_sq, np.min(d_sq, axis=1))
+    return np.sqrt(np.maximum(min_sq, 0.0))
+
+
 def find_most_changed_region(v_ref, v_cand, custom_center=None):
-    """Find focal center and radius of the region with maximum deviation."""
+    """Find the focal center/radius and the direction of the worst deviation.
+
+    Both directions are evaluated (candidate->reference and
+    reference->candidate) and the point is taken from the direction that
+    realises the larger maximum, so a missing input feature is zoomed on even
+    when the candidate adds nothing.  Returns ``(center, radius, direction)``
+    with ``direction`` one of ``candidate_to_reference`` /
+    ``reference_to_candidate``.
+    """
     extent = (v_ref.max(axis=0) - v_ref.min(axis=0)).max() if len(v_ref) > 0 else 1.0
     if custom_center is not None:
-        return np.asarray(custom_center, dtype=np.float64), max(extent * 0.15, 2.0)
+        return (np.asarray(custom_center, dtype=np.float64),
+                max(extent * 0.15, 2.0), "custom")
 
     if len(v_ref) == 0 or len(v_cand) == 0:
         c = (v_ref.min(axis=0) + v_ref.max(axis=0)) * 0.5 if len(v_ref) > 0 else np.zeros(3)
-        return c, max(extent * 0.15, 2.0)
+        return c, max(extent * 0.15, 2.0), "none"
 
-    # Subsample candidate side only (fixed stride, <= 1000 pts)
-    stride = max(1, len(v_cand) // 1000)
-    sample_cand = np.asarray(v_cand[::stride], dtype=np.float64)
     v_ref_arr = np.asarray(v_ref, dtype=np.float64)
+    v_cand_arr = np.asarray(v_cand, dtype=np.float64)
 
-    # Exact nearest-vertex distance against the full reference.  The KdTree
-    # path is the same metric (nearest reference vertex), not a surface query,
-    # so the V1 zoom centre/radius are unchanged; it replaces the O(N*M) chunk
-    # scan that dominated the detail pass on 90k-face meshes.
-    dists = None
-    if HAS_SUTURA_GEOM and hasattr(sutura_geom, "KdTree"):
-        try:
-            tree = sutura_geom.KdTree(v_ref_arr)
-            d, _ = tree.query(sample_cand, k=1)
-            dists = np.asarray(d, dtype=np.float64)
-        except Exception:  # noqa: BLE001
-            dists = None
-    if dists is None:
-        cand_sq = np.sum(sample_cand ** 2, axis=1)
-        min_sq = np.full(len(sample_cand), np.inf, dtype=np.float64)
-        chunk_size = 8000
-        for i in range(0, len(v_ref_arr), chunk_size):
-            chunk = v_ref_arr[i:i + chunk_size]
-            ref_sq = np.sum(chunk ** 2, axis=1)
-            dot = sample_cand @ chunk.T
-            d_sq = cand_sq[:, None] - 2.0 * dot + ref_sq[None, :]
-            min_sq = np.minimum(min_sq, np.min(d_sq, axis=1))
-        dists = np.sqrt(np.maximum(min_sq, 0.0))
-    worst_idx = np.argmax(dists)
-    max_dev = float(dists[worst_idx])
-    worst_pt = sample_cand[worst_idx]
+    # Subsample each side to <= 1000 points with a fixed stride.
+    stride_c = max(1, len(v_cand_arr) // 1000)
+    stride_r = max(1, len(v_ref_arr) // 1000)
+    sample_cand = v_cand_arr[::stride_c]
+    sample_ref = v_ref_arr[::stride_r]
+
+    dists_c2r = _nearest_vertex_distances(sample_cand, v_ref_arr)
+    dists_r2c = _nearest_vertex_distances(sample_ref, v_cand_arr)
+    idx_c = int(np.argmax(dists_c2r))
+    idx_r = int(np.argmax(dists_r2c))
+    max_c = float(dists_c2r[idx_c])
+    max_r = float(dists_r2c[idx_r])
+    if max_r > max_c:
+        worst_pt = sample_ref[idx_r]
+        max_dev = max_r
+        direction = "reference_to_candidate"
+    else:
+        worst_pt = sample_cand[idx_c]
+        max_dev = max_c
+        direction = "candidate_to_reference"
 
     focal_radius = max(extent * 0.15, max_dev * 2.5)
-    return worst_pt, focal_radius
+    return worst_pt, focal_radius, direction
 
 
 def render_zoomed_detail(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
@@ -2185,7 +2215,8 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
 
     t_stage = time.perf_counter()
     if need_detail:
-        f_center, f_radius = find_most_changed_region(v_base, v_cand, custom_center=defect_center)
+        f_center, f_radius, f_direction = find_most_changed_region(
+            v_base, v_cand, custom_center=defect_center)
 
         # 512px detail renders
         det_ref_b, det_base, det_diff_b = render_zoomed_detail(
@@ -2199,7 +2230,8 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
             save_rgb_png(det_diff_c, detail_png_saved)
 
             detail_row = {
-                "view_name": "Detail 512px",
+                "view_name": "Detail 512px [%s]" % f_direction,
+                "direction": f_direction,
                 "images": [det_ref_c, det_base, det_diff_b, det_cand, det_diff_c],
                 "captions": [
                     "Zoom Ref",

@@ -137,6 +137,25 @@ def test_oblique_replaces_flat_plate_sliver():
     print('ok  oblique plate views')
 
 
+def test_most_changed_region_picks_reference_direction():
+    # The missing material is on the reference side: candidate->reference is
+    # zero, reference->candidate is the 5 mm gap, so the zoom must centre on
+    # the reference cube and label that direction.
+    a, _ta = _cube()
+    b, _tb = _cube((5.0, 0.0, 0.0))
+    ref = np.vstack([a, b])
+    cand = a
+    center, _radius, direction = vvq.find_most_changed_region(ref, cand)
+    assert direction == 'reference_to_candidate', direction
+    assert np.linalg.norm(center - np.array([5.5, 0.5, 0.5])) < 1.0, center
+
+    # The opposite case must pick the candidate direction.
+    center, _radius, direction = vvq.find_most_changed_region(a, b)
+    assert direction == 'candidate_to_reference', direction
+    assert np.linalg.norm(center - np.array([5.5, 0.5, 0.5])) < 1.0, center
+    print('ok  most-changed-region direction')
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):
