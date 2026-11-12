@@ -139,8 +139,11 @@ pub struct BuriedFaceMask {
 ///
 /// This is the lightweight mask/area accessor for the shape metric, not a new
 /// classification rule: it uses the same `w_min >= 1 - delta` criterion as
-/// `analyze_shells`, with `delta = 0.1` by default.  Two winding queries per
-/// non-zero-area face; no coplanar clustering, no filter pass.
+/// `analyze_shells`, with `delta = 0.1` by default.  A face is buried only
+/// when **all eight** probes are inside: the centroid and each vertex pulled
+/// 10% toward the centroid, both sides of the face normal.  A partially
+/// covered triangle therefore stays visible (the fail-safe direction).  No
+/// coplanar clustering, no filter pass.
 pub fn buried_face_mask(
     verts: &[[f64; 3]],
     tris: &[[u32; 3]],
@@ -194,11 +197,27 @@ pub fn buried_face_mask(
             let w_back = bvh.winding_at(sub3(c, scale3(unorm, eps)));
             let w_min = w_front.min(w_back);
             let w_max = w_front.max(w_back);
-            let integral = (w_front - w_front.round()).abs() <= d
-                && (w_back - w_back.round()).abs() <= d;
+            let integral = |w: f64| (w - w.round()).abs() <= d;
 
-            if w_min >= 1.0 - d && integral {
-                (0u8, area)
+            if w_min >= 1.0 - d && integral(w_front) && integral(w_back) {
+                let mut buried = true;
+                for v in [v0, v1, v2] {
+                    // Sample 10% away from each vertex toward the centroid so a
+                    // triangle that is only partly inside another part is not
+                    // mistaken for an interior wall.
+                    let p = add3(scale3(v, 0.9), scale3(c, 0.1));
+                    let w1 = bvh.winding_at(add3(p, scale3(unorm, eps)));
+                    let w2 = bvh.winding_at(sub3(p, scale3(unorm, eps)));
+                    if w1.min(w2) < 1.0 - d || !integral(w1) || !integral(w2) {
+                        buried = false;
+                        break;
+                    }
+                }
+                if buried {
+                    (0u8, area)
+                } else {
+                    (3u8, 0.0)
+                }
             } else if w_max < d {
                 (1u8, area)
             } else {
@@ -3413,9 +3432,10 @@ mod tests {
 
     #[test]
     fn buried_face_mask_matches_case_b_and_excludes_debris() {
-        // Two overlapping cubes: the overlap walls are Case B interior walls.
-        let a = unit_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
-        let b = unit_box([0.25, 0.25, 0.25], [1.0, 1.0, 1.0]);
+        // A small cube fully inside a larger one (origin shifted by 0.25):
+        // every inner face is a Case B interior wall, every outer face is not.
+        let a = unit_box([0.25, 0.25, 0.25], [1.0, 1.0, 1.0]);
+        let b = unit_box([0.0, 0.0, 0.0], [2.0, 2.0, 2.0]);
         let (verts, tris) = combine_meshes(a, b);
 
         let mask = buried_face_mask(&verts, &tris, 0.1);
@@ -3461,6 +3481,24 @@ mod tests {
         assert!(!mask2.mask[debris], "debris must not be an interior wall");
         assert_eq!(mask2.debris_count, 12);
         assert_eq!(mask2.buried_count, mask.buried_count);
+    }
+
+    #[test]
+    fn buried_face_mask_rejects_partial_overlap() {
+        // Equal cubes offset diagonally: every overlap face is only partly
+        // covered, so the visible part must keep the face out of the mask.
+        for off in [0.25, 0.5] {
+            let a = unit_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+            let b = unit_box([off, off, off], [1.0, 1.0, 1.0]);
+            let (verts, tris) = combine_meshes(a, b);
+            let mask = buried_face_mask(&verts, &tris, 0.1);
+            assert_eq!(
+                mask.buried_count, 0,
+                "partly covered faces must not be buried (offset {off})"
+            );
+            assert_eq!(mask.debris_count, 0);
+            assert!(!mask.mask.iter().any(|&b| b));
+        }
     }
 
     #[test]
