@@ -1,0 +1,115 @@
+name: Mesh job (sharded, owner-only)
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:      { description: 'Side A ref', required: true, default: origin/main }
+      candidate_ref: { description: 'Side B ref (empty = single-side)', required: false, default: '' }
+      sets:          { description: 'samples40,oracle36,core150,core_clean,determinism', required: true, default: 'samples40,oracle36' }
+      mode:          { description: 'quality_ab | byte | determinism | single_side', required: true, default: 'quality_ab' }
+      env_base:      { description: 'Side A env, e.g. SUTURA_SI_EXCISE=0', required: false, default: '' }
+      env_candidate: { description: 'Side B env', required: false, default: '' }
+      shards:        { description: 'Shard count override', required: false, default: '' }
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Owner-only guard
+        run: |
+          if [ "${{ github.actor }}" != "Krateian" ]; then
+            echo "::error::release gate is owner-only"; exit 1
+          fi
+      - name: Plan matrix
+        id: plan
+        run: |
+          python3 - <<'PY'
+          import json, os
+          sets=[s for s in "${{ inputs.sets }}".split(',') if s]
+          n=int("${{ inputs.shards }}" or 0) or {'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2}.get(sets[0],4)
+          inc=[{'set':s,'shard':i,'shards':n} for s in sets for i in range(n)]
+          print('matrix='+json.dumps({'include':inc}))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('matrix='+json.dumps({'include':inc})+'\n')
+          PY
+  build-base:
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { ref: '${{ inputs.base_ref }}' }
+      - uses: actions/setup-python@v7
+        with: { python-version: '3.11' }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build base
+        run: |
+          python -m venv venv
+          ./venv/bin/pip install --quiet --upgrade pip
+          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
+          SUTURA_GEOM_FROM_SOURCE=1 scripts/install_sutura_geom.sh ./venv/bin/python
+      - uses: actions/upload-artifact@v4
+        with: { name: build-base, path: venv, retention-days: 3 }
+  build-cand:
+    needs: preflight
+    if: inputs.candidate_ref != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { ref: '${{ inputs.candidate_ref }}' }
+      - uses: actions/setup-python@v7
+        with: { python-version: '3.11' }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build candidate
+        run: |
+          python -m venv venv
+          ./venv/bin/pip install --quiet --upgrade pip
+          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
+          SUTURA_GEOM_FROM_SOURCE=1 scripts/install_sutura_geom.sh ./venv/bin/python
+      - uses: actions/upload-artifact@v4
+        with: { name: build-cand, path: venv, retention-days: 3 }
+  shard:
+    needs: [preflight, build-base, build-cand]
+    if: always() && needs.preflight.result == 'success' && needs.build-base.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - name: Owner-only guard
+        run: |
+          if [ "${{ github.actor }}" != "Krateian" ]; then echo "::error::owner-only"; exit 1; fi
+      - uses: actions/checkout@v7
+      - name: Corpus (private repo, secret PAT)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.GATE_CORPUS_REPO }}
+          token: ${{ secrets.GATE_CORPUS_TOKEN }}
+          path: corpus
+      - uses: actions/download-artifact@v4
+        with: { name: build-base, path: build-base }
+      - uses: actions/download-artifact@v4
+        if: inputs.candidate_ref != ''
+        with: { name: build-cand, path: build-cand }
+      - name: Run shard
+        env:
+          ENV_BASE: ${{ inputs.env_base }}
+          ENV_CAND: ${{ inputs.env_candidate }}
+        run: |
+          python3 scripts/gh_mesh_shard.py --set "${{ matrix.set }}" --shard ${{ matrix.shard }} \
+            --shards ${{ matrix.shards }} --mode "${{ inputs.mode }}" \
+            --out shard-${{ matrix.set }}-${{ matrix.shard }}.json > shard.log 2>&1
+      - uses: actions/upload-artifact@v4
+        with: { name: summary-${{ matrix.set }}-${{ matrix.shard }}, path: 'shard-*.json', retention-days: 7 }
+  aggregate:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'summary-*', merge-multiple: true, path: summaries }
+      - name: Board
+        run: |
+          python3 scripts/gh_mesh_board.py summaries > board.md
+          cat board.md >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/gh_mesh_board.py --check summaries
