@@ -362,9 +362,10 @@ jobs:
       - name: Hide the runner's Rust toolchain and force the source path
         run: |
           CLEAN_PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '/\.cargo/bin' | paste -sd: -)"
+          export PATH="$CLEAN_PATH"
           echo "PATH=$CLEAN_PATH" >> "$GITHUB_ENV"
-          if command -v rustup >/dev/null 2>&1 || command -v cargo >/dev/null 2>&1; then
-            echo "::error::rustup/cargo still on PATH; the bootstrap test is invalid"
+          if FOUND="$(command -v rustup || command -v cargo)"; then
+            echo "::error::rustup/cargo still on PATH at '$FOUND'; the bootstrap test is invalid"
             exit 1
           fi
           mkdir -p /tmp/fresh-home
