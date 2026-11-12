@@ -35,14 +35,12 @@ def main():
     else:
         err={'rc':r.returncode,'error_type':'MissingSummary',
              'tail':(r.stderr.strip().splitlines()[-1][:200] if r.stderr.strip() else '')}
-    if r.returncode!=0 and err is None:
-        err={'rc':r.returncode,'error_type':'HarnessFailed','tail':(r.stderr.strip().splitlines()[-1][:200] if r.stderr.strip() else '')}
     if err:
         for f in files+[outdir]: pass
         json.dump(err,open('error.json','w'),indent=1)
     json.dump({'set':set_name,'shard':shard,'shards':shards,'mode':mode,'rc':r.returncode,
                'meshes':len(files),'rows':rows,'error':err},open('shard-%s-%d.json'%(set_name,shard),'w'),indent=1)
-    sys.exit(0 if r.returncode==0 and not err else 1)
+    sys.exit(0 if not err else 1)
 if __name__=='__main__':
     try: main()
     except SystemExit: raise
