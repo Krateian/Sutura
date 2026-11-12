@@ -389,7 +389,7 @@ def _markdown_modes(results, mode, surface_budget='sweep'):
              'i2o all b/c | Buried n b/c | Buried mm2 b/c | Vol err b/c | '
              'Parts b/c | Recall ext b/c | Recall all b/c | Fill b/c | '
              'Removed b/c | Surface | Verdict | Changed |',
-             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for r in results:
         b = r.get('baseline') or {}
         c = r.get('candidate') or {}
