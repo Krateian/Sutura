@@ -17,6 +17,9 @@ trimesh==5.2.0
 # that sutura/ imports no pymeshlab.  On Linux it installs from PyPI; on Apple
 # Silicon there is no PyPI wheel, so macOS developers must install it from
 # conda-forge (conda install -c conda-forge pymeshlab).
+# Still imported as an optional oracle by scripts/benchmark_repair_corpus.py
+# and scripts/experiments/alpha_wrap_prototype.py; it must not be re-added to
+# the runtime dependency set.
 pymeshlab==2025.7.post1
 
 # pytest is NOT a Sutura runtime dependency.  The CI test job runs every suite
