@@ -138,3 +138,4 @@ flagged here for a later, separate review. This pass only marks them.
 | `AGENTS.md` 39-40 -> `packaging-updater-selfrepair.md` | REVIEW | `venv311` / PyMeshLab-era install narrative must be checked against the current native core; no deletion here. |
 | `AGENTS.md` 211-218 -> `pipeline-stages.md` | DUP | Measure-helper differences overlap `docs/agents/diagnosis-classifier.md` and `docs/agents/verification-bench.md`; keep one canonical explanation later. |
 | `tests/test_updater.py:116` | CODE-COMMENT | Mentions AGENTS.md in a code comment; this docs-only task does not edit code. |
+| `sutura/sutura_engine/pipeline/utils.py:159` (`_internal_wall_count`, >=1.5 both sides) vs `rust/sutura-geom/src/shell.rs` `buried_face_mask` (>=1-delta, delta 0.1) | DISTINCT | The Tamponade gate counts a stricter overlap; the metric mask is report-only. Do not merge. |

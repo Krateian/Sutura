@@ -197,7 +197,9 @@ klasik güven skorundan bağımsız, ayrı bir skorlama sistemi
   kararları verildikten sonra ölçülür ve hangi adayın benimseneceğini asla
   değiştirmez. Eksik faktörler atlanır (ağırlıkları diğerlerine dağıtılır);
   böylece keskin kenar terimi uygulanmayan pürüzsüz modellerde de skor anlamlı
-  kalır.
+  kalır. Girdinin kendi örtüşen parçalarının iç duvarları bu hatırlamadan
+  çıkarılır (görünür yüzey değildir) ve `interior_walls_removed_faces` /
+  `interior_walls_removed_area_mm2` olarak ayrıca raporlanır.
 - `repair_status` / `repair_status_code` — Sağlık/Risk tier kombinasyonundan
   bir config lookup tablosuyla türetilen iki-eksenli etiket: `safe`
   ("Kontrol için güvenli"), `review` ("İnceleme önerilir"), `caution`
@@ -230,10 +232,20 @@ klasik güven skorundan bağımsız, ayrı bir skorlama sistemi
   nesne dosya başlığını belirler. 0,1 mm ayrıntı toleransı sınır kutusu
   köşegeninin `%0,2`'siyle sınırlanır; minyatürler ve metre ölçekli dışa
   aktarımlar doğru ölçeklenir.
+- `interior_walls_removed_faces` / `interior_walls_removed_area_mm2` — girdinin
+  kendi katı birleşiminde iç duvar kalan ve çıktıda tolerans içinde bulunmayan
+  yüzler; `interior_walls_buried_faces` / `interior_walls_buried_area_mm2`
+  çıkarılmadan önceki girdi-tek başına sayımdır,
+  `interior_walls_debris_faces` / `interior_walls_cavity_faces` tanılama
+  amaçlıdır. Bu yüzler `feature_recall` paydasından çıkarılır, böylece kayıp
+  görünür yüzey gibi okunmaz; tüm girdi değeri
+  `repair_fidelity_metrics.feature_recall_all` olarak korunur.
 
 `--human` bu tek hükmü kendi satırında, ardından sayıları
 (`Health: X/100   Risk: Y/100   Fidelity: Z/100`) yazdırır; sayılar artık hükmü
-tekrarlamaz ve `repair_status` bir sonraki ayrıntı satırında kalır.
+tekrarlamaz ve `repair_status` bir sonraki ayrıntı satırında kalır. İç
+duvarlar kaldırıldıysa ayrıca `Kaldırılan iç duvarlar: N yüz (A mm²)`
+satırını yazdırır.
 `--no-fidelity` (veya Options onay kutusu) ölçümü atlar; yalnızca raporlama
 amaçlıdır, kaydedilen mesh'i asla değiştirmez. Skorlama fail-silent'tir:
 eksik/geçersiz metrik atlanır (ağırlığı diğerlerine dağıtılır) ve skorlama
@@ -253,7 +265,7 @@ Her onarım raporu, tanılama güven skoruyla birlikte üç bağımsız 0–100 
 |---|---|---|---|
 | **Sağlık** | 0 – 100 | **YÜKSEK olması iyidir** (100 idealdir) | **Topolojik ve yapısal bütünlük.** 100 puan, sıfır delik, sıfır non-manifold kenar, sıfır bozuk yüz, sıfır artık kendini-kesişim ve doğru yüz yönlenmesine sahip, tamamen kapalı, su geçirmez 2-manifold bir katıyı gösterir. Düşük puanlar kalan kusurları ifade eder. |
 | **Risk** | 0 – 100 | **DÜŞÜK olması iyidir** (0 idealdir) | **Ağdaki değişiklik derecesi.** Onarımın orijinal geometriyi ne kadar değiştirdiğini ölçer (yüz/vertex farkları, hacim kaymaları, kabuk budama veya katı remesh). Düşük risk puanı (0–25) modelin nazikçe yamandığını; yüksek risk (> 60) agresif bir yeniden inşa uygulandığını gösterir. |
-| **Sadakat** | 0 – 100 | **YÜKSEK olması iyidir** (100 idealdir) | **Sağlıklı bölgelerde şeklin korunma doğruluğu.** Girdiye doğru tek yönlü Hausdorff sapmasını, keskin kenar hatırlamasını (dihedral açılar) ve sağlıklı dolgu/kaldırma oranını ölçer. **Yalnızca raporlama amaçlıdır:** aday yöntemlerin benimsenmesini engellemez. Büyük hasarlı bölümler sıfırdan inşa edildiyse başlıkta `tahmini alanlar - kontrol edin` uyarısı verilir. |
+| **Sadakat** | 0 – 100 | **YÜKSEK olması iyidir** (100 idealdir) | **Sağlıklı bölgelerde şeklin korunma doğruluğu.** Girdiye doğru tek yönlü Hausdorff sapmasını, keskin kenar hatırlamasını (dihedral açılar) ve sağlıklı dolgu/kaldırma oranını ölçer. **Yalnızca raporlama amaçlıdır:** aday yöntemlerin benimsenmesini engellemez. Büyük hasarlı bölümler sıfırdan inşa edildiyse başlıkta `tahmini alanlar - kontrol edin` uyarısı verilir. Örtüşen girdi parçalarının iç duvarları keskin kenar hatırlamasından çıkarılır ve ayrıca raporlanır. |
 | **Güvenilirlik** | 0 – 100 / Yüksek-Orta-Düşük | *Tanılama kesinliği* | **Triage sınıflandırıcı güveni.** Sutura'nın girdi ağındaki kusur kategorisini teşhis ederken ve ilk onarım stratejisini seçerken ne kadar emin olduğunu gösterir. Çıktının geometrik kalitesinden bağımsız bir girdi analiz kesinliğidir. |
 
 > [!TIP]

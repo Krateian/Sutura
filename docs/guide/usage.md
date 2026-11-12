@@ -196,7 +196,10 @@ configurable via `sutura/repair_score_config.json`):
   once on the final result, after every candidate decision, and never changes
   which candidate is adopted. Missing factors are skipped (their weight is
   redistributed), so the score stays meaningful on smooth models where the
-  sharp-edge term does not apply.
+  sharp-edge term does not apply. Interior walls of the input's own overlapping
+  parts are excluded from that recall (they are not visible surface) and
+  reported separately as `interior_walls_removed_faces` /
+  `interior_walls_removed_area_mm2`.
 - `repair_status` / `repair_status_code` — a two-axis label derived from the
   Health/Risk tier combination via a config lookup table: `safe` ("Safe to
   inspect"), `review` ("Review recommended"), `caution` ("Caution advised"),
@@ -230,10 +233,21 @@ configurable via `sutura/repair_score_config.json`):
   file headline. The 0.1 mm detail tolerance is capped by
   `0.2 %` of the bounding-box diagonal, so miniatures and metre-scale exports
   scale correctly.
+- `interior_walls_removed_faces` / `interior_walls_removed_area_mm2` — input
+  faces that were interior walls of the input's own solid union (overlapping
+  parts) and are not within tolerance of the output;
+  `interior_walls_buried_faces` / `interior_walls_buried_area_mm2` is the
+  input-alone count before removal, and `interior_walls_debris_faces` /
+  `interior_walls_cavity_faces` are diagnostics. These faces are excluded from
+  the `feature_recall` denominator, so they never read as lost visible
+  surface; the all-input value stays in
+  `repair_fidelity_metrics.feature_recall_all`.
 
 `--human` prints that one verdict on its own line, then
 `Health: X/100   Risk: Y/100   Fidelity: Z/100` as the numbers (the numbers no
-longer repeat the verdict); `repair_status` stays on the following details line.
+longer repeat the verdict); `repair_status` stays on the following details
+line. When interior walls were removed, it also prints `Interior walls
+removed: N faces (A mm²)`.
 `--no-fidelity` (or the Options checkbox) skips the measurement; it is
 reporting-only, so it never changes the saved mesh. Scoring is fail-silent: any
 missing/invalid metric is skipped (its weight redistributed), and scoring never
@@ -253,7 +267,7 @@ Every repair report presents three independent 0–100 shape and mesh indicators
 |---|---|---|---|
 | **Health** | 0 – 100 | **HIGHER is better** (100 is ideal) | **Topological & structural integrity.** 100 indicates a fully closed, watertight 2-manifold solid with zero holes, zero non-manifold edges, zero bad faces, zero residual self-intersections, and correct face winding orientation. Lower scores indicate remaining defects. |
 | **Risk** | 0 – 100 | **LOWER is better** (0 is ideal) | **Degree of mesh alteration.** Measures how much the repair altered the original geometry (face/vertex count deltas, volume shifts, shell pruning, or solid remeshing). A low risk score (0–25) means the part was gently patched; high risk (> 60) signals aggressive reconstruction. |
-| **Fidelity** | 0 – 100 | **HIGHER is better** (100 is ideal) | **Shape preservation on healthy regions.** Measures one-sided Hausdorff deviation, sharp feature-edge recall (dihedral angles), and healthy fill/removal. **Report-only:** does not block candidate adoption. If large damaged sections were reconstructed from scratch, the headline warns `guessed area(s) - check`. |
+| **Fidelity** | 0 – 100 | **HIGHER is better** (100 is ideal) | **Shape preservation on healthy regions.** Measures one-sided Hausdorff deviation, sharp feature-edge recall (dihedral angles), and healthy fill/removal. **Report-only:** does not block candidate adoption. If large damaged sections were reconstructed from scratch, the headline warns `guessed area(s) - check`. Interior walls of overlapping input parts are excluded from feature-edge recall and reported separately. |
 | **Confidence** | 0 – 100 / High-Med-Low | *Diagnostic certainty* | **Triage classifier confidence.** Indicates how confident Sutura was when diagnosing the input mesh defect category and selecting the initial repair strategy. It reflects input analysis certainty, independent of the geometric quality of the output. |
 
 > [!TIP]

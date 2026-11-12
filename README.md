@@ -59,7 +59,8 @@ a file-manager right-click or an OrcaSlicer plugin.
   otherwise it is discarded (see [what "no worse" covers](docs/guide/how-it-works.md#what-no-worse-covers)).
 - **Shape transparency.** If severe damage forces an aggressive solid rebuild
   (such as fTetWild), the report-only **Fidelity score** alerts you exactly
-  where and how much the surface moved.
+  where and how much the surface moved. Interior walls of overlapping input
+  parts are reported separately and excluded from the visible-surface recall.
 - **One plain verdict.** A single headline verdict tells you if the model is
   ready to print, has caveats, or had its shape altered, with full health,
   risk, and fidelity scores behind **Details**.

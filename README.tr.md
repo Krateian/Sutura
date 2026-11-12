@@ -60,7 +60,8 @@ tıkla ya da bir OrcaSlicer eklentisiyle.
   aşılmadığında benimsenir; aksi halde reddedilir (bkz. ["Daha kötü yapmama" ilkesi neleri kapsar](docs/guide/tr/how-it-works.md#daha-kötü-yapmama-no-worse-ilkesi-neleri-kapsar)).
 - **Şekil şeffaflığı.** Ağır hasar modeli yeniden inşa etmeye zorlarsa
   (örneğin fTetWild ile), raporlama amaçlı **Sadakat puanı** yüzeyin nerede ve
-  ne kadar değiştiğini açıkça gösterir.
+  ne kadar değiştiğini açıkça gösterir. Örtüşen girdi parçalarının iç duvarları
+  ayrıca raporlanır ve görünür yüzey hatırlamasından çıkarılır.
 - **Tek ve net hüküm.** Başlık hükmü modelin baskıya hazır olup olmadığını,
   notlar içerip içermediğini veya şeklinin değişip değişmediğini tek satırda
   söyler; Sağlık, Risk ve Sadakat puanları **Ayrıntılar** arkasında sunulur.

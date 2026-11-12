@@ -121,7 +121,11 @@ konumsal `baseline` mesh'i puanlama referansı olarak kalır. Kontrol; dökünt�
 şişme, gözle görülür biçimde kapanmış bir açıklık, kırışma veya belirgin puan
 düşüşü gibi görünür hasarları yakalar. Topoloji ve şekil kapılarının yerini
 almaz: çizim çözünürlüğünün altındaki bir kılcal delik veya topoloji
-değişikliğini görüntü değil, o kapılar yakalar.
+değişikliğini görüntü değil, o kapılar yakalar. Şekil doğrulayıcı, girdi-tek
+başına iç duvarları ayrıca raporlar: `two_sided_max_mm` / `i2o_max_mm` görünür
+yüzey değerleridir; `two_sided_max_all_mm` / `i2o_max_all_mm` ve
+`buried_faces_removed` / `buried_area_mm2` tüm-yüz ve kaldırılan-duvar
+ayrıntısını korur.
 
 Depo kökünden:
 

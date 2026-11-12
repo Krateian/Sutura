@@ -120,7 +120,10 @@ the positional `baseline` mesh remains the scoring reference. The check catches
 visible damage such as debris, swelling, a visibly closed opening, wrinkling or
 a clear score drop. It does not replace the topology and shape gates: a pinhole
 or a topology change below the rendered resolution is caught by those checks,
-not by the image.
+not by the image. The shape verifier reports input-alone interior walls
+separately: `two_sided_max_mm` / `i2o_max_mm` are the visible-surface values,
+while `two_sided_max_all_mm` / `i2o_max_all_mm` and `buried_faces_removed` /
+`buried_area_mm2` keep the all-face and removed-wall detail.
 
 From the repository root:
 

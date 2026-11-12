@@ -251,7 +251,7 @@ Sutura'nın "daha kötü yapmama" (no-worse) ilkesi, doğrudan **onarım süreci
 
 Ancak "daha kötü yapmama" ilkesi, ağır hasarlı modellerde her mikroskobik yüzey ayrıntısının veya boyutsal toleransın mutlak korunacağı anlamına gelen genel bir vaat değildir:
 1. **Topolojik benimseme korumaları (çalışma anında zorunlu):** Her ara adım kusurların artmamasını güvenceye almalı (aday kusur sayısı ≤ taban; birçok katmanda kesinlikle sıfır delik ve non-manifold kenar aranır) ve katı yüz, vertex, bileşen ve hacim sınırları içinde kalmalıdır. Aday korumalardan herhangi birine takılırsa derhal reddedilir.
-2. **Şekil Sadakati (yalnızca raporlama):** Ağır hasarlar Sutura'yı agresif katı yeniden inşasına zorlarsa (örneğin fTetWild, Splint veya büyük Tamponade tıkaçları), nihai ağ basılabilir ve manifold hale gelir ancak şekli kaymış olabilir. Yalnızca raporlama amaçlı **Sadakat puanı** bu sapmayı ölçer ve başlıkta `şekil değişti` ya da `tahmini alanlar - kontrol edin` uyarısı verir; alan sayısı yalnızca ölçüm mevcut olduğunda gösterilir, bu yüzden çalışamayan bir şekil kontrolü sayı olmadan görünür. Sadakat puanı bir benimseme engeli değildir.
+2. **Şekil Sadakati (yalnızca raporlama):** Ağır hasarlar Sutura'yı agresif katı yeniden inşasına zorlarsa (örneğin fTetWild, Splint veya büyük Tamponade tıkaçları), nihai ağ basılabilir ve manifold hale gelir ancak şekli kaymış olabilir. Yalnızca raporlama amaçlı **Sadakat puanı** bu sapmayı ölçer ve başlıkta `şekil değişti` ya da `tahmini alanlar - kontrol edin` uyarısı verir; alan sayısı yalnızca ölçüm mevcut olduğunda gösterilir, bu yüzden çalışamayan bir şekil kontrolü sayı olmadan görünür. Sadakat puanı bir benimseme engeli değildir. Girdinin kendi örtüşen parçalarının iç duvarları olan yüzler, kayıp görünür yüzey olarak sayılmaz; sayı ve alanları ayrıca kaldırılan iç duvarlar olarak raporlanır.
 
 ### Katman bazında benimseme korumaları
 
@@ -329,8 +329,8 @@ dört açık kurala ayırır:
 
 3. **Yalnızca raporlananlar veya henüz ölçülmeyenler:**
    - **Sadakat (Fidelity) puanı (yalnızca rapor):** Rapor artık yüzey sadakatini
-     ölçmektedir (sağlıklı yüzey mesafesi, keskin kenar korunumu, sağlıklı bölge
-     dolgusu/eksiltmesi ve düşük güvenli tahmin alanları); ancak bu skor **yalnızca
+     ölçmektedir (sağlıklı yüzey mesafesi, görünür yüzey keskin kenar korunumu, sağlıklı
+     bölge dolgusu/eksiltmesi ve düşük güvenli tahmin alanları); ancak bu skor **yalnızca
      raporlama amaçlıdır**, bir benimseme koruması DEĞİLDİR. Kullanıcı şeffaflığı
      için nihai mesh'i değerlendirir ve bir onarım adayının benimsenip reddedileceğini
      asla belirlemez. Bir şekil değişikliği artık yalnızca sağlıklı yüzey sınır

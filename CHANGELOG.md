@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Fidelity: interior walls are not lost surface.** `feature_recall` now
+  excludes input-alone interior walls of overlapping parts and reports
+  `interior_walls_removed_faces` / `interior_walls_removed_area_mm2` (with
+  `feature_recall_all` kept); `--human` and the GUI Details add the `Interior
+  walls removed` line. The verifier's `i2o` / `two_sided` are visible-surface
+  values with `*_all_*` kept. No repair output, adoption guard or saved tier
+  changes.
 - **Fidelity: is it still the same model?** Every repair report now carries a
   third 0–100 score beside Repair Health and Repair Risk. It compares the
   repaired surface with the parts of the input that were already healthy and
