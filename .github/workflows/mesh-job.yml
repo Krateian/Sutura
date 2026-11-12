@@ -14,6 +14,8 @@ permissions:
 jobs:
   preflight:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - name: Owner-only guard
         run: |
@@ -28,7 +30,6 @@ jobs:
           sets=[s for s in "${{ inputs.sets }}".split(',') if s]
           n=int("${{ inputs.shards }}" or 0) or {'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2}.get(sets[0],4)
           inc=[{'set':s,'shard':i,'shards':n} for s in sets for i in range(n)]
-          print('matrix='+json.dumps({'include':inc}))
           with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('matrix='+json.dumps({'include':inc})+'\n')
           PY
   build-base:

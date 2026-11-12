@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Aggregate shard JSON into the board; --check exits non-zero on worse/fail."""
 import glob, json, sys
-d=sys.argv[1]; check='--check' in sys.argv
+import argparse
+ap=argparse.ArgumentParser(); ap.add_argument('dir'); ap.add_argument('--check',action='store_true')
+a=ap.parse_args(); d=a.dir; check=a.check
 rows=[]
 for p in glob.glob(d+'/*.json'):
     rows.extend(json.load(open(p)).get('rows',[]))
