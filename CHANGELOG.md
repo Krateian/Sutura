@@ -97,8 +97,10 @@ All notable changes to this project are documented here.
 - **README highlights** now point precisely at the topology and shape adoption
   guards. The 115-mesh corpus benchmark and its citations are marked as
   historical (v0.2.8-era) results.
-- **Debris and hole-patching rules** document the native `< 8`-triangle debris
-  threshold and Flap boundary continuation in the limitations page.
+- **Debris and hole-patching rules** document the Stage-1 small-part cutoff
+  (`mincomponentsize`: 8 triangles by default, higher in the organic,
+  aggressive and extreme modes) and Flap boundary continuation in the
+  limitations page.
 - **The bug-report template** now asks for the diagnostics archive and the
   optional crash log instead of manual environment typing.
 

@@ -52,15 +52,17 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
   for very large holes where boundary curvature cannot reliably span the opening,
   the repair falls back to a plain flat triangulated patch, which closes the
   opening topologically but may require smoothing or solid remeshing.
-* **Tiny disconnected debris.** Disconnected components with strictly fewer
-  than 8 triangles are removed during Stage 1 cleanup
-  (`sutura.topology.remove_connected_components`). Separate, disconnected parts
-  with 8 or more triangles are kept intact. (To preserve sub-8-face details on
-  tiny models, the `--profile miniature` preset lowers this threshold to 1). The
-  report makes this visible: `stage1.removed_small_parts` (and the `--human`
-  report and GUI details) lists how many components the `<8`-face rule dropped,
-  their total face count and, for a capped list, each component's face count,
-  size and distance to the main body.
+* **Tiny disconnected debris.** Disconnected components with fewer triangles
+  than the Stage-1 `mincomponentsize` cutoff are removed during Stage 1 cleanup
+  (`sutura.topology.remove_connected_components`); separate, disconnected parts
+  at or above the cutoff are kept intact. The cutoff is 8 triangles by default.
+  Deviations are brief: `--mode aggressive` raises it to 12 and `--mode extreme`
+  to 20 (low/medium stay at 8); the `organic` Stage-1 profile and the detected
+  organic type raise it to 12, the `scan` profile lowers it to 4, and
+  `--profile miniature` lowers it to 1. The report makes this visible:
+  `stage1.removed_small_parts` (and the `--human` report and GUI details) lists
+  how many components the cutoff dropped, their total face count and, for a
+  capped list, each component's face count, size and distance from the main body.
 * **Small separate parts are listed, never removed.**
   `stage1.possible_debris` lists small separate parts kept in the repaired mesh
   (a separate, closed, non-degenerate part under 0.5% of the largest part's

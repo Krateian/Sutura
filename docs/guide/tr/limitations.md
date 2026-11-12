@@ -54,15 +54,17 @@ güvenilir şekilde algılayabilir.
   Ancak sınır eğriliğinin açıklığı güvenilir biçimde bağlayamadığı çok büyük
   deliklerde onarım, açıklığı topolojik olarak kapatan ancak yumuşatma veya katı
   yeniden örme gerektirebilen düz üçgensel bir yamaya geri döner.
-* **Küçük bağlantısız döküntüler.** Kesin olarak 8 üçgenden az olan bağlantısız
-  bileşenler Aşama 1 temizliğinde kaldırılır
-  (`sutura.topology.remove_connected_components`). 8 veya daha fazla üçgene sahip
-  ayrık parçalar korunur. (Minyatür modellerdeki 8 yüzün altındaki ayrıntıları
-  korumak için `--profile miniature` preseti bu eşiği 1'e indirir). Rapor bunu
-  görünür kılar: `stage1.removed_small_parts` (ve `--human` raporu ile GUI
-  ayrıntıları), `<8`-yüz kuralının kaç bileşen kaldırdığını, toplam yüz sayısını
-  ve sınırlı bir liste için her bileşenin yüz sayısını, boyutunu ve ana gövdeye
-  uzaklığını verir.
+* **Küçük bağlantısız döküntüler.** Aşama 1 `mincomponentsize` eşiğinden daha
+  az üçgene sahip bağlantısız bileşenler Aşama 1 temizliğinde kaldırılır
+  (`sutura.topology.remove_connected_components`); eşiğe eşit veya daha fazla
+  üçgeni olan ayrık parçalar korunur. Eşik varsayılan olarak 8 üçgendir.
+  Sapmalar kısaca: `--mode aggressive` eşiği 12'ye, `--mode extreme` 20'ye
+  çıkarır (low/medium 8'de kalır); `organic` Aşama 1 profili ve algılanan
+  organic türü eşiği 12'ye çıkarır, `scan` profili 4'e, `--profile miniature`
+  1'e indirir. Rapor bunu görünür kılar: `stage1.removed_small_parts` (ve
+  `--human` raporu ile GUI ayrıntıları) eşiğin kaç bileşen kaldırdığını, toplam
+  yüz sayısını ve sınırlı bir liste için her bileşenin yüz sayısını, boyutunu ve
+  ana gövdeye uzaklığını verir.
 * **Küçük ayrı parçalar listelenir, asla kaldırılmaz.**
   `stage1.possible_debris`, onarılan mesh'te korunan küçük ayrı parçaları (ayrı,
   kapalı, dejenere olmayan ve en büyük parçanın hacminin %0,5'inden küçük) yüz
