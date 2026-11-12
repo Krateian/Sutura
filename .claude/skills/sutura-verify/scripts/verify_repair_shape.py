@@ -245,10 +245,70 @@ def submesh(verts, tris, face_idx):
 # --------------------------------------------------------------------------- #
 # distance / leak
 # --------------------------------------------------------------------------- #
-def two_sided_distance(vi, ti, vo, to):
-    """Symmetric vertex-to-surface distance (mm) between input and output."""
+def _face_areas(vi, ti):
+    tri = np.asarray(vi, dtype=np.float64)[np.asarray(ti, dtype=np.int64)]
+    return 0.5 * np.linalg.norm(
+        np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+
+
+def _buried_input_mask(vi, ti, defect_face_mask=None, delta=0.1):
+    """Input-alone interior-wall mask from ``sutura_geom.buried_face_mask``.
+
+    Returns ``(mask, info, areas)``.  The mask is already zero-area-free (the
+    kernel skips those faces); the defect mask is applied here because it lives
+    in the Python pipeline, not the kernel.  Debris and cavity walls are never
+    in the mask.
+    """
+    ti = np.asarray(ti, dtype=np.int64)
+    areas = _face_areas(vi, ti)
+    info = {'buried_mask_available': False,
+            'buried_faces_input': 0, 'buried_area_input_mm2': 0.0,
+            'buried_faces_removed': 0, 'buried_area_mm2': 0.0,
+            'buried_debris_faces': 0, 'buried_degenerate_faces': 0,
+            'buried_epsilon_mm': 0.0}
+    mask = np.zeros(len(ti), dtype=bool)
+    try:
+        import sutura_geom
+        if not hasattr(sutura_geom, 'buried_face_mask'):
+            info['buried_note'] = 'sutura_geom lacks buried_face_mask'
+            return mask, info, areas
+        m, d = sutura_geom.buried_face_mask(
+            np.asarray(vi, dtype=np.float64), ti.astype(np.int32), float(delta))
+        mask = np.asarray(m, dtype=bool)
+        info.update({
+            'buried_mask_available': True,
+            'buried_debris_faces': int(d.get('debris_count', 0)),
+            'buried_degenerate_faces': int(d.get('degenerate_count', 0)),
+            'buried_epsilon_mm': round(float(d.get('epsilon_mm', 0.0)), 6),
+        })
+    except Exception as e:  # noqa: BLE001
+        info['buried_note'] = 'buried_face_mask failed: %s' % e
+        return mask, info, areas
+    if defect_face_mask is not None:
+        mask &= ~np.asarray(defect_face_mask, dtype=bool)
+    info['buried_faces_input'] = int(np.count_nonzero(mask))
+    info['buried_area_input_mm2'] = round(float(areas[mask].sum()), 6)
+    return mask, info, areas
+
+
+def two_sided_distance(vi, ti, vo, to, tol=None, defect_face_mask=None):
+    """Symmetric vertex-to-surface distance (mm) between input and output.
+
+    ``i2o_*`` and ``two_sided_*`` are the **visible** values: internal walls of
+    the input's own solid union (Case B, input alone) are excluded and reported
+    separately.  ``i2o_all_*`` / ``two_sided_all_*`` keep the old all-face
+    values.  A visible input face is scored at its worst vertex, so partially
+    lost visible skin is never hidden.
+    """
     empty = {'o2i_max': 0.0, 'o2i_p95': 0.0, 'i2o_max': 0.0,
-             'i2o_p95': 0.0, 'two_sided_max': 0.0, 'two_sided_p95': 0.0}
+             'i2o_p95': 0.0, 'i2o_all_max': 0.0, 'i2o_all_p95': 0.0,
+             'two_sided_max': 0.0, 'two_sided_p95': 0.0,
+             'two_sided_all_max': 0.0, 'two_sided_all_p95': 0.0,
+             'buried_mask_available': False, 'buried_faces_input': 0,
+             'buried_area_input_mm2': 0.0, 'buried_faces_removed': 0,
+             'buried_area_mm2': 0.0, 'buried_debris_faces': 0,
+             'buried_degenerate_faces': 0, 'buried_epsilon_mm': 0.0,
+             'buried_mask': np.zeros(0, dtype=bool)}
     if len(ti) == 0 or len(to) == 0 or len(vi) == 0 or len(vo) == 0:
         return empty
     try:
@@ -259,17 +319,63 @@ def two_sided_distance(vi, ti, vo, to):
         return empty
     d_o2i = np.asarray(d_o2i, dtype=np.float64)
     d_i2o = np.asarray(d_i2o, dtype=np.float64)
+    ti = np.asarray(ti, dtype=np.int64)
+
+    if tol is None:
+        diag = float(np.linalg.norm(np.asarray(vi).max(0)
+                                    - np.asarray(vi).min(0)))
+        tol = min(max(diag / 10000.0, 0.0125), 0.05)
+    buried, info, areas = _buried_input_mask(
+        vi, ti, defect_face_mask=defect_face_mask)
+    nonzero = areas > 1e-12
+    if info['buried_faces_input']:
+        face_d = d_i2o[ti[buried]].max(axis=1)
+        removed = face_d > tol
+        info['buried_faces_removed'] = int(np.count_nonzero(removed))
+        info['buried_area_mm2'] = round(float(areas[buried][removed].sum()), 6)
+    all_i2o_max = float(np.max(d_i2o)) if len(d_i2o) else 0.0
+    all_i2o_p95 = (float(np.percentile(d_i2o, 95)) if len(d_i2o) else 0.0)
+    # With no interior walls (or no kernel mask) the visible values are
+    # byte-for-byte the old all-face values; the split only changes meshes
+    # that actually have buried faces.
+    if not info['buried_mask_available'] or not info['buried_faces_input']:
+        i2o_vis_max = all_i2o_max
+        i2o_vis_p95 = all_i2o_p95
+        vis_pool = d_i2o
+    else:
+        visible = nonzero & ~buried
+        if visible.any():
+            vis_d = d_i2o[ti[visible]].max(axis=1)
+            i2o_vis_max = float(np.max(vis_d))
+            i2o_vis_p95 = float(np.percentile(vis_d, 95))
+            vis_pool = d_i2o[ti[visible]].ravel()
+        else:
+            i2o_vis_max = 0.0
+            i2o_vis_p95 = 0.0
+            vis_pool = np.zeros(0, dtype=np.float64)
     all_d = np.concatenate([d_o2i, d_i2o]) if (len(d_o2i) and len(d_i2o)) \
         else (d_o2i if len(d_o2i) else d_i2o)
-    return {
-        'o2i_max': round(float(np.max(d_o2i)), 4) if len(d_o2i) else 0.0,
-        'o2i_p95': round(float(np.percentile(d_o2i, 95)), 4) if len(d_o2i) else 0.0,
-        'i2o_max': round(float(np.max(d_i2o)), 4) if len(d_i2o) else 0.0,
-        'i2o_p95': round(float(np.percentile(d_i2o, 95)), 4) if len(d_i2o) else 0.0,
-        'two_sided_max': round(float(max(np.max(d_o2i), np.max(d_i2o))), 4)
-        if len(d_o2i) and len(d_i2o) else 0.0,
-        'two_sided_p95': round(float(np.percentile(all_d, 95)), 4) if len(all_d) else 0.0,
+    two_pool = np.concatenate([d_o2i, vis_pool]) if (len(d_o2i) and len(vis_pool)) \
+        else (d_o2i if len(d_o2i) else vis_pool)
+    o2i_max = float(np.max(d_o2i)) if len(d_o2i) else 0.0
+    o2i_p95 = float(np.percentile(d_o2i, 95)) if len(d_o2i) else 0.0
+    result = {
+        'o2i_max': round(o2i_max, 4),
+        'o2i_p95': round(o2i_p95, 4),
+        'i2o_max': round(i2o_vis_max, 4),
+        'i2o_p95': round(i2o_vis_p95, 4),
+        'i2o_all_max': round(all_i2o_max, 4),
+        'i2o_all_p95': round(all_i2o_p95, 4),
+        'two_sided_max': round(max(o2i_max, i2o_vis_max), 4),
+        'two_sided_p95': (round(float(np.percentile(two_pool, 95)), 4)
+                          if len(two_pool) else 0.0),
+        'two_sided_all_max': round(max(o2i_max, all_i2o_max), 4),
+        'two_sided_all_p95': (round(float(np.percentile(all_d, 95)), 4)
+                              if len(all_d) else 0.0),
+        'buried_mask': buried,
     }
+    result.update(info)
+    return result
 
 
 def leak_metric(in_raw, out_raw, vi, ti, tol):
@@ -404,9 +510,25 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
     vol_in = gwn_union_volume(vi, ti)
     vol_out = gwn_union_volume(vo, to)
     vol_err = abs(vol_out - vol_in) / max(abs(vol_in), 1e-12)
-    dist = two_sided_distance(vi, ti, vo, to)
+    try:
+        import surface_metrics as _sm
+        defect_mask = _sm.defect_face_mask(ti, in_rep)
+    except Exception:  # noqa: BLE001
+        defect_mask = None
+    dist = two_sided_distance(vi, ti, vo, to, tol=tol,
+                              defect_face_mask=defect_mask)
     leak = leak_metric(in_raw, out_raw, vi, ti, tol)
     orca = orca_info(out_path)
+
+    buried_mask = dist.pop('buried_mask', None)
+    if buried_mask is None or len(buried_mask) != len(in_keys):
+        buried_mask = np.zeros(len(in_keys), dtype=bool)
+    in_areas = _face_areas(vi, ti)
+    visible = (in_areas > 1e-12) & ~buried_mask
+    present = np.array([k in out_set for k in in_keys], dtype=bool)
+    healthy_visible = int(np.count_nonzero(present & visible))
+    healthy_visible_pct = round(
+        100.0 * healthy_visible / max(int(np.count_nonzero(visible)), 1), 3)
 
     result = {
         'tag': tag,
@@ -418,6 +540,8 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
         'output_faces': len(out_raw),
         'healthy_faces': healthy,
         'healthy_faces_pct': round(100.0 * healthy / max(len(in_raw), 1), 3),
+        'healthy_faces_visible': healthy_visible,
+        'healthy_faces_visible_pct': healthy_visible_pct,
         'added_faces': len(added),
         'reload_holes': len(rep['holes']),
         'reload_non_manifold_edges': len(rep['non_manifold']),
@@ -428,8 +552,22 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
         'orca_available': orca['available'],
         'two_sided_max_mm': dist['two_sided_max'],
         'two_sided_p95_mm': dist['two_sided_p95'],
+        'two_sided_max_all_mm': dist['two_sided_all_max'],
+        'two_sided_p95_all_mm': dist['two_sided_all_p95'],
         'o2i_max_mm': dist['o2i_max'],
+        'o2i_p95_mm': dist['o2i_p95'],
         'i2o_max_mm': dist['i2o_max'],
+        'i2o_p95_mm': dist['i2o_p95'],
+        'i2o_max_all_mm': dist['i2o_all_max'],
+        'i2o_p95_all_mm': dist['i2o_all_p95'],
+        'buried_mask_available': dist['buried_mask_available'],
+        'buried_faces_input': dist['buried_faces_input'],
+        'buried_area_input_mm2': dist['buried_area_input_mm2'],
+        'buried_faces_removed': dist['buried_faces_removed'],
+        'buried_area_mm2': dist['buried_area_mm2'],
+        'buried_debris_faces': dist['buried_debris_faces'],
+        'buried_degenerate_faces': dist['buried_degenerate_faces'],
+        'buried_epsilon_mm': dist['buried_epsilon_mm'],
         'leak_max_mm': leak['leak_max'],
         'leak_count': leak['leak_count'],
         'si_output': si_out,

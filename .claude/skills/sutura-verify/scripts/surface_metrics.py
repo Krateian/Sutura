@@ -10,10 +10,11 @@ row.
   still represents with a matching dihedral.  Input edges are "healthy"
   (both incident faces outside the input defect mask); the output is the
   candidate, so every sharp output edge is a match candidate.
-  ``feature_recall_exterior`` is the primary value: it excludes input edges
-  whose incident faces have a vertex buried inside the output solid (a
-  3-ray parity vote plus a surface-distance guard).  ``feature_recall``
-  remains the all-input secondary value for backward comparison.
+  ``feature_recall_exterior`` is the primary value.  When the input has
+  Case-B interior walls (an overlap of its own parts, classified on the input
+  alone by ``sutura_geom.buried_face_mask``) it excludes their edges; the old
+  output-inside-parity exterior is kept as the ``feature_exterior_output_*``
+  diagnostic.  ``feature_recall`` remains the all-input secondary value.
 * ``healthy_fill`` - volume the output adds outside the input on healthy
   skin, and volume it removes.  A surface-normal lattice (area samples x
   offset layers) is used instead of a full 3-D band grid: the latter cannot
@@ -130,6 +131,53 @@ def _face_normals(v, t):
     n = np.zeros_like(cr)
     n[ok] = cr[ok] / ln[ok, None]
     return n, ok
+
+
+def input_buried_face_mask(vi, ti, defect_face_mask=None, delta=0.1):
+    """Input-alone Case-B interior-wall mask, via ``sutura_geom.buried_face_mask``.
+
+    Returns ``(mask, info)``.  The kernel already excludes zero-area faces and
+    floating debris (Case C); the defect mask is applied here because it lives
+    in the Python pipeline.  Cavity walls are not marked.  ``info`` carries the
+    counts/areas plus availability so a report can say why the split is absent.
+    """
+    ti = np.asarray(ti, dtype=np.int64)
+    mask = np.zeros(len(ti), dtype=bool)
+    info = {
+        'buried_input_available': False,
+        'buried_input_faces': 0,
+        'buried_input_area_mm2': 0.0,
+        'buried_input_debris_faces': 0,
+        'buried_input_degenerate_faces': 0,
+        'buried_input_epsilon_mm': 0.0,
+        'buried_input_note': None,
+    }
+    try:
+        import sutura_geom
+        if not hasattr(sutura_geom, 'buried_face_mask'):
+            info['buried_input_note'] = 'sutura_geom lacks buried_face_mask'
+            return mask, info
+        m, d = sutura_geom.buried_face_mask(
+            np.asarray(vi, dtype=np.float64), ti.astype(np.int32),
+            float(delta))
+        mask = np.asarray(m, dtype=bool)
+        info.update({
+            'buried_input_available': True,
+            'buried_input_debris_faces': int(d.get('debris_count', 0)),
+            'buried_input_degenerate_faces': int(d.get('degenerate_count', 0)),
+            'buried_input_epsilon_mm': round(float(d.get('epsilon_mm', 0.0)), 6),
+        })
+    except Exception as e:  # noqa: BLE001
+        info['buried_input_note'] = 'buried_face_mask failed: %s' % e
+        return mask, info
+    if defect_face_mask is not None:
+        mask &= ~np.asarray(defect_face_mask, dtype=bool)
+    tri = np.asarray(vi, dtype=np.float64)[ti]
+    areas = 0.5 * np.linalg.norm(
+        np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+    info['buried_input_faces'] = int(np.count_nonzero(mask))
+    info['buried_input_area_mm2'] = round(float(areas[mask].sum()), 6)
+    return mask, info
 
 
 def _sharp_edges(v, t, face_mask=None, angle_deg=SHARP_ANGLE_DEG,
@@ -273,12 +321,18 @@ def feature_recall(vi, ti, vo, to, defect_face_mask=None, tol=None,
                    max_per_edge=RECALL_SAMPLES_PER_EDGE,
                    angle_deg=SHARP_ANGLE_DEG,
                    match_deg=DIHEDRAL_MATCH_DEG,
-                   strict_deg=STRICT_DIHEDRAL_DEG, exterior=None):
+                   strict_deg=STRICT_DIHEDRAL_DEG, exterior=None,
+                   buried_mask=None):
     """Fraction of healthy input sharp-edge length the output represents.
 
     A sample is kept when the nearest output sharp-edge sample is within
     ``tol`` AND the two dihedral angles differ by less than ``match_deg``.
     Identity gives 1.0 exactly.
+
+    When ``buried_mask`` (input-alone Case-B interior walls) marks any face,
+    the primary exterior set becomes the visible input edges; the output-based
+    exterior (vertex inside the output solid) is kept as a diagnostic.  With no
+    buried faces the old output-based behaviour is unchanged.
     """
     vi = np.asarray(vi, dtype=np.float64)
     ti = np.asarray(ti, dtype=np.int64)
@@ -291,12 +345,32 @@ def feature_recall(vi, ti, vo, to, defect_face_mask=None, tol=None,
     in_e, in_d, in_faces = _sharp_edges(vi, ti, face_mask=defect_face_mask,
                                         angle_deg=angle_deg, with_faces=True)
     out_e, out_d = _sharp_edges(vo, to, face_mask=None, angle_deg=angle_deg)
-    ext_mask = None
+    ext_mask_output = None
     if ext_avail and len(in_e):
         f0 = in_faces[:, 0]
         f1 = in_faces[:, 1]
-        ext_mask = ~((inside_v[ti[f0]].any(axis=1))
-                     | (inside_v[ti[f1]].any(axis=1)))
+        ext_mask_output = ~((inside_v[ti[f0]].any(axis=1))
+                            | (inside_v[ti[f1]].any(axis=1)))
+    ext_mask_input = None
+    buried_active = False
+    if buried_mask is not None:
+        bm = np.asarray(buried_mask, dtype=bool)
+        if len(bm) == len(ti):
+            buried_active = bool(bm.any())
+            if len(in_e):
+                f0 = in_faces[:, 0]
+                f1 = in_faces[:, 1]
+                ext_mask_input = ~(bm[f0] | bm[f1])
+    use_input = buried_active and ext_mask_input is not None
+    ext_mask = ext_mask_input if use_input else ext_mask_output
+    ext_available = bool(ext_avail or use_input)
+    ext_note_final = ext_note
+    if use_input:
+        ext_note_final = ('input-alone buried mask'
+                          if ext_avail else
+                          'input-alone buried mask; output exterior unavailable')
+    source = ('input_buried_mask' if use_input else
+              ('output' if ext_mask_output is not None else 'none'))
     q, qd, qw, ext_sample = _sample_sharp(
         vi, in_e, in_d, tol, max_per_edge, edge_flag=ext_mask,
         return_flag=True)
@@ -317,8 +391,9 @@ def feature_recall(vi, ti, vo, to, defect_face_mask=None, tol=None,
         'feature_recall_10deg': 1.0 if len(q) == 0 else 0.0,
         'feature_dihedral_delta_p50_deg': 0.0,
         'feature_dihedral_delta_p95_deg': 0.0,
-        'feature_exterior_available': bool(ext_avail),
-        'feature_exterior_note': ext_note,
+        'feature_exterior_available': ext_available,
+        'feature_exterior_note': ext_note_final,
+        'feature_exterior_source': source,
         'feature_exterior_sharp_edges': (
             int(ext_mask.sum()) if ext_mask is not None else None),
         'feature_buried_sharp_edges': (
@@ -328,16 +403,22 @@ def feature_recall(vi, ti, vo, to, defect_face_mask=None, tol=None,
         'feature_buried_length_mm': 0.0,
         'feature_buried_fraction': 0.0,
         'feature_recall_exterior': (
-            1.0 if (ext_avail and (ext_mask is None or not ext_mask.any()))
-            else (None if not ext_avail else 0.0)),
+            1.0 if (ext_available and (ext_mask is None or not ext_mask.any()))
+            else (None if not ext_available else 0.0)),
         'feature_recall_exterior_tol_half': (
-            1.0 if (ext_avail and (ext_mask is None or not ext_mask.any()))
-            else (None if not ext_avail else 0.0)),
+            1.0 if (ext_available and (ext_mask is None or not ext_mask.any()))
+            else (None if not ext_available else 0.0)),
         'feature_recall_exterior_10deg': (
-            1.0 if (ext_avail and (ext_mask is None or not ext_mask.any()))
-            else (None if not ext_avail else 0.0)),
+            1.0 if (ext_available and (ext_mask is None or not ext_mask.any()))
+            else (None if not ext_available else 0.0)),
         'feature_exterior_dihedral_delta_p50_deg': 0.0,
         'feature_exterior_dihedral_delta_p95_deg': 0.0,
+        'feature_exterior_output_available': bool(ext_avail),
+        'feature_exterior_output_sharp_edges': (
+            int(ext_mask_output.sum()) if ext_mask_output is not None else None),
+        'feature_exterior_output_buried_sharp_edges': (
+            int((~ext_mask_output).sum()) if ext_mask_output is not None else None),
+        'feature_exterior_output_recall': None,
     }
     if len(q) == 0:
         return out
@@ -389,6 +470,18 @@ def feature_recall(vi, ti, vo, to, defect_face_mask=None, tol=None,
                     float(np.percentile(matched_ext, 50)), 3)
                 out['feature_exterior_dihedral_delta_p95_deg'] = round(
                     float(np.percentile(matched_ext, 95)), 3)
+    if use_input and ext_mask_output is not None:
+        _qo, _qdo, _qwo, ext_sample_out = _sample_sharp(
+            vi, in_e, in_d, tol, max_per_edge, edge_flag=ext_mask_output,
+            return_flag=True)
+        if ext_sample_out is not None and len(ext_sample_out) == len(qw):
+            out_total = float(qw[ext_sample_out].sum())
+            if out_total > 0.0:
+                out['feature_exterior_output_recall'] = float(
+                    qw[keep & ext_sample_out].sum() / out_total)
+            else:
+                out['feature_exterior_output_recall'] = (
+                    1.0 if not ext_sample_out.any() else 0.0)
     return out
 
 
@@ -541,13 +634,17 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
                  budget=DEFAULT_SURFACE_BUDGET,
                  area_samples=None, max_area_samples=MAX_AREA_SAMPLES,
                  layers=None, band_factor=BAND_FACTOR,
-                 band_fraction=BAND_FRACTION, exterior=None):
+                 band_fraction=BAND_FRACTION, exterior=None, buried_mask=None):
     """Added / removed volume on healthy skin.
 
     A surface-normal lattice is evaluated in a band around the input.  A
     base sample is healthy when its face is outside the defect mask and its
     position is outside every expanded defect influence box; the box rule is
     what keeps a legitimate hole cap out of the metric.  Identity gives 0.
+
+    When ``buried_mask`` (input-alone Case-B interior walls) is supplied, walls
+    the output removed are also ignored: a correct union removes them, so they
+    are not lost printed skin.  Debris and cavity walls are never in the mask.
     """
     t0 = time.perf_counter()
     vi = np.asarray(vi, dtype=np.float64)
@@ -586,6 +683,11 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
         'healthy_buried_face_samples': 0,
         'healthy_buried_face_fraction': 0.0,
         'healthy_ignored_buried_face_samples': 0,
+        'healthy_buried_input_face_samples': 0,
+        'healthy_buried_input_face_fraction': 0.0,
+        'healthy_ignored_input_wall_face_samples': 0,
+        'healthy_input_wall_faces': 0,
+        'healthy_input_wall_area_mm2': 0.0,
         'healthy_elapsed_ms': 0.0,
         'surface_metrics_note': None,
     }
@@ -611,16 +713,37 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
         return out
     deep_buried_face = np.zeros(len(ti), dtype=bool)
     buried_face = np.zeros(len(ti), dtype=bool)
+    input_wall = np.zeros(len(ti), dtype=bool)
+    input_wall_removed = np.zeros(len(ti), dtype=bool)
+    if buried_mask is not None:
+        bm = np.asarray(buried_mask, dtype=bool)
+        if len(bm) == len(ti):
+            input_wall = bm
     if ext_avail:
         inside_face = np.asarray(inside_v, dtype=bool)[ti]
         buried_face = np.all(inside_face, axis=1)
         face_out_dist = np.asarray(out_dist_v, dtype=np.float64)[ti].min(axis=1)
         deep_buried_face = buried_face & (face_out_dist > band)
+        input_wall_removed = input_wall & (face_out_dist > band)
+        deep_buried_face |= input_wall_removed
     buried = buried_face[face_idx]
     deep = deep_buried_face[face_idx]
+    wall_samples = input_wall[face_idx]
+    wall_removed_samples = input_wall_removed[face_idx]
     out['healthy_buried_face_samples'] = int(buried.sum())
     out['healthy_buried_face_fraction'] = float(buried.mean())
     out['healthy_ignored_buried_face_samples'] = int(deep.sum())
+    out['healthy_buried_input_face_samples'] = int(wall_samples.sum())
+    out['healthy_buried_input_face_fraction'] = float(wall_samples.mean())
+    out['healthy_ignored_input_wall_face_samples'] = int(
+        wall_removed_samples.sum())
+    out['healthy_input_wall_faces'] = int(np.count_nonzero(input_wall))
+    if input_wall.any():
+        tri = vi[ti]
+        wall_area = 0.5 * np.linalg.norm(
+            np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+        out['healthy_input_wall_area_mm2'] = round(
+            float(wall_area[input_wall].sum()), 6)
     healthy = ~mask[face_idx] & ~deep
     if boxes:
         healthy &= ~_in_boxes(base, boxes)
@@ -688,15 +811,18 @@ def measure(vi, ti, vo, to, defect_report=None, *, tol=None,
             area_samples=None, layers=None):
     """Both metrics as one flat dict, ready to merge into a verify result."""
     mask = defect_face_mask(ti, defect_report)
+    buried, buried_info = input_buried_face_mask(
+        vi, ti, defect_face_mask=mask)
     exterior = _inside_output(np.asarray(vo), np.asarray(to),
                               np.asarray(vi))
     out = feature_recall(vi, ti, vo, to, defect_face_mask=mask, tol=tol,
                          max_per_edge=recall_samples_per_edge,
-                         exterior=exterior)
+                         exterior=exterior, buried_mask=buried)
     out.update(healthy_fill(vi, ti, vo, to, defect_report=defect_report,
                             defect_face_mask=mask, tol=tol, budget=budget,
                             area_samples=area_samples, layers=layers,
-                            exterior=exterior))
+                            exterior=exterior, buried_mask=buried))
+    out.update(buried_info)
     out['surface_exterior_available'] = bool(exterior[2])
     out['surface_exterior_note'] = exterior[3]
     out['surface_exterior_buried_vertices'] = int(

@@ -344,17 +344,21 @@ def _markdown_modes(results, mode, surface_budget='sweep'):
              'layers).' % (surface_budget, area, layers),
              '- Recall ext = exterior-only (buried input edges removed); '
              'all = all healthy input sharp edges.',
+             '- 2-sided max = visible (input-alone interior walls excluded); '
+             'i2o all = the old all-face value; Buried = interior walls the '
+             'output removed (faces / mm2).',
              '',
              '| Mesh | Holes b/c | NM b/c | SI b/c | 2-sided max b/c | '
-             'Vol err b/c | Parts b/c | Recall ext b/c | Recall all b/c | '
-             'Fill b/c | Removed b/c | Surface | Verdict | Changed |',
-             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+             'i2o all b/c | Buried n b/c | Buried mm2 b/c | Vol err b/c | '
+             'Parts b/c | Recall ext b/c | Recall all b/c | Fill b/c | '
+             'Removed b/c | Surface | Verdict | Changed |',
+             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for r in results:
         b = r.get('baseline') or {}
         c = r.get('candidate') or {}
         if not b or not c:
-            lines.append('| %s | - | - | - | - | - | - | - | - | - | - | - | **%s** | - |' % (
-                r['name'], r['verdict']))
+            lines.append('| %s | %s | **%s** | - |' % (
+                r['name'], ' | '.join(['-'] * 14), r['verdict']))
             continue
         bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
         cp = c['orca_number_of_parts'] if c['orca_number_of_parts'] is not None else c['components']
@@ -367,11 +371,23 @@ def _markdown_modes(results, mode, surface_budget='sweep'):
         fill = ('%.3f/%.3f' % (fb, fc)) if fb is not None and fc is not None else '-'
         rem = ('%.3f/%.3f' % (rmb, rmc)) if rmb is not None and rmc is not None else '-'
         surf = '**WORSE**' if r.get('surface_worse') else '-'
-        lines.append('| %s | %d/%d | %d/%d | %s/%s | %.4f/%.4f | %.6f/%.6f | %s/%s | %s | %s | %s | %s | %s | **%s** | %s |' % (
+        i2o_all = ('%.4f/%.4f' % (
+            _num(b.get('i2o_max_all_mm')) or 0.0,
+            _num(c.get('i2o_max_all_mm')) or 0.0)
+            if _num(b.get('i2o_max_all_mm')) is not None
+            and _num(c.get('i2o_max_all_mm')) is not None else '-')
+        bur_n = ('%s/%s' % (b.get('buried_faces_removed', '-'),
+                            c.get('buried_faces_removed', '-')))
+        ba_b = _num(b.get('buried_area_mm2'))
+        ba_c = _num(c.get('buried_area_mm2'))
+        bur_a = ('%.3f/%.3f' % (ba_b, ba_c)
+                 if ba_b is not None and ba_c is not None else '-')
+        lines.append('| %s | %d/%d | %d/%d | %s/%s | %.4f/%.4f | %s | %s | %s | %.6f/%.6f | %s/%s | %s | %s | %s | %s | %s | **%s** | %s |' % (
             r['name'], b['reload_holes'], c['reload_holes'],
             b['reload_non_manifold_edges'], c['reload_non_manifold_edges'],
             b['si_output'], c['si_output'],
             b['two_sided_max_mm'], c['two_sided_max_mm'],
+            i2o_all, bur_n, bur_a,
             b['volume_error_rel'], c['volume_error_rel'], bp, cp,
             rec_ext, rec_all, fill, rem, surf,
             r['verdict'], 'yes' if r.get('changed') else 'no'))
