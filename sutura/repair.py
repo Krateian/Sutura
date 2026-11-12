@@ -167,7 +167,7 @@ from sutura_engine.pipeline.cli import (
 )
 
 
-VERSION = "0.9.8"
+VERSION = "0.9.9"
 
 EXIT_OK = 0
 EXIT_ERROR = 1

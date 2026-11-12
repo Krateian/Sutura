@@ -160,7 +160,8 @@ açıktır:
   (örneğin Rubik küpü tarzı montajlar), **dış kabuk çıkarma** ön adımı hafif bir
   genişletmeyle (`5e-4 * bbox_diagonal`, 100 mm'lik nesne için ~0,05 mm) ve
   boolean birleşimle iç arayüzleri çözerek iç yüzeyleri ve kendini kesmeleri
-  ana onarım geçişlerinden önce yok eder.
+  ana onarım geçişlerinden önce yok eder. Bu ön adım Tamponad anahtarına
+  bağlıdır: Tamponad'ı kapatmak onu da atlar.
 * *Stage 1'den sonra, son çare olarak:* fTetWild yedek katmanı (orijinal
   girdiyi fTetWild ile tetrahedralize edip su geçirmez bir yüzey çıkarır;
   varsayılan olarak kurulur, ~6 MB, bkz. Kurulum). Varsayılan olarak

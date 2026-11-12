@@ -2,206 +2,158 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.9.9] - 2026-11-12
 
 ### Added
 
-- **A crash log for hard crashes.** A hard crash — a segfault in the native
-  `sutura_geom` or Qt layer, or an uncaught Python error — now leaves a trace
-  instead of dying silently. The CLI and the GUI both enable `faulthandler` and
-  uncaught-exception hooks into a single bounded `crash.log` in Sutura's
-  user-data directory (`~/.local/share/sutura/data/crash.log`, or
-  `$SUTURA_DATA_DIR/crash.log`); it keeps only its most recent ~200 KB. The GUI
-  also shows one short dialog pointing at Diagnostics. `sutura --diagnostics
-  out.zip` now includes a scrubbed `crash_log.txt` (the same sanitizer as the
-  rest of the archive). The file never leaves the machine unless the user
-  attaches it. No repair output changes.
-- **3MF triangle-attribute loss is now visible.** When a repaired 3MF loses
-  paint/seam/support attributes on surviving triangles, the `--human` report and
-  the GUI show one warning line with the kept / dropped /
-  new-triangles-without-attributes counts (per object for a multi-object file).
-  When only newly created triangles lack attributes — which is expected — the
-  same counts are shown as a neutral note instead of a warning, and nothing is
-  shown when the input had no attributes. The JSON report already carried these
-  counts; no repair output changes.
-- **Fidelity: "is it still the same model?"** Every repair report now carries a
-  third, report-only score next to Repair Health and Repair Risk. Fidelity
-  (0-100) compares the final mesh with the input on the healthy (non-defect)
-  surface using one-sided distance, feature-edge recall, healthy fill/removed
-  volume, volume and bounding-box change, and the area of newly created
-  surface. `repair_verdict_code` gives one plain-language verdict ("Repaired,
-  shape preserved", "Repaired, shape changed in N area(s) - check", or "Not
-  fully repaired"); large invented areas (big hole caps, fTetWild/Splint
-  rebuilds) are marked as low-confidence guesses. The measurement
-  runs once on the final result, never changes which candidate is adopted, is
-  deterministic and fail-silent, and is gated on large meshes. Weights, scales
-  and budgets live in `sutura/repair_score_config.json`; `--no-fidelity` (and
-  the Options checkbox) opts out. `--human`, the JSON report, the GUI header
-  and `history.jsonl` are wired; docs updated in English and Turkish.
-- **Separate small parts are visible in the report.** `stage1.removed_small_parts`
-  records the components the Stage-1 `< mincomponentsize`-face rule dropped
-  (count, total faces, and a capped per-component list of face count, size and
-  distance to the main body). `stage1.possible_debris` flags kept components that
-  look like possible debris under the census rule F (a separate, closed,
-  non-degenerate part below 0.5% of the largest part's volume) with face count,
-  volume share and distance. Both appear in the `--human` report and the GUI
-  result details (EN/TR), per object for multi-object 3MF. This is report-only:
-  nothing extra is removed, so the output is byte-identical.
-- **Opt-in auto-reorder of the automatic fallbacks.** `--auto-reorder` (and a
-  checkbox in Options → Methods, *Automatic* mode) reorders the automatic
-  fallback methods per model from the suggested-method ranking. Only the fallback
-  attempt order changes; the baseline pipeline and the deep-repair ladder are
-  unchanged, and Graft still precedes fTetWild. It ships off pending the
-  samples40 + oracle36 measurement.
+- **Fidelity: is it still the same model?** Every repair report now carries a
+  third 0–100 score beside Repair Health and Repair Risk. It compares the
+  repaired surface with the parts of the input that were already healthy and
+  turns the result into one plain verdict: "Repaired, shape preserved",
+  "Repaired, shape changed in N area(s) - check", or "Not fully repaired".
+  Large rebuilt areas (big hole caps, fTetWild or Splint rebuilds) are marked
+  as guesses, not measurements. The score is report-only: it never decides
+  whether a repair is accepted. `--no-fidelity` or the Options checkbox turns
+  it off; weights and budgets live in `sutura/repair_score_config.json`.
+  Limits: the thresholds are experimental, and when the input has almost no
+  healthy surface the check cannot run and reports "Shape check unavailable"
+  instead of inventing a score. Measured on the 40-sample and 36-mesh check
+  sets against independent visual review: 61 preserved, 2 changed, and 0
+  repairs silently presented as preserved.
+- **Separate small parts are visible.** The report now lists components the
+  Stage-1 small-debris rule removed (how many faces, how big, how far from the
+  main body) and flags kept components that look like possible debris (a
+  separate, closed, non-degenerate part below 0.5% of the largest part's
+  volume). Both appear in `--human` and in the GUI details, per object for
+  multi-object 3MF. This is report-only: nothing extra is removed and the
+  output is unchanged.
+- **3MF triangle attributes are reported.** When a repaired 3MF loses
+  paint/seam/support attributes on triangles that survive, the report and GUI
+  show how many were kept, dropped and left without attributes on new
+  triangles. When only newly created triangles lack attributes — which is
+  expected — the same counts appear as a neutral note, and nothing appears
+  when the input had no attributes. Limits: attributes are kept only on
+  surviving triangles whose vertex coordinates are unchanged; new triangles
+  are not guessed.
+- **A crash log for hard crashes.** A hard crash (a native `sutura_geom` or Qt
+  segfault, or an uncaught Python error) now leaves a capped log at
+  `~/.local/share/sutura/data/crash.log` (or `$SUTURA_DATA_DIR/crash.log`)
+  instead of dying silently. The file keeps its most recent ~200 KB and never
+  leaves the machine unless you attach it; `sutura --diagnostics out.zip`
+  includes a scrubbed `crash_log.txt`, and the GUI points at Diagnostics after
+  a crash.
+- **Opt-in automatic fallback reorder.** `--auto-reorder`, or the
+  *Auto-reorder* checkbox in Options → Methods (Automatic mode), reorders the
+  automatic fallback methods per model from the suggested-method ranking. Only
+  the fallback attempt order changes; the baseline pipeline and the deep-repair
+  ladder stay as they are, and Graft still precedes fTetWild. It ships
+  **off by default** because it is experimental; measured neutral (0 changed,
+  0 better, 0 worse) on the 40-sample and 36-mesh check sets.
 
 ### Changed
 
+- **One verdict, in one line.** `--human` and the GUI now show one headline
+  verdict instead of two: the Fidelity shape verdict with the topology verdict
+  folded in. A failed repair always reads "Not fully repaired"; topology
+  caveats with a preserved shape read "Repaired with notes — shape preserved"
+  (amber, never a clean green check). When Fidelity is off, the headline falls
+  back to the plain brief ("Ready to print" / "Repaired with notes"). The
+  Health/Risk/Fidelity numbers no longer repeat the verdict. Display only: no
+  repair output changes. The report details behind **Details** are now
+  localized in English and Turkish.
+- **The Tamponade switch also controls the outer-shell pre-step.**
+  `--no-tamponade` (or `SUTURA_TAMPONADE=0`, or the GUI checkbox) now skips the
+  multi-part outer-shell union that ran before the first stage as well. The
+  default path (Tamponade on) is unchanged; the trace records the outer-shell
+  stage so the skip is visible.
 - **The installer needs no manual steps.** When no prebuilt `sutura_geom`
   wheel exists for the platform, the installer now fetches what the source
-  build needs itself, non-interactively and only in user space: rustup + a
-  minimal Rust toolchain and cmake from its PyPI wheel, under
-  `~/.local/share/sutura/tools` (never `~/.cargo`), printing the sizes first
-  (~11 MB + ~90 MB download, ~460 MB on disk for Rust; ~54 MB / ~137 MB for
-  cmake). `SUTURA_NO_TOOLCHAIN_FETCH=1` refuses the download, and the toolchain
-  is never touched when `cargo` already works. cmake lives in a throwaway tools
-  directory and is not shipped in the runtime environment. The one prerequisite
-  that cannot be installed in user space is a C++20 compiler: if none is
-  present the installer prints a single line (macOS: `xcode-select --install`)
-  and stops. `uninstall.sh` removes the fetched toolchain. The fTetWild fallback
-  Python is likewise fetched in user space — a usable `python3.11`, a
-  standalone build (~27 MB), or a `uv`-managed 3.11 — and never via a
-  `sudo apt`/`dnf` instruction. Installer-only; no repair output change.
-- **macOS installer bootstrap fixed.** `install-macos.sh` now fetches the
-  Miniforge checksum from the versioned release asset (the unversioned
-  `*.sha256` is no longer published, which made a fresh install abort) and
-  installs the runtime dependencies (`requirements.txt`, e.g. numpy) into
-  `sutura-env` — without them the installer's own verify step failed. Found
-  while running the B5 local install test; both are needed for a working
-  installer. The macOS source build also exports the SDK include path from
-  `xcrun --show-sdk-path` for the build (only when unset, only if xcrun
-  succeeds), so a partial Command Line Tools install no longer fails on
-  `<cstdint>`.
-- **One verdict, in one line.** The report now shows a single headline verdict
-  in both `--human` and the GUI — the Fidelity `repair_verdict`, with the
-  topology verdict folded in — instead of two verdict lines. The
-  Health/Risk/Fidelity numbers no longer repeat the verdict, and a failed repair
-  always reads "Not fully repaired". When Fidelity is not measured the headline
-  falls back to the plain brief verdict ("Ready to print" / "Repaired with
-  notes") rather than claiming an unmeasured shape check. The GUI report details
-  (behind the **Details** toggle) are now localized in English and Turkish.
-  Display only: no repair output changes (core_clean byte gate 100/100).
-- **The Tamponade switch now also controls the outer-shell pre-step.**
-  `--no-tamponade` (and `SUTURA_TAMPONADE=0`, or the GUI checkbox) previously
-  left the multi-part outer-shell union running before the first labelled
-  stage. The whole outer-shell block now sits under the same switch: disabling
-  Tamponade also skips the outer-shell pre-pass, so the opt-out path leaves the
-  input geometry untouched there. The default path (Tamponade on) is unchanged;
-  the `core_clean` byte gate stays 100/100. The trace gains an `outer_shell`
-  stage (`adopted` / `skipped` / `rejected` / `disabled`) so the geometry change
-  is visible. Documentation updated in English and Turkish (methods and
-  CLI/GUI parity notes), including the GUI Tamponade tooltip.
+  build needs itself, in user space: Rust (rustup + a minimal toolchain) and
+  cmake, under `~/.local/share/sutura/tools` (never `~/.cargo`), printing the
+  sizes first. `SUTURA_NO_TOOLCHAIN_FETCH=1` refuses the download, cmake is
+  not shipped in the runtime environment, and `uninstall.sh` removes the
+  fetched toolchain. Limitation: a C++20 compiler cannot be installed this
+  way; if none is present, the installer says how to get one (macOS:
+  `xcode-select --install`) and stops. The fTetWild helper Python is fetched
+  the same way (a usable Python 3.11 or a `uv`-managed one), never through a
+  system package manager. Installer-only; no repair output change.
+- **macOS installer fixes.** The Miniforge checksum is fetched from the
+  versioned release asset, the runtime dependencies are installed into
+  `sutura-env`, and the source build exports the macOS SDK include path, so a
+  fresh install no longer aborts and a partial Command Line Tools install no
+  longer fails on `<cstdint>`.
 
 ### Documentation
 
-- **New user guidance, score cheat sheet, and geometry glossary:** Clarified the
-  distinction between runtime topology adoption guards ("no worse") and report-only
-  shape verification (Fidelity). Added a score cheat sheet to usage guides
-  explaining Health (higher is better), Risk (lower is better penalty scale),
-  Fidelity (higher is better), and triage Confidence. Added a genuine CLI `--human`
-  output example generated from the test corpus, added plain-language geometry
-  glossary definitions (fTetWild, CDT, sub-ULP, non-manifold, Hausdorff distance,
-  dihedral angle, winding orientation), synchronized Turkish documentation
-  avoiding overclaiming terminology, and updated Turkish UI option labels.
-- **Adoption guards and guarantees documentation:** Added 'What "no worse" covers'
-  table and breakdown to `docs/guide/how-it-works.md` and Turkish guide, detailing
-  runtime adoption guards, explaining self-intersection policies (`strict_zero`,
-  `non_rise`, `improved_flag`, `flag`), and clarifying distinctions between runtime
-  checks, release verification, and unmeasured fidelity.
-- **Clarified README highlights:** Updated 'Never worse than the input' bullet to
-  point precisely to topology and shape adoption guards in both English and Turkish.
-- **Historical benchmark markers:** Marked the 115-mesh corpus benchmark and citations
-  as historical v0.2.8-era results across documentation.
-- **Precise debris and hole patching rules:** Documented native `< 8` triangle debris
-  removal threshold and Flap boundary continuation in `docs/guide/limitations.md`.
-- **Bug report issue template:** Updated bug report template to request the diagnostics
-  archive (`sutura --diagnostics sutura-diag.zip` or GUI Diagnostics button) and optional
-  crash log instead of manual environment typing.
+- **New user guidance, score cheat sheet, and geometry glossary.** The docs now
+  separate runtime adoption guards ("no worse") from the report-only shape
+  check (Fidelity), explain the three scores and triage confidence in a cheat
+  sheet, show a real `--human` example, and define the geometry terms in plain
+  words. English and Turkish were updated together.
+- **Adoption guards and guarantees.** `docs/guide/how-it-works.md` explains
+  what "no worse" covers, the self-intersection policies (`strict_zero`,
+  `non_rise`, `improved_flag`, `flag`), and the difference between runtime
+  checks, release verification and the shape check.
+- **README highlights** now point precisely at the topology and shape adoption
+  guards. The 115-mesh corpus benchmark and its citations are marked as
+  historical (v0.2.8-era) results.
+- **Debris and hole-patching rules** document the native `< 8`-triangle debris
+  threshold and Flap boundary continuation in the limitations page.
+- **The bug-report template** now asks for the diagnostics archive and the
+  optional crash log instead of manual environment typing.
 
 ### Fixed
 
 - **Saving to another filesystem works again (WSL `/mnt/c`, tmpfs `/tmp`).**
-  `sutura -o` failed with `[Errno 18] EXDEV` when the output directory was on
-  a different filesystem from the temporary directory. The finished mesh is
-  now copied into a hidden temporary file next to the destination, flushed and
-  fsynced, and only then atomically renamed onto the output path, so the final
-  save stays atomic and a failed copy leaves no truncated file. Reported by
-  @LordKhizir in #134.
+  `sutura -o` failed with `[Errno 18] EXDEV` when the output folder was on a
+  different filesystem from the temporary folder. The finished mesh is now
+  copied into a hidden temporary file next to the destination, flushed and
+  fsynced, and only then atomically renamed, so the final save stays atomic
+  and a failed copy leaves no truncated file. Reported by @LordKhizir in #134.
 - **Unavailable scores print `n/a`.** When Repair Health, Risk or Fidelity is
-  unavailable, the `--human` report and the GUI header print `Fidelity: n/a`
-  (and likewise `Health: n/a`, `Risk: n/a`) instead of the misleading
-  `n/a/100`. Display only; no report field or repair output changes.
-- **`final_summary` now describes the written output.** When a repair ran
+  unavailable, `--human` and the GUI print `Fidelity: n/a` (and likewise
+  `Health: n/a`, `Risk: n/a`) instead of the misleading `n/a/100`.
+- **The trace summary describes the file that was written.** When a repair ran
   fallback attempts, the trace's `final_summary` could describe the last
-  rejected internal candidate instead of the file that was saved (for example a
-  17,748-face scaffold candidate versus the 2,230-face written result). A
-  `save` stage is now recorded after the output is put in place, measured from
-  the written file (single STL/OBJ) or from a summed aggregate over the object
-  blocks (multi-object 3MF); budget-declined and error paths record
-  `written=false` with the reason and never point at an unwritten candidate.
-  Trace-only when tracing is inactive; no repair output change.
-- **Stale documentation text.** The Turkish version history now says the v0.7.0
-  registry had 15 methods (matching the English page), the Turkish usage guide
-  gains the `--profile scan` equivalence sentence, and the September security
-  audit no longer references a removed `requirements-311.txt`. Text only; no
-  behaviour change.
-- **Stale code docstrings and a documented config override.** The methods
-  registry docstrings now state 1..19, and the `deep_repair` key of
-  `~/.config/sutura/config.json` is documented as an explicit manual override
-  (the app does not write it; `--deep-repair` and `SUTURA_DEEP_REPAIR` win). No
-  behaviour change.
-- **Fidelity no longer cries wolf on tiny shape changes.** A shape change now
-  counts (verdict `changed`) only when the healthy surface moved more than 1.0 %
-  of the bounding-box diagonal — `fidelity.changed_min_healthy_distance_pct` in
-  `repair_score_config.json`, not code; below it the verdict is `preserved`.
-  Calibrated on samples40 + oracle36 against independent visual QA: **61
-  preserved / 2 changed / 0 silent** (down from 8 false `changed`, no repair
-  silently presented as preserved). Report-only; no repair output change.
-- **Crash log and small-part reporting hardening (review follow-up).**
-  `crash.log` stays empty on a normal run (no startup banner) and only gains
-  content on a real fatal signal or uncaught exception; the modal crash dialog
-  never appears under offscreen/minimal/CI/HEADLESS/`SUTURA_NO_DIALOG`; the GUI
-  exception hooks chain to the default handler so tracebacks still reach stderr;
-  Qt warnings are no longer logged (only critical/fatal). The diagnostics
-  sanitizer matches home/user case-insensitively and also scrubs
-  `/Volumes/<name>`, `/media/<user>` and `/run/media/<user>`; the trimmed
-  crash-log tail stays valid UTF-8. A kept small separate part is now
-  informational — neutral wording, computed on the repaired mesh and reported per
-  object for a multi-object 3MF — and no longer demotes a ready repair to
-  "Repaired with notes". Report-only; no repair output changes.
-
-- **Fidelity review fixes.** A mesh with no measurable healthy skin now reports
-  Fidelity `unavailable` instead of a fabricated 100; invalid closest-point
-  results are dropped rather than mapped to face 0; area sampling is no longer
-  capped by the face count and filters the defect mask before the CDF; the
-  0.1 mm detail floor scales with the bounding-box diagonal; reduced-budget
-  meshes no longer invent a "1 area" count; low-confidence wins the multi-object
-  headline; and the aggregate verdict follows semantic severity
-  (`not_repaired` > `low_confidence` > `changed` > `preserved`). Report-only;
-  no repair output change.
-- **Auto-reorder fixes.** With the opt-in `--auto-reorder`, Graft now always
-  precedes fTetWild in multi-object 3MF too (a suggestion ranking fTetWild first
-  could previously push Graft past the three-attempt limit, so Graft was never
-  tried); empty suggestions keep the calibrated order instead of scrambling it
-  into method-number order; methods the ranking omits keep their previous
-  relative order; and the GUI *Auto-reorder* checkbox now commits with the
-  panel's **Apply** (like the tier order), resets with **Reset Defaults** and
-  refreshes when the config changes. The flag stays OFF by default and the
-  flag-off output is unchanged.
-- **No area count next to an unavailable shape check.** When the Fidelity
-  measurement cannot run, the verdict is `unavailable` and the report no longer
-  carries a changed/low-confidence area count beside it (previously it could
-  show e.g. `99` areas next to `unavailable`). The count is reported only when
-  the measurement exists. Report-only; no repair output change.
+  rejected internal candidate instead of the saved file. A `save` stage is now
+  recorded after the output is in place, measured from the written file (or
+  from the object blocks of a multi-object 3MF); budget-declined and error
+  paths record `written=false` with the reason. Trace-only; no repair output
+  change.
+- **The shape check no longer cries wolf on tiny changes.** A shape change now
+  counts only when the healthy surface moved more than 1.0% of the
+  bounding-box diagonal; below that the verdict is `preserved`. This removes
+  8 false `changed` results on the 40-sample and 36-mesh check sets (61
+  preserved, 2 changed, 0 silently presented as preserved). Report-only.
+- **The shape check no longer invents a score it cannot measure.** A mesh with
+  no measurable healthy skin now reports Fidelity `unavailable` instead of a
+  fabricated 100; invalid closest-point results are dropped; area sampling is
+  no longer capped by the face count; the 0.1 mm detail floor scales with the
+  model; reduced-budget meshes no longer invent a "1 area" count;
+  low-confidence wins the multi-object headline; and the aggregate verdict
+  follows semantic severity. Report-only.
+- **Crash log and small-part report hardening.** `crash.log` stays empty on a
+  normal run and only gains content on a real fatal signal or uncaught
+  exception; the crash dialog never appears in headless/CI runs; tracebacks
+  still reach stderr; Qt warnings are not logged. The diagnostics sanitizer
+  also scrubs `/Volumes/<name>`, `/media/<user>` and `/run/media/<user>`, and
+  the trimmed crash-log tail stays valid UTF-8. A kept small separate part is
+  informational and no longer demotes a ready repair to "Repaired with notes".
+- **Auto-reorder fixes.** With `--auto-reorder`, Graft now always precedes
+  fTetWild in multi-object 3MF too; empty suggestions keep the calibrated
+  order; methods the ranking omits keep their previous relative order; and the
+  GUI checkbox commits with **Apply**, resets with **Reset Defaults**, and
+  refreshes when the configuration changes. The flag stays off by default and
+  the flag-off output is unchanged.
+- **No area count next to an unavailable shape check.** The report no longer
+  shows a changed/low-confidence area count when the measurement could not
+  run. Report-only.
+- **Stale documentation and docstrings.** The Turkish version history matches
+  the English method count, the Turkish usage guide has the `--profile scan`
+  equivalence sentence, the September security audit no longer references a
+  removed `requirements-311.txt`, the methods registry docstrings state 1..19,
+  and the `deep_repair` config key is documented as an explicit manual
+  override. Text only.
 
 ## [0.9.8] - 2026-10-31
 

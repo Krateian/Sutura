@@ -416,7 +416,8 @@ STRINGS = {
                         'level set of the generalized-winding field. '
                         '2-manifold and self-intersection-free by '
                         'construction; tried after Graft and before fTetWild. '
-                        'Off by default until measured on the corpus.',
+                        'Off by default: it can flatten fine detail; enable it '
+                        'deliberately.',
         'dressing_force_adopt_label': 'Dressing: force adopt (may deform)',
         'dressing_force_adopt_tip': 'Skip Dressing\'s shape-preservation gates '
                                     '(volume / component count / healthy-surface '
@@ -1349,8 +1350,8 @@ STRINGS = {
                         'alanın değişken viskoziteli dar bantlı seviye '
                         'kümesiyle kaplar. Yapısı gereği two-manifold ve '
                         'kendisiyle-kesişimsizdir; Graft sonrası ve fTetWild '
-                        'öncesi denenir. Korpus üzerinde ölçülene kadar '
-                        'varsayılan olarak kapalıdır.',
+                        'öncesi denenir. Varsayılan olarak kapalıdır: ince '
+                        'ayrıntıları düzleştirebilir; bilerek açın.',
         'dressing_force_adopt_label': 'Pansuman (Dressing): zorla benimse (deforme olabilir)',
         'dressing_force_adopt_tip': 'Pansuman (Dressing)\'in şekil koruma kapılarını '
                                     '(hacim / bileşen sayısı / sağlıklı yüzey '

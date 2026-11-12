@@ -156,7 +156,8 @@ fTetWild fallback is installed and on by default:
   Rubik-style models), an **outer-shell extraction** pre-step dissolves internal
   interfaces via a slight dilation (`5e-4 * bbox_diagonal`, ~0.05 mm for a
   100 mm object) and boolean union, eliminating internal faces and degenerate
-  self-intersections before repair passes.
+  self-intersections before repair passes. The same switch as Tamponade
+  controls this pre-step: turning Tamponade off skips it too.
 * *After stage 1, as a last resort:* the fTetWild fallback (tetrahedralizes
   the original input with fTetWild and extracts a watertight boundary;
   installed by default, ~6 MB, see Install). It runs by default, but only when

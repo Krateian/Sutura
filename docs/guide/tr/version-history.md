@@ -6,6 +6,23 @@
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../../CHANGELOG.md).
 
+- **v0.9.9 — 2026-11-12** — Onarım Sağlığı ve Riski'nin yanına bir
+  **Sadakat** puanı eklendi: onarılmış yüzeyi, girişin zaten sağlıklı olan
+  parçalarıyla karşılaştırır ve tek bir sade hüküm verir ("Onarıldı, şekil
+  korundu", "N bölgede şekil değişti - kontrol edin", "Tam onarılmadı").
+  Büyük yeniden inşa alanları tahmin olarak işaretlenir, puan yalnızca
+  raporlamadır ve ölçülecek kadar sağlıklı yüzey yoksa "Şekil kontrolü
+  kullanılamıyor" der; eşikler deneyseldir (40 örnek ve 36 meshli kontrol
+  setinde kalibre edildi). Rapor ve GUI tek bir başlık hükmü gösterir; ayrıca
+  kaldırılan küçük parçaları, tutulan olası döküntüleri ve 3MF'de kaybolan
+  boya/dikiş/destek üçgen özelliklerini listeler; ayrıntılar İngilizce ve
+  Türkçe yerelleştirilmiştir. Sert bir çökme artık sınırlı, yerel bir çökme
+  günlüğü bırakır ve Tanılama arşivinde temizlenmiş olarak bulunur.
+  `--auto-reorder` otomatik yedekleri model başına yeniden sıralayabilir
+  (isteğe bağlı, deneysel, nötr ölçüldü). Kurulumcu kendi Rust araç zincirini
+  ve cmake'i kullanıcı alanında indirir ve kaldırmada siler; C++20 derleyici
+  yine gereklidir. Başka bir dosya sistemine kaydetme (WSL `/mnt/c`, tmpfs
+  `/tmp`) yeniden çalışır ve kullanılamayan puanlar `n/a` yazar.
 - **v0.9.8 — 2026-10-31** — En yavaş Flap onarımları hızlandı: doğrulanan
   en yavaş iki durum yaklaşık 822 s'den 26 s'ye ve 655 s'den 12 s'ye indi;
   155 meshli kontrol aynı onarımları korudu. Tamponad ayrıca ince kabukları,
