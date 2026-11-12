@@ -124,7 +124,8 @@ def main():
     print('| set | mode | public ID | verdict | SI trade | MD5 b/c | %s | note |'
           % ' | '.join(h for h, _k, _f in COLS))
     print('|---|---|---|---|--:|---|%s|---|' % '|'.join('---' for _ in COLS))
-    for r in sorted(rows, key=lambda x: (str(x.get('set')), str(x.get('id')))):
+    for r in sorted(rows, key=lambda x: (str(r.get('set')), str(r.get('mode')),
+                                         str(r.get('id')))):
         b = r.get('baseline') or {}
         c = r.get('candidate') or {}
         print('| %s | %s | %s | %s | %s | %s | %s | %s |' % (

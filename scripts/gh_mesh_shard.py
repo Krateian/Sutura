@@ -114,8 +114,14 @@ def main():
             missing = sorted({k for rec in sides.values() for k in required
                               if rec.get(k) is None})
             verdict = item.get('verdict') or 'MISSING'
+            reason = item.get('verdict_reason')
+            if missing and verdict not in ('WORSE', 'FAIL', 'ERROR'):
+                # A metric the judge needs never arrived; the run cannot be
+                # called a pass on the metrics that survived.
+                verdict = 'MISSING'
+                reason = 'missing metric(s): %s' % ', '.join(missing)
             rows.append({'id': item.get('name'), 'verdict': verdict,
-                         'reason': item.get('verdict_reason'),
+                         'reason': reason,
                          'baseline': sides['baseline'],
                          'candidate': sides['candidate'],
                          'missing': missing})
