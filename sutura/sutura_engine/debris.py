@@ -6,8 +6,8 @@ Nothing here changes geometry: it only measures (1) the components the
 Stage-1 ``<min_faces`` removal drops, and (2) which surviving components look
 like possible debris by the census rule F. Pure numpy + ``topology``.
 
-Rules and evidence: ``~/sutura-wt/plan-debris.md`` and the read-only debris
-census (``debris-census/SUMMARY.md``). Components are vertex-connected faces,
+Rules and evidence come from a read-only debris census of the benchmark
+corpus. Components are vertex-connected faces,
 exactly what ``diagnosis::part_report`` uses.
 
 TODO(rust): port rule F into ``sutura_geom``'s diagnosis ``part_report`` so the
