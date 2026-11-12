@@ -282,6 +282,7 @@ jobs:
         run: |
           test -x "$HOME/.local/share/sutura/tools/cargo/bin/cargo"
           ENV_PY="$(conda run -n sutura-env which python)"
+          echo "ENV_PY=$ENV_PY" >> "$GITHUB_ENV"
           test ! -e "$(dirname "$ENV_PY")/cmake"
           test ! -e "$HOME/.cargo"
           "$ENV_PY" -c "import sutura_geom; assert hasattr(sutura_geom, 'stage2_rebuild')"
