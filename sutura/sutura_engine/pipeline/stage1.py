@@ -572,13 +572,14 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
             topo_ok = bool(si_ok and holes_ok and nm_after <= nm_before
                            and components_ok)
             guard_ok = True
-            post_vis = new_face_mm = None
+            post_vis = post_all = new_face_mm = None
             if topo_ok and guard_on and guard_available:
                 _post = _si_excise_visible_metrics(
                     guard_ref_v, guard_ref_t, v_work, t_work,
                     buried=guard_buried, centroids=guard_centroids)
                 if _post is not None:
                     post_vis = float(_post[0])
+                    post_all = float(_post[1])
                     new_face_mm = _si_excise_new_face_max_mm(
                         guard_ref_v, guard_ref_t, v_work, t_work,
                         new_face_mask)
@@ -604,6 +605,7 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
                     entry['pre_vis_mm'] = (round(last_vis, 4)
                                            if last_vis is not None else None)
                     entry['post_vis_mm'] = round(post_vis, 4)
+                    entry['post_all_mm'] = round(post_all, 4)
                     entry['new_face_mm'] = (round(new_face_mm, 4)
                                             if new_face_mm is not None else None)
                     last_vis = post_vis
@@ -627,6 +629,8 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
                                     if last_vis is not None else None)
                 sg['post_vis_mm'] = (round(post_vis, 4)
                                      if post_vis is not None else None)
+                sg['post_all_mm'] = (round(post_all, 4)
+                                     if post_all is not None else None)
                 sg['new_face_mm'] = (round(new_face_mm, 4)
                                      if new_face_mm is not None else None)
                 sg['reason'] = 'shape_guard'
