@@ -361,8 +361,28 @@ jobs:
 
       - name: Hide the runner's Rust toolchain and force the source path
         run: |
-          CLEAN_PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '/\.cargo/bin' | paste -sd: -)"
+          # Drop every PATH entry that still exposes a rustup/cargo binary.
+          # System dirs stay: if one still has a toolchain the strict check
+          # below must fail instead of losing a path the rest of the job
+          # needs. The list matches the macOS job (/opt/homebrew/bin is
+          # simply absent here).
+          keep_dir() {
+            case "$1" in
+              /opt/homebrew/bin|/usr/bin|/bin|/usr/local/bin|/usr/sbin|/sbin)
+                return 0
+                ;;
+            esac
+            if [ -x "$1/rustup" ] || [ -x "$1/cargo" ]; then
+              return 1
+            fi
+            return 0
+          }
+          CLEAN_PATH="$(printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r d; do
+            d="${d%/}"
+            if keep_dir "$d"; then printf '%s\n' "$d"; fi
+          done | paste -sd: -)"
           export PATH="$CLEAN_PATH"
+          hash -r
           echo "PATH=$CLEAN_PATH" >> "$GITHUB_ENV"
           if FOUND="$(command -v rustup || command -v cargo)"; then
             echo "::error::rustup/cargo still on PATH at '$FOUND'; the bootstrap test is invalid"
