@@ -834,6 +834,13 @@ def human_report(r, show_defects=False, show_diff=False):
             _score_field('Fidelity', rf)))
         if r.get('repair_fidelity_note'):
             lines.append('Fidelity note: %s' % r['repair_fidelity_note'])
+        _m = r.get('repair_fidelity_metrics') or {}
+        _n = _m.get('interior_walls_removed_faces')
+        if _n:
+            lines.append('Interior walls removed: %d face%s (%.3f mm²)'
+                         % (int(_n), '' if int(_n) == 1 else 's',
+                            float(_m.get(
+                                'interior_walls_removed_area_mm2') or 0.0)))
     pr = r.get('print_report')
     if pr:
         block = human_print_report(pr, include_advisories=False)

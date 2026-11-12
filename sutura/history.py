@@ -132,6 +132,29 @@ def build_record(result, fingerprint, version, elapsed_ms, fmt=None):
         'repair_verdict_areas': result.get('repair_verdict_areas'),
         'repair_verdict_low_confidence': bool(
             result.get('repair_verdict_low_confidence')),
+        'interior_walls_note': result.get('interior_walls_note'),
+        'feature_recall': (result.get('repair_fidelity_metrics') or {}).get(
+            'feature_recall'),
+        'feature_recall_all': (result.get('repair_fidelity_metrics') or {}).get(
+            'feature_recall_all'),
+        'interior_walls_removed_faces': (
+            result.get('repair_fidelity_metrics') or {}).get(
+                'interior_walls_removed_faces'),
+        'interior_walls_removed_area_mm2': (
+            result.get('repair_fidelity_metrics') or {}).get(
+                'interior_walls_removed_area_mm2'),
+        'interior_walls_buried_faces': (
+            result.get('repair_fidelity_metrics') or {}).get(
+                'interior_walls_buried_faces'),
+        'interior_walls_buried_area_mm2': (
+            result.get('repair_fidelity_metrics') or {}).get(
+                'interior_walls_buried_area_mm2'),
+        'interior_walls_debris_faces': (
+            result.get('repair_fidelity_metrics') or {}).get(
+                'interior_walls_debris_faces'),
+        'interior_walls_cavity_faces': (
+            result.get('repair_fidelity_metrics') or {}).get(
+                'interior_walls_cavity_faces'),
         'volume_change_percent': s1.get('volume_change_percent'),
         'extreme_passes_applied': result.get('extreme_passes_applied'),
         'self_intersections_found': result.get('self_intersections_found'),

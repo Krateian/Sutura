@@ -577,6 +577,8 @@ STRINGS = {
         # Details body (the collapsible report); values stay verbatim.
         'detail_output': 'Output file: %s',
         'detail_status': 'Status: %s',
+        'detail_interior_walls': (
+            'Interior walls removed: %d face(s) (%.3f mm²)'),
         'detail_stage1': 'Stage 1 (native):',
         'detail_holes_closed': '  Holes closed              : %d',
         'detail_holes_remaining': '  Holes remaining           : %d',
@@ -1518,6 +1520,8 @@ STRINGS = {
         'fidelity_verdict_unavailable': 'Şekil kontrolü kullanılamıyor',
         'detail_output': 'Çıktı dosyası: %s',
         'detail_status': 'Durum: %s',
+        'detail_interior_walls': (
+            'Kaldırılan iç duvarlar: %d yüz (%.3f mm²)'),
         'detail_stage1': 'Aşama 1 (yerel):',
         'detail_holes_closed': '  Kapatılan delik           : %d',
         'detail_holes_remaining': '  Kalan delik               : %d',
@@ -2347,6 +2351,12 @@ def format_report(data):
                         _score_text(rf)))
         if data.get('repair_status'):
             lines.append(_t('detail_status', data.get('repair_status')))
+        _m = data.get('repair_fidelity_metrics') or {}
+        _n = _m.get('interior_walls_removed_faces')
+        if _n:
+            lines.append(_t('detail_interior_walls', int(_n),
+                            float(_m.get(
+                                'interior_walls_removed_area_mm2') or 0.0)))
     lines.append('')
     if data.get('unit_warning'):
         lines.append(_t('unit_warning', data.get('unit_hint', '')))

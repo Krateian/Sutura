@@ -174,6 +174,13 @@ def test_format_report_localized():
     multi = {'output': 'a.3mf', 'stage1': {}, 'objects': 2,
              'objects_watertight': 1, 'object_reports': None}
     assert '3MF objects repaired' in gui.format_report(multi)
+    walls = {'output': 'a.stl', 'stage1': {},
+             'repair_fidelity': 90, 'repair_verdict_code': 'preserved',
+             'repair_fidelity_metrics': {
+                 'interior_walls_removed_faces': 418,
+                 'interior_walls_removed_area_mm2': 4339.863}}
+    assert 'Interior walls removed: 418 face(s) (4339.863 mm²)' \
+        in gui.format_report(walls)
     en_tbl = gui.STRINGS['en']
     try:
         gui.STRINGS['en'] = gui.STRINGS['tr']
@@ -181,6 +188,8 @@ def test_format_report_localized():
         assert 'Çıktı dosyası:' in tr, tr
         assert 'Aşama 1' in tr, tr
         assert 'Onarılan 3MF nesnesi' in gui.format_report(multi)
+        assert 'Kaldırılan iç duvarlar: 418 yüz (4339.863 mm²)' \
+            in gui.format_report(walls)
     finally:
         gui.STRINGS['en'] = en_tbl
     print('ok  format_report EN/TR + sparse report')
