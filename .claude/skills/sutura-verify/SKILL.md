@@ -70,6 +70,13 @@ This skill is how an agent that did NOT write the change checks the claim.
 ## Rules
 - Default (feature ON) must be no worse than the opt-out on EVERY mesh. A
   single WORSE mesh blocks the change; "better on average" is not enough.
+- Shape first: the quality judge's `TRADE-SI` verdict covers a rise in
+  SI-after when every shape metric (visible two-sided max/p95, volume error,
+  reload holes, non-manifold edges, parts, closed shells, leak) is equal or
+  better. It is a deliberate SI-for-shape trade: it is printed with its own
+  SI-delta column and its own line, and it does NOT fail the run. Any shape
+  regression on the same mesh is still `WORSE` and does fail — never report a
+  trade when shape also moved the wrong way.
 - Judge shape, never bytes: byte-identical output is a strong hint but not
   proof, and a tiny metric shift can be a real regression.
 - Iterate on a small representative set; run the full corpus only at gates
@@ -159,7 +166,9 @@ invariant is covered by `tests/test_visual_qa_v2.py` (five corpus meshes, no V2
 flags and zero deltas when the reference and candidate are the same file).
 With no MESH it uses the public corpus `tests/real-world-samples/`; `--limit N`
 caps the count. The runner exits non-zero when any mesh is WORSE and writes
-`summary.json` + `report.md`. `--python` must be the repair venv interpreter (numpy + the mandatory
+`summary.json` + `report.md`. `TRADE-SI` meshes are listed separately and do
+not affect the exit code; a run whose only non-SAME/BETTER result is a trade is
+a pass-with-trade, and that must be said explicitly in the report. `--python` must be the repair venv interpreter (numpy + the mandatory
 `sutura_geom` extension), not the plain system Python.
 
 ## Portability (Linux + macOS)
@@ -180,4 +189,6 @@ caps the count. The runner exits non-zero when any mesh is WORSE and writes
 ## What "done" looks like
 A verified change: every mesh in the representative set is SAME or BETTER,
 `thingi10k_100827` included, no new leak, no rise in parts/shells, two-sided
-distance within tolerance, and the runtime delta is explained.
+distance within tolerance, and the runtime delta is explained. A `TRADE-SI`
+mesh is acceptable only when the trade is deliberate and named (shape equal or
+better, SI kept on purpose); it is reported, never silently dropped.
