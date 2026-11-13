@@ -152,9 +152,9 @@ jobs:
         run: |
           python3 -m venv base-venv
           base-venv/bin/pip install --quiet -r base/requirements.txt wheels-base/*.whl
-          if [ -d wheels-cand ]; then cp wheels-cand/*.whl cand-wheel.whl; else cp wheels-base/*.whl cand-wheel.whl; fi
+          mkdir -p cand-wheels
+          if [ -d wheels-cand ]; then cp wheels-cand/*.whl cand-wheels/; else cp wheels-base/*.whl cand-wheels/; fi
           python3 -m venv cand-venv
-          mkdir -p cand-wheels && mv cand-wheel.whl cand-wheels/
           cand-venv/bin/pip install --quiet -r cand/requirements.txt cand-wheels/*.whl
       - name: Run shard
         run: |
