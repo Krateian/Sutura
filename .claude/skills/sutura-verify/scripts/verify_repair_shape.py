@@ -528,6 +528,13 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
 
     vi, ti = weld_exact(in_raw)
     vo, to = weld_exact(out_raw)
+    if len(ti) == 0 or len(to) == 0:
+        # An unreadable or empty mesh would otherwise flow through as zero
+        # holes / zero distance, i.e. metrics that look perfect. Fail loudly
+        # instead of producing a flattering row.
+        raise ValueError(
+            'mesh has no triangles (input=%d, output=%d); unreadable or empty '
+            'STL: %s' % (len(ti), len(to), in_path))
     bbox_diag = float(np.linalg.norm(vi.max(0) - vi.min(0))) if len(vi) else 1.0
     tol = min(max(bbox_diag / 10000.0, 0.0125), 0.05)
 

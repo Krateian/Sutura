@@ -101,6 +101,16 @@ def cli_report(stdout):
 MEASURE_TIMEOUT_EXCEEDED = 'measurement exceeded %ss'
 
 
+def measurement_error_record(exc):
+    """The per-side record for a mesh whose measurement raised.
+
+    Kept as a named function so the run can report a single ERROR row for an
+    unreadable/empty mesh instead of aborting, and so that behaviour is
+    testable without running a repair.
+    """
+    return {'measure_error': str(exc)[:300], 'time_s': 0.0}
+
+
 def measure(in_path, out_path, elapsed, repo, surface_budget='sweep',
             timeout=None):
     """Shape metrics for one side, bounded by ``timeout`` seconds.
@@ -669,8 +679,17 @@ def main():
         with open(out_stl, 'rb') as f:
             md5 = hashlib.md5(f.read()).hexdigest()
         if mode in ('quality', 'feature'):
-            meas = measure(in_path, out_stl, el, repo_x,
-                           args.surface_budget, timeout=args.measure_timeout)
+            try:
+                meas = measure(in_path, out_stl, el, repo_x,
+                               args.surface_budget,
+                               timeout=args.measure_timeout)
+            except Exception as e:  # noqa: BLE001
+                # An unreadable/empty mesh raises in verify(); report it as a
+                # named failure for THIS mesh instead of aborting the run.
+                print('  %s: measurement failed: %s' % (side, e), flush=True)
+                rec = measurement_error_record(e)
+                rec['time_s'] = round(el, 2)
+                return rec
         else:
             meas = {'time_s': round(el, 2)}
         meas.update({'md5': md5, 'ftetwild_adopted': ftetwild_adopted(report),
@@ -700,6 +719,15 @@ def main():
         if b is None or c is None:
             return {'name': name, key_b: b or {}, key_c: c or {},
                     'verdict': 'ERROR', 'verdict_reason': 'a run produced no output',
+                    'changed': True}
+        # A side that could not be measured at all (unreadable/empty mesh) is a
+        # named error, never a pass on zeroed metrics.
+        failed = [s for s in (b, c) if s.get('measure_error')]
+        if failed:
+            return {'name': name, key_b: b, key_c: c,
+                    'verdict': 'ERROR',
+                    'verdict_reason': 'measurement failed: %s'
+                                      % failed[0]['measure_error'],
                     'changed': True}
         # A side whose shape measurement overran is TIMEOUT, not ERROR: it is a
         # budget failure, it fails the run, and the board counts it separately.

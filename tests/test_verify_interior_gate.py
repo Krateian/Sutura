@@ -216,6 +216,35 @@ def test_verify_routes_above_gate_to_the_skip():
     assert r_below['buried_mask_available'] is True
 
 
+def test_empty_mesh_raises_instead_of_reporting_perfect_metrics():
+    """An unreadable mesh used to look perfect: 0 holes, 0 distance.
+
+    verify() must raise, so the harness turns it into a named ERROR row rather
+    than a flattering one.
+    """
+    import tempfile
+    d = tempfile.mkdtemp(prefix='empty-')
+    p = os.path.join(d, 'stub.stl')
+    # declares one triangle, contains none
+    with open(p, 'wb') as f:
+        f.write(b'\0' * 80)
+        f.write(np.uint32(1).tobytes())
+    try:
+        vrs.verify(p, p, repo=REPO, surface=False)
+    except ValueError as e:
+        assert 'no triangles' in str(e), e
+    else:
+        raise AssertionError('verify() accepted an empty mesh')
+
+
+def test_measure_error_becomes_an_error_row_not_a_crash():
+    """The harness must convert a measurement exception into an ERROR row."""
+    vo = _load('verify_default_vs_optout')
+    rec = vo.measurement_error_record(ValueError('mesh has no triangles'))
+    assert 'no triangles' in rec['measure_error'], rec
+    assert 'measure_timeout' not in rec
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):
