@@ -19,7 +19,7 @@ import traceback
 
 VERIFY = os.environ.get(
     'VERIFY_SCRIPT',
-    'base/.claude/skills/sutura-verify/scripts/verify_default_vs_optout.py')
+    'tools/.claude/skills/sutura-verify/scripts/verify_default_vs_optout.py')
 SHAPE_REQUIRED = ('reload_holes', 'reload_non_manifold_edges', 'components',
                   'closed_shells', 'two_sided_max_mm', 'two_sided_p95_mm',
                   'leak_max_mm', 'leak_count', 'si_output')
@@ -119,10 +119,14 @@ def main():
     if set_name != 'bench115':
         files = files[shard::shards]
     outdir = tempfile.mkdtemp(prefix='shard-')
+    # determinism compares two independent runs of the SAME ref (the
+    # candidate, or the base when no candidate is given), never base vs cand.
+    a_repo, a_py = (('cand', 'cand-venv') if mode == 'determinism'
+                    else ('base', 'base-venv'))
     cmd = [sys.executable, VERIFY] \
         + [resolve_mesh(corpus, f) for f in files] + FLAGS[mode] + [
-            '--baseline-repo', os.path.abspath('base'),
-            '--baseline-python', os.path.abspath('base-venv/bin/python'),
+            '--baseline-repo', os.path.abspath(a_repo),
+            '--baseline-python', os.path.abspath(a_py + '/bin/python'),
             '--repo', os.path.abspath('cand'),
             '--python', os.path.abspath('cand-venv/bin/python'),
             '--out-dir', outdir]
