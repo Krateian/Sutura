@@ -580,8 +580,25 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
     if surface:
         try:
             import surface_metrics as sm
+            # Reuse the interior-wall mask already computed above instead of
+            # paying for a second per-face winding pass over the whole surface.
+            # Keys are translated to surface_metrics' naming; the mask itself is
+            # byte-identical (same kernel call, same delta, same defect ring).
+            _buried = None
+            if buried_mask is not None and len(buried_mask) == len(ti):
+                _buried = (buried_mask, {
+                    'buried_input_available': bool(dist.get('buried_mask_available')),
+                    'buried_input_faces': int(np.count_nonzero(buried_mask)),
+                    'buried_input_area_mm2': round(float(
+                        (in_areas[buried_mask]).sum()), 6) if len(in_areas) == len(ti) else 0.0,
+                    'buried_input_debris_faces': int(dist.get('buried_debris_faces') or 0),
+                    'buried_input_degenerate_faces': int(
+                        dist.get('buried_degenerate_faces') or 0),
+                    'buried_input_epsilon_mm': float(dist.get('buried_epsilon_mm') or 0.0),
+                    'buried_input_note': None,
+                })
             result.update(sm.measure(vi, ti, vo, to, in_rep,
-                                     budget=surface_budget))
+                                     budget=surface_budget, buried=_buried))
         except Exception as e:  # noqa: BLE001
             result['surface_metrics_note'] = 'surface metrics failed: %s' % e
 

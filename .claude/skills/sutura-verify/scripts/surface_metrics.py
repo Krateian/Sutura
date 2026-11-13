@@ -808,20 +808,30 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
 def measure(vi, ti, vo, to, defect_report=None, *, tol=None,
             budget=DEFAULT_SURFACE_BUDGET,
             recall_samples_per_edge=RECALL_SAMPLES_PER_EDGE,
-            area_samples=None, layers=None):
-    """Both metrics as one flat dict, ready to merge into a verify result."""
+            area_samples=None, layers=None, buried=None):
+    """Both metrics as one flat dict, ready to merge into a verify result.
+
+    ``buried`` optionally supplies an already-computed
+    ``(mask, info)`` interior-wall pair from the caller (same mesh, same delta,
+    same defect mask).  ``buried_face_mask`` is a per-face winding pass over the
+    whole surface, so on a large mesh it dominates the measurement; a caller
+    that already ran it must not pay for it twice.
+    """
     mask = defect_face_mask(ti, defect_report)
-    buried, buried_info = input_buried_face_mask(
-        vi, ti, defect_face_mask=mask)
+    if buried is not None:
+        buried_mask, buried_info = buried
+    else:
+        buried_mask, buried_info = input_buried_face_mask(
+            vi, ti, defect_face_mask=mask)
     exterior = _inside_output(np.asarray(vo), np.asarray(to),
                               np.asarray(vi))
     out = feature_recall(vi, ti, vo, to, defect_face_mask=mask, tol=tol,
                          max_per_edge=recall_samples_per_edge,
-                         exterior=exterior, buried_mask=buried)
+                         exterior=exterior, buried_mask=buried_mask)
     out.update(healthy_fill(vi, ti, vo, to, defect_report=defect_report,
                             defect_face_mask=mask, tol=tol, budget=budget,
                             area_samples=area_samples, layers=layers,
-                            exterior=exterior, buried_mask=buried))
+                            exterior=exterior, buried_mask=buried_mask))
     out.update(buried_info)
     out['surface_exterior_available'] = bool(exterior[2])
     out['surface_exterior_note'] = exterior[3]

@@ -274,6 +274,11 @@ jobs:
       - name: "Test: face-cap SI skip"
         run: ./venv/bin/python tests/test_verify_face_cap.py
 
+      # The verify harness must not pay for the interior-wall mask twice per
+      # mesh; a precomputed mask has to be used, not recomputed.
+      - name: "Test: buried-mask dedupe"
+        run: ./venv/bin/python tests/test_verify_buried_dedupe.py
+
       - name: "Test: triage profiles"
         run: ./venv/bin/python tests/test_triage_profiles.py
 
