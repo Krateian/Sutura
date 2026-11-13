@@ -234,6 +234,9 @@ jobs:
           mkdir -p summaries
           python3 scripts/gh_mesh_board.py --plan plan.json summaries > board.md
           cat board.md >> "$GITHUB_STEP_SUMMARY"
-          python3 scripts/gh_mesh_board.py --check --plan plan.json summaries
+      # Upload the board before the verdict check so a failing run still
+      # leaves the board to read.
       - uses: actions/upload-artifact@v4
         with: { name: board, path: board.md, retention-days: 7 }
+      - name: Verdict check (fails on WORSE/ERROR/MISSING/TIMEOUT)
+        run: python3 scripts/gh_mesh_board.py --check --plan plan.json summaries
