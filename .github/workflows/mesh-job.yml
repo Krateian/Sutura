@@ -43,6 +43,10 @@ jobs:
               if not re.fullmatch(r'[A-Za-z0-9_]+', name):
                   raise SystemExit('bad set name: %s' % name)
               n=override or counts.get(name,4)
+              # bench115 chunks are files[k::12]; a shard count that does not
+              # divide 12 makes every shard fetch a large superset of its slice.
+              if name == 'bench115' and 12 % n:
+                  raise SystemExit('bench115 shards must divide 12; got %d' % n)
               inc += [{'set':name,'mode':mode,'shard':i,'shards':n} for i in range(n)]
           out=json.dumps({'include':inc})
           with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('matrix='+out+'\n')
@@ -192,6 +196,8 @@ jobs:
               name, _, mode = raw.partition('@')
               mode = mode or os.environ['MODE']
               n=override or counts.get(name,4)
+              if name == 'bench115' and 12 % n:
+                  raise SystemExit('bench115 shards must divide 12; got %d' % n)
               inc += [{'set':name,'mode':mode,'shard':i,'shards':n} for i in range(n)]
           print(json.dumps({'include':inc}))
           PY
