@@ -122,8 +122,9 @@ jobs:
       # bench115 is 6.4 GB; a shard downloads only its own ~250-380 MB chunk
       # from the private repo's release, verifies it, extracts it, and deletes
       # the archive so the 14 GB runner disk never holds the whole corpus.
-      # The release also carries bench115-chunk-<k>.txt, the authoritative file
-      # list for that chunk, so the shard does not re-derive a slicing rule.
+      # The chunk's own contents ARE the file list: the shard writes its
+      # manifest from the extracted files, so no slicing rule lives on the
+      # runner and the release needs no extra manifest asset.
       - name: bench115 chunk (private release, secret PAT)
         if: matrix.set == 'bench115'
         env:
@@ -132,16 +133,16 @@ jobs:
           CORPUS_REPO: ${{ vars.GATE_CORPUS_REPO || 'Krateian/sutura-gate-corpus' }}
         run: |
           set -euo pipefail
-          mkdir -p corpus/bench115
+          mkdir -p corpus/bench115 corpus/sets
           tmp=$(mktemp -d)
           gh release download benchmark-corpus-v1 -R "$CORPUS_REPO" \
-            -p "bench115-chunk-${SHARD}.tar.gz" -p "bench115-chunk-${SHARD}.txt" \
-            -p bench115-SHA256SUMS -D "$tmp"
+            -p "bench115-chunk-${SHARD}.tar.gz" -p bench115-SHA256SUMS -D "$tmp"
           ( cd "$tmp" && grep " bench115-chunk-${SHARD}.tar.gz\$" bench115-SHA256SUMS | sha256sum -c - )
           tar -xzf "$tmp/bench115-chunk-${SHARD}.tar.gz" -C corpus/bench115
-          cp "$tmp/bench115-chunk-${SHARD}.txt" corpus/sets/bench115.txt
           rm -rf "$tmp"
-          echo "bench115 files staged: $(find corpus/bench115 -name '*.stl' | wc -l)"
+          # The extracted chunk is the authoritative list for this shard.
+          ls corpus/bench115 | grep '\.stl$' | sort > corpus/sets/bench115.txt
+          echo "bench115 files staged: $(wc -l < corpus/sets/bench115.txt)"
       - uses: actions/download-artifact@v4
         with: { name: wheel-base, path: wheels-base }
       - uses: actions/download-artifact@v4
