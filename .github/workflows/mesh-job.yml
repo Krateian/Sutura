@@ -4,8 +4,8 @@ on:
     inputs:
       base_ref:      { description: 'Side A ref (branch, tag or SHA)', required: true, default: 'main' }
       candidate_ref: { description: 'Side B ref (empty = single-side)', required: false, default: '' }
-      sets:          { description: 'Comma list; each entry NAME or NAME@mode (quality_ab|byte|determinism|single_side)', required: true, default: 'samples40@quality_ab,oracle36@quality_ab' }
-      mode:          { description: 'Default mode for entries without @mode: quality_ab | byte | determinism | single_side', required: true, default: 'quality_ab' }
+      sets:          { description: 'Comma list; each entry NAME or NAME@mode (quality_ab|byte|determinism|single_side|bench115). Full run: derived264@quality_ab,samples40@quality_ab,bench115@bench115', required: true, default: 'samples40@quality_ab,oracle36@quality_ab' }
+      mode:          { description: 'Default mode for entries without @mode: quality_ab | byte | determinism | single_side | bench115', required: true, default: 'quality_ab' }
       env_base:      { description: 'Side A env (unsupported by the harness; candidate side only)', required: false, default: '' }
       env_candidate: { description: 'Side B env, e.g. SUTURA_SI_EXCISE=0', required: false, default: '' }
       shards:        { description: 'Shard count override (per set)', required: false, default: '' }
@@ -30,8 +30,8 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, re
-          counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5}
-          modes=('quality_ab','byte','determinism','single_side')
+          counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5,'derived264':20,'bench115':12}
+          modes=('quality_ab','byte','determinism','single_side','bench115')
           override=int(os.environ.get('SHARDS') or 0)
           default_mode=os.environ['MODE']
           inc=[]
@@ -114,6 +114,41 @@ jobs:
           repository: ${{ vars.GATE_CORPUS_REPO || 'Krateian/sutura-gate-corpus' }}
           token: ${{ secrets.GATE_CORPUS_TOKEN }}
           path: corpus
+      # bench115 is 6.4 GB; a shard downloads only its own ~450 MB chunk from
+      # the private repo's release, verifies it, extracts it, and deletes the
+      # archive so the 14 GB runner disk never holds the whole corpus.
+      - name: bench115 chunk (private release, secret PAT)
+        if: matrix.set == 'bench115'
+        env:
+          GH_TOKEN: ${{ secrets.GATE_CORPUS_TOKEN }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
+          CORPUS_REPO: ${{ vars.GATE_CORPUS_REPO || 'Krateian/sutura-gate-corpus' }}
+        run: |
+          set -euo pipefail
+          mkdir -p corpus/bench115
+          # The manifest is size-descending, so shard k's files are the stride
+          # files[k::SHARDS]. Chunk c holds files[c::12], so the chunks this
+          # shard needs are {(SHARD + j*SHARDS) mod 12}; with SHARDS == 12 that
+          # is the single chunk SHARD.
+          chunks=$(python3 -c "
+          import sys
+          shard, shards = int(sys.argv[1]), int(sys.argv[2])
+          print(' '.join(sorted({str((shard + j * shards) % 12)
+                                 for j in range(12)})))" "$SHARD" "$SHARDS")
+          echo "chunks: $chunks"
+          tmp=$(mktemp -d)
+          gh release download benchmark-corpus-v1 -R "$CORPUS_REPO" \
+            -p bench115-SHA256SUMS -D "$tmp"
+          for k in $chunks; do
+            gh release download benchmark-corpus-v1 -R "$CORPUS_REPO" \
+              -p "bench115-chunk-${k}.tar.gz" -D "$tmp"
+            ( cd "$tmp" && grep " bench115-chunk-${k}.tar.gz\$" bench115-SHA256SUMS | sha256sum -c - )
+            tar -xzf "$tmp/bench115-chunk-${k}.tar.gz" -C corpus/bench115
+            rm -f "$tmp/bench115-chunk-${k}.tar.gz"
+          done
+          rm -rf "$tmp"
+          echo "bench115 files staged: $(find corpus/bench115 -name '*.stl' | wc -l)"
       - uses: actions/download-artifact@v4
         with: { name: wheel-base, path: wheels-base }
       - uses: actions/download-artifact@v4
@@ -150,7 +185,7 @@ jobs:
         run: |
           python3 - <<'PY' > plan.json
           import json, os
-          counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5}
+          counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5,'derived264':20,'bench115':12}
           override=int(os.environ.get('SHARDS') or 0)
           inc=[]
           for raw in [x.strip() for x in os.environ['SETS'].split(',') if x.strip()]:

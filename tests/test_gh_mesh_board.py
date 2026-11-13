@@ -150,6 +150,61 @@ def test_fewer_rows_than_meshes_fails():
     assert 'meshes but' in out, out
 
 
+def _strict_row(name, verdict, strict_b, strict_c, set_name='bench115'):
+    holes_b = 0 if strict_b else 1
+    holes_c = 0 if strict_c else 1
+    b = dict(SHAPE, reload_holes=holes_b)
+    c = dict(SHAPE, reload_holes=holes_c)
+    return {'id': name, 'verdict': verdict, 'reason': 'why',
+            'baseline': b, 'candidate': c, 'missing': [],
+            'set': set_name, 'mode': 'bench115',
+            'strict_watertight': {'baseline': strict_b, 'candidate': strict_c}}
+
+
+def test_strict_watertight_counts_are_printed_per_set():
+    rows = [_strict_row('m1', 'SAME', True, True),
+            _strict_row('m2', 'SAME', True, False),
+            _strict_row('m3', 'SAME', False, False)]
+    rc, out = _board(_run(rows))
+    assert rc == 0, out
+    assert 'StrictWT b/c' in out, out
+    assert 'baseline 2/3, candidate 1/3' in out, out
+    assert 'September 2026' in out, out
+
+
+def test_strict_counts_are_not_gated():
+    # A strict-watertight regression is a measurement, not a verdict: the row
+    # verdict drives the exit code, never the count.
+    rows = [_strict_row('m1', 'SAME', True, False)]
+    rc, out = _board(_run(rows))
+    assert rc == 0, out
+    assert 'candidate 0/1' in out, out
+
+
+def test_strict_recomputed_when_shard_json_predates_the_field():
+    row = _strict_row('m1', 'SAME', True, False)
+    del row['strict_watertight']
+    d = _run([row])
+    rc, out = _board(d)
+    assert rc == 0, out
+    assert 'yes/no' in out, out
+
+
+def test_skipped_nondet_is_reported_in_the_strict_block():
+    rows = [_strict_row('m1', 'SKIPPED-NONDET', True, True)]
+    rc, out = _board(_run(rows))
+    assert rc == 0, out
+    assert 'SKIPPED-NONDET 1' in out, out
+
+
+def test_same_id_in_two_sets_renders_twice():
+    a = _strict_row('artec_metal-nut', 'SAME', True, True, set_name='bench115')
+    b = _strict_row('artec_metal-nut', 'SAME', True, True, set_name='samples40')
+    rc, out = _board(_run([a, b]))
+    assert rc == 0, out
+    assert out.count('artec_metal-nut') == 2, out
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):

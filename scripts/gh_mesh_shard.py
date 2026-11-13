@@ -34,8 +34,13 @@ FLAGS = {'byte': ['--byte', '--deterministic'],
          'determinism': ['--byte', '--deterministic',
                          '--exclude-nondeterministic'],
          'quality_ab': ['--quality', '--no-visual'],
-         'single_side': ['--quality', '--no-visual']}
-QUALITY_MODES = ('quality_ab', 'single_side')
+         'single_side': ['--quality', '--no-visual'],
+         # bench115 has fTetWild-adopting meshes; an adopted result is
+         # stochastic, so it is reported as SKIPPED-NONDET instead of being
+         # compared, exactly as the determinism and core_clean sets do.
+         'bench115': ['--quality', '--no-visual',
+                      '--exclude-nondeterministic']}
+QUALITY_MODES = ('quality_ab', 'single_side', 'bench115')
 
 
 def resolve_mesh(corpus, rel):
@@ -43,10 +48,12 @@ def resolve_mesh(corpus, rel):
 
     The derived sets (``data/derived/stl/...``) live in the private corpus
     repo; ``samples40`` points at ``tests/real-world-samples``, which is
-    already tracked in the public repo.  Reading the input from the base
-    checkout keeps those 40 files out of the private repo.
+    already tracked in the public repo.  ``bench115`` lists bare file names and
+    the chunk fetch extracts them to ``corpus/bench115/``.  Reading the public
+    copy from the base checkout keeps those 40 files out of the private repo.
     """
-    for root in (corpus, os.path.join(os.getcwd(), 'base')):
+    for root in (corpus, os.path.join(os.getcwd(), 'base'),
+                 os.path.join(corpus, 'bench115')):
         p = os.path.join(root, rel)
         if os.path.exists(p):
             return p
@@ -69,6 +76,20 @@ def manifest(sets, set_name):
         return matches[0]
     raise SystemExit('no unique manifest for set %r in %s (matches: %s)'
                      % (set_name, sets, [os.path.basename(m) for m in matches]))
+
+
+def strict_watertight(rec):
+    """September-style strict watertight: no holes AND no non-manifold edges.
+
+    ``reload_holes`` / ``reload_non_manifold_edges`` are the harness's
+    ``defects.detect()`` counts on the reloaded output, which is exactly the
+    metric in docs/repair-benchmark-strict-watertight-2026-09.md.  None when
+    either count is unavailable (the row must not read as a pass).
+    """
+    holes, nm = rec.get('reload_holes'), rec.get('reload_non_manifold_edges')
+    if holes is None or nm is None:
+        return None
+    return bool(holes == 0 and nm == 0)
 
 
 def main():
@@ -124,6 +145,10 @@ def main():
                          'reason': reason,
                          'baseline': sides['baseline'],
                          'candidate': sides['candidate'],
+                         'strict_watertight': {
+                             'baseline': strict_watertight(sides['baseline']),
+                             'candidate': strict_watertight(sides['candidate']),
+                         } if quality else None,
                          'missing': missing})
     else:
         err = {'rc': r.returncode, 'error_type': 'MissingSummary',

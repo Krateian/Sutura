@@ -55,6 +55,22 @@ def _md5s(b, c):
     return '%s/%s' % (str(mb or '-')[:8], str(mc or '-')[:8])
 
 
+def _strict_cell(row, side):
+    """Strict-watertight for one side, from the shard or recomputed.
+
+    Older shard files predate the field, so recompute from the reloaded
+    holes/non-manifold counts rather than showing a blank.
+    """
+    val = (row.get('strict_watertight') or {}).get(side)
+    if val is None:
+        rec = row.get(side) or {}
+        holes, nm = rec.get('reload_holes'), rec.get('reload_non_manifold_edges')
+        if holes is None or nm is None:
+            return '-'
+        val = (holes == 0 and nm == 0)
+    return 'yes' if val else 'no'
+
+
 def _cell(b, c, key, f):
     if key is None:
         return '%s/%s' % (_fmt(_parts(b), f), _fmt(_parts(c), f))
@@ -84,6 +100,53 @@ def _plan_errors(plan, files):
         seen.add((d.get('set'), d.get('mode'), int(d.get('shard', -1))))
     return ['no summary for set %s mode %s shard %d' % t
             for t in sorted(expected - seen)]
+
+
+SEPTEMBER_STRICT = {'bench115': '102/115 at c0f5d26, v0.2.8 era'}
+
+
+def _strict_summary(rows):
+    """Per-set strict-watertight counts, September-comparable, never gated.
+
+    The counts are printed for comparison with
+    docs/repair-benchmark-strict-watertight-2026-09.md.  They are not part of
+    the failing set: September measured a different pipeline era, and a count
+    is a measurement, not an acceptance decision.
+    """
+    from collections import defaultdict
+    agg = defaultdict(lambda: {'baseline': 0, 'candidate': 0, 'measured': 0,
+                               'skipped': 0, 'error': 0})
+    for r in rows:
+        if not r.get('strict_watertight'):
+            continue
+        a = agg[r.get('set') or '-']
+        a['measured'] += 1
+        if r['strict_watertight'].get('baseline'):
+            a['baseline'] += 1
+        if r['strict_watertight'].get('candidate'):
+            a['candidate'] += 1
+        if r.get('verdict') == 'SKIPPED-NONDET':
+            a['skipped'] += 1
+        if r.get('verdict') == 'ERROR':
+            a['error'] += 1
+    if not agg:
+        return ''
+    lines = ['', 'Strict watertight (defects.detect on the reloaded output; '
+                 'September-comparable, printed not gated):']
+    for name in sorted(agg):
+        a = agg[name]
+        n = a['measured']
+        line = ('  %-12s baseline %d/%d, candidate %d/%d'
+                % (name, a['baseline'], n, a['candidate'], n))
+        if a['skipped']:
+            line += '  (SKIPPED-NONDET %d)' % a['skipped']
+        if a['error']:
+            line += '  (ERROR %d)' % a['error']
+        ref = SEPTEMBER_STRICT.get(name)
+        if ref:
+            line += '  [September 2026: %s]' % ref
+        lines.append(line)
+    return '\n'.join(lines)
 
 
 def main():
@@ -121,18 +184,21 @@ def main():
     bad = [r for r in rows
            if str(r.get('verdict', '')).upper() in FAILING]
     trades = [r for r in rows if r.get('verdict') == 'TRADE-SI']
-    print('| set | mode | public ID | verdict | SI trade | MD5 b/c | %s | note |'
+    print('| set | mode | public ID | verdict | SI trade | MD5 b/c | StrictWT b/c | %s | note |'
           % ' | '.join(h for h, _k, _f in COLS))
-    print('|---|---|---|---|--:|---|%s|---|' % '|'.join('---' for _ in COLS))
-    for r in sorted(rows, key=lambda x: (str(r.get('set')), str(r.get('mode')),
-                                         str(r.get('id')))):
+    print('|---|---|---|---|--:|---|--:|%s|---|' % '|'.join('---' for _ in COLS))
+    for r in sorted(rows, key=lambda x: (str(x.get('set')), str(x.get('mode')),
+                                         str(x.get('id')))):
         b = r.get('baseline') or {}
         c = r.get('candidate') or {}
-        print('| %s | %s | %s | %s | %s | %s | %s | %s |' % (
+        strict = '%s/%s' % (_strict_cell(r, 'baseline'),
+                            _strict_cell(r, 'candidate'))
+        print('| %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (
             r.get('set') or '-', r.get('mode') or '-', r['id'], r['verdict'],
-            _si_trade(b, c, r), _md5s(b, c),
+            _si_trade(b, c, r), _md5s(b, c), strict,
             ' | '.join(_cell(b, c, k, f) for _h, k, f in COLS),
             str(r.get('reason') or '-').replace('|', '/')))
+    print(_strict_summary(rows))
     print('\nRows: %d; failing: %d; TRADE-SI: %d; shard errors: %d'
           % (len(rows), len(bad), len(trades), len(errors)))
     if trades:
