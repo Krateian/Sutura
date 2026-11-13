@@ -177,13 +177,21 @@ jobs:
         env: { SETS: '${{ inputs.sets }}', SHARDS: '${{ inputs.shards }}', MODE: '${{ inputs.mode }}' }
         run: |
           python3 - <<'PY' > plan.json
-          import json, os
+          import json, os, re
           counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5,'derived264':20,'bench115':12}
+          modes=('quality_ab','byte','determinism','single_side','bench115')
           override=int(os.environ.get('SHARDS') or 0)
           inc=[]
+          # Same validation as preflight: this job runs with if: always(), so a
+          # silently accepted bad input would surface only as confusing
+          # "no summary for shard N" errors instead of the real problem.
           for raw in [x.strip() for x in os.environ['SETS'].split(',') if x.strip()]:
               name, _, mode = raw.partition('@')
               mode = mode or os.environ['MODE']
+              if mode not in modes:
+                  raise SystemExit('unknown mode: %s' % mode)
+              if not re.fullmatch(r'[A-Za-z0-9_]+', name):
+                  raise SystemExit('bad set name: %s' % name)
               n=override or counts.get(name,4)
               if name == 'bench115' and n != 12:
                   raise SystemExit('bench115 shards are fixed at 12; got %d' % n)
