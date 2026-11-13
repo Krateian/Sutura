@@ -108,7 +108,12 @@ def main():
     corpus = os.path.join(os.getcwd(), 'corpus')
     sets = os.path.join(corpus, 'sets')
     files = [l.strip() for l in open(manifest(sets, set_name)) if l.strip()]
-    files = files[shard::shards]
+    # bench115 ships one manifest per packed chunk (bench115-chunk-<k>.txt,
+    # staged as sets/bench115.txt), so the file list IS this shard's slice and
+    # must not be sub-sliced again.  Every other set is sliced from its full
+    # manifest here.
+    if set_name != 'bench115':
+        files = files[shard::shards]
     outdir = tempfile.mkdtemp(prefix='shard-')
     cmd = [sys.executable, VERIFY] \
         + [resolve_mesh(corpus, f) for f in files] + FLAGS[mode] + [

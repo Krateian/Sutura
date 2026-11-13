@@ -43,10 +43,11 @@ jobs:
               if not re.fullmatch(r'[A-Za-z0-9_]+', name):
                   raise SystemExit('bad set name: %s' % name)
               n=override or counts.get(name,4)
-              # bench115 chunks are files[k::12]; a shard count that does not
-              # divide 12 makes every shard fetch a large superset of its slice.
-              if name == 'bench115' and 12 % n:
-                  raise SystemExit('bench115 shards must divide 12; got %d' % n)
+              # bench115 is packed as exactly 12 LPT-balanced chunks and shard k
+              # runs chunk k, so the count is fixed at 12.
+              if name == 'bench115' and n != 12:
+                  raise SystemExit('bench115 shards are fixed at 12 (one per '
+                                   'packed chunk); got %d' % n)
               inc += [{'set':name,'mode':mode,'shard':i,'shards':n} for i in range(n)]
           out=json.dumps({'include':inc})
           with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('matrix='+out+'\n')
@@ -118,39 +119,27 @@ jobs:
           repository: ${{ vars.GATE_CORPUS_REPO || 'Krateian/sutura-gate-corpus' }}
           token: ${{ secrets.GATE_CORPUS_TOKEN }}
           path: corpus
-      # bench115 is 6.4 GB; a shard downloads only its own ~450 MB chunk from
-      # the private repo's release, verifies it, extracts it, and deletes the
-      # archive so the 14 GB runner disk never holds the whole corpus.
+      # bench115 is 6.4 GB; a shard downloads only its own ~250-380 MB chunk
+      # from the private repo's release, verifies it, extracts it, and deletes
+      # the archive so the 14 GB runner disk never holds the whole corpus.
+      # The release also carries bench115-chunk-<k>.txt, the authoritative file
+      # list for that chunk, so the shard does not re-derive a slicing rule.
       - name: bench115 chunk (private release, secret PAT)
         if: matrix.set == 'bench115'
         env:
           GH_TOKEN: ${{ secrets.GATE_CORPUS_TOKEN }}
           SHARD: ${{ matrix.shard }}
-          SHARDS: ${{ matrix.shards }}
           CORPUS_REPO: ${{ vars.GATE_CORPUS_REPO || 'Krateian/sutura-gate-corpus' }}
         run: |
           set -euo pipefail
           mkdir -p corpus/bench115
-          # The manifest is size-descending, so shard k's files are the stride
-          # files[k::SHARDS]. Chunk c holds files[c::12], so the chunks this
-          # shard needs are {(SHARD + j*SHARDS) mod 12}; with SHARDS == 12 that
-          # is the single chunk SHARD.
-          chunks=$(python3 -c "
-          import sys
-          shard, shards = int(sys.argv[1]), int(sys.argv[2])
-          print(' '.join(sorted({str((shard + j * shards) % 12)
-                                 for j in range(12)})))" "$SHARD" "$SHARDS")
-          echo "chunks: $chunks"
           tmp=$(mktemp -d)
           gh release download benchmark-corpus-v1 -R "$CORPUS_REPO" \
+            -p "bench115-chunk-${SHARD}.tar.gz" -p "bench115-chunk-${SHARD}.txt" \
             -p bench115-SHA256SUMS -D "$tmp"
-          for k in $chunks; do
-            gh release download benchmark-corpus-v1 -R "$CORPUS_REPO" \
-              -p "bench115-chunk-${k}.tar.gz" -D "$tmp"
-            ( cd "$tmp" && grep " bench115-chunk-${k}.tar.gz\$" bench115-SHA256SUMS | sha256sum -c - )
-            tar -xzf "$tmp/bench115-chunk-${k}.tar.gz" -C corpus/bench115
-            rm -f "$tmp/bench115-chunk-${k}.tar.gz"
-          done
+          ( cd "$tmp" && grep " bench115-chunk-${SHARD}.tar.gz\$" bench115-SHA256SUMS | sha256sum -c - )
+          tar -xzf "$tmp/bench115-chunk-${SHARD}.tar.gz" -C corpus/bench115
+          cp "$tmp/bench115-chunk-${SHARD}.txt" corpus/sets/bench115.txt
           rm -rf "$tmp"
           echo "bench115 files staged: $(find corpus/bench115 -name '*.stl' | wc -l)"
       - uses: actions/download-artifact@v4
@@ -196,8 +185,8 @@ jobs:
               name, _, mode = raw.partition('@')
               mode = mode or os.environ['MODE']
               n=override or counts.get(name,4)
-              if name == 'bench115' and 12 % n:
-                  raise SystemExit('bench115 shards must divide 12; got %d' % n)
+              if name == 'bench115' and n != 12:
+                  raise SystemExit('bench115 shards are fixed at 12; got %d' % n)
               inc += [{'set':name,'mode':mode,'shard':i,'shards':n} for i in range(n)]
           print(json.dumps({'include':inc}))
           PY
