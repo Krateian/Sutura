@@ -145,6 +145,77 @@ def test_measure_without_a_budget_still_works():
         vo.vrs.verify = real
 
 
+def _subdivide(v, t, levels=1):
+    v = np.asarray(v, np.float64)
+    for _ in range(levels):
+        cache = {}
+        verts = list(v)
+        tris = []
+        for a, b, c in t:
+            def mid(i, j):
+                k = (min(i, j), max(i, j))
+                if k not in cache:
+                    cache[k] = len(verts)
+                    verts.append((v[i] + v[j]) / 2.0)
+                return cache[k]
+            ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+            tris += [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]
+        v = np.asarray(verts)
+        t = np.asarray(tris, np.int64)
+    return v, t
+
+
+def _write_binary_stl(path, v, t):
+    """Binary STL: 80-byte header, u4 count, then 50 bytes per triangle."""
+    tri = v[t]
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    rec = np.zeros(len(t), dtype=[('n', '<f4', 3), ('v', '<f4', (3, 3)),
+                                  ('a', '<u2')])
+    rec['n'] = n.astype(np.float32)
+    rec['v'] = tri.astype(np.float32)
+    with open(path, 'wb') as f:
+        f.write(b'\0' * 80)
+        f.write(np.uint32(len(t)).tobytes())
+        f.write(rec.tobytes())
+
+
+def test_verify_routes_above_gate_to_the_skip():
+    """verify() ITSELF must select the gate, not just honour a flag.
+
+    Builds a synthetic mesh comfortably above the gate (the cube subdivided
+    until it crosses it) and one far below, then checks the routing.  The gate
+    is read from the product, so the subdivision count is derived, not assumed.
+    """
+    import tempfile
+    gate = vrs._interior_wall_gate()
+    assert gate is not None
+    v, t = _cube()
+    levels = 0
+    while len(t) <= gate:
+        v, t = _subdivide(v, t, 1)
+        levels += 1
+    assert len(t) > gate, (len(t), gate)
+    small_v, small_t = _cube()
+    assert len(small_t) < gate
+
+    d = tempfile.mkdtemp(prefix='gate-route-')
+    above = os.path.join(d, 'above.stl')
+    below = os.path.join(d, 'below.stl')
+    _write_binary_stl(above, v, t)
+    _write_binary_stl(below, small_v, small_t)
+
+    r_above = vrs.verify(above, above, repo=REPO, surface=False)
+    assert r_above['buried_note'] == vrs.INTERIOR_WALLS_SKIPPED_NOTE, \
+        (len(t), r_above.get('buried_note'))
+    assert r_above['buried_mask_available'] is False
+    # skipped => the visible distance IS the all-face one
+    assert r_above['two_sided_max_mm'] == r_above['two_sided_max_all_mm']
+
+    r_below = vrs.verify(below, below, repo=REPO, surface=False)
+    assert r_below['buried_note'] != vrs.INTERIOR_WALLS_SKIPPED_NOTE
+    assert r_below['buried_mask_available'] is True
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):
