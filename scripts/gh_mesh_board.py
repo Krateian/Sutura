@@ -16,7 +16,8 @@ import glob
 import json
 import sys
 
-FAILING = ('WORSE', 'FAIL', 'ERROR', 'CHANGED', 'MISSING', 'VISUAL-WORSE')
+FAILING = ('WORSE', 'FAIL', 'ERROR', 'CHANGED', 'MISSING', 'VISUAL-WORSE',
+           'TIMEOUT')
 COLS = [
     ('Holes b/c', 'reload_holes', '%s'),
     ('NM b/c', 'reload_non_manifold_edges', '%s'),
@@ -105,6 +106,29 @@ def _plan_errors(plan, files):
 SEPTEMBER_STRICT = {'bench115': '102/115 at c0f5d26, v0.2.8 era'}
 SI_FACE_CAP_NOTE = 'skipped (face cap)'
 SI_FACE_CAP_MARKER = 'SI n/a (face cap)'
+INTERIOR_WALLS_NOTE = 'interior walls not computed (large mesh)'
+
+
+def _interior_walls_summary(rows):
+    """Per-set count of rows measured above the product's interior-wall gate.
+
+    Mirrors the product's own note for a large mesh: the visible distances fall
+    back to the all-face values, and the board says so rather than presenting a
+    silently different metric as if it were the split one.
+    """
+    from collections import Counter
+    per_set = Counter(r.get('set') or '-' for r in rows
+                      if (r.get('baseline') or {}).get('buried_note')
+                      == INTERIOR_WALLS_NOTE
+                      or (r.get('candidate') or {}).get('buried_note')
+                      == INTERIOR_WALLS_NOTE)
+    if not per_set:
+        return ''
+    lines = ['', '%s:' % INTERIOR_WALLS_NOTE]
+    for name in sorted(per_set):
+        lines.append('  %-12s %d row(s) use all-face distances'
+                     % (name, per_set[name]))
+    return '\n'.join(lines)
 
 
 def _si_capped(r):
@@ -130,6 +154,23 @@ def _face_cap_summary(rows):
     for name in sorted(per_set):
         lines.append('  %-12s %d row(s) judged without SI, face cap'
                      % (name, per_set[name]))
+    return '\n'.join(lines)
+
+
+def _timeout_summary(rows):
+    """One line per set: rows whose shape measurement hit --measure-timeout.
+
+    Counted separately from ERROR (a named measurement failure) and never a
+    pass: a timed-out row is in FAILING above.
+    """
+    from collections import Counter
+    per_set = Counter(r.get('set') or '-' for r in rows
+                      if r.get('verdict') == 'TIMEOUT')
+    if not per_set:
+        return ''
+    lines = ['', 'TIMEOUT (shape measurement exceeded its budget, never a pass):']
+    for name in sorted(per_set):
+        lines.append('  %-12s %d row(s) timed out' % (name, per_set[name]))
     return '\n'.join(lines)
 
 
@@ -228,6 +269,8 @@ def main():
             str(r.get('reason') or '-').replace('|', '/')))
     print(_strict_summary(rows))
     print(_face_cap_summary(rows))
+    print(_interior_walls_summary(rows))
+    print(_timeout_summary(rows))
     print('\nRows: %d; failing: %d; TRADE-SI: %d; shard errors: %d'
           % (len(rows), len(bad), len(trades), len(errors)))
     if trades:

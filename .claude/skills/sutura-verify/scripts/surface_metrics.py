@@ -808,17 +808,29 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
 def measure(vi, ti, vo, to, defect_report=None, *, tol=None,
             budget=DEFAULT_SURFACE_BUDGET,
             recall_samples_per_edge=RECALL_SAMPLES_PER_EDGE,
-            area_samples=None, layers=None, buried=None):
+            area_samples=None, layers=None, buried=None,
+            skip_buried_mask=False):
     """Both metrics as one flat dict, ready to merge into a verify result.
 
-    ``buried`` optionally supplies an already-computed
-    ``(mask, info)`` interior-wall pair from the caller (same mesh, same delta,
-    same defect mask).  ``buried_face_mask`` is a per-face winding pass over the
-    whole surface, so on a large mesh it dominates the measurement; a caller
-    that already ran it must not pay for it twice.
+    ``buried`` optionally supplies an already-computed ``(mask, info)``
+    interior-wall pair from the caller (same mesh, same delta, same defect
+    mask) -- ``buried_face_mask`` is a per-face winding pass over the whole
+    surface, so a caller that already ran it must not pay for it twice.
+
+    ``skip_buried_mask`` is for meshes above the product's own interior-wall
+    gate: the mask is not computed at all and the visible metrics fall back to
+    the all-face values, matching what the product reports for a large mesh.
     """
     mask = defect_face_mask(ti, defect_report)
-    if buried is not None:
+    if skip_buried_mask:
+        buried_mask = np.zeros(len(ti), dtype=bool)
+        buried_info = {
+            'buried_input_available': False, 'buried_input_faces': 0,
+            'buried_input_area_mm2': 0.0, 'buried_input_debris_faces': 0,
+            'buried_input_degenerate_faces': 0, 'buried_input_epsilon_mm': 0.0,
+            'buried_input_note': 'interior walls not computed (large mesh)',
+        }
+    elif buried is not None:
         buried_mask, buried_info = buried
     else:
         buried_mask, buried_info = input_buried_face_mask(

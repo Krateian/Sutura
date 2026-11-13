@@ -291,7 +291,28 @@ def _buried_input_mask(vi, ti, defect_face_mask=None, delta=0.1):
     return mask, info, areas
 
 
-def two_sided_distance(vi, ti, vo, to, tol=None, defect_face_mask=None):
+INTERIOR_WALLS_SKIPPED_NOTE = 'interior walls not computed (large mesh)'
+
+
+def _interior_wall_gate():
+    """The product's own interior-wall face threshold, or None if unavailable.
+
+    Imported from ``sutura/fidelity.py``'s budget config so the verifier and the
+    product cannot drift apart: raising or lowering the product's gate moves the
+    verifier with it, with no second number to keep in sync.
+    """
+    try:
+        import fidelity
+        budgets = ((fidelity.load_config().get('fidelity') or {})
+                   .get('budgets') or {})
+        v = budgets.get('max_faces')
+        return int(v) if v is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def two_sided_distance(vi, ti, vo, to, tol=None, defect_face_mask=None,
+                       skip_buried_mask=False):
     """Symmetric vertex-to-surface distance (mm) between input and output.
 
     ``i2o_*`` and ``two_sided_*`` are the **visible** values: internal walls of
@@ -325,8 +346,22 @@ def two_sided_distance(vi, ti, vo, to, tol=None, defect_face_mask=None):
         diag = float(np.linalg.norm(np.asarray(vi).max(0)
                                     - np.asarray(vi).min(0)))
         tol = min(max(diag / 10000.0, 0.0125), 0.05)
-    buried, info, areas = _buried_input_mask(
-        vi, ti, defect_face_mask=defect_face_mask)
+    if skip_buried_mask:
+        # Large mesh: the product does not compute interior walls either, so the
+        # visible values fall back to the all-face ones.  The mask pass is NOT
+        # run at all -- that is the point -- and the reason is reported in the
+        # product's own words.
+        areas = _face_areas(vi, ti)
+        buried = np.zeros(len(ti), dtype=bool)
+        info = {'buried_mask_available': False,
+                'buried_faces_input': 0, 'buried_area_input_mm2': 0.0,
+                'buried_faces_removed': 0, 'buried_area_mm2': 0.0,
+                'buried_debris_faces': 0, 'buried_degenerate_faces': 0,
+                'buried_epsilon_mm': 0.0,
+                'buried_note': INTERIOR_WALLS_SKIPPED_NOTE}
+    else:
+        buried, info, areas = _buried_input_mask(
+            vi, ti, defect_face_mask=defect_face_mask)
     nonzero = areas > 1e-12
     if info['buried_faces_input']:
         face_d = d_i2o[ti[buried]].max(axis=1)
@@ -515,8 +550,20 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
         defect_mask = _sm.defect_face_mask(ti, in_rep)
     except Exception:  # noqa: BLE001
         defect_mask = None
-    dist = two_sided_distance(vi, ti, vo, to, tol=tol,
-                              defect_face_mask=defect_mask)
+    # Mirror the product: sutura/fidelity.py skips the interior-wall mask above
+    # its own `budgets.max_faces` (150k today) and reports the note
+    # 'healthy mask skipped (large mesh)'. The verifier follows the same gate so
+    # it never pays a per-face winding pass the product itself refuses to run.
+    # The threshold is READ from the product's config, not copied.
+    mask_gate = _interior_wall_gate()
+    walls_skipped = mask_gate is not None and max(len(ti), len(to)) > mask_gate
+    if walls_skipped:
+        dist = two_sided_distance(vi, ti, vo, to, tol=tol,
+                                  defect_face_mask=defect_mask,
+                                  skip_buried_mask=True)
+    else:
+        dist = two_sided_distance(vi, ti, vo, to, tol=tol,
+                                  defect_face_mask=defect_mask)
     leak = leak_metric(in_raw, out_raw, vi, ti, tol)
     orca = orca_info(out_path)
 
@@ -561,6 +608,7 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
         'i2o_max_all_mm': dist['i2o_all_max'],
         'i2o_p95_all_mm': dist['i2o_all_p95'],
         'buried_mask_available': dist['buried_mask_available'],
+        'buried_note': dist.get('buried_note'),
         'buried_faces_input': dist['buried_faces_input'],
         'buried_area_input_mm2': dist['buried_area_input_mm2'],
         'buried_faces_removed': dist['buried_faces_removed'],
@@ -585,7 +633,8 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
             # Keys are translated to surface_metrics' naming; the mask itself is
             # byte-identical (same kernel call, same delta, same defect ring).
             _buried = None
-            if buried_mask is not None and len(buried_mask) == len(ti):
+            if not walls_skipped and buried_mask is not None \
+                    and len(buried_mask) == len(ti):
                 _buried = (buried_mask, {
                     'buried_input_available': bool(dist.get('buried_mask_available')),
                     'buried_input_faces': int(np.count_nonzero(buried_mask)),
@@ -598,7 +647,8 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
                     'buried_input_note': None,
                 })
             result.update(sm.measure(vi, ti, vo, to, in_rep,
-                                     budget=surface_budget, buried=_buried))
+                                     budget=surface_budget, buried=_buried,
+                                     skip_buried_mask=walls_skipped))
         except Exception as e:  # noqa: BLE001
             result['surface_metrics_note'] = 'surface metrics failed: %s' % e
 

@@ -26,7 +26,7 @@ SHAPE_REQUIRED = ('reload_holes', 'reload_non_manifold_edges', 'components',
 SHAPE_KEYS = SHAPE_REQUIRED + (
     'orca_number_of_parts', 'orca_manifold', 'volume_error_rel',
     'two_sided_max_all_mm', 'two_sided_p95_all_mm',
-    'i2o_max_all_mm', 'i2o_p95_all_mm', 'si_output_note')
+    'i2o_max_all_mm', 'i2o_p95_all_mm', 'si_output_note', 'buried_note')
 BYTE_KEYS = ('md5', 'ftetwild_adopted')
 # The judge skips the SI criterion when BOTH sides lack exact SI for the face
 # cap; such a row is judged on its other metrics, so si_output must not count
@@ -153,9 +153,11 @@ def main():
                               if rec.get(k) is None})
             verdict = item.get('verdict') or 'MISSING'
             reason = item.get('verdict_reason')
-            if missing and verdict not in ('WORSE', 'FAIL', 'ERROR'):
+            if missing and verdict not in ('WORSE', 'FAIL', 'ERROR', 'TIMEOUT'):
                 # A metric the judge needs never arrived; the run cannot be
-                # called a pass on the metrics that survived.
+                # called a pass on the metrics that survived.  TIMEOUT is kept
+                # as itself: its metrics are None by construction and it has its
+                # own board line.
                 verdict = 'MISSING'
                 reason = 'missing metric(s): %s' % ', '.join(missing)
             rows.append({'id': item.get('name'), 'verdict': verdict,

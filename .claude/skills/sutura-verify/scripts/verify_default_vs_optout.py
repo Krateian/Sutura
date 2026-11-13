@@ -98,9 +98,42 @@ def cli_report(stdout):
     return {}
 
 
-def measure(in_path, out_path, elapsed, repo, surface_budget='sweep'):
-    m = vrs.verify(in_path, out_path, repo=repo,
-                   surface_budget=surface_budget)
+MEASURE_TIMEOUT_EXCEEDED = 'measurement exceeded %ss'
+
+
+def measure(in_path, out_path, elapsed, repo, surface_budget='sweep',
+            timeout=None):
+    """Shape metrics for one side, bounded by ``timeout`` seconds.
+
+    ``--timeout`` bounds only the repair subprocess, so a slow measurement (a
+    per-face winding pass on a large mesh) used to run unbounded and could burn
+    a whole CI job.  On expiry this returns a record with
+    ``measure_timeout=True`` and every metric None; the caller turns that into
+    a TIMEOUT row, which fails and is counted separately from ERROR.
+    """
+    if timeout and timeout > 0:
+        import threading
+        box = {}
+
+        def work():
+            try:
+                box['m'] = vrs.verify(in_path, out_path, repo=repo,
+                                      surface_budget=surface_budget)
+            except Exception as e:  # noqa: BLE001
+                box['err'] = e
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            return {'measure_timeout': True,
+                    'measure_timeout_s': float(timeout),
+                    'time_s': round(elapsed, 2)}
+        if 'err' in box:
+            raise box['err']
+        m = box['m']
+    else:
+        m = vrs.verify(in_path, out_path, repo=repo,
+                       surface_budget=surface_budget)
     m['time_s'] = round(elapsed, 2)
     return m
 
@@ -548,6 +581,10 @@ def main():
     ap.add_argument('--extra-arg', action='append', default=[])
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--timeout', type=int, default=900)
+    ap.add_argument('--measure-timeout', type=int, default=900,
+                    help='seconds allowed for one side of the SHAPE '
+                         'measurement (not the repair, which --timeout covers); '
+                         'a side that overruns makes the row TIMEOUT')
     ap.add_argument('--surface-budget', choices=('sweep', 'gate'),
                     default='sweep',
                     help='surface sampling budget (default: sweep 4k x 10)')
@@ -633,7 +670,7 @@ def main():
             md5 = hashlib.md5(f.read()).hexdigest()
         if mode in ('quality', 'feature'):
             meas = measure(in_path, out_stl, el, repo_x,
-                           args.surface_budget)
+                           args.surface_budget, timeout=args.measure_timeout)
         else:
             meas = {'time_s': round(el, 2)}
         meas.update({'md5': md5, 'ftetwild_adopted': ftetwild_adopted(report),
@@ -663,6 +700,15 @@ def main():
         if b is None or c is None:
             return {'name': name, key_b: b or {}, key_c: c or {},
                     'verdict': 'ERROR', 'verdict_reason': 'a run produced no output',
+                    'changed': True}
+        # A side whose shape measurement overran is TIMEOUT, not ERROR: it is a
+        # budget failure, it fails the run, and the board counts it separately.
+        timed_out = [s for s in (b, c) if s.get('measure_timeout')]
+        if timed_out:
+            lim = timed_out[0].get('measure_timeout_s')
+            return {'name': name, key_b: b, key_c: c,
+                    'verdict': 'TIMEOUT',
+                    'verdict_reason': MEASURE_TIMEOUT_EXCEEDED % int(lim),
                     'changed': True}
         nondet = (args.exclude_nondeterministic
                   and (b.get('ftetwild_adopted') or c.get('ftetwild_adopted')))
@@ -736,7 +782,7 @@ def main():
         md = _markdown_modes(results, mode, args.surface_budget)
     with open(os.path.join(out_dir, 'report.md'), 'w') as f:
         f.write(md)
-    bad = [r['name'] for r in results if r['verdict'] in ('WORSE', 'CHANGED', 'ERROR', 'VISUAL-WORSE')]
+    bad = [r['name'] for r in results if r['verdict'] in ('WORSE', 'CHANGED', 'ERROR', 'VISUAL-WORSE', 'TIMEOUT')]
     trades = [(r['name'], r.get('verdict_reason', '')) for r in results
               if r['verdict'] == 'TRADE-SI']
     skipped = [r['name'] for r in results if r['verdict'] == 'SKIPPED-NONDET']

@@ -256,6 +256,56 @@ def test_one_sided_cap_is_not_counted_as_a_skip():
     assert 'judged without SI' not in out, out
 
 
+INTERIOR_NOTE = 'interior walls not computed (large mesh)'
+
+
+def _timeout_row(name, set_name='bench115'):
+    b = dict(SHAPE, si_output=None)
+    c = dict(SHAPE, si_output=None)
+    return {'id': name, 'verdict': 'TIMEOUT', 'reason': 'measurement exceeded 900s',
+            'baseline': b, 'candidate': c, 'missing': [],
+            'set': set_name, 'mode': 'bench115',
+            'strict_watertight': None}
+
+
+def test_timeout_is_a_failure_and_has_its_own_line():
+    rc, out = _board(_run([_timeout_row('m1')]), check=True)
+    assert rc == 1, out
+    assert 'TIMEOUT' in out, out
+    assert '1 row(s) timed out' in out, out
+
+
+def test_timeout_counts_per_set():
+    rows = [_timeout_row('m1', 'bench115'), _timeout_row('m2', 'derived264')]
+    rc, out = _board(_run(rows), check=True)
+    assert rc == 1, out
+    assert 'bench115' in out and 'derived264' in out, out
+
+
+def test_no_timeout_line_when_none_timed_out():
+    rc, out = _board(_run([_row('m1', 'SAME')]))
+    assert rc == 0, out
+    assert 'timed out' not in out, out
+
+
+def test_interior_walls_note_gets_its_own_line():
+    b = dict(SHAPE, buried_note=INTERIOR_NOTE)
+    c = dict(SHAPE, buried_note=INTERIOR_NOTE)
+    row = {'id': 'big', 'verdict': 'SAME', 'reason': 'ok', 'baseline': b,
+           'candidate': c, 'missing': [], 'set': 'bench115', 'mode': 'bench115',
+           'strict_watertight': {'baseline': True, 'candidate': True}}
+    rc, out = _board(_run([row]))
+    assert rc == 0, out
+    assert INTERIOR_NOTE in out, out
+    assert '1 row(s) use all-face distances' in out, out
+
+
+def test_interior_walls_line_absent_below_the_gate():
+    rc, out = _board(_run([_row('m1', 'SAME')]))
+    assert rc == 0, out
+    assert 'use all-face distances' not in out, out
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):
