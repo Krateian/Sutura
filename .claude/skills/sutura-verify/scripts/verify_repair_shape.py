@@ -140,6 +140,38 @@ def boundary_edges(tris):
     return {(int(a), int(b)) for a, b in uniq[counts == 1]}
 
 
+def shell_volumes(verts, tris):
+    """Absolute signed volume of each connected component, largest first."""
+    if len(tris) == 0:
+        return []
+    n = len(verts)
+    parent = np.arange(n)
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for f in tris:
+        for u, w in ((f[0], f[1]), (f[1], f[2]), (f[2], f[0])):
+            ru, rw = find(int(u)), find(int(w))
+            if ru != rw:
+                parent[ru] = rw
+    from collections import defaultdict
+    comp = defaultdict(list)
+    for f in tris:
+        comp[find(int(f[0]))].append(f)
+    out = []
+    for faces in comp.values():
+        ft = np.asarray(faces, dtype=np.int64)
+        a = verts[ft[:, 0]]
+        b = verts[ft[:, 1]]
+        c = verts[ft[:, 2]]
+        out.append(abs(float(np.einsum('ij,ij->i', a, np.cross(b, c)).sum() / 6.0)))
+    out.sort(reverse=True)
+    return [round(v, 6) for v in out]
+
 def topology_counts(verts, tris):
     """Vectorised (components, closed_shells) of a welded mesh."""
     if len(tris) == 0:
@@ -549,6 +581,8 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
     rep = detect(vo, to)
     comp, closed = topology_counts(vo, to)
     si_out, si_note = exact_si(vo, to)
+    si_in, _si_in_note = exact_si(vi, ti)
+    shell_vols = shell_volumes(vo, to)
     vol_in = gwn_union_volume(vi, ti)
     vol_out = gwn_union_volume(vo, to)
     vol_err = abs(vol_out - vol_in) / max(abs(vol_in), 1e-12)
@@ -627,6 +661,8 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
         'leak_count': leak['leak_count'],
         'si_output': si_out,
         'si_output_note': si_note,
+        'input_si': si_in,
+        'shell_volumes': shell_vols,
         'input_gwn_volume_mm3': round(vol_in, 4),
         'output_gwn_volume_mm3': round(vol_out, 4),
         'volume_error_rel': round(vol_err, 9),

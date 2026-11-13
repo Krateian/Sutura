@@ -293,6 +293,33 @@ def ftetwild_adopted(report):
     return bool(ft.get('adopted'))
 
 
+def _volume_check_skip(b):
+    """Reason to skip the volume-error criterion, or None to apply it."""
+    si = _num(b.get('input_si'))
+    if si is not None and si > 0:
+        return 'volume error skipped (input self-intersections: %d)' % int(si)
+    iv = _num(b.get('input_gwn_volume_mm3'))
+    tol = _num(b.get('tolerance_mm')) or 0.0
+    bbox = tol * 10000.0
+    if iv is not None and bbox > 0 and abs(iv) <= 1e-6 * bbox ** 3:
+        return 'volume error skipped (input GWN volume degenerate)'
+    return None
+
+
+def _missing_shell_volume(b, c):
+    """Closed-shell volume present in the baseline but not the candidate."""
+    bv, cv = b.get('shell_volumes'), c.get('shell_volumes')
+    if not isinstance(bv, list) or not isinstance(cv, list):
+        return None
+    return max(0.0, sum(bv) - sum(cv))
+
+
+def _judge_note(reason, c):
+    notes = c.get('_judge_notes') or []
+    if notes:
+        reason += '; ' + '; '.join(notes)
+    return reason
+
 def _shape_regressions(b, c, tol):
     """Shape metrics on which the candidate is worse than the baseline.
 
@@ -303,6 +330,7 @@ def _shape_regressions(b, c, tol):
     reported for a shape regression is unchanged.
     """
     out = []
+    c.pop('_judge_notes', None)
     if c['reload_holes'] > b['reload_holes']:
         out.append('more holes: %d vs %d' % (
             c['reload_holes'], b['reload_holes']))
@@ -316,7 +344,10 @@ def _shape_regressions(b, c, tol):
     if c['two_sided_p95_mm'] > b['two_sided_p95_mm'] + tol:
         out.append('two-sided p95 worse beyond tol: %s vs %s' % (
             c['two_sided_p95_mm'], b['two_sided_p95_mm']))
-    if c['volume_error_rel'] > b['volume_error_rel'] + 1e-3:
+    vol_skip = _volume_check_skip(b)
+    if vol_skip:
+        c.setdefault('_judge_notes', []).append(vol_skip)
+    elif c['volume_error_rel'] > b['volume_error_rel'] + 1e-3:
         out.append('volume error rose: %.6f vs %.6f' % (
             c['volume_error_rel'], b['volume_error_rel']))
     bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
@@ -324,8 +355,34 @@ def _shape_regressions(b, c, tol):
     if cp > bp:
         out.append('more parts: %s vs %s' % (cp, bp))
     if c['closed_shells'] < b['closed_shells']:
-        out.append('fewer closed shells: %d vs %d' % (
-            c['closed_shells'], b['closed_shells']))
+        missing = _missing_shell_volume(b, c)
+        bvol = _num(b.get('input_gwn_volume_mm3'))
+        if missing is not None and bvol:
+            if missing > 0.001 * abs(bvol):
+                out.append('fewer closed shells: %d vs %d '
+                           '(missing %s mm3 > 0.1%% input)' % (
+                               c['closed_shells'], b['closed_shells'],
+                               round(missing, 6)))
+            else:
+                c.setdefault('_judge_notes', []).append(
+                    'fewer closed shells accepted (missing %s mm3 <= 0.1%% '
+                    'input)' % round(missing, 6))
+        elif missing is not None:
+            if missing > 0:
+                out.append('fewer closed shells: %d vs %d' % (
+                    c['closed_shells'], b['closed_shells']))
+            else:
+                c.setdefault('_judge_notes', []).append(
+                    'fewer closed shells accepted (no closed-shell volume lost)')
+        elif c['closed_shells'] == 0:
+            out.append('fewer closed shells: %d vs %d' % (
+                c['closed_shells'], b['closed_shells']))
+        elif c['volume_error_rel'] > b['volume_error_rel'] + 1e-3:
+            out.append('fewer closed shells: %d vs %d' % (
+                c['closed_shells'], b['closed_shells']))
+        else:
+            c.setdefault('_judge_notes', []).append(
+                'fewer closed shells accepted (no shell volume lost)')
     lc_b = _num(b.get('leak_max_mm')) or 0.0
     lc_c = _num(c.get('leak_max_mm')) or 0.0
     n_b = _num(b.get('leak_count')) or 0
@@ -384,13 +441,13 @@ def judge_quality(b, c, tol):
     md5_changed = bool(b.get('md5') and c.get('md5') and b['md5'] != c['md5'])
     shape_worse = _shape_regressions(b, c, tol)
     if shape_worse:
-        return 'WORSE', shape_worse[0]
+        return 'WORSE', _judge_note(shape_worse[0], c)
     if si_skip is None:
         si_delta = int(c['si_output']) - int(b['si_output'])
         if si_delta > 0:
-            return 'TRADE-SI', ('SI-after rose %d -> %d (+%d) with no shape '
+            return 'TRADE-SI', _judge_note(('SI-after rose %d -> %d (+%d) with no shape '
                                 'regression' % (b['si_output'], c['si_output'],
-                                                si_delta))
+                                                si_delta)), c)
     bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
     cp = c['orca_number_of_parts'] if c['orca_number_of_parts'] is not None else c['components']
     si_better = (si_skip is None and c['si_output'] < b['si_output'])
@@ -402,14 +459,14 @@ def judge_quality(b, c, tol):
             or cp < bp
             or c['closed_shells'] > b['closed_shells']):
         if si_skip:
-            return 'BETTER', ('no metric worse and at least one improves; '
-                              + SI_FACE_CAP_MARKER)
-        return 'BETTER', 'no metric worse and at least one improves'
+            return 'BETTER', _judge_note(('no metric worse and at least one improves; '
+                              + SI_FACE_CAP_MARKER), c)
+        return 'BETTER', _judge_note('no metric worse and at least one improves', c)
     if md5_changed:
-        return 'CHANGED', 'output changed within quality tolerance'
+        return 'CHANGED', _judge_note('output changed within quality tolerance', c)
     if si_skip:
-        return 'SAME', 'no quality change; ' + SI_FACE_CAP_MARKER
-    return 'SAME', 'no quality change'
+        return 'SAME', _judge_note('no quality change; ' + SI_FACE_CAP_MARKER, c)
+    return 'SAME', _judge_note('no quality change', c)
 
 
 # Provisional, report-only surface thresholds.  They do NOT change the main
