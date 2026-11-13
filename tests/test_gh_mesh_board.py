@@ -205,6 +205,57 @@ def test_same_id_in_two_sets_renders_twice():
     assert out.count('artec_metal-nut') == 2, out
 
 
+CAP_NOTE = 'skipped (face cap)'
+
+
+def _cap_row(name, verdict='SAME', b_note=CAP_NOTE, c_note=CAP_NOTE,
+             set_name='bench115'):
+    b = dict(SHAPE, si_output=None, si_output_note=b_note)
+    c = dict(SHAPE, si_output=None, si_output_note=c_note)
+    return {'id': name, 'verdict': verdict, 'reason': 'why',
+            'baseline': b, 'candidate': c, 'missing': [],
+            'set': set_name, 'mode': 'bench115',
+            'strict_watertight': {'baseline': True, 'candidate': True}}
+
+
+def test_face_cap_rows_get_their_own_count_line():
+    rows = [_cap_row('m1'), _cap_row('m2'), _cap_row('m3')]
+    rc, out = _board(_run(rows))
+    assert rc == 0, out
+    assert 'SI n/a (face cap)' in out, out
+    assert 'bench115     3 row(s) judged without SI, face cap' in out, out
+
+
+def test_face_cap_count_is_per_set():
+    rows = [_cap_row('m1', set_name='bench115'),
+            _cap_row('m2', set_name='derived264')]
+    rc, out = _board(_run(rows))
+    assert rc == 0, out
+    assert 'bench115' in out and 'derived264' in out, out
+    assert '1 row(s) judged without SI' in out, out
+
+
+def test_face_cap_line_absent_when_no_capped_rows():
+    rc, out = _board(_run([_row('m1', 'SAME')]))
+    assert rc == 0, out
+    assert 'judged without SI' not in out, out
+
+
+def test_face_cap_rows_are_not_failures():
+    # Judged without SI, but SAME/BETTER/WORSE semantics still rule the exit.
+    rc, out = _board(_run([_cap_row('m1', 'SAME')]), check=True)
+    assert rc == 0, out
+    rc, out = _board(_run([_cap_row('m1', 'WORSE')]), check=True)
+    assert rc == 1, out
+
+
+def test_one_sided_cap_is_not_counted_as_a_skip():
+    rows = [_cap_row('m1', b_note=CAP_NOTE, c_note=None)]
+    rc, out = _board(_run(rows))
+    assert rc == 0, out
+    assert 'judged without SI' not in out, out
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):

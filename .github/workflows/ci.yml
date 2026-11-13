@@ -269,6 +269,11 @@ jobs:
       - name: "Test: TRADE-SI quality verdict"
         run: ./venv/bin/python tests/test_verify_trade_si.py
 
+      # A mesh above sutura_geom.SI_MAX_FACES is judged on every other metric
+      # and marked 'SI n/a (face cap)'; one capped side stays ERROR.
+      - name: "Test: face-cap SI skip"
+        run: ./venv/bin/python tests/test_verify_face_cap.py
+
       - name: "Test: triage profiles"
         run: ./venv/bin/python tests/test_triage_profiles.py
 

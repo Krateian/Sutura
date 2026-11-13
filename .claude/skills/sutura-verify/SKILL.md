@@ -77,6 +77,16 @@ This skill is how an agent that did NOT write the change checks the claim.
   SI-delta column and its own line, and it does NOT fail the run. Any shape
   regression on the same mesh is still `WORSE` and does fail — never report a
   trade when shape also moved the wrong way.
+- Face cap: when exact SI-after is unavailable on **both** sides because the
+  mesh exceeds `sutura_geom.SI_MAX_FACES` (`si_output_note == 'skipped (face
+  cap)'`), the judge **skips the SI criterion** for that row, judges every
+  other metric as usual, and marks it `SI n/a (face cap)`. The verdict keeps
+  its normal SAME/BETTER/WORSE/CHANGED semantics and `TRADE-SI` cannot occur
+  on such a row (there is no delta). The board counts these rows on their own
+  line per set (`N row(s) judged without SI, face cap`). If only one side is
+  capped, or the note is anything else, the row stays `ERROR` — a one-sided
+  comparison or an unexplained missing count is a hard failure, not a skip.
+  The 2 000 000-face cap itself is not raised and no mesh is excluded.
 - Judge shape, never bytes: byte-identical output is a strong hint but not
   proof, and a tiny metric shift can be a real regression.
 - Iterate on a small representative set; run the full corpus only at gates

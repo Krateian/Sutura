@@ -26,8 +26,12 @@ SHAPE_REQUIRED = ('reload_holes', 'reload_non_manifold_edges', 'components',
 SHAPE_KEYS = SHAPE_REQUIRED + (
     'orca_number_of_parts', 'orca_manifold', 'volume_error_rel',
     'two_sided_max_all_mm', 'two_sided_p95_all_mm',
-    'i2o_max_all_mm', 'i2o_p95_all_mm')
+    'i2o_max_all_mm', 'i2o_p95_all_mm', 'si_output_note')
 BYTE_KEYS = ('md5', 'ftetwild_adopted')
+# The judge skips the SI criterion when BOTH sides lack exact SI for the face
+# cap; such a row is judged on its other metrics, so si_output must not count
+# as a missing metric here.
+SI_FACE_CAP_NOTE = 'skipped (face cap)'
 # determinism is a byte comparison of two independent runs of the same ref,
 # with the stochastic fTetWild path excluded.
 FLAGS = {'byte': ['--byte', '--deterministic'],
@@ -137,7 +141,15 @@ def main():
         for item in json.load(open(sp)):
             sides = {side: {k: (item.get(side) or {}).get(k) for k in keys}
                      for side in ('baseline', 'candidate')}
-            missing = sorted({k for rec in sides.values() for k in required
+            # Both sides capped -> the judge deliberately skipped SI; it is not
+            # a missing metric and must not be reported as MISSING.
+            both_capped = all(
+                (rec.get('si_output') is None
+                 and (rec.get('si_output_note') or '').strip() == SI_FACE_CAP_NOTE)
+                for rec in sides.values())
+            check = tuple(k for k in required
+                          if not (both_capped and k == 'si_output'))
+            missing = sorted({k for rec in sides.values() for k in check
                               if rec.get(k) is None})
             verdict = item.get('verdict') or 'MISSING'
             reason = item.get('verdict_reason')

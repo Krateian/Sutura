@@ -294,6 +294,32 @@ def _shape_regressions(b, c, tol):
     return out
 
 
+SI_FACE_CAP_NOTE = 'skipped (face cap)'
+SI_FACE_CAP_MARKER = 'SI n/a (face cap)'
+
+
+def _face_capped(m):
+    """True when exact SI was refused on this side by the face cap.
+
+    ``verify_repair_shape.exact_si`` returns ``(None, 'skipped (face cap)')``
+    above ``SI_MAX_FACES``. Any other reason for a missing count is a real
+    failure, not a skip.
+    """
+    return (m.get('si_output') is None
+            and (m.get('si_output_note') or '').strip() == SI_FACE_CAP_NOTE)
+
+
+def si_judged_without(b, c):
+    """'face cap' when BOTH sides lack exact SI for the face cap, else None.
+
+    A single capped side is not a skip: the comparison would be one-sided, so
+    that stays a hard failure.
+    """
+    if _face_capped(b) and _face_capped(c):
+        return 'face cap'
+    return None
+
+
 def judge_quality(b, c, tol):
     """Candidate vs baseline: no mesh worse on the quality metrics.
 
@@ -301,30 +327,45 @@ def judge_quality(b, c, tol):
     the change keeps self-intersections on purpose (for example to avoid
     moving visible surface) and must be reported as a deliberate trade, not
     as a regression. Any shape regression is still WORSE.
+
+    When exact SI is unavailable on BOTH sides because the mesh is above
+    ``sutura_geom.SI_MAX_FACES``, the SI criterion is skipped for this row and
+    every other metric is judged as usual. The verdict keeps its normal
+    semantics and the row is marked ``SI n/a (face cap)``. One capped side, or
+    a missing count for any other reason, is still ERROR.
     """
-    if b.get('si_output') is None or c.get('si_output') is None:
+    si_skip = si_judged_without(b, c)
+    if si_skip is None and (b.get('si_output') is None
+                            or c.get('si_output') is None):
         return 'ERROR', 'SI-after unavailable (hard fail)'
     md5_changed = bool(b.get('md5') and c.get('md5') and b['md5'] != c['md5'])
     shape_worse = _shape_regressions(b, c, tol)
     if shape_worse:
         return 'WORSE', shape_worse[0]
-    si_delta = int(c['si_output']) - int(b['si_output'])
-    if si_delta > 0:
-        return 'TRADE-SI', ('SI-after rose %d -> %d (+%d) with no shape '
-                            'regression' % (b['si_output'], c['si_output'],
-                                            si_delta))
+    if si_skip is None:
+        si_delta = int(c['si_output']) - int(b['si_output'])
+        if si_delta > 0:
+            return 'TRADE-SI', ('SI-after rose %d -> %d (+%d) with no shape '
+                                'regression' % (b['si_output'], c['si_output'],
+                                                si_delta))
     bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
     cp = c['orca_number_of_parts'] if c['orca_number_of_parts'] is not None else c['components']
+    si_better = (si_skip is None and c['si_output'] < b['si_output'])
     if (c['reload_holes'] < b['reload_holes']
             or c['reload_non_manifold_edges'] < b['reload_non_manifold_edges']
-            or c['si_output'] < b['si_output']
+            or si_better
             or c['two_sided_max_mm'] < b['two_sided_max_mm']
             or c['volume_error_rel'] < b['volume_error_rel']
             or cp < bp
             or c['closed_shells'] > b['closed_shells']):
+        if si_skip:
+            return 'BETTER', ('no metric worse and at least one improves; '
+                              + SI_FACE_CAP_MARKER)
         return 'BETTER', 'no metric worse and at least one improves'
     if md5_changed:
         return 'CHANGED', 'output changed within quality tolerance'
+    if si_skip:
+        return 'SAME', 'no quality change; ' + SI_FACE_CAP_MARKER
     return 'SAME', 'no quality change'
 
 
@@ -421,15 +462,32 @@ def _markdown_modes(results, mode, surface_budget='sweep'):
                  if ba_b is not None and ba_c is not None else '-')
         si_trade = ('+' + str(int(c['si_output']) - int(b['si_output']))
                     if r['verdict'] == 'TRADE-SI' else '-')
-        lines.append('| %s | %d/%d | %d/%d | %s/%s | %s | %.4f/%.4f | %s | %s | %s | %.6f/%.6f | %s/%s | %s | %s | %s | %s | %s | **%s** | %s |' % (
+        capped = si_judged_without(b, c) is not None
+        si_cell = ('n/a/n/a' if capped
+                   else '%s/%s' % (_num(b.get('si_output')),
+                                   _num(c.get('si_output'))))
+        lines.append('| %s | %d/%d | %d/%d | %s | %s | %.4f/%.4f | %s | %s | %s | %.6f/%.6f | %s/%s | %s | %s | %s | %s | %s | **%s** | %s |' % (
             r['name'], b['reload_holes'], c['reload_holes'],
             b['reload_non_manifold_edges'], c['reload_non_manifold_edges'],
-            b['si_output'], c['si_output'], si_trade,
+            si_cell, si_trade,
             b['two_sided_max_mm'], c['two_sided_max_mm'],
             i2o_all, bur_n, bur_a,
             b['volume_error_rel'], c['volume_error_rel'], bp, cp,
             rec_ext, rec_all, fill, rem, surf,
             r['verdict'], 'yes' if r.get('changed') else 'no'))
+    capped_rows = [r for r in results
+                   if si_judged_without(r.get('baseline') or {},
+                                        r.get('candidate') or {}) is not None]
+    if capped_rows:
+        lines.append('')
+        lines.append('## %s' % SI_FACE_CAP_MARKER)
+        lines.append('')
+        lines.append('Exact SI-after is unavailable on BOTH sides because the '
+                     'mesh exceeds `sutura_geom.SI_MAX_FACES`; the SI criterion '
+                     'was skipped and every other metric was judged as usual.')
+        for r in capped_rows:
+            lines.append('* **%s**: %s (%s)' % (
+                r['name'], r['verdict'], r.get('verdict_reason', '')))
     surf_bad = [r for r in results if r.get('surface_worse')]
     if surf_bad:
         lines.append('')

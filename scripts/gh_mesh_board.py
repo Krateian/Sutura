@@ -103,6 +103,34 @@ def _plan_errors(plan, files):
 
 
 SEPTEMBER_STRICT = {'bench115': '102/115 at c0f5d26, v0.2.8 era'}
+SI_FACE_CAP_NOTE = 'skipped (face cap)'
+SI_FACE_CAP_MARKER = 'SI n/a (face cap)'
+
+
+def _si_capped(r):
+    """Both sides lacked exact SI for the face cap (the judge skipped SI)."""
+    pair = (r.get('baseline') or {}, r.get('candidate') or {})
+
+    def capped(rec):
+        return (rec.get('si_output') is None
+                and (rec.get('si_output_note') or '').strip() == SI_FACE_CAP_NOTE)
+    return capped(pair[0]) and capped(pair[1])
+
+
+def _face_cap_summary(rows):
+    """One line per set: rows judged without SI because of the face cap."""
+    from collections import Counter
+    per_set = Counter()
+    for r in rows:
+        if _si_capped(r):
+            per_set[r.get('set') or '-'] += 1
+    if not per_set:
+        return ''
+    lines = ['', '%s:' % SI_FACE_CAP_MARKER]
+    for name in sorted(per_set):
+        lines.append('  %-12s %d row(s) judged without SI, face cap'
+                     % (name, per_set[name]))
+    return '\n'.join(lines)
 
 
 def _strict_summary(rows):
@@ -199,6 +227,7 @@ def main():
             ' | '.join(_cell(b, c, k, f) for _h, k, f in COLS),
             str(r.get('reason') or '-').replace('|', '/')))
     print(_strict_summary(rows))
+    print(_face_cap_summary(rows))
     print('\nRows: %d; failing: %d; TRADE-SI: %d; shard errors: %d'
           % (len(rows), len(bad), len(trades), len(errors)))
     if trades:
