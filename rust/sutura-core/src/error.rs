@@ -15,6 +15,8 @@ pub enum MeshError {
     },
     /// The container/file is structurally invalid.
     Malformed(String),
+    /// An STL file could not be decoded.
+    MalformedStl(String),
 }
 
 impl fmt::Display for MeshError {
@@ -33,6 +35,7 @@ impl fmt::Display for MeshError {
                 "triangle {triangle} references vertex {index} but the mesh has {vertices} vertices"
             ),
             MeshError::Malformed(msg) => write!(f, "malformed mesh: {msg}"),
+            MeshError::MalformedStl(msg) => write!(f, "malformed STL: {msg}"),
         }
     }
 }

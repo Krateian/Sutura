@@ -6,9 +6,11 @@
 
 pub mod error;
 pub mod mesh;
+pub mod mesh_io;
 
 pub use error::{MeshError, MeshResult};
 pub use mesh::{Mesh, MeshBlock, SourceFormat};
+pub use mesh_io::{load_stl, read_stl, scan_stl_bad_coordinates, write_stl_binary};
 
 #[cfg(test)]
 mod tests {
@@ -49,8 +51,14 @@ mod tests {
 
     #[test]
     fn format_is_detected_case_insensitively() {
-        assert_eq!(SourceFormat::from_extension("part.STL").unwrap(), SourceFormat::Stl);
-        assert_eq!(SourceFormat::from_extension("a.3mf").unwrap(), SourceFormat::ThreeMf);
+        assert_eq!(
+            SourceFormat::from_extension("part.STL").unwrap(),
+            SourceFormat::Stl
+        );
+        assert_eq!(
+            SourceFormat::from_extension("a.3mf").unwrap(),
+            SourceFormat::ThreeMf
+        );
         assert!(SourceFormat::from_extension("a.txt").is_err());
     }
 }
