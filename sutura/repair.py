@@ -592,6 +592,8 @@ def _main(argv=None):
                         help='input mesh file(s)')
     parser.add_argument('-o', '--output', metavar='OUTPUT',
                         help='output file (only valid with a single input)')
+    parser.add_argument('--lang', choices=('en', 'tr'), default='en',
+                        help='human report language (default: en)')
     parser.add_argument('--human', action='store_true',
                         help='print a human-readable report; a progress line is '
                              'shown on stderr when stderr is a TTY')
@@ -939,6 +941,7 @@ def _main(argv=None):
                              '(also SUTURA_DEBUG=1)')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args(argv)
+    os.environ['SUTURA_LANG'] = args.lang
 
     # --list-intensities: print the presets and user profiles, then exit.
     if args.list_intensities:
