@@ -39,6 +39,8 @@ reading mechanical: their dihedrals are ~2-5 deg, i.e. `gentle`, not `flat`.
 """
 import numpy as np
 
+from sutura_engine import rust_bridge
+
 # Classifier identity for cache/learning keying. Part of the analysis cache key
 # (see sutura_engine.diagnosis.analyze_mesh) so a cached analysis is never
 # reused across a classifier change; bump it when either engine's decisions
@@ -73,19 +75,6 @@ _W_GENTLE = 5.0
 # cylinder's organic score is 0.30).
 _MECH_FLOOR = 0.7
 _ORG_FLOOR = 0.5
-
-
-def _rust_features(verts, tris):
-    """Rust numeric features when available (shared sutura_geom kernel)."""
-    try:
-        import sutura_geom
-        if not hasattr(sutura_geom, 'classifier_features'):
-            return None
-        return sutura_geom.classifier_features(
-            np.asarray(verts, dtype=np.float64),
-            np.asarray(tris, dtype=np.int32))
-    except Exception:
-        return None
 
 
 def _sigmoid(x):
@@ -169,7 +158,7 @@ def classify_mesh(verts, tris):
     metrics: {'near90', 'flat', 'gentle', 'mechanical_score',
               'organic_score', 'leaning' (unknown only)}
     """
-    features = _rust_features(verts, tris)
+    features, feature_engine = rust_bridge.classifier_features(verts, tris)
     if features is not None:
         near90 = float(features['near90'])
         flat = float(features['flat'])
@@ -188,15 +177,18 @@ def classify_mesh(verts, tris):
     if mechanical >= _MECH_FLOOR:
         return {'type': 'mechanical',
                 'confidence': round(mechanical, 3),
-                'metrics': metrics}
+                'metrics': metrics,
+                'feature_engine': feature_engine}
 
     if organic >= _ORG_FLOOR:
         return {'type': 'organic',
                 'confidence': round(organic, 3),
-                'metrics': metrics}
+                'metrics': metrics,
+                'feature_engine': feature_engine}
 
     # unknown: keep the proximity to the nearer class (signed margin sign)
     metrics['leaning'] = 'mechanical' if mechanical >= organic else 'organic'
     return {'type': 'unknown',
             'confidence': round(max(mechanical, organic), 3),
-            'metrics': metrics}
+            'metrics': metrics,
+            'feature_engine': feature_engine}

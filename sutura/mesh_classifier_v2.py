@@ -44,6 +44,8 @@ Invariant: this module must NEVER import pymeshlab / trimesh / scipy.
 """
 import numpy as np
 
+from sutura_engine import rust_bridge
+
 # Single classifier identity, shared with the classic engine (used in the
 # analysis cache key; see sutura_engine.diagnosis.analyze_mesh).
 try:
@@ -94,25 +96,6 @@ _HEAD_MECH_FLOOR = 0.50          # p(mechanical) >= 0.50 -> mechanical, else org
 # classic veto -- that was tried and reverted as counterproductive).
 _HEAD_MARGIN = 0.15              # |p_mech - 0.5| below this counts as no opinion
 _CLASSIC_STRONG = 0.70           # classic class-score floor for the fallback
-
-
-def _rust_features(verts, tris):
-    """Rust numeric features when the shared kernel is available (default).
-
-    The classifier's heavy numeric core lives in sutura_geom::classify and is
-    exported as ``classifier_features``. Keeping the feature computation in one
-    place removes the NumPy eigh/dot last-bit drift between the Rust and Python
-    engines; the NumPy path below stays as the fallback for old wheels.
-    """
-    try:
-        import sutura_geom
-        if not hasattr(sutura_geom, 'classifier_features'):
-            return None
-        return sutura_geom.classifier_features(
-            np.asarray(verts, dtype=np.float64),
-            np.asarray(tris, dtype=np.int32))
-    except Exception:
-        return None
 
 
 def _sigmoid(x):
@@ -508,7 +491,7 @@ def classify_mesh(verts, tris, extra_features=False):
     baked weights: the classic decision verbatim (metrics gain the RANSAC
     features).
     """
-    features = _rust_features(verts, tris)
+    features, feature_engine = rust_bridge.classifier_features(verts, tris)
     if features is not None:
         near90 = float(features['near90'])
         flat = float(features['flat'])
@@ -550,7 +533,9 @@ def classify_mesh(verts, tris, extra_features=False):
 
     if p_mech is None:
         # no trained head baked yet -> classic decision
-        return _classic_decision(mechanical, organic, metrics)
+        result = _classic_decision(mechanical, organic, metrics)
+        result['feature_engine'] = feature_engine
+        return result
 
     # head verdict: single threshold at p=0.50 (LOO-CV-validated on the
     # labeled set). No classic veto: it was counterproductive, reverting
@@ -571,7 +556,8 @@ def classify_mesh(verts, tris, extra_features=False):
 
     return {'type': head_type,
             'confidence': round(head_conf, 3),
-            'metrics': metrics}
+            'metrics': metrics,
+            'feature_engine': feature_engine}
 
 
 def _classic_decision(mechanical, organic, metrics):

@@ -103,3 +103,25 @@ def rust_config():
             'config_learning_bonus', 'config_intensity_format')):
         return unavailable('sutura_core_py has no config bindings')
     return mod
+
+
+def classifier_features(verts, tris):
+    """Rust classifier feature kernel, or ``(None, 'numpy')``.
+
+    The kernel lives in ``sutura_geom`` (the geometry extension), not in the
+    ``sutura_core_py`` bridge. A missing extension falls back to NumPy;
+    ``SUTURA_REQUIRE_RUST=1`` turns that fallback into an error, and an
+    exception raised by a present kernel is propagated, never swallowed.
+    """
+    requested = os.environ.get('SUTURA_CLASSIFIER_BACKEND', 'rust').strip().lower()
+    if requested != 'rust':
+        return None, 'numpy'
+    try:
+        import sutura_geom as mod
+    except Exception as exc:  # noqa: BLE001 - environment dependent
+        unavailable('sutura_geom is unavailable: %s' % exc, exc)
+        return None, 'numpy'
+    if not hasattr(mod, 'classifier_features'):
+        unavailable('sutura_geom has no classifier_features binding')
+        return None, 'numpy'
+    return mod.classifier_features(verts, tris), 'rust'

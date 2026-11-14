@@ -89,11 +89,13 @@ pub fn classify_classic(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Value {
     metrics.insert("organic_score".into(), json!(py_round(organic, 3)));
     if mechanical >= MECH_FLOOR {
         return json!({"type": "mechanical", "confidence": py_round(mechanical, 3),
-                      "metrics": Value::Object(metrics)});
+                      "metrics": Value::Object(metrics),
+                      "feature_engine": "rust"});
     }
     if organic >= ORG_FLOOR {
         return json!({"type": "organic", "confidence": py_round(organic, 3),
-                      "metrics": Value::Object(metrics)});
+                      "metrics": Value::Object(metrics),
+                      "feature_engine": "rust"});
     }
     metrics.insert(
         "leaning".into(),
@@ -104,7 +106,8 @@ pub fn classify_classic(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Value {
         }),
     );
     json!({"type": "unknown", "confidence": py_round(mechanical.max(organic), 3),
-           "metrics": Value::Object(metrics)})
+           "metrics": Value::Object(metrics),
+           "feature_engine": "rust"})
 }
 
 fn head_p_mechanical(features: [f64; 6]) -> f64 {
@@ -178,7 +181,8 @@ pub fn classify_v2(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Value {
         head_type = "unknown";
     }
     json!({"type": head_type, "confidence": py_round(head_conf, 3),
-           "metrics": Value::Object(metrics)})
+           "metrics": Value::Object(metrics),
+           "feature_engine": "rust"})
 }
 
 /// Public switch: `engine` is `classic` or anything else (experimental).
