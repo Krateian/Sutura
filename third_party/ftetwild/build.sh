@@ -76,9 +76,7 @@ CMAKE_FLAGS=(
     -DCMAKE_BUILD_TYPE=Release
     -DFLOATTETWILD_BUILD_TESTS=OFF
     -DCMAKE_POLICY_DEFAULT_CMP0169=OLD
-    -DFLOAT_TETWILD_ENABLE_TBB=ON
-    -DBUILD_SHARED_LIBS=OFF
-    -DTBB_TEST=OFF
+    -DFLOAT_TETWILD_ENABLE_TBB=OFF
     -DGMP_LIBRARIES="$STATIC_GMP"
 )
 
@@ -197,6 +195,13 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 elif command -v ldd >/dev/null 2>&1; then
     echo "ldd $OUT_BIN:"
     ldd "$OUT_BIN"
+    NON_SYSTEM=$(ldd "$OUT_BIN" | grep -E "libgmp\.so|libtbb" || true)
+    if [ -n "$NON_SYSTEM" ]; then
+        echo "ERROR: Built binary contains disallowed non-system dynamic dependencies (GMP/TBB):" >&2
+        echo "$NON_SYSTEM" >&2
+        exit 1
+    fi
+    echo "Verification OK: binary contains no disallowed dynamic dependencies."
 fi
 
 echo "=== Done: $OUT_BIN built successfully ($(du -h "$OUT_BIN" | cut -f1)) ==="

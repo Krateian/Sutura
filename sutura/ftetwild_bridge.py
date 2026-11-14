@@ -121,6 +121,64 @@ def _find_binary():
             return None
 
 
+def build_binary_cmd(bin_path, src, msh_out, params=None):
+    """Build the command-line arguments for the fTetWild binary.
+
+    CLI flag mapping according to fTetWild --help:
+      -a, --la FLOAT       Absolute ideal edge length (not scaled by diag_of_bbox)
+      -l, --lr FLOAT       Relative ideal edge length (diag_of_bbox * L, default: 0.05)
+      -e, --epsr FLOAT     Relative envelope epsilon (diag_of_bbox * EPS, default: 1e-3)
+      --max-its INT        Maximum optimization iterations (0 disables optimization)
+      --stop-energy FLOAT  Stop optimization when max energy is lower than this
+      --skip-simplify      Skip simplification preprocessing
+      -q, --is-quiet       Mute console output
+      --no-color           Do not export color
+      --max-threads UINT   Maximum threads used (forced to 1 for bitwise determinism)
+    """
+    kw = tetrahedralize_params(params)
+    cmd = [
+        bin_path,
+        '-i', os.path.abspath(src),
+        '-o', os.path.abspath(msh_out),
+        '--max-threads', '1',
+        '-q',
+        '--no-color',
+    ]
+
+    if 'max_its' in kw and kw['max_its'] is not None:
+        cmd.extend(['--max-its', str(kw['max_its'])])
+    elif kw.get('optimize') is False:
+        cmd.extend(['--max-its', '0'])
+
+    if kw.get('simplify') is False or kw.get('skip_simplify') is True:
+        cmd.append('--skip-simplify')
+
+    if 'stop_energy' in kw and kw['stop_energy'] is not None:
+        cmd.extend(['--stop-energy', str(kw['stop_energy'])])
+
+    # Absolute ideal edge length (-a / --la)
+    if 'edge_length_abs' in kw and kw['edge_length_abs'] is not None:
+        cmd.extend(['-a', str(kw['edge_length_abs'])])
+    elif 'ideal_edge_length' in kw and kw['ideal_edge_length'] is not None:
+        cmd.extend(['-a', str(kw['ideal_edge_length'])])
+    elif 'la' in kw and kw['la'] is not None:
+        cmd.extend(['-a', str(kw['la'])])
+
+    # Relative ideal edge length (-l / --lr)
+    if 'lr' in kw and kw['lr'] is not None:
+        cmd.extend(['-l', str(kw['lr'])])
+    elif 'edge_length_fac' in kw and kw['edge_length_fac'] is not None:
+        cmd.extend(['-l', str(kw['edge_length_fac'])])
+
+    # Relative envelope epsilon (-e / --epsr)
+    if 'epsr' in kw and kw['epsr'] is not None:
+        cmd.extend(['-e', str(kw['epsr'])])
+    elif 'epsilon' in kw and kw['epsilon'] is not None:
+        cmd.extend(['-e', str(kw['epsilon'])])
+
+    return cmd
+
+
 def run_binary(bin_path, src, dst, params=None, timeout=180):
     """Run the deterministic standalone fTetWild CLI binary via subprocess.
 
@@ -148,37 +206,7 @@ def run_binary(bin_path, src, dst, params=None, timeout=180):
         msh_out = os.path.join(tmpdir, 'out.msh')
         sf_obj = os.path.join(tmpdir, 'out.msh__sf.obj')
 
-        cmd = [
-            bin_path,
-            '-i', os.path.abspath(src),
-            '-o', msh_out,
-            '--max-threads', '1',
-            '-q',
-            '--no-color',
-        ]
-
-        if kw.get('optimize') is False:
-            cmd.extend(['--max-its', '0'])
-        elif 'max_its' in kw:
-            cmd.extend(['--max-its', str(kw['max_its'])])
-
-        if kw.get('simplify') is False or kw.get('skip_simplify') is True:
-            cmd.append('--skip-simplify')
-
-        if 'stop_energy' in kw:
-            cmd.extend(['--stop-energy', str(kw['stop_energy'])])
-
-        if 'ideal_edge_length' in kw:
-            cmd.extend(['-e', str(kw['ideal_edge_length'])])
-        elif 'edge_length_abs' in kw and kw['edge_length_abs'] is not None:
-            cmd.extend(['-e', str(kw['edge_length_abs'])])
-        elif 'lr' in kw:
-            cmd.extend(['-l', str(kw['lr'])])
-        elif 'edge_length_fac' in kw and kw['edge_length_fac'] is not None:
-            cmd.extend(['-l', str(kw['edge_length_fac'])])
-
-        if 'epsilon' in kw:
-            cmd.extend(['--eps', str(kw['epsilon'])])
+        cmd = build_binary_cmd(bin_path, src, msh_out, kw)
 
         proc_timeout = kw.get('timeout', timeout)
 
