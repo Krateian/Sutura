@@ -3,6 +3,7 @@
 pub mod classify;
 pub mod debris;
 pub mod defects;
+pub mod score;
 
 pub use classify::{
     classify_json, classify_value, estimate_confidence_json, repair_confidence_json,
@@ -13,6 +14,7 @@ pub use debris::{
     SmallPart,
 };
 pub use defects::{detect_defects, DefectReport, Hole, NonManifoldRegion};
+pub use score::{compute_scores_json, compute_scores_value};
 
 pub(crate) fn round_to(value: f64, decimals: u32) -> f64 {
     let scale = 10f64.powi(decimals as i32);

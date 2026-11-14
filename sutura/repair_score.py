@@ -42,6 +42,30 @@ Design rules (hard project constraints):
 import json
 import os
 
+
+_REPORT_CORE = None
+_REPORT_CORE_TRIED = False
+
+
+def _rust_core():
+    global _REPORT_CORE, _REPORT_CORE_TRIED
+    if os.environ.get('SUTURA_REPORT_ENGINE', 'python').strip().lower() != 'rust':
+        return None
+    if _REPORT_CORE_TRIED:
+        return _REPORT_CORE
+    _REPORT_CORE_TRIED = True
+    try:
+        import sutura_core_py as mod
+        _REPORT_CORE = mod
+    except Exception:
+        _REPORT_CORE = None
+    return _REPORT_CORE
+
+
+def _json_arg(data):
+    return json.dumps(data, ensure_ascii=False,
+                      default=lambda o: o.item() if hasattr(o, 'item') else str(o))
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -350,6 +374,9 @@ def compute_scores(report, config=None):
     """
     if config is None:
         config = load_config()
+    _core = _rust_core()
+    if _core is not None:
+        return json.loads(_core.repair_scores(_json_arg(report), _json_arg(config)))
     try:
         health, hf = _health(report, config)
         risk, rf = _risk(report, config)
