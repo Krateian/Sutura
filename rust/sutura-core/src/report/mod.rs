@@ -4,6 +4,8 @@ pub mod classify;
 pub mod debris;
 pub mod defects;
 pub mod fidelity;
+pub mod health;
+pub mod history;
 pub mod score;
 
 pub use classify::{
@@ -16,6 +18,8 @@ pub use debris::{
 };
 pub use defects::{detect_defects, DefectReport, Hole, NonManifoldRegion};
 pub use fidelity::{compute_fidelity_json, compute_fidelity_value};
+pub use health::{build_report_json as build_health_report_json, human_line_json};
+pub use history::{build_record_json, summary_text_json};
 pub use score::{compute_scores_json, compute_scores_value};
 
 pub(crate) fn round_to(value: f64, decimals: u32) -> f64 {

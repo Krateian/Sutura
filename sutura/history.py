@@ -43,6 +43,29 @@ SCHEMA_VERSION = 1
 # A filename is only ever used to derive the mesh FORMAT ('stl'/'obj'/'3mf').
 _ALLOWED_FORMATS = ('stl', 'obj', '3mf')
 
+_REPORT_CORE = None
+_REPORT_CORE_TRIED = False
+
+
+def _rust_core():
+    global _REPORT_CORE, _REPORT_CORE_TRIED
+    if os.environ.get('SUTURA_REPORT_ENGINE', 'python').strip().lower() != 'rust':
+        return None
+    if _REPORT_CORE_TRIED:
+        return _REPORT_CORE
+    _REPORT_CORE_TRIED = True
+    try:
+        import sutura_core_py as mod
+        _REPORT_CORE = mod
+    except Exception:
+        _REPORT_CORE = None
+    return _REPORT_CORE
+
+
+def _json_arg(data):
+    return json.dumps(data, ensure_ascii=False,
+                      default=lambda o: o.item() if hasattr(o, 'item') else str(o))
+
 
 def mesh_fingerprint(verts, tris):
     """Deterministic sha256 hex digest of a mesh's geometry (quantized).
@@ -85,6 +108,12 @@ def build_record(result, fingerprint, version, elapsed_ms, fmt=None):
     ``fmt`` overrides the mesh format (per-object 3MF reports carry no input
     path of their own, so the parent report's format is passed in).
     """
+    _core = _rust_core()
+    if _core is not None:
+        ts = datetime.now(timezone.utc).isoformat()
+        return json.loads(_core.history_build_record(
+            _json_arg(result), fingerprint, version, int(elapsed_ms),
+            fmt, ts))
     s1 = result.get('stage1') or {}
     defects = result.get('defects') or {}
     mu = result.get('method_used') or {}
@@ -262,6 +291,9 @@ def load_records(last=0):
 def summary_text(records):
     """Concise, copy-paste friendly summary of the records. No geometry, no
     identifying data."""
+    _core = _rust_core()
+    if _core is not None:
+        return _core.history_summary_text(_json_arg(records))
     from collections import Counter
     lines = ['Sutura usage history: %d repair record(s)' % len(records)]
     ts = [r.get('ts') for r in records if r.get('ts')]
