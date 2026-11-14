@@ -25,7 +25,7 @@ _REPORT_CORE_TRIED = False
 def _rust_core():
     """Optional sutura_core_py for SUTURA_REPORT_ENGINE=rust."""
     global _REPORT_CORE, _REPORT_CORE_TRIED
-    if os.environ.get('SUTURA_REPORT_ENGINE', 'python').strip().lower() != 'rust':
+    if os.environ.get('SUTURA_REPORT_ENGINE', 'rust').strip().lower() != 'rust':
         return None
     if _REPORT_CORE_TRIED:
         return _REPORT_CORE
