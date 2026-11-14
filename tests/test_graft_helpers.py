@@ -75,15 +75,8 @@ def test_graft_g0b_remesh_matches_python():
         ):
             pv, pt = fn(v, t, target)
             rv, rt = sutura_core_py.graft_remesh_probe(v, t, target, step)
-            # smooth/isotropic: numpy's second-iteration accumulation leaves a
-            # <=7.1e-15 float-order difference (split/collapse/normals exact).
-            # The final A2 mesh gate stays byte-exact.
-            if step in ('smooth', 'isotropic'):
-                assert np.allclose(pv, rv, rtol=0.0, atol=1e-12), (
-                    name, step, 'verts')
-            else:
-                assert np.array_equal(pv, rv), (name, step, 'verts')
+            assert np.array_equal(pv, rv), (name, step, 'verts')
             assert np.array_equal(pt, rt), (name, step, 'tris')
         pv = _smooth_tangential(v, t, iterations=2)
         rv, _rt = sutura_core_py.graft_remesh_probe(v, t, target, 'smooth')
-        assert np.allclose(pv, rv, rtol=0.0, atol=1e-12), (name, 'smooth')
+        assert np.array_equal(pv, rv), (name, 'smooth')

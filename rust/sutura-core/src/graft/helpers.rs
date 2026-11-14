@@ -597,15 +597,16 @@ pub fn smooth_tangential(v: &[[f64; 3]], t: &[[i64; 3]], iterations: usize) -> V
     // The accumulation order is part of the float result.
     let mut a = Vec::with_capacity(3 * t.len());
     let mut b = Vec::with_capacity(3 * t.len());
-    for r in t {
-        a.push(r[0] as usize);
-        a.push(r[1] as usize);
-        a.push(r[2] as usize);
+    // numpy concatenates all t[:,0], then all t[:,1], then all t[:,2].
+    for k in 0..3 {
+        for r in t {
+            a.push(r[k] as usize);
+        }
     }
-    for r in t {
-        b.push(r[1] as usize);
-        b.push(r[2] as usize);
-        b.push(r[0] as usize);
+    for k in [1usize, 2, 0] {
+        for r in t {
+            b.push(r[k] as usize);
+        }
     }
     let mut src = Vec::with_capacity(6 * t.len());
     let mut dst = Vec::with_capacity(6 * t.len());
@@ -677,3 +678,4 @@ pub fn isotropic_remesh(v: &[[f64; 3]], t: &[[i64; 3]], target: f64) -> (Vec<[f6
     let v3 = smooth_tangential(&v2, &t2, 2);
     (v3, t2)
 }
+
