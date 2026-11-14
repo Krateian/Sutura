@@ -163,7 +163,7 @@ def main():
         if env_c:
             cmd += ['--opt-out-env', env_c]
         if bridge:
-            cmd += ['--opt-out-env', 'SUTURA_IO_REQUIRE_RUST=1']
+            cmd += ['--opt-out-env', 'SUTURA_REQUIRE_RUST=1']
         if mode == 'determinism':
             # The baseline half is cached by input SHA + flags + repo head, so a
             # warmed cache would compare a run against itself.  A fresh cache
