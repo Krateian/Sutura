@@ -19,7 +19,11 @@
     "*.seconds",
     "*.time_s",
     "*.elapsed_ms",
-    "*.duration"
+    "*.duration",
+    "*_s",
+    "*_ms",
+    "*.topo_stats_s",
+    "*.shell_analyze_s"
   ],
   "top_level": {
     "input": "A",
