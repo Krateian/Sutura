@@ -627,6 +627,23 @@ pub fn stage2_rebuild_core(
     v: &[[f64; 3]],
     t: &[[i32; 3]],
 ) -> (Vec<[f32; 3]>, Vec<[i32; 3]>, Stage2Report) {
+    for (fi, r) in t.iter().enumerate() {
+        for &idx in r {
+            if idx < 0 || (idx as usize) >= v.len() {
+                let mut rep = Stage2Report {
+                    input_vertices: v.len(),
+                    input_faces: t.len(),
+                    construct_status: "Error.InvalidIndex".to_string(),
+                    ..Default::default()
+                };
+                rep.error = Some(format!(
+                    "triangle {} references vertex {} but the mesh has {} vertices",
+                    fi, idx, v.len()
+                ));
+                return (Vec::new(), Vec::new(), rep);
+            }
+        }
+    }
     let tu: Vec<[usize; 3]> = t
         .iter()
         .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
@@ -1314,5 +1331,15 @@ mod tests {
             olo[0] < lo[0] - eps || ohi[0] > hi[0] + eps,
             "explicit dilation did not grow the result: {olo:?}..{ohi:?} vs {lo:?}..{hi:?}"
         );
+    }
+
+    #[test]
+    fn stage2_rejects_out_of_range_triangle() {
+        let v = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let t = vec![[0, 1, 3]];
+        let (ov, ot, rep) = stage2_rebuild_core(&v, &t);
+        assert!(ov.is_empty());
+        assert!(ot.is_empty());
+        assert!(rep.error.unwrap().contains("references vertex 3"));
     }
 }
