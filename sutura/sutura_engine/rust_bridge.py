@@ -68,5 +68,12 @@ def json_arg(data):
     """JSON-encode a report argument; fail clearly on unknown objects."""
     import json
     def encode(o):
-        return o.item() if hasattr(o, 'item') else str(o)
+        if hasattr(o, 'item'):
+            try:
+                return o.item()
+            except Exception as exc:  # multi-element numpy arrays, etc.
+                raise TypeError(
+                    'not JSON serializable: %s (%s)'
+                    % (type(o).__name__, exc)) from exc
+        raise TypeError('not JSON serializable: %s' % (type(o).__name__,))
     return json.dumps(data, ensure_ascii=False, default=encode)
