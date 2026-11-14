@@ -298,6 +298,21 @@ def test_read_mesh_dispatches_by_extension():
             raise AssertionError('unsupported extension must raise')
 
 
+def test_missing_file_raises_filenotfound():
+    with tempfile.TemporaryDirectory() as tmp:
+        for fn, name in ((read_stl, 'missing.stl'),
+                         (read_obj, 'missing.obj'),
+                         (read_mesh, 'missing.stl')):
+            path = os.path.join(tmp, name)
+            try:
+                fn(path)
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError('%s must raise FileNotFoundError for %s'
+                                     % (fn.__name__, name))
+
+
 def main():
     test_obj_quad_and_ngon_are_fan_triangulated()
     test_obj_negative_indices_wrap_to_current_vertices()
@@ -316,6 +331,7 @@ def main():
     test_empty_obj_returns_2d_arrays()
     test_empty_binary_stl_stays_valid_empty_mesh()
     test_read_mesh_dispatches_by_extension()
+    test_missing_file_raises_filenotfound()
     print('mesh_io reader regressions passed')
 
 

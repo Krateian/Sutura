@@ -409,7 +409,10 @@ def read_stl(path):
     """
     _core = _rust_io()
     if _core is not None:
-        return _core.read_stl(str(path))
+        try:
+            return _core.read_stl(str(path))
+        except ValueError as exc:
+            raise MalformedSTLError(str(exc)) from exc
     with open(path, 'rb') as f:
         head = f.read(84)
         if len(head) == 84:
@@ -548,7 +551,12 @@ def read_mesh(path):
     """Read an STL, OBJ or PLY file into (verts float32, tris int32)."""
     _core = _rust_io()
     if _core is not None:
-        return _core.read_mesh(str(path))
+        try:
+            return _core.read_mesh(str(path))
+        except ValueError as exc:
+            if str(path).lower().endswith('.stl'):
+                raise MalformedSTLError(str(exc)) from exc
+            raise
     ext = os.path.splitext(str(path))[1].lower()
     if ext == '.obj':
         return read_obj(path)
