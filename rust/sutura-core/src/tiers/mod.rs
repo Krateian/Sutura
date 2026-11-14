@@ -7,6 +7,7 @@
 
 pub mod cdt;
 pub mod closing;
+pub mod wall;
 pub mod coaptation;
 pub mod common;
 pub mod flap;
