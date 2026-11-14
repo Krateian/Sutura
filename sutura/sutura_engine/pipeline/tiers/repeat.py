@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Sutura Authors
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """repeat tier (P1a split). Moved verbatim from sutura/repair.py; no logic change."""
+import json
 import os
 
 import numpy as np
@@ -11,6 +12,7 @@ from sutura_engine import health as method_health
 from sutura_engine.pipeline.p_weld import reload_strict_holes_nm
 from sutura_engine.pipeline.utils import boundary_loop_stats
 from sutura_engine.policy import TIERS as _TIERS
+from sutura_engine.pipeline.tiers.engine import tier_core, tier_engine
 
 _REPEAT_GATES = _TIERS['repeat']['gates']
 
@@ -41,6 +43,82 @@ REPEAT_MAX_HAUSDORFF_OUTSIDE = float(_REPEAT_GATES['max_hausdorff_outside'])
 
 def repeat_tier(cur_v, cur_t, after, stats, mode=None, source_point=None,
                 target_point=None):
+    """Repeat tier entry point (Python by default, Rust gate when opted in)."""
+    cur_v = np.asarray(cur_v, dtype=np.float64)
+    cur_t = np.asarray(cur_t, dtype=np.int64)
+    if not mode:
+        return cur_v, cur_t, after
+    core = tier_core()
+    if tier_engine('repeat') != 'rust' or core is None:
+        return _repeat_tier_python(cur_v, cur_t, after, stats, mode,
+                                   source_point, target_point)
+    return _repeat_tier_rust(cur_v, cur_t, after, stats, mode, source_point,
+                             target_point, core)
+
+
+def _repeat_tier_rust(cur_v, cur_t, after, stats, mode, source_point,
+                      target_point, core):
+    stats = stats if stats is not None else {}
+    rec = {'mode': mode, 'ran': False, 'adopted': False, 'watertight': False,
+           'pattern_type': None, 'positions_repaired': None,
+           'hausdorff_outside': None, 'notes': [], 'reason': None}
+    stats['repeat'] = rec
+    holes = boundary_loop_stats(cur_v, cur_t)[0]
+    nm = int(after.get('non_two_manifold_edges', 0))
+    if holes or nm or not after.get('is_mesh_two_manifold'):
+        rec['reason'] = ('repeated-element transplant needs a watertight '
+                         'input; stage 1 left holes=%d non-manifold=%d'
+                         % (holes, nm))
+        stats['repeat'] = rec
+        return cur_v, cur_t, after
+    if mode == 'manual' and (source_point is None or target_point is None):
+        rec['reason'] = ('manual repeat repair needs a source and a target '
+                         'point')
+        stats['repeat'] = rec
+        return cur_v, cur_t, after
+    payload = None
+    rep = {}
+    cand_v = cand_t = None
+    with method_health.tier_guard('repeat', 'tier') as _g:
+        import repeat_repair as _rr
+        if mode == 'manual':
+            cand_v, cand_t, rep = _rr.repair_repeat_manual(
+                np.asarray(cur_v, dtype=np.float64),
+                np.asarray(cur_t, dtype=np.int64),
+                np.asarray(source_point, dtype=np.float64),
+                np.asarray(target_point, dtype=np.float64))
+        else:
+            cand_v, cand_t, rep = _rr.repair_repeat_auto(
+                np.asarray(cur_v, dtype=np.float64),
+                np.asarray(cur_t, dtype=np.int64))
+        payload = core.tier_repeat_decide(
+            np.ascontiguousarray(cur_v, dtype=np.float64),
+            np.ascontiguousarray(cur_t, dtype=np.int64),
+            np.ascontiguousarray(cand_v, dtype=np.float64),
+            np.ascontiguousarray(cand_t, dtype=np.int64),
+            json.dumps(rep, default=str),
+            json.dumps({'mode': mode,
+                        'max_hausdorff_outside':
+                            float(REPEAT_MAX_HAUSDORFF_OUTSIDE)}))
+    if _g.error is not None or payload is None:
+        rec['ran'] = False
+        rec['reason'] = 'error: %s: %s' % (type(_g.error).__name__, _g.error)
+        stats['repeat'] = rec
+        return cur_v, cur_t, after
+    out_v, out_t, rec_json = payload
+    rec = json.loads(rec_json)
+    stats['repeat'] = rec
+    if not rec.get('adopted'):
+        return cur_v, cur_t, after
+    out_v = np.asarray(out_v, dtype=np.float64)
+    out_t = np.asarray(out_t, dtype=np.int64)
+    return (out_v, out_t,
+            topology.mesh_topology(np.asarray(out_v, dtype=np.float32),
+                                   np.asarray(out_t, dtype=np.int32)))
+
+
+def _repeat_tier_python(cur_v, cur_t, after, stats, mode=None, source_point=None,
+                        target_point=None):
     """Repeated-element transplant tier (registry methods 11/12, P-REP).
 
     Array-native: ``cur_v``/``cur_t`` is the current mesh (as passed by the
