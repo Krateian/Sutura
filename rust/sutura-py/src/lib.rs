@@ -868,6 +868,86 @@ fn graft_helpers_probe_py(
     Ok(out.to_string())
 }
 
+#[pyfunction(name = "graft_shell_wrap_probe")]
+fn graft_shell_wrap_probe_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    params_json: &str,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let params = parse_params(params_json)?;
+    let box_ = params.get("box").and_then(|b| b.as_array()).and_then(|rows| {
+        if rows.len() != 2 {
+            return None;
+        }
+        let read = |row: &serde_json::Value| -> Option<[f64; 3]> {
+            let a = row.as_array()?;
+            if a.len() != 3 {
+                return None;
+            }
+            Some([a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?])
+        };
+        Some((read(&rows[0])?, read(&rows[1])?))
+    });
+    let mut opts = sutura_core::graft::shell::ShellWrapOptions::default();
+    opts.r = params.get("r").and_then(|x| x.as_f64());
+    opts.voxel = params.get("voxel").and_then(|x| x.as_f64());
+    opts.box_ = box_;
+    opts.local = params.get("local").and_then(|x| x.as_bool());
+    if let Some(x) = params.get("remesh").and_then(|x| x.as_bool()) {
+        opts.remesh = x;
+    }
+    if let Some(x) = params.get("fill_cavities").and_then(|x| x.as_bool()) {
+        opts.fill_cavities = x;
+    }
+    if let Some(x) = params.get("max_tries").and_then(|x| x.as_i64()) {
+        opts.max_tries = x;
+    }
+    opts.target_edge = params.get("target_edge").and_then(|x| x.as_f64());
+    if let Some(x) = params.get("si_check").and_then(|x| x.as_bool()) {
+        opts.si_check = x;
+    }
+    if let Some(x) = params.get("guard").and_then(|x| x.as_bool()) {
+        opts.guard = x;
+    }
+    opts.grid_budget = params.get("grid_budget").and_then(|x| x.as_i64());
+    opts.detail_tol = params.get("detail_tol").and_then(|x| x.as_f64());
+    opts.intensity = params
+        .get("intensity")
+        .and_then(|x| x.as_str())
+        .map(|x| x.to_string());
+    opts.time_budget = params.get("time_budget").and_then(|x| x.as_f64());
+    opts.sign_field = params.get("sign_field").and_then(|x| x.as_bool());
+    if let Some(x) = params.get("hybrid").and_then(|x| x.as_bool()) {
+        opts.hybrid = x;
+    }
+    opts.raystab = params.get("raystab").and_then(|x| x.as_bool());
+    opts.raystab_dirs = params
+        .get("raystab_dirs")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as usize);
+    if let Some(x) = params.get("raystab_seed").and_then(|x| x.as_u64()) {
+        opts.raystab_seed = x;
+    }
+    if let Some(x) = params.get("raystab_parity").and_then(|x| x.as_bool()) {
+        opts.raystab_parity = x;
+    }
+    opts.antipodal = params.get("antipodal").and_then(|x| x.as_bool());
+    let out = sutura_core::graft::shell::shell_wrap(&v, &t, &opts)
+        .map_err(PyValueError::new_err)?;
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
 #[pyfunction(name = "stage1_si_excise")]
 fn stage1_si_excise_py<'py>(
     py: Python<'py>,
@@ -1223,6 +1303,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(graft_vn_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(graft_remesh_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(graft_helpers_probe_py, m)?)?;
+    m.add_function(wrap_pyfunction!(graft_shell_wrap_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_si_excise_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_wall_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_repeat_decide_py, m)?)?;

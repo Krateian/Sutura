@@ -23,6 +23,58 @@ pub fn np_dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[2].mul_add(b[2], a[0] * b[0]) + a[1] * b[1]
 }
 
+/// NumPy `add.reduce` float64 pairwise summation (PW_BLOCKSIZE 128).
+pub fn np_pairwise_sum(values: &[f64]) -> f64 {
+    fn rec(a: &[f64]) -> f64 {
+        let n = a.len();
+        if n < 8 {
+            let mut res = 0.0;
+            for x in a {
+                res += *x;
+            }
+            return res;
+        }
+        if n <= 128 {
+            let mut r = [a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]];
+            let mut i = 8;
+            while i < n - (n % 8) {
+                for k in 0..8 {
+                    r[k] += a[i + k];
+                }
+                i += 8;
+            }
+            let mut res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+            while i < n {
+                res += a[i];
+                i += 1;
+            }
+            return res;
+        }
+        let mut n2 = n / 2;
+        n2 -= n2 % 8;
+        rec(&a[..n2]) + rec(&a[n2..])
+    }
+    rec(values)
+}
+
+/// `_referenced_only`: unique referenced vertices (sorted) and remapped faces.
+pub fn referenced_only(v: &[[f64; 3]], t: &[[i64; 3]]) -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
+    let mut used: Vec<i64> = t.iter().flat_map(|r| r.iter().copied()).collect();
+    used.sort_unstable();
+    used.dedup();
+    let remap: HashMap<i64, i64> = used
+        .iter()
+        .enumerate()
+        .map(|(i, &u)| (u, i as i64))
+        .collect();
+    let nv = used.iter().map(|&u| v[u as usize]).collect();
+    let nt = t
+        .iter()
+        .map(|r| [remap[&r[0]], remap[&r[1]], remap[&r[2]]])
+        .collect();
+    (nv, nt)
+}
+
 pub fn bbox(v: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
     if v.is_empty() {
         return ([0.0; 3], [0.0; 3]);

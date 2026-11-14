@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Graft G1 parity: whole-mesh Python `shell_wrap` vs the Rust loop.
+
+Public samples only. The guard is disabled so the NumPy-RNG coverage terms
+(G3) are not part of this slice; the produced mesh must still be bit-exact.
+"""
+import json
+import os
+import sys
+
+import numpy as np
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, 'sutura'))
+
+
+def _case(name, voxel, r, remesh):
+    try:
+        import sutura_core_py
+        from sutura_core_py import load_stl
+    except Exception as exc:  # noqa: BLE001
+        import pytest
+        pytest.skip('bridge unavailable: %s' % exc)
+
+    from sutura_engine.graft import shell_wrap
+
+    v, t = load_stl(os.path.join(REPO, 'tests', 'real-world-samples', name))
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    params = {
+        'r': r,
+        'voxel': voxel,
+        'local': False,
+        'remesh': remesh,
+        'guard': False,
+        'si_check': True,
+        'grid_budget': 300_000,
+        'hybrid': False,
+    }
+    pv, pt, prep = shell_wrap(v, t, **params)
+    rv, rt, rrep = sutura_core_py.graft_shell_wrap_probe(v, t, json.dumps(params))
+    rrep = json.loads(rrep)
+    assert np.array_equal(pv, rv), (name, 'verts')
+    assert np.array_equal(pt, rt), (name, 'tris')
+    for key in ('r_used', 'mode', 'holes', 'non_manifold', 'faces_after',
+                'si_before', 'si_after', 'projected_fraction', 'remeshed',
+                'detail_max_mm', 'detail_mean_mm', 'voxel'):
+        assert prep[key] == rrep[key], (name, key, prep[key], rrep[key])
+
+
+def test_shell_wrap_g1_whole_mesh():
+    _case('thingi10k_100173.stl', 8.0, 4.0, True)
+
+
+def test_shell_wrap_g1_whole_mesh_no_remesh():
+    _case('thingi10k_100045.stl', 0.5, 1.0, False)
