@@ -8,10 +8,32 @@ by the pipeline and the graft/dressing tiers. The former duplicate copies in
 ``sutura_engine.stitch`` / ``sutura_engine.xray`` had no live caller and were
 removed.
 """
+import json
+import os
+
 import numpy as np
 
 import topology
 from defects import detect as detect_defects
+
+
+_PWELD_CORE = None
+_PWELD_CORE_TRIED = False
+
+
+def _rust_core():
+    global _PWELD_CORE, _PWELD_CORE_TRIED
+    if os.environ.get('SUTURA_STAGE_ENGINE', 'python').strip().lower() != 'rust':
+        return None
+    if _PWELD_CORE_TRIED:
+        return _PWELD_CORE
+    _PWELD_CORE_TRIED = True
+    try:
+        import sutura_core_py as mod
+        _PWELD_CORE = mod
+    except Exception:
+        _PWELD_CORE = None
+    return _PWELD_CORE
 
 
 def weld_reload_equivalent(verts, tris):
@@ -30,6 +52,11 @@ def weld_reload_equivalent(verts, tris):
     faces dropped, unreferenced vertices removed. Pure numpy (no pymeshlab) so
     the method registry's guard can apply the same rule without importing it.
     """
+    _core = _rust_core()
+    if _core is not None:
+        return _core.p_weld_reload_equivalent(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int64))
     return topology.weld_reload_equivalent(verts, tris)
 
 
@@ -68,6 +95,11 @@ def reload_topology(verts, tris):
     check as before plus ``topology.mesh_topology`` for pinched vertices.
     The independent verification gate (and the original oracle finding) counts
     those vertices, so the verdict must too. Pure numpy/Rust, no pymeshlab."""
+    _core = _rust_core()
+    if _core is not None:
+        return tuple(int(x) for x in _core.p_weld_reload_topology(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int64)))
     wv, wt = weld_reload_equivalent(verts, tris)
     d = detect_defects(wv, wt)
     topo = topology.mesh_topology(wv, wt)
@@ -82,6 +114,11 @@ def reload_strict_holes_nm(verts, tris):
     does **not** compute the non-manifold-vertex count. Use
     :func:`reload_topology` (and pass ``include_n2m=True`` to the verdict) when
     the STL save/reload pinch matters."""
+    _core = _rust_core()
+    if _core is not None:
+        return tuple(int(x) for x in _core.p_weld_reload_strict(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int64)))
     wv, wt = weld_reload_equivalent(verts, tris)
     d = detect_defects(wv, wt)
     return len(d['holes']), len(d['non_manifold'])
@@ -175,6 +212,12 @@ def p_weld_final(verts, tris):
     Returns ``(verts, tris, report)`` with ``report`` None when the mesh was
     already reload-topology-clean.
     """
+    _core = _rust_core()
+    if _core is not None:
+        _v, _t, _rep = _core.p_weld_final(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int64))
+        return _v, _t, (None if _rep is None else json.loads(_rep))
     v0 = np.asarray(verts)
     t0 = np.asarray(tris)
     base_h, base_nm, base_n2m = reload_topology(v0, t0)
@@ -241,6 +284,16 @@ def enforce_reload_verdict(report, verts, tris, include_n2m=True):
     Returns True when the report was downgraded."""
     if not isinstance(report, dict):
         return False
+    _core = _rust_core()
+    if _core is not None:
+        _changed, _new = _core.p_weld_enforce_verdict(
+            json.dumps(report, default=lambda o: o.item() if hasattr(o, 'item') else str(o)),
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int64), bool(include_n2m))
+        if _changed:
+            report.clear()
+            report.update(json.loads(_new))
+        return bool(_changed)
     s1 = report.get('stage1')
     if not isinstance(s1, dict):
         return False

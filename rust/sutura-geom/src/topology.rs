@@ -491,7 +491,7 @@ pub fn remove_duplicate_vertices<'py>(
     Ok((rows_to_array2_f32(py, &new_verts), rows_to_array2_i64(py, &new_tris)))
 }
 
-pub(crate) fn remove_unreferenced_vertices_core(
+pub fn remove_unreferenced_vertices_core(
     vrows: &[[f32; 3]],
     trows: &[[i64; 3]],
 ) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
