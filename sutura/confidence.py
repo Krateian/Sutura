@@ -34,7 +34,34 @@ comments): a baseline score is adjusted by each signal and clamped. These
 numbers are an honest assessment, not a metric; the `factors` dict makes the
 reasoning visible in the report so a surprising score can be traced.
 """
+import json
+import os
+
 from classification import classify
+
+
+_REPORT_CORE = None
+_REPORT_CORE_TRIED = False
+
+
+def _rust_core():
+    global _REPORT_CORE, _REPORT_CORE_TRIED
+    if os.environ.get('SUTURA_REPORT_ENGINE', 'python').strip().lower() != 'rust':
+        return None
+    if _REPORT_CORE_TRIED:
+        return _REPORT_CORE
+    _REPORT_CORE_TRIED = True
+    try:
+        import sutura_core_py as mod
+        _REPORT_CORE = mod
+    except Exception:
+        _REPORT_CORE = None
+    return _REPORT_CORE
+
+
+def _json_arg(data):
+    return json.dumps(data, ensure_ascii=False,
+                      default=lambda o: o.item() if hasattr(o, 'item') else str(o))
 
 
 def _tuning_gates():
@@ -87,6 +114,9 @@ def repair_confidence(report):
     A hard error (malformed input, extreme_removed_object, ...) is always
     score 0 / 'low' regardless of any other field.
     """
+    _core = _rust_core()
+    if _core is not None:
+        return _core.repair_confidence(_json_arg(report))
     factors = {}
     category, _issues, _key = classify(report)
 
@@ -212,6 +242,11 @@ def estimate_confidence_pre_repair(signals):
       self_intersections (input self-intersecting face count),
       stage2_bridge_available.
     """
+    _core = _rust_core()
+    if _core is not None:
+        mech_gate, org_gate = _tuning_gates()
+        return _core.estimate_confidence_pre_repair(
+            _json_arg(signals), mech_gate, org_gate)
     factors = {}
     score = _PRE_BASELINE
 

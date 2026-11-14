@@ -1,8 +1,13 @@
 //! Measurement and reporting primitives (Python-free).
 
+pub mod classify;
 pub mod debris;
 pub mod defects;
 
+pub use classify::{
+    classify_json, classify_value, estimate_confidence_json, repair_confidence_json,
+    repair_confidence_value, summary_args_json, summary_args_value, Confidence,
+};
 pub use debris::{
     possible_debris, removed_small_parts, PossibleDebris, PossibleDebrisPart, RemovedSmallParts,
     SmallPart,

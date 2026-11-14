@@ -10,6 +10,34 @@ codes/keys. The CLI (English, not localized) formats them via ISSUE_LABELS;
 the GUI localizes them through its own EN/TR dictionary.
 """
 
+import json
+import os
+
+
+_REPORT_CORE = None
+_REPORT_CORE_TRIED = False
+
+
+def _rust_core():
+    global _REPORT_CORE, _REPORT_CORE_TRIED
+    if os.environ.get('SUTURA_REPORT_ENGINE', 'python').strip().lower() != 'rust':
+        return None
+    if _REPORT_CORE_TRIED:
+        return _REPORT_CORE
+    _REPORT_CORE_TRIED = True
+    try:
+        import sutura_core_py as mod
+        _REPORT_CORE = mod
+    except Exception:
+        _REPORT_CORE = None
+    return _REPORT_CORE
+
+
+def _json_arg(data):
+    return json.dumps(data, ensure_ascii=False,
+                      default=lambda o: o.item() if hasattr(o, 'item') else str(o))
+
+
 # Machine-readable issue codes, with a human-readable English label for the
 # CLI's --human summary (the GUI localizes these separately).
 ISSUE_LABELS = {
@@ -96,6 +124,10 @@ def classify(data):
     summary_key is a stable key from SUMMARY_KEYS; see summary_args() for the
     dynamic argument (e.g. the hole count) the GUI uses to format it.
     """
+    _core = _rust_core()
+    if _core is not None:
+        return tuple(_core.classify(_json_arg(data)))
+
     issues = []
 
     # Extreme mode with a small mesh deleted every face (mincomponentsize=20):
@@ -196,6 +228,9 @@ def summary_args(data):
 
     Returns a tuple to pass into the localized string template.
     """
+    _core = _rust_core()
+    if _core is not None:
+        return tuple(_core.summary_args(_json_arg(data)))
     if data.get('stage1', {}).get('two_manifold'):
         return (data.get('stage1', {}).get('holes_remaining', 0),)
     return ()
