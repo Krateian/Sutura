@@ -26,6 +26,19 @@ Rust-only unwired changes skip the corpus (T0 only). T0 is CI; T1/T2/T3 are
 developer/lead gates. Measured on the local M2: T1 138.7 s cold / 73.5 s warm;
 T2 338.2 s cold / 169.2 s warm (baseline cache + `--jobs 4`).
 
+### `io_parity` mode (P10 phase 1)
+
+`sets=core_clean@io_parity,samples40@io_parity` compares the baseline Python
+`mesh_io` with the candidate Rust CLI per mesh. Each row carries numeric
+summaries only: format, mesh/vertex/triangle counts, per-block array SHA-256,
+written-STL SHA-256, unit warnings, material loss and NaN scan. Temporary
+meshes are deleted and never uploaded; `DIFF` is a failing verdict.
+`scripts/io_probe.py` produces the Python side and `scripts/io_parity.py`
+drives both sides; `gh_mesh_shard.py` builds/uses `cand-bin/sutura` for the
+mode. The acceptance run for the Python double path used
+`verify_default_vs_optout.py --byte --deterministic` with
+`--opt-out-env SUTURA_IO_ENGINE=rust` and returned `SAME` 140/140.
+
 ## Tests (no framework — plain scripts, need the venvs installed)
 
 - **Repair modes (`repair.MODE_PARAMS`, CLI `--mode`, GUI picker).** Five-step Stage 1 aggressiveness ladder: `low {8,200}`, `medium {8,1000}` (historical default thresholds), `auto` (the default; runs classify_mesh + tuning gate exactly as before — mode-neutral for all existing tests/CI), `aggressive {12,3000}`, `extreme {20,10000}`. Fixed modes (not `auto`) bypass the classifier for parameter selection (it still runs, cheap, so detected_type/confidence stay informative) and set `tuning_applied=False`. The chosen mode lands in the report as `repair_mode` (JSON), a `Mode:` line (`--human`), and per-object for multi-object 3MF. `mincomponentsize` stays >= 8 for every mode (never lower: CI regression risk). Note: `extreme` with mincomponentsize=20 can delete a whole object whose connected part has < 20 faces (e.g. the 13-face broken.stl smoke cube) — that is the value's intended-but-aggressive behaviour. When extreme deletes ALL geometry (zero faces remain), the report carries `category=error` with issue `extreme_removed_object` and the clear message "Extreme mode removed all geometry (small connected component below the size threshold); try a less aggressive mode (e.g. Auto)" — reported distinctly from the generic `malformed`/`all faces are degenerate` error via `repair.ExtremeRemovedAllError` + `classification.classify` (GUI localizes it through the `issue_extreme_removed_object` EN/TR dictionary entry). The GUI exposes the same five modes via its batch-wide Repair Mode button.
