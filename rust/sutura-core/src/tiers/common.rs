@@ -585,3 +585,55 @@ pub fn json_s(v: &Value, k: &str, d: &str) -> String {
 pub fn json_opt_i(v: &Value, k: &str) -> Option<i64> {
     v.get(k).and_then(Value::as_i64)
 }
+
+/// Edge-connected face labels (faces sharing an undirected edge), numbered by
+/// the sorted union-find root so the numbering matches `topology._face_labels`.
+pub fn edge_face_labels(tris: &[[i64; 3]]) -> (usize, Vec<i64>) {
+    let nf = tris.len();
+    if nf == 0 {
+        return (0, Vec::new());
+    }
+    let mut parent: Vec<usize> = (0..nf).collect();
+    fn find(p: &mut [usize], mut x: usize) -> usize {
+        let mut root = x;
+        while p[root] != root {
+            root = p[root];
+        }
+        while p[x] != root {
+            let next = p[x];
+            p[x] = root;
+            x = next;
+        }
+        root
+    }
+    let mut first: HashMap<(i64, i64), usize> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let key = if a <= b { (a, b) } else { (b, a) };
+            match first.get(&key) {
+                Some(&other) => {
+                    let ra = find(&mut parent, fi);
+                    let rb = find(&mut parent, other);
+                    if ra < rb {
+                        parent[rb] = ra;
+                    } else if rb < ra {
+                        parent[ra] = rb;
+                    }
+                }
+                None => {
+                    first.insert(key, fi);
+                }
+            }
+        }
+    }
+    let roots: Vec<i64> = (0..nf).map(|i| find(&mut parent, i) as i64).collect();
+    let mut uniq: Vec<i64> = roots.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    let mut map: HashMap<i64, i64> = HashMap::with_capacity(uniq.len());
+    for (i, r) in uniq.iter().enumerate() {
+        map.insert(*r, i as i64);
+    }
+    let labels: Vec<i64> = roots.iter().map(|r| map[r]).collect();
+    (uniq.len(), labels)
+}
