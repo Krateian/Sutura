@@ -15,3 +15,5 @@ path = "src/lib.rs"
 sutura-geom = { path = "../sutura-geom", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+toml = "0.8"
+sha2 = "0.11"

@@ -1,0 +1,12 @@
+# Managed by the Sutura Method control panel (Options -> Methods).
+# Panel-owned sections: [order] / [methods]. Comments in these sections
+# may be regenerated. The packaged default policy is never modified.
+
+
+[ranking]
+nope = 1
+
+[modes]
+
+[modes.low]
+mincomponentsize = 9

@@ -1051,6 +1051,11 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(scan_bad_coordinates, m)?)?;
     m.add_function(wrap_pyfunction!(obj_has_material_refs_py, m)?)?;
     m.add_function(wrap_pyfunction!(probe, m)?)?;
+    m.add_function(wrap_pyfunction!(config_policy_load_py, m)?)?;
+    m.add_function(wrap_pyfunction!(config_policy_hash_py, m)?)?;
+    m.add_function(wrap_pyfunction!(config_intensity_format_py, m)?)?;
+    m.add_function(wrap_pyfunction!(config_intensity_resolve_py, m)?)?;
+    m.add_function(wrap_pyfunction!(config_learning_bonus_py, m)?)?;
     m.add_function(wrap_pyfunction!(rewrite_3mf, m)?)?;
     m.add_function(wrap_pyfunction!(parse_3mf_mesh_blocks_py, m)?)?;
     m.add_function(wrap_pyfunction!(read_3mf_units_py, m)?)?;
@@ -1096,4 +1101,183 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
+}
+
+// --- config (policy / intensity / learning) ---------------------------------
+//
+// Thin adapters only: the policy document crosses the boundary as the exact
+// `json.dumps(sort_keys=True, separators=(',', ':'))` text, so the Python side
+// can compare or re-hash it without a second normalizer.
+
+#[pyfunction(name = "config_policy_load")]
+#[pyo3(signature = (path=None))]
+fn config_policy_load_py<'py>(
+    py: Python<'py>,
+    path: Option<&str>,
+) -> PyResult<Bound<'py, PyDict>> {
+    use std::path::PathBuf;
+    let path = path.map(PathBuf::from);
+    let loaded = sutura_core::config::policy::load_policy(path.as_deref())
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let out = PyDict::new(py);
+    out.set_item("schema_version", loaded.schema_version)?;
+    out.set_item("content_hash", loaded.content_hash.clone())?;
+    out.set_item("user_override", loaded.user_override)?;
+    match &loaded.policy_error {
+        Some(e) => out.set_item("policy_error", e)?,
+        None => out.set_item("policy_error", py.None())?,
+    }
+    out.set_item("ignored_keys", loaded.ignored_keys.clone())?;
+    out.set_item(
+        "json",
+        sutura_core::config::policy::json_python(&loaded.policy),
+    )?;
+    out.set_item("gate_paths", loaded.gate_paths())?;
+    Ok(out)
+}
+
+#[pyfunction(name = "config_policy_hash")]
+fn config_policy_hash_py(json_text: &str) -> PyResult<String> {
+    let value: serde_json::Value = serde_json::from_str(json_text)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let policy = json_value_to_policy(&value);
+    Ok(sutura_core::config::policy::policy_hash(&policy))
+}
+
+#[pyfunction(name = "config_intensity_format")]
+fn config_intensity_format_py() -> PyResult<String> {
+    let loaded = sutura_core::config::policy::load_policy(None)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(sutura_core::config::intensity::format_intensities(&loaded, None))
+}
+
+#[pyfunction(name = "config_intensity_resolve")]
+#[pyo3(signature = (cli_value=None, environ=None, config_path=None))]
+fn config_intensity_resolve_py(
+    cli_value: Option<&str>,
+    environ: Option<&Bound<'_, PyDict>>,
+    config_path: Option<&str>,
+) -> PyResult<String> {
+    use std::path::PathBuf;
+    let loaded = sutura_core::config::policy::load_policy(None)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let map = match environ {
+        Some(dict) => {
+            let mut map = std::collections::BTreeMap::new();
+            for (key, value) in dict.iter() {
+                if let (Ok(key), Ok(value)) = (key.extract::<String>(), value.extract::<String>()) {
+                    map.insert(key, value);
+                }
+            }
+            Some(map)
+        }
+        None => None,
+    };
+    let path = config_path.map(PathBuf::from);
+    let spec = sutura_core::config::intensity::resolve_intensity(
+        &loaded,
+        cli_value,
+        map.as_ref(),
+        path.as_deref(),
+        None,
+        None,
+    );
+    serde_json::to_string(&intensity_spec_json(&spec))
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction(name = "config_learning_bonus")]
+#[pyo3(signature = (template=None, method_id=None, stats_json=None))]
+fn config_learning_bonus_py(
+    template: Option<&str>,
+    method_id: Option<&str>,
+    stats_json: Option<&str>,
+) -> PyResult<f64> {
+    let stats = match stats_json {
+        Some(text) => {
+            let value: serde_json::Value = serde_json::from_str(text)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            Some(value.as_object().cloned().unwrap_or_default())
+        }
+        None => None,
+    };
+    Ok(sutura_core::config::learning::learning_bonus(
+        template,
+        method_id,
+        stats.as_ref(),
+        None,
+        sutura_core::config::learning::LearningKnobs::default(),
+    ))
+}
+
+fn json_value_to_policy(value: &serde_json::Value) -> sutura_core::config::PolicyValue {
+    use sutura_core::config::PolicyValue;
+    match value {
+        serde_json::Value::Bool(b) => PolicyValue::Bool(*b),
+        serde_json::Value::Number(n) => match n.as_i64() {
+            Some(i) => PolicyValue::Int(i),
+            None => PolicyValue::Float(n.as_f64().unwrap_or(0.0)),
+        },
+        serde_json::Value::String(s) => PolicyValue::Str(s.clone()),
+        serde_json::Value::Array(items) => {
+            PolicyValue::Array(items.iter().map(json_value_to_policy).collect())
+        }
+        serde_json::Value::Object(map) => PolicyValue::Table(
+            map.iter()
+                .map(|(k, v)| (k.clone(), json_value_to_policy(v)))
+                .collect(),
+        ),
+        serde_json::Value::Null => PolicyValue::Str(String::new()),
+    }
+}
+
+fn intensity_spec_json(
+    spec: &sutura_core::config::intensity::IntensitySpec,
+) -> serde_json::Value {
+    use sutura_core::config::intensity::LadderEntry;
+    let ladder: Vec<serde_json::Value> = spec
+        .dense_target_ladder
+        .iter()
+        .map(|entry| match entry {
+            LadderEntry::Threshold => serde_json::Value::from("threshold"),
+            LadderEntry::Number(v) => serde_json::Value::from(*v),
+        })
+        .collect();
+    serde_json::json!({
+        "name": spec.name,
+        "ftetwild_enabled": spec.ftetwild_enabled,
+        "ftetwild_max_faces": spec.ftetwild_max_faces,
+        "ftetwild_timeout": spec.ftetwild_timeout,
+        "graft_max_faces": spec.graft_max_faces,
+        "graft_timeout": spec.graft_timeout,
+        "ftetwild_optimize_retry_on_dense_fail": spec.ftetwild_optimize_retry_on_dense_fail,
+        "deep_repair": spec.deep_repair,
+        "dense_target_ladder": ladder,
+        "dense_ratio": spec.dense_ratio,
+        "dense_min_faces": spec.dense_min_faces,
+        "ftetwild_hausdorff_samples": spec.ftetwild_hausdorff_samples,
+        "base": spec.base,
+        "overrides": serde_json::to_value(
+            spec.overrides.iter().map(|(k, v)| (k.clone(), policy_to_json_value(v)))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        ).unwrap_or(serde_json::Value::Null),
+    })
+}
+
+fn policy_to_json_value(value: &sutura_core::config::PolicyValue) -> serde_json::Value {
+    use sutura_core::config::PolicyValue;
+    match value {
+        PolicyValue::Bool(b) => serde_json::Value::Bool(*b),
+        PolicyValue::Int(i) => serde_json::Value::from(*i),
+        PolicyValue::Float(f) => serde_json::Value::from(*f),
+        PolicyValue::Str(s) => serde_json::Value::from(s.clone()),
+        PolicyValue::Array(items) => {
+            serde_json::Value::Array(items.iter().map(policy_to_json_value).collect())
+        }
+        PolicyValue::Table(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), policy_to_json_value(v)))
+                .collect(),
+        ),
+    }
 }
