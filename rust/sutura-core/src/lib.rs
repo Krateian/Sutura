@@ -12,8 +12,9 @@ pub mod mesh_io;
 pub use error::{MeshError, MeshResult};
 pub use mesh::{Mesh, MeshBlock, SourceFormat};
 pub use mesh_io::{
-    load_stl, obj_has_material_refs, read_obj, read_stl, scan_stl_bad_coordinates, write_obj,
-    write_stl_binary,
+    check_units, load_stl, match_triangle_attributes, obj_has_material_refs, parse_3mf_mesh_blocks,
+    read_3mf_units, read_obj, read_stl, rewrite_3mf_meshes, scan_stl_bad_coordinates,
+    write_3mf_single, write_obj, write_stl_binary, TriangleAttrStats, UnitWarning,
 };
 
 #[cfg(test)]
