@@ -1451,6 +1451,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sutura-py"
+version = "0.1.0"
+dependencies = [
+ "numpy",
+ "pyo3",
+ "sutura-core",
+]
+
+[[package]]
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
