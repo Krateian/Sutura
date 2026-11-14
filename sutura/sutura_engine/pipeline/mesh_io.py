@@ -98,9 +98,13 @@ INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
 
 def write_obj(path, verts, tris):
+    # The Rust writer formats float32 values; the Python path writes the
+    # caller's dtype with %.9g.  Keep float64 (fTetWild/indirect inputs and the
+    # user OBJ output) on the Python writer so the text does not lose precision.
+    arr = np.asarray(verts)
     _core = _rust_io()
-    if _core is not None:
-        _core.write_obj(str(path), np.asarray(verts, dtype=np.float32),
+    if _core is not None and arr.dtype == np.float32:
+        _core.write_obj(str(path), arr,
                         np.asarray(tris, dtype=np.int32))
         return
     with open(path, 'w') as f:
