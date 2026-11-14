@@ -238,6 +238,18 @@ def extreme_extra_passes(verts, tris, params):
     """
     v = np.asarray(verts, dtype=np.float64)
     t = np.asarray(tris, dtype=np.int64)
+    _core = _stage1_core()
+    if _core is not None:
+        (_applied, _found, _removed, _applied2, _skipped_json,
+         _ov, _ot) = _core.stage1_extreme_passes(
+            v, t, json.dumps(params))
+        _skipped2 = json.loads(_skipped_json)
+        for _name, _msg in _skipped2.items():
+            method_health.record_error('stage1:' + _name, 'filter',
+                                       RuntimeError(_msg))
+        return (bool(_applied), int(_found), int(_removed), int(_applied2),
+                _skipped2, np.asarray(_ov, dtype=np.float64),
+                np.asarray(_ot, dtype=np.int64))
     mask, found = topology.self_intersecting_faces(v, t)
     if int(found) <= 0:
         return False, max(int(found), 0), 0, 0, {}, v, t

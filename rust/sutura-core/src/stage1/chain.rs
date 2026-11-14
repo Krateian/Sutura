@@ -239,3 +239,40 @@ pub fn apply_chain(
     }
     (v, t, applied, Value::Object(skipped), removed_small_parts)
 }
+
+/// Extreme-mode extra passes: drop SI faces, then re-run the main chain once.
+pub fn extreme_extra_passes(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    params: &Value,
+) -> (bool, i64, usize, usize, Value, Vec<[f64; 3]>, Vec<[i64; 3]>) {
+    let ut: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let (mask, found, _skipped) = sutura_geom::self_intersections_core(verts, &ut);
+    if found <= 0 {
+        return (false, found.max(0), 0, 0, json!({}), verts.to_vec(), tris.to_vec());
+    }
+    let before = tris.len();
+    let t2 = remove_selected_faces_core(tris, &mask);
+    let v32 = as_f32(verts);
+    let (nv, nt) = remove_unreferenced_vertices_core(&v32, &t2);
+    let mut v = f32_to_f64(&nv);
+    let mut t = nt;
+    let removed = before.saturating_sub(t2.len());
+    let maxholesize = params.get("maxholesize").and_then(Value::as_i64).unwrap_or(1000);
+    let mincomp = params
+        .get("mincomponentsize")
+        .and_then(Value::as_i64)
+        .unwrap_or(8);
+    let join = params
+        .get("join_components")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let chain = Value::Array(stage1_chain(maxholesize, mincomp, join));
+    let (v2, t2, applied2, skipped2, _) = apply_chain(&v, &t, &chain);
+    v = v2;
+    t = t2;
+    (true, found, removed, applied2, skipped2, v, t)
+}
