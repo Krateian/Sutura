@@ -370,6 +370,7 @@ pub fn remove_null_faces_core(
         }
         if norm2 == 0.0 {
             if safe {
+                // Keep it when deleting it would open a boundary edge.
                 let opens = [(r[0], r[1]), (r[1], r[2]), (r[2], r[0])]
                     .iter()
                     .any(|&(a, b)| {
@@ -1766,6 +1767,21 @@ mod tests {
         assert!(vol_opt.is_some());
         let vol = vol_opt.unwrap();
         assert!((vol.abs() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn null_face_safe_keeps_a_load_bearing_collinear_face() {
+        let v = [
+            [0.0f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let t = [[0i64, 1, 3], [1, 2, 3], [0, 1, 2]];
+        let safe = remove_null_faces_core(&v, &t, true);
+        assert!(safe.contains(&[0, 1, 2]), "safe mode must keep the load-bearing null face");
+        let strict = remove_null_faces_core(&v, &t, false);
+        assert!(!strict.contains(&[0, 1, 2]), "non-safe mode drops it");
     }
 }
 
