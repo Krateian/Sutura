@@ -11,6 +11,7 @@ pub mod mesh_io;
 pub mod p_weld;
 pub mod stage2;
 pub mod report;
+pub mod tiers;
 
 pub use error::{MeshError, MeshResult};
 pub use mesh::{Mesh, MeshBlock, SourceFormat};

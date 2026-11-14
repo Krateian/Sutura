@@ -740,6 +740,130 @@ fn stage2_split_pinched_py<'py>(
         r.report.map(|x| x.to_string())))
 }
 
+
+fn parse_params(json: &str) -> PyResult<serde_json::Value> {
+    serde_json::from_str(json).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+fn arrays_f64<'py>(py: Python<'py>, v: &[[f64; 3]]) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    if v.is_empty() {
+        return Ok(PyArray2::<f64>::zeros(py, [0, 3], false));
+    }
+    let rows: Vec<Vec<f64>> = v.iter().map(|p| p.to_vec()).collect();
+    PyArray2::from_vec2(py, &rows).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+fn arrays_i64<'py>(py: Python<'py>, t: &[[i64; 3]]) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    if t.is_empty() {
+        return Ok(PyArray2::<i64>::zeros(py, [0, 3], false));
+    }
+    let rows: Vec<Vec<i64>> = t.iter().map(|r| r.to_vec()).collect();
+    PyArray2::from_vec2(py, &rows).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction(name = "tier_tamponade")]
+fn tier_tamponade_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    params_json: &str,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>, String)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let params = parse_params(params_json)?;
+    let (ov, ot, rec) = sutura_core::tiers::tamponade::run(&v, &t, &params);
+    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
+}
+
+#[pyfunction(name = "tier_flap")]
+fn tier_flap_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    params_json: &str,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>, String)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let params = parse_params(params_json)?;
+    let (ov, ot, rec) = sutura_core::tiers::flap::run(&v, &t, &params);
+    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
+}
+
+#[pyfunction(name = "tier_flap_debris")]
+fn tier_flap_debris_py<'py>(
+    py: Python<'py>,
+    in_verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    in_tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    out_verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    out_tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    params_json: &str,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>, Option<String>)> {
+    let iv = verts_f64(in_verts)?;
+    let it = tris_i64(in_tris)?;
+    let ov = verts_f64(out_verts)?;
+    let ot = tris_i64(out_tris)?;
+    let params = parse_params(params_json)?;
+    let (cv, ct, info) = sutura_core::tiers::flap::debris(&iv, &it, &ov, &ot, &params);
+    Ok((arrays_f64(py, &cv)?, arrays_i64(py, &ct)?, info.map(|x| x.to_string())))
+}
+
+#[pyfunction(name = "tier_flap_final")]
+fn tier_flap_final_py(
+    in_v: PyArrayLike2<'_, f64, AllowTypeChange>,
+    in_t: PyArrayLike2<'_, i64, AllowTypeChange>,
+    out_v: PyArrayLike2<'_, f64, AllowTypeChange>,
+    out_t: PyArrayLike2<'_, i64, AllowTypeChange>,
+    measure_si: bool,
+    si_flagged: bool,
+) -> PyResult<(Option<String>, Option<String>)> {
+    let iv = verts_f64(in_v)?;
+    let it = tris_i64(in_t)?;
+    let ov = verts_f64(out_v)?;
+    let ot = tris_i64(out_t)?;
+    let (reason, metrics) =
+        sutura_core::tiers::flap::final_off(&iv, &it, &ov, &ot, measure_si, si_flagged);
+    Ok((reason, metrics.map(|x| x.to_string())))
+}
+
+#[pyfunction(name = "tier_flap_off_preferred")]
+fn tier_flap_off_preferred_py(on_reason: &str, on_json: &str, off_json: &str) -> PyResult<bool> {
+    let on = parse_params(on_json)?;
+    let off = parse_params(off_json)?;
+    Ok(sutura_core::tiers::flap::off_preferred(on_reason, &on, &off))
+}
+
+#[pyfunction(name = "tier_flap_si_rose")]
+fn tier_flap_si_rose_py(rec_json: &str) -> PyResult<bool> {
+    let rec = parse_params(rec_json)?;
+    Ok(sutura_core::tiers::flap::si_rose(&rec))
+}
+
+#[pyfunction(name = "tier_tamponade_final")]
+fn tier_tamponade_final_py(
+    in_v: PyArrayLike2<'_, f64, AllowTypeChange>,
+    in_t: PyArrayLike2<'_, i64, AllowTypeChange>,
+    out_v: PyArrayLike2<'_, f64, AllowTypeChange>,
+    out_t: PyArrayLike2<'_, i64, AllowTypeChange>,
+    force_metrics: bool,
+    params_json: &str,
+) -> PyResult<(Option<String>, Option<String>)> {
+    let iv = verts_f64(in_v)?;
+    let it = tris_i64(in_t)?;
+    let ov = verts_f64(out_v)?;
+    let ot = tris_i64(out_t)?;
+    let params = parse_params(params_json)?;
+    let (reason, metrics) =
+        sutura_core::tiers::tamponade::final_off(&iv, &it, &ov, &ot, force_metrics, &params);
+    Ok((reason, metrics.map(|x| x.to_string())))
+}
+
+#[pyfunction(name = "tier_tamponade_off_preferred")]
+fn tier_tamponade_off_preferred_py(on_json: &str, off_json: &str) -> PyResult<bool> {
+    let on = parse_params(on_json)?;
+    let off = parse_params(off_json)?;
+    Ok(sutura_core::tiers::tamponade::off_preferred_json(&on, &off))
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -782,6 +906,14 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(p_weld_enforce_verdict_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage2_should_run_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage2_split_pinched_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tier_tamponade_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tier_flap_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tier_flap_debris_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tier_flap_final_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tier_flap_off_preferred_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tier_flap_si_rose_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tier_tamponade_final_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tier_tamponade_off_preferred_py, m)?)?;
     m.add_function(wrap_pyfunction!(history_build_record_py, m)?)?;
     m.add_function(wrap_pyfunction!(history_summary_text_py, m)?)?;
     m.add_function(wrap_pyfunction!(health_build_report_py, m)?)?;

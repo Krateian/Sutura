@@ -4,6 +4,7 @@
 
 Moved verbatim from sutura/repair.py; no logic change.
 """
+import json
 import math
 import os
 
@@ -17,6 +18,9 @@ from sutura_engine.pipeline.p_weld import (
     reload_strict_holes_nm, weld_reload_equivalent,
 )
 from sutura_engine.pipeline.tiers.local_remesh import _local_si_rise
+from sutura_engine.pipeline.tiers.engine import (
+    guard_params, tier_core, tier_engine,
+)
 from sutura_engine.pipeline.utils import (
     _bbox_diagonal, _count_vertex_components, _exact_si_face_count,
     _internal_wall_count, signed_volume, surface_area,
@@ -328,6 +332,24 @@ def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris,
     OFF-side call sets ``force_metrics=True`` so its metrics dict is always
     built (the comparison reads it unconditionally).
     """
+    core = tier_core()
+    if tier_engine('tamponade') == 'rust' and core is not None:
+        try:
+            reason, metrics_json = core.tier_tamponade_final(
+                np.ascontiguousarray(in_verts, dtype=np.float64),
+                np.ascontiguousarray(in_tris, dtype=np.int64),
+                np.ascontiguousarray(out_verts, dtype=np.float64),
+                np.ascontiguousarray(out_tris, dtype=np.int64),
+                bool(force_metrics),
+                json.dumps({
+                    'leak_max_faces': int(TAMP_LEAK_MAX_FACES),
+                    'collapse_bbox_frac': float(TAMP_COLLAPSE_BBOX_FRAC),
+                    'leak_trigger_frac': float(TAMP_LEAK_TRIGGER_FRAC),
+                }))
+            return reason, (json.loads(metrics_json)
+                            if metrics_json else None)
+        except Exception:  # noqa: BLE001 - the net never crashes a repair
+            pass
     in_diag = _bbox_diagonal(in_verts)
     out_diag = _bbox_diagonal(out_verts)
     coverage = (out_diag / in_diag) if in_diag else 1.0
@@ -363,6 +385,14 @@ def _tamponade_off_preferred(on_metrics, off_metrics):
     only when it is actually worse. Unknown metrics (``None``) are treated
     conservatively as "not worse".
     """
+    core = tier_core()
+    if tier_engine('tamponade') == 'rust' and core is not None:
+        try:
+            return bool(core.tier_tamponade_off_preferred(
+                json.dumps(on_metrics), json.dumps(off_metrics)))
+        except Exception:  # noqa: BLE001 - a comparison failure is not fatal
+            pass
+
     def _damage(m):
         h = m.get('holes')
         n = m.get('non_manifold')
@@ -410,6 +440,102 @@ from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
 def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
                    tmpdir=None, tamponade=False, intensity=None, spec=None,
                    si_mode='report', prepass=False, tamponade_force=False):
+    """Tamponade tier entry point (Python by default, Rust when opted in)."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    if not tamponade:
+        return v, t, after
+    core = tier_core()
+    if tier_engine('tamponade') != 'rust' or core is None:
+        return _tamponade_tier_python(
+            v, t, input_v, input_t, after, stats, tmpdir, tamponade, intensity,
+            spec, si_mode, prepass, tamponade_force)
+    return _tamponade_tier_rust(
+        v, t, input_v, input_t, after, stats, tmpdir, intensity, spec, si_mode,
+        prepass, tamponade_force, core)
+
+
+def _tamponade_tier_rust(v, t, input_v, input_t, after, stats, tmpdir, intensity,
+                         spec, si_mode, prepass, tamponade_force, core):
+    """Rust-backed Tamponade tier (same decisions and report keys)."""
+    stats = stats if stats is not None else {}
+    from sutura_engine import tamponade as _tamp
+    intensity_val = (intensity or getattr(spec, 'base', None)
+                     or getattr(spec, 'name', None))
+    melt_on = bool(_tamp.resolve_melt_si(intensity_val))
+    prepass_budget = None
+    reason_override = None
+    if prepass:
+        prepass_budget = _tamp.resolve_tamponade_prepass_budget(intensity_val)
+        if prepass_budget is not None and int(prepass_budget) <= 0:
+            reason_override = ('prepass work budget 0 at intensity %r; tier '
+                               'skipped' % (intensity_val,))
+    if prepass and prepass_budget is not None:
+        budget = int(prepass_budget)
+    else:
+        budget = int(_tamp.TAMPONADE_WORK_BY_INTENSITY.get(
+            intensity_val, _tamp.TAMPONADE_DEFAULT_WORK))
+    drill = json.dumps({
+        'prepass': bool(prepass),
+        'tamponade_force': bool(tamponade_force),
+        'intensity': intensity_val,
+        'melt_si': melt_on,
+        'h_min': _tamp._median_edge_length(v, t),
+        'budget': budget,
+        'prepass_budget': (int(prepass_budget)
+                           if prepass_budget is not None else None),
+        'reason_override': reason_override,
+        'si_mode': si_mode,
+        'shape_gate_enabled': _shape_gate_enabled(),
+        'genus': (after.get('genus') if isinstance(after, dict) else None),
+        'input_faces': int(len(t)),
+        'leak_max_faces': int(TAMP_LEAK_MAX_FACES),
+        'collapse_bbox_frac': float(TAMP_COLLAPSE_BBOX_FRAC),
+        'leak_trigger_frac': float(TAMP_LEAK_TRIGGER_FRAC),
+        'shape_compactness': float(TAMP_SHAPE_COMPACTNESS),
+        'shape_open_area': float(TAMP_SHAPE_OPEN_AREA),
+        'shape_thin': float(TAMP_SHAPE_THIN),
+        'shape_thickness': float(TAMP_SHAPE_THICKNESS),
+        'shape_depth_cells': int(TAMP_SHAPE_DEPTH_CELLS),
+        'shape_perimeter_ratio': float(TAMP_SHAPE_PERIMETER_RATIO),
+        'shape_solid_area': float(TAMP_SHAPE_SOLID_AREA),
+        'shape_winding': float(TAMP_SHAPE_WINDING),
+        'shape_side_samples': int(TAMP_SHAPE_SIDE_SAMPLES),
+        'shape_side_eps': float(TAMP_SHAPE_SIDE_EPS),
+        'tap_internal_walls': bool(os.environ.get('SUTURA_TAMP_IW')),
+        'guard': guard_params('tamponade'),
+    })
+    dump_dir = os.environ.get('SUTURA_TAMP_DUMP')
+    _dump_tamp_mesh(dump_dir, 'tamp_input', v, t)
+    payload = None
+    with method_health.tier_guard('tamponade', 'tier') as _g:
+        payload = core.tier_tamponade(
+            np.ascontiguousarray(v, dtype=np.float64),
+            np.ascontiguousarray(t, dtype=np.int64), drill)
+    if _g.error is not None or payload is None:
+        rec = {'tier': 'tamponade', 'ran': False, 'adopted': False,
+               'reason': 'error: %s: %s' % (type(_g.error).__name__, _g.error)}
+        stats['tamponade'] = rec
+        return v, t, after
+    out_v, out_t, rec_json = payload
+    rec = json.loads(rec_json)
+    if 'tamponade_shell_prepass' in stats:
+        rec['shell_prepass'] = stats['tamponade_shell_prepass']
+    stats['tamponade'] = rec
+    if not rec.get('adopted'):
+        return v, t, after
+    out_v = np.asarray(out_v, dtype=np.float64)
+    out_t = np.asarray(out_t, dtype=np.int64)
+    _dump_tamp_mesh(dump_dir, 'tamp_output', out_v, out_t)
+    return (out_v, out_t,
+            topology.mesh_topology(np.asarray(out_v, dtype=np.float32),
+                                   np.asarray(out_t, dtype=np.int32)))
+
+
+def _tamponade_tier_python(v, t, input_v=None, input_t=None, after=None,
+                           stats=None, tmpdir=None, tamponade=False,
+                           intensity=None, spec=None, si_mode='report',
+                           prepass=False, tamponade_force=False):
     """Interior-plug tier for registry method 17 (Tamponade).
 
     Runs ``sutura_engine.tamponade.run_tamponade`` on the CURRENT stage-1 result

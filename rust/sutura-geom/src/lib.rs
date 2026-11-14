@@ -1974,7 +1974,7 @@ fn self_intersecting_faces<'py>(
 }
 
 /// Core self-intersection scan (no Python): `(mask, count, skipped)`.
-fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool>, i64, bool) {
+pub fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool>, i64, bool) {
     if tris.len() > SI_MAX_FACES {
         return (vec![false; tris.len()], -1, true);
     }
@@ -2006,7 +2006,7 @@ fn self_intersections_subset<'py>(
 
 /// Core subset self-intersection count (no Python); see
 /// `self_intersections_subset`.
-pub(crate) fn self_intersections_subset_core(
+pub fn self_intersections_subset_core(
     verts: &[[f64; 3]],
     tris: &[[usize; 3]],
     subset: &[bool],
