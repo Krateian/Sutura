@@ -20,10 +20,11 @@ pub use mesh_io::{
     TriangleAttrStats, UnitWarning,
 };
 pub use report::{
-    classify_json, classify_value, compute_fidelity_json, compute_fidelity_value,
-    compute_scores_json, compute_scores_value, detect_defects, estimate_confidence_json,
-    possible_debris, removed_small_parts, repair_confidence_json, repair_confidence_value,
-    summary_args_json, summary_args_value, Confidence, DefectReport, Hole, NonManifoldRegion,
+    build_health_report_json, build_record_json, classify_json, classify_value,
+    compute_fidelity_json, compute_fidelity_value, compute_scores_json, compute_scores_value,
+    detect_defects, estimate_confidence_json, human_line_json, possible_debris,
+    removed_small_parts, repair_confidence_json, repair_confidence_value, summary_args_json,
+    summary_args_value, summary_text_json, Confidence, DefectReport, Hole, NonManifoldRegion,
     PossibleDebris, PossibleDebrisPart, RemovedSmallParts, SmallPart,
 };
 
