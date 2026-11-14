@@ -6,6 +6,7 @@
 //! (or a per-tier override) is `rust`.
 
 pub mod cdt;
+pub mod closing;
 pub mod coaptation;
 pub mod common;
 pub mod flap;
