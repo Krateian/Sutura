@@ -1096,6 +1096,76 @@ pub fn union_pair<'py>(
 /// The OBB is computed in Python (numpy eig) and passed in, so this function
 /// performs only the Manifold CSG sequence. Returns vertices, triangles,
 /// absolute volume change, destination boxes and the watertight verdict.
+/// Pure boolean transplant report (no Python).
+#[derive(Clone, Debug)]
+pub struct BooleanTransplantReport {
+    pub vol_change: f64,
+    pub boxes: Vec<([f64; 3], [f64; 3], [[f64; 3]; 3])>,
+    pub watertight: bool,
+}
+
+/// Pure repeated-element transplant.  The Python `boolean_transplant` binding
+/// is a thin wrapper over this function.
+pub fn boolean_transplant_core(
+    v: &[[f64; 3]],
+    t: &[[usize; 3]],
+    c_src: [f64; 3],
+    ext_src: [f64; 3],
+    frame_src: [[f64; 3]; 3],
+    mats: &[([[f64; 3]; 3], [f64; 3])],
+) -> Result<(Vec<[f64; 3]>, Vec<[usize; 3]>, BooleanTransplantReport), String> {
+    let man = f64_mesh(v, t)
+        .map_err(|e| format!("manifold3d error status on input mesh: {e:?}"))?;
+    if man.status().is_err() {
+        return Err(format!(
+            "manifold3d error status on input mesh: {:?}",
+            man.status()
+        ));
+    }
+    if man.is_empty() {
+        return Err("manifold3d solid is empty".to_string());
+    }
+    let initial_vol = man.volume();
+    let box_src = Manifold::cube(ext_src[0], ext_src[1], ext_src[2], true)
+        .transform(&mat3x4(frame_src, c_src));
+    let element_solid = man.intersection(&box_src);
+    let mut current = man;
+    let eps = 1e-3;
+    let ext_cut = [
+        ext_src[0] * (1.0 - eps),
+        ext_src[1] * (1.0 - eps),
+        ext_src[2] * (1.0 - eps),
+    ];
+    let cube_cut = Manifold::cube(ext_cut[0], ext_cut[1], ext_cut[2], true);
+    let box_src_cut = cube_cut.transform(&mat3x4(frame_src, c_src));
+    let mut boxes = Vec::with_capacity(mats.len());
+    for (r, tr) in mats {
+        let c_dst = {
+            let x = mat3_vec(*r, c_src);
+            [x[0] + tr[0], x[1] + tr[1], x[2] + tr[2]]
+        };
+        let frame_dst = mat3_mul(*r, frame_src);
+        boxes.push((c_dst, ext_src, frame_dst));
+        let box_dst_cut = box_src_cut.transform(&mat3x4(*r, *tr));
+        let cavity = current.difference(&box_dst_cut);
+        let element_prime = element_solid.transform(&mat3x4(*r, *tr));
+        current = cavity.union(&element_prime);
+    }
+    let is_watertight = current.status().is_ok();
+    let vol_change = (current.volume() - initial_vol).abs();
+    let (ov, ot) = mesh_to_f64(&current);
+    Ok((
+        ov,
+        ot,
+        BooleanTransplantReport {
+            vol_change,
+            boxes,
+            watertight: is_watertight,
+        },
+    ))
+}
+
+/// Boolean transplant of a repeated element (Graft/Repeat CSG).
 #[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, center, extents, frame, transforms))]
@@ -1133,64 +1203,25 @@ pub fn boolean_transplant<'py>(
         ];
         mats.push((r, [tm[[i, 0, 3]], tm[[i, 1, 3]], tm[[i, 2, 3]]]));
     }
-
-    let man = f64_mesh(&v, &t).map_err(|e| {
-        PyValueError::new_err(format!("manifold3d error status on input mesh: {e:?}"))
-    })?;
-    if man.status().is_err() {
-        return Err(PyValueError::new_err(format!(
-            "manifold3d error status on input mesh: {:?}",
-            man.status()
-        )));
-    }
-    if man.is_empty() {
-        return Err(PyValueError::new_err("manifold3d solid is empty"));
-    }
-    let initial_vol = man.volume();
-
-    let box_src = Manifold::cube(ext_src[0], ext_src[1], ext_src[2], true)
-        .transform(&mat3x4(frame_src, c_src));
-    let element_solid = man.intersection(&box_src);
-    let mut current = man;
-
-    let eps = 1e-3;
-    let ext_cut = [
-        ext_src[0] * (1.0 - eps),
-        ext_src[1] * (1.0 - eps),
-        ext_src[2] * (1.0 - eps),
-    ];
-    let cube_cut = Manifold::cube(ext_cut[0], ext_cut[1], ext_cut[2], true);
-    let box_src_cut = cube_cut.transform(&mat3x4(frame_src, c_src));
-
+    let (ov, ot, rep) = boolean_transplant_core(
+        &v, &t, c_src, ext_src, frame_src, &mats,
+    )
+    .map_err(PyValueError::new_err)?;
     let boxes = PyList::empty(py);
-    for (r, tr) in mats {
-        let c_dst = {
-            let x = mat3_vec(r, c_src);
-            [x[0] + tr[0], x[1] + tr[1], x[2] + tr[2]]
-        };
-        let frame_dst = mat3_mul(r, frame_src);
-        let c_arr = numpy::PyArray1::from_vec(py, c_dst.to_vec());
-        let e_arr = numpy::PyArray1::from_vec(py, ext_src.to_vec());
+    for (c, e, f) in rep.boxes {
+        let c_arr = numpy::PyArray1::from_vec(py, c.to_vec());
+        let e_arr = numpy::PyArray1::from_vec(py, e.to_vec());
         let f_arr = numpy::PyArray2::from_vec2(
             py,
-            &frame_dst.iter().map(|row| row.to_vec()).collect::<Vec<_>>(),
+            &f.iter().map(|row| row.to_vec()).collect::<Vec<_>>(),
         )?;
         boxes.append(PyTuple::new(
             py,
             [c_arr.into_any(), e_arr.into_any(), f_arr.into_any()],
         )?)?;
-
-        let box_dst_cut = box_src_cut.transform(&mat3x4(r, tr));
-        let cavity = current.difference(&box_dst_cut);
-        let element_prime = element_solid.transform(&mat3x4(r, tr));
-        current = cavity.union(&element_prime);
     }
-
-    let is_watertight = current.status().is_ok();
-    let vol_change = (current.volume() - initial_vol).abs();
-    let (ov, ot) = mesh_to_f64(&current);
     let (pv, pt) = f64_arrays(py, &ov, &ot)?;
-    Ok((pv, pt, vol_change, boxes, is_watertight))
+    Ok((pv, pt, rep.vol_change, boxes, rep.watertight))
 }
 
 #[cfg(test)]
