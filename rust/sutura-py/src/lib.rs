@@ -13,12 +13,13 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 use sutura_core::{
-    check_units, classify_json, compute_scores_json, detect_defects as core_detect_defects,
-    estimate_confidence_json, load_mesh as core_load_mesh, load_stl, parse_3mf_mesh_blocks,
-    possible_debris as core_possible_debris, read_3mf_units, read_mesh as core_read_mesh, read_obj,
-    read_ply, read_stl, removed_small_parts as core_removed_small_parts, repair_confidence_json,
-    rewrite_3mf_meshes, save_mesh as core_save_mesh, scan_bad_coordinates as core_scan,
-    summary_args_json, write_obj, write_ply, write_stl_binary, Mesh,
+    check_units, classify_json, compute_fidelity_json, compute_scores_json,
+    detect_defects as core_detect_defects, estimate_confidence_json, load_mesh as core_load_mesh,
+    load_stl, parse_3mf_mesh_blocks, possible_debris as core_possible_debris, read_3mf_units,
+    read_mesh as core_read_mesh, read_obj, read_ply, read_stl,
+    removed_small_parts as core_removed_small_parts, repair_confidence_json, rewrite_3mf_meshes,
+    save_mesh as core_save_mesh, scan_bad_coordinates as core_scan, summary_args_json, write_obj,
+    write_ply, write_stl_binary, Mesh,
 };
 
 fn mesh_from_arrays<'py>(
@@ -540,6 +541,23 @@ fn summary_args_py<'py>(py: Python<'py>, data_json: &str) -> PyResult<Bound<'py,
     Ok(PyTuple::new(py, v)?)
 }
 
+#[pyfunction(name = "compute_fidelity")]
+fn compute_fidelity_py(
+    vi: PyArrayLike2<'_, f64, AllowTypeChange>,
+    ti: PyArrayLike2<'_, i32, AllowTypeChange>,
+    vo: PyArrayLike2<'_, f64, AllowTypeChange>,
+    to: PyArrayLike2<'_, i32, AllowTypeChange>,
+    report_json: &str,
+    config_json: &str,
+) -> PyResult<String> {
+    let vi = verts_f64(vi)?;
+    let ti = tris_i32(ti)?;
+    let vo = verts_f64(vo)?;
+    let to = tris_i32(to)?;
+    compute_fidelity_json(&vi, &ti, &vo, &to, report_json, config_json)
+        .map_err(PyValueError::new_err)
+}
+
 #[pyfunction(name = "repair_scores")]
 fn repair_scores_py(report_json: &str, config_json: &str) -> PyResult<String> {
     compute_scores_json(report_json, config_json).map_err(PyValueError::new_err)
@@ -579,6 +597,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(estimate_confidence_py, m)?)?;
     m.add_function(wrap_pyfunction!(summary_args_py, m)?)?;
     m.add_function(wrap_pyfunction!(repair_scores_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_fidelity_py, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

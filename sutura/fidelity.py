@@ -31,6 +31,9 @@ Large invented regions are surfaced as a "low confidence" flag: the explicit
 tier evidence (fTetWild/Splint) or a large invented-area fraction means the
 reconstruction there is a guess, not a measurement.
 """
+import json
+import os
+
 import numpy as np
 
 try:  # optional: the metric is unavailable without the shipped extension
@@ -42,6 +45,30 @@ try:
     from topology import edge_table
 except Exception:  # noqa: BLE001 - the pure-numpy oracle lives at top level
     edge_table = None
+
+_REPORT_CORE = None
+_REPORT_CORE_TRIED = False
+
+
+def _rust_core():
+    global _REPORT_CORE, _REPORT_CORE_TRIED
+    if os.environ.get('SUTURA_REPORT_ENGINE', 'python').strip().lower() != 'rust':
+        return None
+    if _REPORT_CORE_TRIED:
+        return _REPORT_CORE
+    _REPORT_CORE_TRIED = True
+    try:
+        import sutura_core_py as mod
+        _REPORT_CORE = mod
+    except Exception:
+        _REPORT_CORE = None
+    return _REPORT_CORE
+
+
+def _json_arg(data):
+    return json.dumps(data, ensure_ascii=False,
+                      default=lambda o: o.item() if hasattr(o, 'item') else str(o))
+
 
 SHARP_ANGLE_DEG = 30.0
 DIHEDRAL_MATCH_DEG = 15.0
@@ -548,6 +575,14 @@ def compute(in_arrays, out_arrays, report=None, config=None):
         cfg = load_config(config)
         fc = cfg.get('fidelity') or {}
         report = report or {}
+        _core = _rust_core()
+        if _core is not None:
+            return json.loads(_core.compute_fidelity(
+                np.asarray(in_arrays[0], dtype=np.float64),
+                np.asarray(in_arrays[1], dtype=np.int32).reshape(-1, 3),
+                np.asarray(out_arrays[0], dtype=np.float64),
+                np.asarray(out_arrays[1], dtype=np.int32).reshape(-1, 3),
+                _json_arg(report), _json_arg(cfg)))
         if sutura_geom is None or edge_table is None:
             empty['repair_fidelity_note'] = 'sutura_geom unavailable'
             return empty
