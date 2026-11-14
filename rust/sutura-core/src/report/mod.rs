@@ -3,6 +3,7 @@
 pub mod classify;
 pub mod debris;
 pub mod defects;
+pub mod fidelity;
 pub mod score;
 
 pub use classify::{
@@ -14,6 +15,7 @@ pub use debris::{
     SmallPart,
 };
 pub use defects::{detect_defects, DefectReport, Hole, NonManifoldRegion};
+pub use fidelity::{compute_fidelity_json, compute_fidelity_value};
 pub use score::{compute_scores_json, compute_scores_value};
 
 pub(crate) fn round_to(value: f64, decimals: u32) -> f64 {
