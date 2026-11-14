@@ -4,6 +4,7 @@
 //! pipeline, policy and reporting modules are added in later slices; none of
 //! them may depend on pyo3 or numpy.
 
+pub mod classify;
 pub mod config;
 pub mod error;
 pub mod fmt;
@@ -13,6 +14,7 @@ pub mod p_weld;
 pub mod stage1;
 pub mod stage2;
 pub mod report;
+pub mod rng;
 pub mod tiers;
 
 pub use error::{MeshError, MeshResult};
