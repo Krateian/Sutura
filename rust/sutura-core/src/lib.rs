@@ -4,6 +4,7 @@
 //! pipeline, policy and reporting modules are added in later slices; none of
 //! them may depend on pyo3 or numpy.
 
+pub mod config;
 pub mod error;
 pub mod fmt;
 pub mod mesh;

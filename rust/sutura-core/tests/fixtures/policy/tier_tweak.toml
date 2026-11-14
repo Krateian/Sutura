@@ -1,0 +1,12 @@
+# Managed by the Sutura Method control panel (Options -> Methods).
+# Panel-owned sections: [order] / [methods]. Comments in these sections
+# may be regenerated. The packaged default policy is never modified.
+
+
+[tiers]
+
+[tiers.flap]
+default_work = 50000000
+
+[ranking]
+top_n = 4

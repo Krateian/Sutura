@@ -1,0 +1,230 @@
+# Sutura repair policy — built-in defaults.
+#
+# This file is the single source of the data-like repair decision rules (order,
+# thresholds, budgets, weights). It ships inside the package and is read at
+# import time; the user override lives at ~/.config/sutura/policy.toml.
+#
+# schema_version is the policy schema; the effective merged policy is also
+# hashed (content hash) and both are reported so any run is reproducible.
+
+[policy]
+schema_version = 1
+
+# Deep-repair tier order and method numbers (were pipeline/order.py literals).
+[order]
+deep_tier_order = ["local", "graft", "dressing", "splint", "coaptation", "ftetwild"]
+final_tier_precedence = ["ftetwild", "cdt", "graft", "dressing", "splint", "coaptation", "local"]
+graft = "graft"
+ftetwild = "ftetwild"
+
+[order.deep_tier_method_num]
+local = 2        # Local Mend
+graft = 13       # Graft
+dressing = 16    # Dressing
+splint = 18      # Splint
+coaptation = 19  # Coaptation
+ftetwild = 7     # fTetWild
+
+# Auto escalation policy (were triage.py AUTO_* / GENERATIVE_* literals).
+# The fallback ladder is count-budgeted; fallback_budget_factor/min_s/max_s are
+# backward-compatible aliases that no longer influence method selection, and
+# fallback_watchdog_s is a batch safety net that is reported when it trips.
+[auto]
+max_attempts = 3
+fallback_watchdog_s = 3600.0
+fallback_budget_factor = 2.0
+fallback_min_s = 30.0
+fallback_max_s = 120.0
+invent_min_score = 0.8
+generative_max_hausdorff_rel = 0.01
+
+# SI escalation (were triage.py SI_ESCALATION_* literals). method_num is the
+# only candidate today; SI_ESCALATION_CANDIDATES stays derived from it. The
+# dist_tol_* values are the sutura-verify never-worse gate tolerances and are
+# NOT user-overridable (the override layer will reject them).
+[si_escalation]
+method_num = 10
+vol_rel_tol = 0.005
+dist_tol_min_mm = 0.0125
+dist_tol_max_mm = 0.05
+dist_tol_div = 10000.0
+
+# Tier tunables and gates. Every `[tiers.<tier>.gates]` sub-table is the
+# NON-OVERRIDABLE set: the user override layer must reject any key under it.
+[tiers.flap]
+default_enabled = true
+work_by_intensity = { quick = 0, balanced = 75000000, thorough = 150000000, extreme = 300000000 }
+default_work = 75000000
+
+[tiers.flap.gates]
+debris_volume_eps = 1e-3
+debris_volume_rel = 1e-9
+debris_flatness = 1e-4
+
+[tiers.tamponade]
+default_enabled = true
+leak_max_faces = 150000
+
+[tiers.tamponade.gates]
+collapse_bbox_frac = 0.5
+leak_trigger_frac = 0.01
+shape_compactness = 0.10
+shape_open_area = 0.10
+shape_thin = 0.30
+shape_thickness = 0.004
+shape_depth_cells = 32768
+shape_perimeter_ratio = 1.0
+shape_solid_area = 0.10
+shape_winding = 0.90
+shape_side_samples = 20000
+shape_side_eps = 1e-4
+
+[tiers.repeat.gates]
+max_hausdorff_outside = 0.01
+
+[tiers.dressing]
+default_enabled = false
+
+[tiers.dressing.gates]
+max_volume_delta = 0.10
+max_parts_slack = 1
+max_normal_angle_p95 = 30.0
+cad_likeness_threshold = 0.5
+
+[tiers.splint]
+default_enabled = false
+res = 128
+work_by_intensity = { quick = 0, balanced = 4000000, thorough = 8000000, extreme = 16000000 }
+default_work = 4000000
+
+[tiers.coaptation]
+default_enabled = true
+seam_ulp_k = 1
+work_by_intensity = { quick = 0, balanced = 1000000, thorough = 2000000, extreme = 4000000 }
+default_work = 1000000
+
+# Ranking knobs. The per-method _score weight formulas stay in code (they are
+# the formula body, not a tunable); only these knobs and the templates below
+# are policy data.
+[ranking]
+preference_boost = 1.25
+top_n = 6
+learning_max_bonus = 0.05
+learning_prior = 2.0
+
+# Score-template thresholds and the preferred method order per template. Keys
+# are the real template ids from sutura_engine.diagnosis.
+[templates]
+open_area_scan = 0.02
+open_area_relief = 0.08
+large_loop_ratio = 0.25
+many_loops = 4
+si_moderate = 20
+si_heavy = 200
+
+[templates.preferred]
+mechanical = [1, 3, 4, 5, 2]
+organic = [1, 2, 3, 13, 7, 5]
+single_side_scan = [8, 13, 7, 3, 2]
+relief = [9, 10, 3, 8]
+repeated_pattern = [11, 12, 1]
+dense_scan_heavy_si = [5, 6, 13, 7, 3]
+
+# Adoption guard (NON-OVERRIDABLE). A candidate may not exceed the larger of
+# face_ratio * input or input + min_slack + slack_per_unit * slack_units;
+# ftetwild_abs_floor is the fTetWild boundary floor. These implement the
+# never-worse rejection and must never be loosened by a user override.
+[gates.adoption]
+face_ratio = 4.0
+vertex_ratio = 4.0
+min_slack = 256
+loop_face_slack = 16
+loop_vertex_slack = 16
+ftetwild_abs_floor = 50000
+
+# Non-overridable tuning gates: a shape/output-acceptance bound must never be
+# loosened by a user override. hausdorff_floor clamps a profile's sample count
+# up; decimate_hd_margin and ftetwild_max_hausdorff_rel are never-worse bounds.
+[gates.tuning]
+hausdorff_floor = 200000
+decimate_hd_margin = 0.005
+ftetwild_max_hausdorff_rel = 0.01
+
+# Intensity presets. Only the fields a preset changes from the IntensitySpec
+# schema defaults are listed (balanced is the defaults); a nullable cap uses the
+# strict sentinel "none". User intensity profiles (profiles.json) override on
+# top and stay a separate user-data file.
+[intensity]
+default = "balanced"
+
+[intensity.quick]
+ftetwild_enabled = false
+ftetwild_max_faces = "none"
+deep_repair = "off"
+dense_target_ladder = []
+
+[intensity.balanced]
+
+[intensity.thorough]
+ftetwild_timeout = 600.0
+graft_timeout = 900.0
+dense_target_ladder = [1.5, 3.0, "threshold"]
+ftetwild_hausdorff_samples = 400000
+
+[intensity.extreme]
+ftetwild_max_faces = "none"
+ftetwild_timeout = 1800.0
+graft_max_faces = "none"
+graft_timeout = 1800.0
+ftetwild_optimize_retry_on_dense_fail = true
+dense_target_ladder = [1.5, 3.0, "threshold"]
+ftetwild_hausdorff_samples = 1000000
+
+# Stage-1 fixed-mode thresholds (were presets.py MODE_PARAMS).
+[modes.low]
+mincomponentsize = 8
+maxholesize = 200
+[modes.medium]
+mincomponentsize = 8
+maxholesize = 1000
+[modes.aggressive]
+mincomponentsize = 12
+maxholesize = 3000
+[modes.extreme]
+mincomponentsize = 20
+maxholesize = 10000
+
+# Stage-1 named threshold profiles (were presets.py PROFILES). Distinct from the
+# intensity presets and from the user profiles.json.
+[stage1_profiles.mechanical]
+mincomponentsize = 8
+maxholesize = 300
+[stage1_profiles.organic]
+mincomponentsize = 12
+maxholesize = 1000
+[stage1_profiles.scan]
+mincomponentsize = 4
+maxholesize = 10000
+[stage1_profiles.miniature]
+mincomponentsize = 1
+maxholesize = 50
+[stage1_profiles.fast]
+mincomponentsize = 8
+maxholesize = 200
+
+# Mesh-type-aware Stage-1 thresholds (were presets.py _TYPE_PARAMS).
+[stage1_types.mechanical]
+mincomponentsize = 8
+maxholesize = 300
+[stage1_types.organic]
+mincomponentsize = 12
+maxholesize = 1000
+[stage1_types.unknown]
+mincomponentsize = 8
+maxholesize = 1000
+
+# Classifier-confidence tuning gates (were presets.py MECH/ORG_TUNE_GATE);
+# tunable but advanced (the control panel does not show them).
+[stage1_tuning]
+mech_gate = 0.75
+org_gate = 0.70

@@ -1,0 +1,7 @@
+# Managed by the Sutura Method control panel (Options -> Methods).
+# Panel-owned sections: [order] / [methods]. Comments in these sections
+# may be regenerated. The packaged default policy is never modified.
+
+
+[order]
+deep_tier_order = ["graft", "local", "dressing", "splint", "coaptation", "ftetwild"]

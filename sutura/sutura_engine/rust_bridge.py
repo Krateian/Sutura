@@ -7,6 +7,7 @@ The transition engines keep their own opt-out envs; this flag only decides
 what happens when the Rust engine was requested but the bridge is missing.
 """
 import os
+import sys
 
 _TRUTHY = ('1', 'true', 'yes', 'on')
 _LOADED = {}
@@ -77,3 +78,28 @@ def json_arg(data):
                     % (type(o).__name__, exc)) from exc
         raise TypeError('not JSON serializable: %s' % (type(o).__name__,))
     return json.dumps(data, ensure_ascii=False, default=encode)
+
+
+# --- config bridge (policy / intensity / learning) ---------------------------
+#
+# Mirrors the mesh_io precedent: Rust is the default engine and
+# ``SUTURA_CONFIG_ENGINE=python`` is the opt-out. The policy document crosses
+# as the exact JSON text both sides hash.
+
+CONFIG_ENGINE_ENV = 'SUTURA_CONFIG_ENGINE'
+
+
+def rust_config():
+    """The bridge module when the Rust config engine is usable, else ``None``.
+
+    Reuses the shared loader, so ``SUTURA_REQUIRE_RUST=1`` behaves exactly like
+    every other transition engine.
+    """
+    mod = load('config', (CONFIG_ENGINE_ENV,), 'rust')
+    if mod is None:
+        return None
+    if not all(hasattr(mod, name) for name in (
+            'config_policy_load', 'config_intensity_resolve',
+            'config_learning_bonus', 'config_intensity_format')):
+        return unavailable('sutura_core_py has no config bindings')
+    return mod
