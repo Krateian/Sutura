@@ -23,7 +23,7 @@ from sutura_engine.pipeline.presets import SUTURA_DIR
 
 
 # Transitional double path: the Rust bridge implements the same I/O contract.
-# Default is the Python implementation; ``SUTURA_IO_ENGINE=rust`` opts in.
+# Rust is the default; ``SUTURA_IO_ENGINE=python`` is the opt-out.
 _RUST_IO_STATE = 0  # 0 = not tried, 1 = unavailable, 2 = loaded
 _RUST_IO_MOD = None
 
@@ -31,7 +31,8 @@ _RUST_IO_MOD = None
 def _rust_io():
     """Return the optional sutura_core_py bridge, or None."""
     global _RUST_IO_STATE, _RUST_IO_MOD
-    if os.environ.get('SUTURA_IO_ENGINE', 'python').strip().lower() != 'rust':
+    requested = os.environ.get('SUTURA_IO_ENGINE', 'rust').strip().lower()
+    if requested != 'rust':
         return None
     if _RUST_IO_STATE == 1:
         return None
@@ -40,9 +41,12 @@ def _rust_io():
     try:
         import sutura_core_py as mod
     except Exception as exc:  # pragma: no cover - environment dependent
-        sys.stderr.write(
-            'sutura: SUTURA_IO_ENGINE=rust requested but sutura_core_py is '
-            'unavailable (%s); using the Python mesh_io path\n' % exc)
+        # Default-rust installs without the bridge wheel fall back quietly;
+        # an explicit request is worth a one-line warning.
+        if 'SUTURA_IO_ENGINE' in os.environ:
+            sys.stderr.write(
+                'sutura: SUTURA_IO_ENGINE=rust requested but sutura_core_py is '
+                'unavailable (%s); using the Python mesh_io path\n' % exc)
         _RUST_IO_STATE = 1
         return None
     _RUST_IO_STATE = 2
