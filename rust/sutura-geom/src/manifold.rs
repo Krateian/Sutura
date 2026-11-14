@@ -828,6 +828,9 @@ pub fn stage2_rebuild<'py>(
         .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
         .collect();
     let (ov, ot, rep) = stage2_rebuild_core(&v, &t32);
+    // Key set matches `report_schema.json`'s `stage2` object (class A); the
+    // parsed contract passed. `ok` is emitted on both the success and error
+    // paths (the old `set_report_common` wrote it in the error path too).
     let report = PyDict::new(py);
     report.set_item("construct_status", rep.construct_status)?;
     report.set_item("input_vertices", rep.input_vertices)?;
