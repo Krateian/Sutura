@@ -1,0 +1,56 @@
+//! Python-free Sutura core.
+//!
+//! Phase 1 starts with the mesh boundary types and errors. The I/O readers,
+//! pipeline, policy and reporting modules are added in later slices; none of
+//! them may depend on pyo3 or numpy.
+
+pub mod error;
+pub mod mesh;
+
+pub use error::{MeshError, MeshResult};
+pub use mesh::{Mesh, MeshBlock, SourceFormat};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bbox_of_unit_triangle() {
+        let m = Mesh::new(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, -1.0]],
+            vec![[0, 1, 2]],
+        );
+        assert_eq!(m.bbox(), Some(([0.0, 0.0, -1.0], [1.0, 2.0, 0.0])));
+    }
+
+    #[test]
+    fn empty_mesh_has_no_bbox() {
+        assert_eq!(Mesh::default().bbox(), None);
+        assert!(Mesh::default().is_empty());
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_index() {
+        let m = Mesh::new(vec![[0.0, 0.0, 0.0]], vec![[0, 1, 2]]);
+        assert!(matches!(
+            m.validate(),
+            Err(MeshError::IndexOutOfRange { triangle: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_a_normal_triangle() {
+        let m = Mesh::new(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![[0, 1, 2]],
+        );
+        assert!(m.validate().is_ok());
+    }
+
+    #[test]
+    fn format_is_detected_case_insensitively() {
+        assert_eq!(SourceFormat::from_extension("part.STL").unwrap(), SourceFormat::Stl);
+        assert_eq!(SourceFormat::from_extension("a.3mf").unwrap(), SourceFormat::ThreeMf);
+        assert!(SourceFormat::from_extension("a.txt").is_err());
+    }
+}
