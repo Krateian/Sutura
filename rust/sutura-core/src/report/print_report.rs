@@ -49,15 +49,27 @@ fn diag(v: &[[f64; 3]]) -> f64 {
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
 fn r4(x: f64) -> f64 {
-    (x * 1e4).round() / 1e4
+    round_py(x, 4)
 }
 fn r3(x: f64) -> f64 {
-    (x * 1e3).round() / 1e3
+    round_py(x, 3)
 }
 fn r2(x: f64) -> f64 {
-    (x * 1e2).round() / 1e2
+    round_py(x, 2)
 }
 
+fn round_py(x: f64, n: i32) -> f64 {
+    let scale = 10f64.powi(n);
+    let y = x * scale;
+    let base = y.floor();
+    let frac = y - base;
+    let r = if (frac - 0.5).abs() < 1e-9 {
+        if (base as i64) % 2 == 0 { base } else { base + 1.0 }
+    } else {
+        y.round()
+    };
+    r / scale
+}
 fn deviation(
     report: &Value,
     iv: Option<&[[f64; 3]]>,
