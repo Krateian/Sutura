@@ -777,6 +777,33 @@ fn arrays_i64<'py>(py: Python<'py>, t: &[[i64; 3]]) -> PyResult<Bound<'py, PyArr
     PyArray2::from_vec2(py, &rows).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+#[pyfunction(name = "stage1_apply_chain")]
+fn stage1_apply_chain_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    chain_json: &str,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    usize,
+    String,
+    Option<String>,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let chain = parse_params(chain_json)?;
+    let (ov, ot, applied, skipped, small) =
+        sutura_core::stage1::chain::apply_chain(&v, &t, &chain);
+    Ok((
+        arrays_f64(py, &ov)?,
+        arrays_i64(py, &ot)?,
+        applied,
+        skipped.to_string(),
+        small.map(|x| x.to_string()),
+    ))
+}
+
 #[pyfunction(name = "tier_wall_decide")]
 fn tier_wall_decide_py<'py>(
     py: Python<'py>,
@@ -1077,6 +1104,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(p_weld_enforce_verdict_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage2_should_run_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage2_split_pinched_py, m)?)?;
+    m.add_function(wrap_pyfunction!(stage1_apply_chain_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_wall_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_repeat_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_closing_decide_py, m)?)?;

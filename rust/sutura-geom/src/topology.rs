@@ -328,32 +328,16 @@ pub fn remove_duplicate_faces<'py>(
     Ok(rows_to_array2_i64(py, &out))
 }
 
-/// Remove null / degenerate faces (matching VCGLib / PyMeshLab meshing_remove_null_faces).
-///
-/// ``safe`` keeps a *zero-area but topologically valid* face (three distinct,
-/// in-range, collinear vertices) when removing it would turn one of its edges
-/// into a boundary edge -- i.e. when that edge is used by fewer than three
-/// faces. Such a face contributes no area but it is part of a closed surface,
-/// so dropping it opens a hole (thingi10k_248395: 226 collinear faces, all
-/// interior, deleting them leaves 47 holes). PyMeshLab / ADMesh likewise keep
-/// these faces. Faces with a repeated index, an out-of-range index or a
-/// non-finite normal are always dropped (structurally invalid), and with
-/// ``safe=False`` the historical drop-everything behaviour is unchanged.
-#[cfg(feature = "python")]
-#[pyfunction]
-#[pyo3(signature = (verts, tris, safe=false))]
-pub fn remove_null_faces<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+/// Pure null/degenerate-face removal (no Python).
+pub fn remove_null_faces_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
     safe: bool,
-) -> PyResult<Bound<'py, PyArray2<i64>>> {
-    let vrows = read_f32_rows(&verts)?;
-    let trows = read_i64_rows(&tris)?;
+) -> Vec<[i64; 3]> {
     let nv = vrows.len();
     let mut incidence: HashMap<(i64, i64), u32> = HashMap::new();
     if safe {
-        for r in &trows {
+        for r in trows {
             for (a, b) in [(r[0], r[1]), (r[1], r[2]), (r[2], r[0])] {
                 if a == b {
                     continue;
@@ -386,7 +370,6 @@ pub fn remove_null_faces<'py>(
         }
         if norm2 == 0.0 {
             if safe {
-                // Keep it when deleting it would open a boundary edge.
                 let opens = [(r[0], r[1]), (r[1], r[2]), (r[2], r[0])]
                     .iter()
                     .any(|&(a, b)| {
@@ -394,13 +377,39 @@ pub fn remove_null_faces<'py>(
                         incidence.get(&key).copied().unwrap_or(0) <= 2
                     });
                 if opens {
-                    out.push(r);
+                    out.push(*r);
                 }
             }
             continue;
         }
-        out.push(r);
+        out.push(*r);
     }
+    out
+}
+
+/// Remove null / degenerate faces (matching VCGLib / PyMeshLab meshing_remove_null_faces).
+///
+/// ``safe`` keeps a *zero-area but topologically valid* face (three distinct,
+/// in-range, collinear vertices) when removing it would turn one of its edges
+/// into a boundary edge -- i.e. when that edge is used by fewer than three
+/// faces. Such a face contributes no area but it is part of a closed surface,
+/// so dropping it opens a hole (thingi10k_248395: 226 collinear faces, all
+/// interior, deleting them leaves 47 holes). PyMeshLab / ADMesh likewise keep
+/// these faces. Faces with a repeated index, an out-of-range index or a
+/// non-finite normal are always dropped (structurally invalid), and with
+/// ``safe=False`` the historical drop-everything behaviour is unchanged.
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (verts, tris, safe=false))]
+pub fn remove_null_faces<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    safe: bool,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let vrows = read_f32_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let out = remove_null_faces_core(&vrows, &trows, safe);
     Ok(rows_to_array2_i64(py, &out))
 }
 
@@ -555,6 +564,59 @@ pub fn remove_unreferenced_vertices<'py>(
     Ok((rows_to_array2_f32(py, &wv), rows_to_array2_i64(py, &wt)))
 }
 
+/// Pure connected-component removal (no Python).
+pub fn remove_connected_components_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+    min_faces: i64,
+    remove_unreferenced: bool,
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+    let nf = trows.len();
+    if nf == 0 || min_faces <= 1 {
+        return (vrows.to_vec(), trows.to_vec());
+    }
+    let mut half_edges: Vec<((i64, i64), usize)> = Vec::with_capacity(3 * nf);
+    for (f_idx, tri) in trows.iter().enumerate() {
+        half_edges.push((canon(tri[0], tri[1]), f_idx));
+        half_edges.push((canon(tri[1], tri[2]), f_idx));
+        half_edges.push((canon(tri[2], tri[0]), f_idx));
+    }
+    half_edges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    let mut ds = DisjointSet::new(nf);
+    let mut i = 0usize;
+    let n_he = half_edges.len();
+    while i < n_he {
+        let edge = half_edges[i].0;
+        let mut j = i + 1;
+        while j < n_he && half_edges[j].0 == edge {
+            ds.union(half_edges[i].1, half_edges[j].1);
+            j += 1;
+        }
+        i = j;
+    }
+    let mut comp_sizes = vec![0usize; nf];
+    for f in 0..nf {
+        let root = ds.find(f);
+        comp_sizes[root] += 1;
+    }
+    let min_sz = min_faces.max(0) as usize;
+    let mut kept_tris: Vec<[i64; 3]> = Vec::with_capacity(nf);
+    for f in 0..nf {
+        let root = ds.find(f);
+        if comp_sizes[root] >= min_sz {
+            kept_tris.push(trows[f]);
+        }
+    }
+    if kept_tris.len() == nf {
+        return (vrows.to_vec(), trows.to_vec());
+    }
+    if remove_unreferenced {
+        remove_unreferenced_vertices_core(vrows, &kept_tris)
+    } else {
+        (vrows.to_vec(), kept_tris)
+    }
+}
+
 /// Remove connected components by face number (matching VCGLib / PyMeshLab
 /// meshing_remove_connected_component_by_face_number).
 /// Components of faces connected via shared undirected edges with fewer than
@@ -572,57 +634,13 @@ pub fn remove_connected_components<'py>(
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
     let vrows = read_f32_rows(&verts)?;
     let trows = read_i64_rows(&tris)?;
-    let nf = trows.len();
-    if nf == 0 || min_faces <= 1 {
-        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
-    }
+    let (wv, wt) = remove_connected_components_core(&vrows, &trows, min_faces, remove_unreferenced);
+    Ok((rows_to_array2_f32(py, &wv), rows_to_array2_i64(py, &wt)))
+}
 
-    let mut half_edges: Vec<((i64, i64), usize)> = Vec::with_capacity(3 * nf);
-    for (f_idx, tri) in trows.iter().enumerate() {
-        half_edges.push((canon(tri[0], tri[1]), f_idx));
-        half_edges.push((canon(tri[1], tri[2]), f_idx));
-        half_edges.push((canon(tri[2], tri[0]), f_idx));
-    }
-    half_edges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-
-    let mut ds = DisjointSet::new(nf);
-    let mut i = 0usize;
-    let n_he = half_edges.len();
-    while i < n_he {
-        let edge = half_edges[i].0;
-        let mut j = i + 1;
-        while j < n_he && half_edges[j].0 == edge {
-            ds.union(half_edges[i].1, half_edges[j].1);
-            j += 1;
-        }
-        i = j;
-    }
-
-    let mut comp_sizes = vec![0usize; nf];
-    for f in 0..nf {
-        let root = ds.find(f);
-        comp_sizes[root] += 1;
-    }
-
-    let min_sz = min_faces.max(0) as usize;
-    let mut kept_tris: Vec<[i64; 3]> = Vec::with_capacity(nf);
-    for f in 0..nf {
-        let root = ds.find(f);
-        if comp_sizes[root] >= min_sz {
-            kept_tris.push(trows[f]);
-        }
-    }
-
-    if kept_tris.len() == nf {
-        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
-    }
-
-    if remove_unreferenced {
-        let (wv, wt) = remove_unreferenced_vertices_core(&vrows, &kept_tris);
-        Ok((rows_to_array2_f32(py, &wv), rows_to_array2_i64(py, &wt)))
-    } else {
-        Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &kept_tris)))
-    }
+/// Pure face-orientation inversion (no Python).
+pub fn invert_face_orientation_core(trows: &[[i64; 3]]) -> Vec<[i64; 3]> {
+    trows.iter().map(|r| [r[1], r[0], r[2]]).collect()
 }
 
 /// Invert face orientation (matching VCGLib / PyMeshLab meshing_invert_face_orientation).
@@ -635,10 +653,7 @@ pub fn invert_face_orientation<'py>(
     tris: PyArrayLike2<'py, i64, AllowTypeChange>,
 ) -> PyResult<Bound<'py, PyArray2<i64>>> {
     let trows = read_i64_rows(&tris)?;
-    let mut out: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
-    for r in trows {
-        out.push([r[1], r[0], r[2]]);
-    }
+    let out = invert_face_orientation_core(&trows);
     Ok(rows_to_array2_i64(py, &out))
 }
 
