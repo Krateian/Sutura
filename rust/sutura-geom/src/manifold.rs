@@ -849,8 +849,18 @@ pub fn stage2_rebuild<'py>(
     report.set_item("output_faces", rep.output_faces)?;
     let vv: Vec<Vec<f32>> = ov.iter().map(|p| vec![p[0], p[1], p[2]]).collect();
     let tt: Vec<Vec<i32>> = ot.iter().map(|r| vec![r[0], r[1], r[2]]).collect();
-    let pv = numpy::PyArray2::<f32>::from_vec2(py, &vv)?;
-    let pt = numpy::PyArray2::<i32>::from_vec2(py, &tt)?;
+    // The error path must keep the historical (0, 3) shape; from_vec2 on an
+    // empty Vec would produce (0, 0) and break callers that index [:, k].
+    let pv = if vv.is_empty() {
+        numpy::PyArray2::<f32>::zeros(py, [0, 3], false)
+    } else {
+        numpy::PyArray2::<f32>::from_vec2(py, &vv)?
+    };
+    let pt = if tt.is_empty() {
+        numpy::PyArray2::<i32>::zeros(py, [0, 3], false)
+    } else {
+        numpy::PyArray2::<i32>::from_vec2(py, &tt)?
+    };
     Ok((pv, pt, report))
 }
 
