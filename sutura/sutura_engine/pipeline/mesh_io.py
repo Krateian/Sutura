@@ -22,6 +22,34 @@ import numpy as np
 from sutura_engine.pipeline.presets import SUTURA_DIR
 
 
+# Transitional double path: the Rust bridge implements the same I/O contract.
+# Default is the Python implementation; ``SUTURA_IO_ENGINE=rust`` opts in.
+_RUST_IO_STATE = 0  # 0 = not tried, 1 = unavailable, 2 = loaded
+_RUST_IO_MOD = None
+
+
+def _rust_io():
+    """Return the optional sutura_core_py bridge, or None."""
+    global _RUST_IO_STATE, _RUST_IO_MOD
+    if os.environ.get('SUTURA_IO_ENGINE', 'python').strip().lower() != 'rust':
+        return None
+    if _RUST_IO_STATE == 1:
+        return None
+    if _RUST_IO_STATE == 2:
+        return _RUST_IO_MOD
+    try:
+        import sutura_core_py as mod
+    except Exception as exc:  # pragma: no cover - environment dependent
+        sys.stderr.write(
+            'sutura: SUTURA_IO_ENGINE=rust requested but sutura_core_py is '
+            'unavailable (%s); using the Python mesh_io path\n' % exc)
+        _RUST_IO_STATE = 1
+        return None
+    _RUST_IO_STATE = 2
+    _RUST_IO_MOD = mod
+    return mod
+
+
 def _resolve_ftetwild_bridge():
     """Locate ftetwild_bridge.py (bundled-copy aware)."""
     if getattr(sys, 'frozen', False):
@@ -53,6 +81,11 @@ INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
 
 def write_obj(path, verts, tris):
+    _core = _rust_io()
+    if _core is not None:
+        _core.write_obj(str(path), np.asarray(verts, dtype=np.float32),
+                        np.asarray(tris, dtype=np.int32))
+        return
     with open(path, 'w') as f:
         f.write('# sutura intermediate\n')
         for v in verts:
@@ -85,6 +118,12 @@ def check_units(verts, declared_unit=None):
 
     Returns ``{'unit_warning': True, 'unit_hint': '...'}`` or None.
     """
+    _core = _rust_io()
+    if _core is not None:
+        if verts is None or len(verts) == 0:
+            return None
+        _w = _core.check_units(np.asarray(verts, dtype=np.float32), declared_unit)
+        return dict(_w) if _w is not None else None
     if declared_unit is not None and declared_unit != 'millimeter':
         return {'unit_warning': True,
                 'unit_hint': ('The 3MF model declares its unit as "%s"; '
@@ -135,6 +174,9 @@ def read_3mf_units(path):
     carry no unit metadata, so this only applies to .3mf inputs. Never
     raises: a broken archive yields an empty dict (the caller's own 3MF
     parsing will report the real error)."""
+    _core = _rust_io()
+    if _core is not None:
+        return dict(_core.read_3mf_units(str(path)))
     out = {}
     try:
         with zipfile.ZipFile(path) as z:
@@ -216,6 +258,9 @@ def _iter_obj_lines(f):
 
 
 def read_obj(path):
+    _core = _rust_io()
+    if _core is not None:
+        return _core.read_obj(str(path))
     verts = []
     tris = []
     with open(path, encoding='utf-8', errors='replace') as f:
@@ -339,6 +384,9 @@ def read_stl(path):
     layout raise :class:`MalformedSTLError` instead of silently returning an
     empty mesh.
     """
+    _core = _rust_io()
+    if _core is not None:
+        return _core.read_stl(str(path))
     with open(path, 'rb') as f:
         head = f.read(84)
         if len(head) == 84:
@@ -369,6 +417,9 @@ def _ply_key(prop):
 
 def read_ply(path):
     """Read an ASCII or binary_little_endian PLY (vertex xyz + face list)."""
+    _core = _rust_io()
+    if _core is not None:
+        return _core.read_ply(str(path))
     with open(path, 'rb') as f:
         raw = f.read()
     cut = raw.find(b'end_header')
@@ -450,6 +501,11 @@ def read_ply(path):
 
 def write_ply(path, verts, tris):
     """Write a binary_little_endian PLY with only vertex xyz and face lists."""
+    _core = _rust_io()
+    if _core is not None:
+        _core.write_ply(str(path), np.asarray(verts, dtype=np.float32),
+                        np.asarray(tris, dtype=np.int32))
+        return
     v = np.asarray(verts, dtype=np.float32).reshape(-1, 3)
     t = np.asarray(tris, dtype=np.int32).reshape(-1, 3)
     head = ('ply\nformat binary_little_endian 1.0\n'
@@ -467,6 +523,9 @@ def write_ply(path, verts, tris):
 
 def read_mesh(path):
     """Read an STL, OBJ or PLY file into (verts float32, tris int32)."""
+    _core = _rust_io()
+    if _core is not None:
+        return _core.read_mesh(str(path))
     ext = os.path.splitext(str(path))[1].lower()
     if ext == '.obj':
         return read_obj(path)
@@ -478,6 +537,11 @@ def read_mesh(path):
 
 
 def stl_write_binary(path, verts, tris):
+    _core = _rust_io()
+    if _core is not None:
+        _core.write_stl_binary(str(path), np.asarray(verts, dtype=np.float32),
+                               np.asarray(tris, dtype=np.int32))
+        return
     with open(path, 'wb') as f:
         f.write(b'Sutura intermediate'.ljust(80, b'\0'))
         f.write(struct.pack('<I', len(tris)))
@@ -609,6 +673,11 @@ def should_extract_outer_shell(verts, tris, mesh_type=None, si_count=0):
 
 def _write_3mf_single(out_path, verts, tris):
     """Write one object as a minimal, standards-compliant 3MF container."""
+    _core = _rust_io()
+    if _core is not None:
+        _core.write_3mf_single(str(out_path), np.asarray(verts, dtype=np.float32),
+                               np.asarray(tris, dtype=np.int32))
+        return
     out_dir = os.path.dirname(os.path.abspath(out_path)) or '.'
     os.makedirs(out_dir, exist_ok=True)
     model = (
@@ -648,6 +717,11 @@ def save_mesh(out_path, verts, tris):
     Multi-object 3MF rewriting remains the existing ``rewrite_3mf_meshes``
     path.
     """
+    _core = _rust_io()
+    if _core is not None:
+        _core.save_mesh(str(out_path), np.asarray(verts, dtype=np.float32),
+                        np.asarray(tris, dtype=np.int32))
+        return
     ext = os.path.splitext(str(out_path))[1].lower()
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32).reshape(-1, 3)
@@ -665,6 +739,9 @@ def save_mesh(out_path, verts, tris):
 
 def scan_bad_coordinates(path):
     """Return a description of NaN/Inf coordinates in STL/OBJ files, or None."""
+    _core = _rust_io()
+    if _core is not None:
+        return _core.scan_bad_coordinates(str(path))
     ext = os.path.splitext(path)[1].lower()
     if ext == '.3mf':
         # 3MF meshes are parsed as XML (parse_3mf_meshes); NaN/Inf vertex
@@ -732,6 +809,9 @@ def obj_has_material_refs(path):
     material/texture references in the input are not preserved in the
     repaired output. This lets the report surface that loss explicitly
     instead of dropping it silently. Only meaningful for .obj inputs."""
+    _core = _rust_io()
+    if _core is not None:
+        return _core.obj_has_material_refs(str(path))
     try:
         with open(path, errors='replace') as f:
             for line in f:
@@ -826,6 +906,12 @@ def parse_3mf_mesh_blocks(path):
     ``triangle_attrs`` holds every non-index triangle attribute (paint_color,
     paint_seam, slic3rpe:mmu_segmentation, pid, ...) verbatim, or None.
     """
+    _core = _rust_io()
+    if _core is not None:
+        return [MeshBlock(b['model_name'], b['index'], tuple(b['span']),
+                          b['open_tag'], b['close_tag'], b['prefix'],
+                          b['verts'], b['tris'], b['triangle_attrs'])
+                for b in _core.parse_3mf_mesh_blocks(str(path))]
     blocks = []
     with zipfile.ZipFile(path) as z:
         for info in z.infolist():
@@ -979,6 +1065,12 @@ def rewrite_3mf_meshes(container_src, out, updates, attr_source=None):
     while the container is the intermediate output). Returns one stats dict per
     updated block.
     """
+    _core = _rust_io()
+    if _core is not None:
+        updates = [(np.asarray(v, dtype=np.float32), np.asarray(t, dtype=np.int32))
+                   for v, t in updates]
+        return _core.rewrite_3mf(str(container_src), str(out), updates,
+                                 None if attr_source is None else str(attr_source))
     updates = list(updates)
     container_blocks = parse_3mf_mesh_blocks(container_src)
     if len(updates) != len(container_blocks):
@@ -1107,6 +1199,9 @@ def _read_native_single(src):
     exact-position weld here (the topology kernel is bit-for-bit with the
     reload weld used elsewhere).
     """
+    _core = _rust_io()
+    if _core is not None:
+        return _core.load_mesh(str(src))
     ext = os.path.splitext(str(src))[1].lower()
     if ext == '.stl':
         v, t = read_stl(src)
@@ -1128,6 +1223,9 @@ def load_meshes(src):
     objects). Shared by validate and dry-run so both see exactly what repair
     would see. Fully native: no MeshSet is created.
     """
+    _core = _rust_io()
+    if _core is not None:
+        return _core.load_meshes(str(src))
     ext = os.path.splitext(str(src))[1].lower()
     if ext == '.3mf':
         out = []
@@ -1148,6 +1246,9 @@ def load_mesh(src):
     block is returned (use ``load_meshes`` for every object). Raises
     ``ValueError`` when the file has no mesh geometry.
     """
+    _core = _rust_io()
+    if _core is not None:
+        return _core.load_mesh(str(src))
     meshes = load_meshes(src)
     if not meshes:
         raise ValueError('no mesh geometry found in %s' % src)
