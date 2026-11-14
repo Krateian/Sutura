@@ -14,8 +14,8 @@ means callable without pyo3; the Python symbol surface stays unchanged.
 | non-manifold vertices | `topology::repair_non_manifold_vertices_core` | exists |
 | hole closing | `hole::close_holes_core` | exists |
 | coherent orientation | `topology::re_orient_faces_coherently_core` | exists |
-| topology measures | pyfunction `mesh_topology` only | **missing core** (not needed by P4 Tamponade/Flap; Python still builds `after`) |
-| Stage 2 rebuild | pyfunction `manifold::stage2_rebuild` only | **missing core** (P3 partial) |
+| topology measures | pyfunction `mesh_topology` only | **missing core**; the tier `is_two_manifold` helper covers Splint |
+| Stage 2 rebuild | `manifold::stage2_rebuild_core` | **added** (P4 Splint; pyfunction is a thin wrapper) |
 | defect holes/nm | `report::detect_defects` | exists |
 | exact SI scan | `self_intersections_core` | **made pub** (P4) |
 | SI subset scan | `self_intersections_subset_core` | **made pub** (P4) |
@@ -29,7 +29,7 @@ means callable without pyo3; the Python symbol surface stays unchanged.
 | duplicate faces | `topology::remove_duplicate_faces_core` | **added** (P4 Coaptation/Graft) |
 | Manifold union | `manifold::union_pair_core` | **added** (P4 Coaptation) |
 | Manifold verdict | `manifold::watertight_check_core` | **added** (P4 Coaptation) |
-| Splint cut | `splint_cut_core_opts` | `pub(crate)`; needs `pub` before the Splint slice |
+| Splint cut | `splint_cut_core_opts` | **made pub** (P4) |
 | Graft core | `morph_close`, `resample_uniform`, `union_pair` | pyfunction only; needs a pure surface before the Graft slice |
 
 Consequences:
@@ -48,4 +48,7 @@ Consequences:
   (`tier_tamponade`, `tier_flap`, `tier_flap_debris`,
   `tier_flap_final`, `tier_flap_off_preferred`, `tier_flap_si_rose`,
   `tier_tamponade_final`, `tier_tamponade_off_preferred`, `tier_coaptation`,
-  `tier_graft_decide`).
+  `tier_graft_decide`, `tier_cdt`, `tier_splint`).
+- `cdt3d_solid_core`, `splint_cut_core_opts`, `stage2_rebuild_core` and
+  `is_two_manifold` are pure Rust APIs; `local_remesh` remains Python and only
+  its wall-clock gate was replaced with a deterministic work budget.
