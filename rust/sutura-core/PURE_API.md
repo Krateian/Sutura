@@ -67,3 +67,12 @@ Consequences:
   `%.9g` writer (R1). When the Python runtime is removed, the Rust writer needs
   an f64 path that emits the same `%.9g` text; the current Rust writer is
   float32-only.
+
+## Product version source (Phase 6 CLI)
+
+`rust/sutura-cli/build.rs` reads `VERSION = "..."` from `sutura/repair.py` at
+compile time and exports `SUTURA_PRODUCT_VERSION`; the CLI's `--version` prints
+that value. The Python CLI is therefore the single version source while it
+exists. **When the Python runtime is removed, move the version to the Cargo
+workspace `[workspace.package].version` and read it from there** — do not
+reintroduce a handwritten constant in the CLI.

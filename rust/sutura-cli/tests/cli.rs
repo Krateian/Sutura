@@ -17,7 +17,7 @@ fn probe_reports_counts_as_json() {
     let path = tmp("probe").with_extension("obj");
     std::fs::write(&path, b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_sutura"))
-        .args(["io", "probe", path.to_str().unwrap(), "--json"])
+        .args(["__io", "probe", path.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     assert!(
@@ -103,6 +103,18 @@ fn list_intensities_prints_the_presets() {
     for name in ["quick", "balanced", "thorough", "extreme"] {
         assert!(text.contains(name), "listing misses {name}");
     }
+}
+
+#[test]
+fn bare_io_is_a_file_path_not_a_subcommand() {
+    let out = Command::new(env!("CARGO_BIN_EXE_sutura"))
+        .args(["io", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["input"], "io");
+    assert_eq!(v["error"], "file not found: io");
 }
 
 #[test]

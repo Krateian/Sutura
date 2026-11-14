@@ -16,10 +16,10 @@ use sutura_core::{
     Mesh, SourceFormat,
 };
 
-/// Product version reported by `--version`. The Rust CLI ships in the same
-/// release as the Python CLI, so the contract string is the product version,
-/// not the crate version.
-const PRODUCT_VERSION: &str = "0.9.9";
+/// Product version reported by `--version`, read from `sutura/repair.py` at
+/// build time (`build.rs`). The Python CLI is the single version source until
+/// it is retired; then the Cargo workspace version takes over.
+const PRODUCT_VERSION: &str = env!("SUTURA_PRODUCT_VERSION");
 
 #[derive(Parser, Debug)]
 #[command(
@@ -171,6 +171,11 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// I/O probes and conversion (Rust-only helper commands).
+    ///
+    /// Hidden and renamed: the Python CLI has no `io` subcommand, so a bare
+    /// `io` argument is a file path there. Keeping the helper under `__io`
+    /// avoids that contract collision.
+    #[command(name = "__io", hide = true)]
     Io {
         #[command(subcommand)]
         command: IoCommand,
