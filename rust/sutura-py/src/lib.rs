@@ -14,7 +14,8 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 
 use sutura_core::{
     aggregate_print_reports_value, build_health_report_json, build_print_report_json,
-    build_record_json, check_units, classify_json, compute_fidelity_json, compute_scores_json,
+    build_record_json, p_weld_final, reload_strict_holes_nm,
+    reload_topology, weld_reload_equivalent, check_units, classify_json, compute_fidelity_json, enforce_reload_verdict, compute_scores_json,
     detect_defects as core_detect_defects, estimate_confidence_json, human_line_json,
     load_mesh as core_load_mesh, load_stl, parse_3mf_mesh_blocks,
     possible_debris as core_possible_debris, read_3mf_units, read_mesh as core_read_mesh, read_obj,
@@ -391,6 +392,14 @@ fn verts_f64(v: PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]
     Ok(a.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect())
 }
 
+fn tris_i64(t: PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[i64; 3]>> {
+    let a = t.as_array();
+    if a.ncols() != 3 {
+        return Err(PyValueError::new_err("triangles must be Nx3"));
+    }
+    Ok(a.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect())
+}
+
 fn tris_i32(t: PyArrayLike2<'_, i32, AllowTypeChange>) -> PyResult<Vec<[i32; 3]>> {
     let a = t.as_array();
     if a.ncols() != 3 {
@@ -641,6 +650,73 @@ fn aggregate_print_reports_py(prs_json: &str) -> PyResult<Option<String>> {
     Ok(aggregate_print_reports_value(arr).map(|x| x.to_string()))
 }
 
+#[pyfunction(name = "p_weld_reload_topology")]
+fn p_weld_reload_topology_py(
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i64, AllowTypeChange>,
+) -> PyResult<(usize, usize, usize)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    Ok(reload_topology(&v, &t))
+}
+
+#[pyfunction(name = "p_weld_reload_strict")]
+fn p_weld_reload_strict_py(
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i64, AllowTypeChange>,
+) -> PyResult<(usize, usize)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    Ok(reload_strict_holes_nm(&v, &t))
+}
+
+#[pyfunction(name = "p_weld_reload_equivalent")]
+fn p_weld_reload_equivalent_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let (ov, ot) = weld_reload_equivalent(&v, &t).map_err(PyValueError::new_err)?;
+    let mut av = numpy::ndarray::Array2::<f32>::zeros((ov.len(), 3));
+    for (i, p) in ov.iter().enumerate() { av[[i,0]]=p[0]; av[[i,1]]=p[1]; av[[i,2]]=p[2]; }
+    let mut at = numpy::ndarray::Array2::<i64>::zeros((ot.len(), 3));
+    for (i, p) in ot.iter().enumerate() { at[[i,0]]=p[0]; at[[i,1]]=p[1]; at[[i,2]]=p[2]; }
+    Ok((PyArray2::from_owned_array(py, av), PyArray2::from_owned_array(py, at)))
+}
+
+#[pyfunction(name = "p_weld_final")]
+fn p_weld_final_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>, Option<String>)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let r = p_weld_final(&v, &t);
+    let mut av = numpy::ndarray::Array2::<f32>::zeros((r.verts.len(), 3));
+    for (i, p) in r.verts.iter().enumerate() { av[[i,0]]=p[0]; av[[i,1]]=p[1]; av[[i,2]]=p[2]; }
+    let mut at = numpy::ndarray::Array2::<i32>::zeros((r.tris.len(), 3));
+    for (i, p) in r.tris.iter().enumerate() { at[[i,0]]=p[0]; at[[i,1]]=p[1]; at[[i,2]]=p[2]; }
+    Ok((PyArray2::from_owned_array(py, av), PyArray2::from_owned_array(py, at),
+        r.report.map(|x| x.to_string())))
+}
+
+#[pyfunction(name = "p_weld_enforce_verdict")]
+fn p_weld_enforce_verdict_py(
+    report_json: &str,
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i64, AllowTypeChange>,
+    include_n2m: bool,
+) -> PyResult<(bool, String)> {
+    let mut r: serde_json::Value = serde_json::from_str(report_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let changed = enforce_reload_verdict(&mut r, &v, &t, include_n2m);
+    Ok((changed, r.to_string()))
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -676,6 +752,11 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(summary_args_py, m)?)?;
     m.add_function(wrap_pyfunction!(repair_scores_py, m)?)?;
     m.add_function(wrap_pyfunction!(compute_fidelity_py, m)?)?;
+    m.add_function(wrap_pyfunction!(p_weld_reload_topology_py, m)?)?;
+    m.add_function(wrap_pyfunction!(p_weld_reload_strict_py, m)?)?;
+    m.add_function(wrap_pyfunction!(p_weld_reload_equivalent_py, m)?)?;
+    m.add_function(wrap_pyfunction!(p_weld_final_py, m)?)?;
+    m.add_function(wrap_pyfunction!(p_weld_enforce_verdict_py, m)?)?;
     m.add_function(wrap_pyfunction!(history_build_record_py, m)?)?;
     m.add_function(wrap_pyfunction!(history_summary_text_py, m)?)?;
     m.add_function(wrap_pyfunction!(health_build_report_py, m)?)?;

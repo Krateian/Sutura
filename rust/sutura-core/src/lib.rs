@@ -8,6 +8,7 @@ pub mod error;
 pub mod fmt;
 pub mod mesh;
 pub mod mesh_io;
+pub mod p_weld;
 pub mod report;
 
 pub use error::{MeshError, MeshResult};
@@ -19,6 +20,7 @@ pub use mesh_io::{
     scan_stl_bad_coordinates, write_3mf_single, write_obj, write_ply, write_stl_binary,
     TriangleAttrStats, UnitWarning,
 };
+pub use p_weld::{enforce_reload_verdict, p_weld_final, reload_strict_holes_nm, reload_topology, weld_reload_equivalent, PWeldResult};
 pub use report::{
     aggregate_print_reports_value, build_health_report_json, build_print_report_json,
     build_print_report_value, build_record_json, classify_json, classify_value,
