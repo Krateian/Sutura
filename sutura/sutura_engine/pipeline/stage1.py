@@ -6,6 +6,7 @@ The VCG filter chains, extreme extra passes, the guarded self-intersection
 excise + re-cap and the opt-in join-small-components prototype. Moved verbatim
 from sutura/repair.py; no logic change.
 """
+import json
 import os
 import time
 
@@ -14,6 +15,11 @@ import numpy as np
 import topology
 import triage
 from sutura_engine import health as method_health
+from sutura_engine import rust_bridge
+
+
+def _stage1_core():
+    return rust_bridge.load('stage1', ('SUTURA_STAGE1_ENGINE',), 'python')
 
 
 def _close_holes_step(maxholesize):
@@ -143,6 +149,21 @@ def apply_chain(verts, tris, chain, sink=None):
     t = np.asarray(tris, dtype=np.int64)
     if t.ndim != 2:
         t = t.reshape(-1, 3)
+    _core = _stage1_core()
+    if _core is not None:
+        ov, ot, _applied, _skipped_json, _small_json = _core.stage1_apply_chain(
+            v, t, json.dumps(chain))
+        _skipped = json.loads(_skipped_json)
+        for _name, _msg in _skipped.items():
+            method_health.record_error('stage1:' + _name, 'filter',
+                                       RuntimeError(_msg))
+        if sink is not None and any(
+                str(_name) == 'meshing_remove_connected_component_by_face_number'
+                for _name, _params in chain):
+            sink['removed_small_parts'] = (
+                json.loads(_small_json) if _small_json else None)
+        return np.asarray(ov, dtype=np.float64), np.asarray(ot, dtype=np.int64), \
+            int(_applied), _skipped
     applied = 0
     skipped = {}
     selected = np.zeros(len(t), dtype=bool)

@@ -10,6 +10,7 @@ pub mod fmt;
 pub mod mesh;
 pub mod mesh_io;
 pub mod p_weld;
+pub mod stage1;
 pub mod stage2;
 pub mod report;
 pub mod tiers;
