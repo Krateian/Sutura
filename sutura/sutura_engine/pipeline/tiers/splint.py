@@ -21,6 +21,7 @@ when it is strict-watertight after the save/reload-equivalent weld (holes and
 non-manifold edges equal to the best possible zero), which also guarantees it is
 no worse than the result the ladder already holds.  Never raises.
 """
+import json
 import time
 
 import numpy as np
@@ -34,6 +35,9 @@ from sutura_engine.pipeline.presets import (
     SPLINT_WORK_BY_INTENSITY,
 )
 from sutura_engine.pipeline.stage2 import run_stage2_arrays
+from sutura_engine.pipeline.tiers.engine import (
+    guard_params, tier_core, tier_engine,
+)
 
 
 def _count_defects(verts, tris):
@@ -49,6 +53,78 @@ from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
 
 def splint_tier(v, t, input_v, input_t, after, stats, tmpdir, splint=False,
                 intensity=None, spec=None, adaptive=None):
+    """Splint tier entry point (Python by default, Rust when opted in)."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v,
+                         dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
+    if not splint:
+        return v, t, after
+    core = tier_core()
+    if tier_engine('splint') != 'rust' or core is None:
+        return _splint_tier_python(
+            v, t, input_v, input_t, after, stats, tmpdir, splint, intensity,
+            spec, adaptive)
+    return _splint_tier_rust(
+        v, t, input_v, input_t, after, stats, tmpdir, intensity, spec,
+        adaptive, core)
+
+
+def _splint_tier_rust(v, t, input_v, input_t, after, stats, tmpdir, intensity,
+                      spec, adaptive, core):
+    """Rust-backed Splint tier (same cap/work budget, gates and report keys)."""
+    stats = stats if stats is not None else {}
+    cap = getattr(spec, 'splint_max_faces', SPLINT_MAX_FACES) if spec is not None \
+        else SPLINT_MAX_FACES
+    key = (intensity or getattr(spec, 'base', None)
+           or getattr(spec, 'name', None))
+    work_limit = int(getattr(
+        spec, 'splint_work',
+        SPLINT_WORK_BY_INTENSITY.get(key, SPLINT_DEFAULT_WORK))
+        if spec is not None else
+        SPLINT_WORK_BY_INTENSITY.get(key, SPLINT_DEFAULT_WORK))
+    res = int(getattr(spec, 'splint_res', SPLINT_RES) if spec is not None
+              else SPLINT_RES)
+    mode = adaptive or 'retry'
+    drill = json.dumps({
+        'cap': (int(cap) if cap is not None else None),
+        'work_limit': work_limit,
+        'res': res,
+        'adaptive': mode,
+        'intensity': key,
+        'input_faces': int(len(input_t)),
+        'stage1_holes': (stats.get('stage1') or {}).get('holes_remaining'),
+        'stage1_nm': (stats.get('stage1') or {}).get(
+            'non_manifold_edges_remaining'),
+        'guard': guard_params('splint'),
+    })
+    payload = None
+    with method_health.tier_guard('splint', 'tier') as _g:
+        payload = core.tier_splint(
+            np.ascontiguousarray(v, dtype=np.float64),
+            np.ascontiguousarray(t, dtype=np.int64),
+            np.ascontiguousarray(input_v, dtype=np.float64),
+            np.ascontiguousarray(input_t, dtype=np.int64), drill)
+    if _g.error is not None or payload is None:
+        rec = {'tier': 'splint', 'ran': False, 'adopted': False,
+               'reason': 'error: %s: %s' % (type(_g.error).__name__, _g.error)}
+        stats['splint'] = rec
+        return v, t, after
+    out_v, out_t, rec_json = payload
+    rec = json.loads(rec_json)
+    stats['splint'] = rec
+    if not rec.get('adopted'):
+        return v, t, after
+    out_v = np.asarray(out_v, dtype=np.float64)
+    out_t = np.asarray(out_t, dtype=np.int64)
+    return (out_v, out_t,
+            topology.mesh_topology(np.asarray(out_v, dtype=np.float32),
+                                   np.asarray(out_t, dtype=np.int32)))
+
+
+def _splint_tier_python(v, t, input_v, input_t, after, stats, tmpdir, splint=False,
+                        intensity=None, spec=None, adaptive=None):
     """Exact solid-rebuild tier for registry method 18 (Splint).
 
     ``v``/``t`` is the result the ladder currently holds and

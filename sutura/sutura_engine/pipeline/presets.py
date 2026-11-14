@@ -974,7 +974,11 @@ LOCAL_MAX_REGIONS = 8
 LOCAL_MAX_REMOVED_FACES = 2000
 
 
-LOCAL_MAX_SECONDS = 10.0     # checked between steps; slowest sample 1.9 s
+LOCAL_MAX_SECONDS = 10.0     # legacy wall-clock guard; no longer a decision
+# Deterministic replacement for LOCAL_MAX_SECONDS (P10 phase 4): the tier's
+# work is region faces + post-close faces * (fairing steps + 1).  This is a
+# pure function of the input, so the same mesh always takes the same path.
+LOCAL_MAX_WORK = 10_000_000
 
 
 def resolve_deep_repair(cli_value=None, environ=None, config_path=None):

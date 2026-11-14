@@ -12,7 +12,7 @@ import topology
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.presets import (
     LOCAL_MAX_LOOP_LEN, LOCAL_MAX_NM_EDGES, LOCAL_MAX_REGIONS,
-    LOCAL_MAX_REMOVED_FACES, LOCAL_MAX_SECONDS, LOCAL_REMESH_FAIR_STEPS,
+    LOCAL_MAX_REMOVED_FACES, LOCAL_MAX_WORK, LOCAL_REMESH_FAIR_STEPS,
     LOCAL_REMESH_MAX_HOLE, LOCAL_REMESH_REFINE,
 )
 from sutura_engine.pipeline.utils import (
@@ -167,8 +167,12 @@ def _local_remesh_tier(v, t, input_v, input_t, after, stats=None):
             nv, nt, maxholesize=LOCAL_REMESH_MAX_HOLE,
             newfaceselected=True, self_intersection=True)
         rep['faces_added'] = int(len(nt) - n0)
-        if time.perf_counter() - t0 > LOCAL_MAX_SECONDS:
-            return skip('time')
+        work_units = (int(region.sum())
+                      + int(len(nt)) * (int(LOCAL_REMESH_FAIR_STEPS) + 1))
+        rep['work_units'] = work_units
+        rep['work_budget'] = int(LOCAL_MAX_WORK)
+        if work_units > LOCAL_MAX_WORK:
+            return skip('work budget')
         nv = _umbrella_fair(nv, nt, nv0, LOCAL_REMESH_FAIR_STEPS)
         rep['fairing_iters'] = LOCAL_REMESH_FAIR_STEPS
         t_after = topology.mesh_topology(nv, nt)
@@ -180,9 +184,12 @@ def _local_remesh_tier(v, t, input_v, input_t, after, stats=None):
         better = (holes <= base_holes and nm <= base_nm
                   and (holes, nm) != (base_holes, base_nm))
         si_ok = True
-        if outside_ok and better and time.perf_counter() - t0 > LOCAL_MAX_SECONDS:
-            return skip('time')
         if outside_ok and better:
+            si_work = work_units + int(len(nt)) + int(len(t))
+            if si_work > LOCAL_MAX_WORK:
+                rep['work_units'] = int(si_work)
+                return skip('work budget')
+            rep['work_units'] = int(si_work)
             _, base_si = topology.self_intersecting_faces(v, t)
             _, new_si = topology.self_intersecting_faces(nv, nt)
             rep.update(si_before=int(base_si), si_after=int(new_si))

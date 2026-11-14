@@ -5,10 +5,12 @@
 //! the same public entry points and delegate here when `SUTURA_TIER_ENGINE`
 //! (or a per-tier override) is `rust`.
 
+pub mod cdt;
 pub mod coaptation;
 pub mod common;
 pub mod flap;
 pub mod graft;
+pub mod splint;
 pub mod tamponade;
 
 #[cfg(test)]

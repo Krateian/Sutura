@@ -9,6 +9,7 @@ when it reloads strict-watertight, is one part, and passes the existing
 adoption guard.  Failures and budget/timeout results are recorded and the
 ladder keeps its current mesh so fTetWild can fall through.
 """
+import json
 import time
 
 import numpy as np
@@ -19,10 +20,70 @@ from sutura_engine.pipeline.p_weld import weld_reload_equivalent
 from sutura_engine.pipeline.tiers.splint import _count_defects
 from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
 from sutura_engine.pipeline.presets import CDT_MAX_TETS
+from sutura_engine.pipeline.tiers.engine import (
+    guard_params, tier_core, tier_engine,
+)
 
 
 def cdt_tier(v, t, input_v, input_t, after, stats, tmpdir, spec=None,
              wall_timeout_ms=None):
+    """CDT tier entry point (Python by default, Rust when opted in)."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v,
+                         dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
+    core = tier_core()
+    if tier_engine('cdt') != 'rust' or core is None:
+        return _cdt_tier_python(
+            v, t, input_v, input_t, after, stats, tmpdir, spec, wall_timeout_ms)
+    return _cdt_tier_rust(
+        v, t, input_v, input_t, after, stats, tmpdir, spec, wall_timeout_ms,
+        core)
+
+
+def _cdt_tier_rust(v, t, input_v, input_t, after, stats, tmpdir, spec,
+                   wall_timeout_ms, core):
+    """Rust-backed CDT tier (same cap, gates and report keys)."""
+    stats = stats if stats is not None else {}
+    cap = getattr(spec, 'ftetwild_max_faces', None) if spec is not None else None
+    if wall_timeout_ms is None:
+        wall_timeout_ms = int(
+            float(getattr(spec, 'ftetwild_timeout', 180.0)) * 1000)
+    drill = json.dumps({
+        'cap': (int(cap) if cap is not None else None),
+        'wall_timeout_ms': int(wall_timeout_ms),
+        'max_tets': int(CDT_MAX_TETS),
+        'input_faces': int(len(input_t)),
+        'guard': guard_params('splint'),
+    })
+    payload = None
+    with method_health.tier_guard('cdt', 'tier') as _g:
+        payload = core.tier_cdt(
+            np.ascontiguousarray(v, dtype=np.float64),
+            np.ascontiguousarray(t, dtype=np.int64),
+            np.ascontiguousarray(input_v, dtype=np.float64),
+            np.ascontiguousarray(input_t, dtype=np.int64), drill)
+    if _g.error is not None or payload is None:
+        rec = {'tier': 'cdt', 'engine': 'cdt', 'ran': False,
+               'adopted': False, 'reason': 'error: %s: %s'
+               % (type(_g.error).__name__, _g.error)}
+        stats['cdt'] = rec
+        return v, t, after
+    out_v, out_t, rec_json = payload
+    rec = json.loads(rec_json)
+    stats['cdt'] = rec
+    if not rec.get('adopted'):
+        return v, t, after
+    out_v = np.asarray(out_v, dtype=np.float64)
+    out_t = np.asarray(out_t, dtype=np.int64)
+    return (out_v, out_t,
+            topology.mesh_topology(np.asarray(out_v, dtype=np.float32),
+                                   np.asarray(out_t, dtype=np.int32)))
+
+
+def _cdt_tier_python(v, t, input_v, input_t, after, stats, tmpdir, spec=None,
+                     wall_timeout_ms=None):
     """Try the CDT exact solid engine.  Never raises; keeps ``v``/``t`` when
     the candidate is unavailable, invalid, over budget or rejected."""
     rec = {
