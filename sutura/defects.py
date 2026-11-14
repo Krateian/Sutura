@@ -10,10 +10,31 @@ are normally millimetres, but Sutura does not rescale, so callers should treat
 values as "mesh units").
 """
 import math
+import os
 
 import numpy as np
 
 import topology
+
+
+_REPORT_CORE = None
+_REPORT_CORE_TRIED = False
+
+
+def _rust_core():
+    """Optional sutura_core_py for SUTURA_REPORT_ENGINE=rust."""
+    global _REPORT_CORE, _REPORT_CORE_TRIED
+    if os.environ.get('SUTURA_REPORT_ENGINE', 'python').strip().lower() != 'rust':
+        return None
+    if _REPORT_CORE_TRIED:
+        return _REPORT_CORE
+    _REPORT_CORE_TRIED = True
+    try:
+        import sutura_core_py as mod
+        _REPORT_CORE = mod
+    except Exception:
+        _REPORT_CORE = None
+    return _REPORT_CORE
 
 
 def _edge_keys(edges):
@@ -99,6 +120,11 @@ def detect_holes(verts, tris, with_indices=False):
     With ``with_indices=True`` each hole also carries ``verts_idx`` (the
     boundary-loop vertex indices) so a renderer can highlight the hole rim.
     The default (False) keeps the CLI JSON contract unchanged."""
+    _core = _rust_core()
+    if _core is not None:
+        _v = np.asarray(verts, dtype=np.float32)
+        _t = np.asarray(tris, dtype=np.int32)
+        return _core.detect_defects(_v, _t, with_indices)['holes']
     boundary, adj, _edges, _keys = _boundary_edges(tris)
     if not boundary:
         return []
@@ -192,6 +218,11 @@ def detect_non_manifold(verts, tris, with_indices=False):
     region's vertex indices) and ``faces_idx`` (the region's face indices) so
     a renderer can highlight the region. The default (False) keeps the CLI
     JSON contract unchanged."""
+    _core = _rust_core()
+    if _core is not None:
+        _v = np.asarray(verts, dtype=np.float32)
+        _t = np.asarray(tris, dtype=np.int32)
+        return _core.detect_defects(_v, _t, with_indices)['non_manifold']
     tris = np.asarray(tris, dtype=np.int64)
     F = len(tris)
     if F == 0:
@@ -215,6 +246,11 @@ def detect(verts, tris, with_indices=False):
     ``with_indices`` is passed through to the per-defect detectors; the CLI
     (which calls this without the flag) keeps its JSON contract unchanged,
     while the GUI may request the extra index lists for rendering."""
+    _core = _rust_core()
+    if _core is not None:
+        _v = np.asarray(verts, dtype=np.float32)
+        _t = np.asarray(tris, dtype=np.int32)
+        return _core.detect_defects(_v, _t, with_indices)
     return {'holes': detect_holes(verts, tris, with_indices=with_indices),
             'non_manifold': detect_non_manifold(verts, tris,
                                                 with_indices=with_indices)}

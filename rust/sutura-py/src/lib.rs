@@ -13,8 +13,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 use sutura_core::{
-    check_units, load_mesh as core_load_mesh, load_stl, parse_3mf_mesh_blocks, read_3mf_units,
-    read_mesh as core_read_mesh, read_obj, read_ply, read_stl, rewrite_3mf_meshes,
+    check_units, detect_defects as core_detect_defects, load_mesh as core_load_mesh, load_stl,
+    parse_3mf_mesh_blocks, possible_debris as core_possible_debris, read_3mf_units,
+    read_mesh as core_read_mesh, read_obj, read_ply, read_stl,
+    removed_small_parts as core_removed_small_parts, rewrite_3mf_meshes,
     save_mesh as core_save_mesh, scan_bad_coordinates as core_scan, write_obj, write_ply,
     write_stl_binary, Mesh,
 };
@@ -371,6 +373,129 @@ fn check_units_py<'py>(
     Ok(Some(d))
 }
 
+fn verts_f32(v: PyArrayLike2<'_, f32, AllowTypeChange>) -> PyResult<Vec<[f32; 3]>> {
+    let a = v.as_array();
+    if a.ncols() != 3 {
+        return Err(PyValueError::new_err("vertices must be Nx3"));
+    }
+    Ok(a.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect())
+}
+
+fn verts_f64(v: PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]>> {
+    let a = v.as_array();
+    if a.ncols() != 3 {
+        return Err(PyValueError::new_err("vertices must be Nx3"));
+    }
+    Ok(a.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect())
+}
+
+fn tris_i32(t: PyArrayLike2<'_, i32, AllowTypeChange>) -> PyResult<Vec<[i32; 3]>> {
+    let a = t.as_array();
+    if a.ncols() != 3 {
+        return Err(PyValueError::new_err("triangles must be Nx3"));
+    }
+    Ok(a.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect())
+}
+
+#[pyfunction(name = "detect_defects")]
+fn detect_defects_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    with_indices: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let v = verts_f32(verts)?;
+    let t = tris_i32(tris)?;
+    let r = core_detect_defects(&v, &t, with_indices);
+    let holes = PyList::empty(py);
+    for h in r.holes {
+        let d = PyDict::new(py);
+        d.set_item("centroid", h.centroid)?;
+        d.set_item("diameter", h.diameter)?;
+        d.set_item("vertices", h.vertices)?;
+        if let Some(idx) = h.verts_idx {
+            d.set_item("verts_idx", idx)?;
+        }
+        holes.append(d)?;
+    }
+    let nm = PyList::empty(py);
+    for reg in r.non_manifold {
+        let d = PyDict::new(py);
+        d.set_item("centroid", reg.centroid)?;
+        d.set_item("faces", reg.faces)?;
+        if let Some(idx) = reg.verts_idx {
+            d.set_item("verts_idx", idx)?;
+        }
+        if let Some(idx) = reg.faces_idx {
+            d.set_item("faces_idx", idx)?;
+        }
+        nm.append(d)?;
+    }
+    let out = PyDict::new(py);
+    out.set_item("holes", holes)?;
+    out.set_item("non_manifold", nm)?;
+    Ok(out)
+}
+
+#[pyfunction(name = "debris_removed_small_parts")]
+fn debris_removed_small_parts_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    min_faces: usize,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let v = verts_f64(verts)?;
+    let t = tris_i32(tris)?;
+    let Some(r) = core_removed_small_parts(&v, &t, min_faces) else {
+        return Ok(None);
+    };
+    let d = PyDict::new(py);
+    d.set_item("count", r.count)?;
+    d.set_item("min_faces", r.min_faces)?;
+    d.set_item("faces_total", r.faces_total)?;
+    d.set_item("capped", r.capped)?;
+    let parts = PyList::empty(py);
+    for p in r.parts {
+        let pd = PyDict::new(py);
+        pd.set_item("faces", p.faces)?;
+        pd.set_item("size_mm", p.size_mm)?;
+        pd.set_item("size_pct", p.size_pct)?;
+        pd.set_item("distance_mm", p.distance_mm)?;
+        parts.append(pd)?;
+    }
+    d.set_item("parts", parts)?;
+    Ok(Some(d))
+}
+
+#[pyfunction(name = "debris_possible_debris")]
+fn debris_possible_debris_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    min_faces: usize,
+    tau: f64,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let v = verts_f64(verts)?;
+    let t = tris_i32(tris)?;
+    let Some(r) = core_possible_debris(&v, &t, min_faces, tau) else {
+        return Ok(None);
+    };
+    let d = PyDict::new(py);
+    d.set_item("count", r.count)?;
+    d.set_item("capped", r.capped)?;
+    let parts = PyList::empty(py);
+    for p in r.parts {
+        let pd = PyDict::new(py);
+        pd.set_item("faces", p.faces)?;
+        pd.set_item("volume_pct", p.volume_pct)?;
+        pd.set_item("size_pct", p.size_pct)?;
+        pd.set_item("distance_mm", p.distance_mm)?;
+        parts.append(pd)?;
+    }
+    d.set_item("parts", parts)?;
+    Ok(Some(d))
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -397,6 +522,9 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_3mf_units_py, m)?)?;
     m.add_function(wrap_pyfunction!(write_3mf_single_py, m)?)?;
     m.add_function(wrap_pyfunction!(check_units_py, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_defects_py, m)?)?;
+    m.add_function(wrap_pyfunction!(debris_removed_small_parts_py, m)?)?;
+    m.add_function(wrap_pyfunction!(debris_possible_debris_py, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
