@@ -17,29 +17,11 @@ needs new plumbing.
 import os
 
 import numpy as np
-from sutura_engine.rust_bridge import unavailable
-
-_REPORT_CORE = None
-_REPORT_CORE_TRIED = False
-
+from sutura_engine import rust_bridge
 
 def _rust_core():
     """Optional sutura_core_py for SUTURA_REPORT_ENGINE=rust."""
-    global _REPORT_CORE, _REPORT_CORE_TRIED
-    if os.environ.get('SUTURA_REPORT_ENGINE', 'rust').strip().lower() != 'rust':
-        return None
-    if _REPORT_CORE_TRIED:
-        if _REPORT_CORE is None:
-            return unavailable('sutura_core_py is unavailable')
-        return _REPORT_CORE
-    _REPORT_CORE_TRIED = True
-    try:
-        import sutura_core_py as mod
-        _REPORT_CORE = mod
-    except Exception as exc:
-        _REPORT_CORE = None
-        return unavailable('sutura_core_py is unavailable: %s' % exc, exc)
-    return _REPORT_CORE
+    return rust_bridge.load('report', ('SUTURA_REPORT_ENGINE',), 'rust')
 
 
 MAX_REPORTED = 32              # capped per-component list in the report

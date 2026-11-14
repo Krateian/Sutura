@@ -77,7 +77,7 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
-from sutura_engine.rust_bridge import unavailable
+from sutura_engine import rust_bridge
 
 KIND_IMPORT = 'import'
 KIND_MISSING_SYMBOL = 'missing_symbol'
@@ -104,31 +104,12 @@ GEOM_SYMBOL_MISSING_MESSAGE = (
 # feature-detected by their callers and are intentionally NOT in this list.
 REQUIRED_GEOM_SYMBOLS = ('flap_fill', 'morph_close', 'tamponade')
 
-_REPORT_CORE = None
-_REPORT_CORE_TRIED = False
-
-
 def _rust_core():
-    global _REPORT_CORE, _REPORT_CORE_TRIED
-    if os.environ.get('SUTURA_REPORT_ENGINE', 'rust').strip().lower() != 'rust':
-        return None
-    if _REPORT_CORE_TRIED:
-        if _REPORT_CORE is None:
-            return unavailable('sutura_core_py is unavailable')
-        return _REPORT_CORE
-    _REPORT_CORE_TRIED = True
-    try:
-        import sutura_core_py as mod
-        _REPORT_CORE = mod
-    except Exception as exc:
-        _REPORT_CORE = None
-        return unavailable('sutura_core_py is unavailable: %s' % exc, exc)
-    return _REPORT_CORE
+    return rust_bridge.load('report', ('SUTURA_REPORT_ENGINE',), 'rust')
 
 
 def _json_arg(data):
-    return json.dumps(data, ensure_ascii=False,
-                      default=lambda o: o.item() if hasattr(o, 'item') else str(o))
+    return rust_bridge.json_arg(data)
 
 
 class GeometryRequiredError(RuntimeError):

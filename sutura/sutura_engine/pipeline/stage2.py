@@ -16,29 +16,12 @@ import numpy as np
 import topology
 from sutura_engine.pipeline.mesh_io import read_obj, write_obj
 from sutura_engine.pipeline.utils import boundary_loop_stats
-from sutura_engine.rust_bridge import unavailable
-
-
-_STAGE_CORE = None
-_STAGE_CORE_TRIED = False
+from sutura_engine import rust_bridge
 
 
 def _rust_core():
-    global _STAGE_CORE, _STAGE_CORE_TRIED
-    if os.environ.get('SUTURA_STAGE2_ENGINE', os.environ.get('SUTURA_STAGE_ENGINE', 'python')).strip().lower() != 'rust':
-        return None
-    if _STAGE_CORE_TRIED:
-        if _STAGE_CORE is None:
-            return unavailable('sutura_core_py is unavailable')
-        return _STAGE_CORE
-    _STAGE_CORE_TRIED = True
-    try:
-        import sutura_core_py as mod
-        _STAGE_CORE = mod
-    except Exception as exc:
-        _STAGE_CORE = None
-        return unavailable('sutura_core_py is unavailable: %s' % exc, exc)
-    return _STAGE_CORE
+    return rust_bridge.load(
+        'stage2', ('SUTURA_STAGE2_ENGINE', 'SUTURA_STAGE_ENGINE'), 'python')
 
 
 def run_stage2_arrays(verts, tris):
