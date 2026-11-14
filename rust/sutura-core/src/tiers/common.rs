@@ -721,3 +721,88 @@ pub fn is_two_manifold(nv: usize, tris: &[[i64; 3]]) -> bool {
     }
     true
 }
+
+/// Number of boundary loops (`boundary_loop_stats(...)[0]`): connected
+/// components of the edges used by exactly one face.
+pub fn boundary_loop_count(tris: &[[i64; 3]]) -> usize {
+    if tris.is_empty() {
+        return 0;
+    }
+    let mut counts: HashMap<(i64, i64), usize> = HashMap::new();
+    for t in tris {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let k = if a <= b { (a, b) } else { (b, a) };
+            *counts.entry(k).or_insert(0) += 1;
+        }
+    }
+    let boundary: Vec<(i64, i64)> = counts
+        .into_iter()
+        .filter(|(_, c)| *c == 1)
+        .map(|(k, _)| k)
+        .collect();
+    if boundary.is_empty() {
+        return 0;
+    }
+    let mut index: HashMap<i64, usize> = HashMap::new();
+    for (a, b) in &boundary {
+        let n = index.len();
+        index.entry(*a).or_insert(n);
+        let n = index.len();
+        index.entry(*b).or_insert(n);
+    }
+    let mut parent: Vec<usize> = (0..index.len()).collect();
+    fn find(p: &mut [usize], mut x: usize) -> usize {
+        let mut root = x;
+        while p[root] != root {
+            root = p[root];
+        }
+        while p[x] != root {
+            let next = p[x];
+            p[x] = root;
+            x = next;
+        }
+        root
+    }
+    for (a, b) in boundary {
+        let ia = index[&a];
+        let ib = index[&b];
+        let ra = find(&mut parent, ia);
+        let rb = find(&mut parent, ib);
+        if ra != rb {
+            parent[rb] = ra;
+        }
+    }
+    let mut roots: Vec<usize> = (0..parent.len()).map(|i| find(&mut parent, i)).collect();
+    roots.sort_unstable();
+    roots.dedup();
+    roots.len()
+}
+
+/// Edges used by a number of faces other than two (`non_two_manifold_edges`).
+pub fn non_two_manifold_edges(tris: &[[i64; 3]]) -> usize {
+    let mut counts: HashMap<(i64, i64), usize> = HashMap::new();
+    for t in tris {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let k = if a <= b { (a, b) } else { (b, a) };
+            *counts.entry(k).or_insert(0) += 1;
+        }
+    }
+    counts.values().filter(|c| **c != 2).count()
+}
+
+/// Reload-weld + the four-step topology repair used by the closing/graft
+/// candidate checks.
+pub fn repair_welded_topology(v: &[[f32; 3]], t: &[[i64; 3]]) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+    use sutura_geom::topology::{
+        remove_duplicate_faces_core, remove_unreferenced_vertices_core,
+        repair_non_manifold_edges_core, repair_non_manifold_vertices_core,
+    };
+    let mut vv = v.to_vec();
+    let mut tt = t.to_vec();
+    tt = repair_non_manifold_edges_core(&vv, &tt);
+    tt = remove_duplicate_faces_core(&tt);
+    let (nv, nt) = repair_non_manifold_vertices_core(&vv, &tt);
+    vv = nv;
+    tt = nt;
+    remove_unreferenced_vertices_core(&vv, &tt)
+}

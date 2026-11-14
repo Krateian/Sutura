@@ -168,6 +168,7 @@ pub fn resample_core(
     })
 }
 
+#[cfg(feature = "python")]
 fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<V3>> {
     let v = arr.as_array();
     if v.ncols() != 3 {
@@ -181,6 +182,7 @@ fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<V
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[i64; 3]>> {
     let t = arr.as_array();
     if t.ncols() != 3 {
@@ -194,6 +196,7 @@ fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_f64<'py>(py: Python<'py>, rows: &[V3]) -> Bound<'py, PyArray2<f64>> {
     let mut a = Array2::<f64>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -204,6 +207,7 @@ fn rows_to_array2_f64<'py>(py: Python<'py>, rows: &[V3]) -> Bound<'py, PyArray2<
     PyArray2::from_owned_array(py, a)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyArray2<i64>> {
     let mut a = Array2::<i64>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -496,4 +500,35 @@ mod tests {
         let qef = resample_core(&v, &t, 0.1, 0.0, false, false, false, false).unwrap();
         assert!(tets.verts.len() > qef.verts.len());
     }
+}
+
+/// Pure resampling entry point with the Python defaults resolved.
+pub fn resample_uniform_core(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    voxel: f64,
+    offset: f64,
+    absdist: bool,
+    raystab_full: bool,
+    surface: Option<&str>,
+    vertex_mode: Option<&str>,
+) -> Result<ResampleReport, String> {
+    let use_tets = matches!(
+        surface.map(|s| s.to_ascii_lowercase()).as_deref(),
+        Some("tets") | Some("tet") | Some("marching_tets")
+    );
+    let mass_point = matches!(
+        vertex_mode.map(|s| s.to_ascii_lowercase()).as_deref(),
+        Some("mass") | Some("mass_point") | Some("surface_nets")
+    );
+    resample_core(
+        verts,
+        tris,
+        voxel,
+        offset,
+        absdist,
+        raystab_full,
+        use_tets,
+        mass_point,
+    )
 }
