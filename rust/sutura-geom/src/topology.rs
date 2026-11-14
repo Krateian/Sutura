@@ -1481,6 +1481,17 @@ pub fn mesh_topology<'py>(
 }
 
 /// `np.unique(v, axis=0, return_inverse=True)` for a float32 `(N, 3)` array.
+/// Pure vertex weld used by P-WELD and downstream Rust crates.
+pub fn weld_vertices_core(
+    rows: &[[f32; 3]],
+) -> Result<(Vec<[f32; 3]>, Vec<i64>), String> {
+    if rows.iter().flatten().any(|x| !x.is_finite()) {
+        return Err("non-finite coordinate".to_string());
+    }
+    let (uniq, inv) = unique_rows_f32(rows);
+    Ok((uniq, inv))
+}
+
 #[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts))]
@@ -1489,10 +1500,7 @@ pub fn weld_vertices<'py>(
     verts: PyArrayLike2<'py, f32, AllowTypeChange>,
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray1<i64>>)> {
     let rows = read_f32_rows(&verts)?;
-    if rows.iter().flatten().any(|x| !x.is_finite()) {
-        return Err(PyValueError::new_err("non-finite coordinate"));
-    }
-    let (uniq, inv) = unique_rows_f32(&rows);
+    let (uniq, inv) = weld_vertices_core(&rows).map_err(PyValueError::new_err)?;
     Ok((
         rows_to_array2_f32(py, &uniq),
         PyArray1::from_vec(py, inv),
@@ -1504,6 +1512,50 @@ pub fn weld_vertices<'py>(
 /// Positions are cast to float32, exactly-coincident positions merged,
 /// degenerate and duplicate faces dropped and unreferenced vertices removed.
 /// Bit-for-bit identical to the pure-numpy oracle.
+/// Pure STL save/reload-equivalent weld (P-HONEST).
+pub fn weld_reload_equivalent_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+) -> Result<(Vec<[f32; 3]>, Vec<[i64; 3]>), String> {
+    let nv = vrows.len();
+    if nv == 0 || trows.is_empty() {
+        return Ok((vrows.to_vec(), trows.to_vec()));
+    }
+    if vrows.iter().flatten().any(|x| !x.is_finite()) {
+        return Err("non-finite coordinate".to_string());
+    }
+    let (uniq, inv) = unique_rows_f32(vrows);
+    let mut t: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
+    for row in trows {
+        let mut r = [0i64; 3];
+        for k in 0..3 {
+            let idx = row[k];
+            if idx < 0 || idx as usize >= nv {
+                return Err("triangle index out of range".to_string());
+            }
+            r[k] = inv[idx as usize];
+        }
+        t.push(r);
+    }
+    t.retain(|r| r[0] != r[1] && r[1] != r[2] && r[0] != r[2]);
+    if t.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let keys: Vec<[i64; 3]> = t.iter().map(|r| { let mut k = *r; k.sort_unstable(); k }).collect();
+    let (_ku, first) = unique_rows_i64_first(&keys);
+    let mut fsorted = first;
+    fsorted.sort_unstable();
+    let t2: Vec<[i64; 3]> = fsorted.iter().map(|&i| t[i]).collect();
+    let mut used: Vec<i64> = t2.iter().flatten().copied().collect();
+    used.sort_unstable();
+    used.dedup();
+    let mut remap: HashMap<i64, i64> = HashMap::with_capacity(used.len());
+    for (i, &v) in used.iter().enumerate() { remap.insert(v, i as i64); }
+    let out_v: Vec<[f32; 3]> = used.iter().map(|&v| uniq[v as usize]).collect();
+    let out_t: Vec<[i64; 3]> = t2.iter().map(|r| [remap[&r[0]], remap[&r[1]], remap[&r[2]]]).collect();
+    Ok((out_v, out_t))
+}
+
 #[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
@@ -1514,65 +1566,8 @@ pub fn weld_reload_equivalent<'py>(
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
     let vrows = read_f32_rows(&verts)?;
     let trows = read_i64_rows(&tris)?;
-    let nv = vrows.len();
-    let nf = trows.len();
-    if nv == 0 || nf == 0 {
-        return Ok((
-            rows_to_array2_f32(py, &vrows),
-            rows_to_array2_i64(py, &trows),
-        ));
-    }
-    if vrows.iter().flatten().any(|x| !x.is_finite()) {
-        return Err(PyValueError::new_err("non-finite coordinate"));
-    }
-    let (uniq, inv) = unique_rows_f32(&vrows);
-    let mut t: Vec<[i64; 3]> = Vec::with_capacity(nf);
-    for row in &trows {
-        let mut r = [0i64; 3];
-        for k in 0..3 {
-            let idx = row[k];
-            if idx < 0 || idx as usize >= nv {
-                return Err(PyValueError::new_err("triangle index out of range"));
-            }
-            r[k] = inv[idx as usize];
-        }
-        t.push(r);
-    }
-    t.retain(|r| r[0] != r[1] && r[1] != r[2] && r[0] != r[2]);
-    if t.is_empty() {
-        // mirror the oracle: an all-degenerate result drops the vertices too
-        return Ok((
-            PyArray2::<f32>::zeros(py, (0, 3), false),
-            PyArray2::<i64>::zeros(py, (0, 3), false),
-        ));
-    }
-    // duplicate faces (same unordered vertex set): keep the first occurrence
-    let keys: Vec<[i64; 3]> = t
-        .iter()
-        .map(|r| {
-            let mut k = *r;
-            k.sort_unstable();
-            k
-        })
-        .collect();
-    let (_ku, first) = unique_rows_i64_first(&keys);
-    let mut fsorted = first;
-    fsorted.sort_unstable();
-    let t2: Vec<[i64; 3]> = fsorted.iter().map(|&i| t[i]).collect();
-    // unreferenced vertices: drop and remap
-    let mut used: Vec<i64> = t2.iter().flatten().copied().collect();
-    used.sort_unstable();
-    used.dedup();
-    let mut remap = vec![-1i64; nv];
-    for (k, &uid) in used.iter().enumerate() {
-        remap[uid as usize] = k as i64;
-    }
-    let wv: Vec<[f32; 3]> = used.iter().map(|&u| uniq[u as usize]).collect();
-    let wt: Vec<[i64; 3]> = t2
-        .iter()
-        .map(|r| [remap[r[0] as usize], remap[r[1] as usize], remap[r[2] as usize]])
-        .collect();
-    Ok((rows_to_array2_f32(py, &wv), rows_to_array2_i64(py, &wt)))
+    let (ov, ot) = weld_reload_equivalent_core(&vrows, &trows).map_err(PyValueError::new_err)?;
+    Ok((rows_to_array2_f32(py, &ov), rows_to_array2_i64(py, &ot)))
 }
 
 #[cfg(test)]
