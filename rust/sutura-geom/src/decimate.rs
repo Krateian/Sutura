@@ -35,10 +35,15 @@
 
 use std::collections::HashMap;
 
+#[cfg(feature = "python")]
 use numpy::ndarray::Array2;
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArray2, PyArrayLike2};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::PyDict;
 
 use meshopt::{simplify, simplify_with_attributes_and_locks, typed_to_bytes, SimplifyOptions, VertexDataAdapter};
@@ -362,6 +367,7 @@ fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyA
 /// dict (`faces_in`, `faces_out`, `target_faces`, `weld_merged`,
 /// `welded_vertices`, `degenerate_removed`, `target_error_used`,
 /// `result_error`, `lock_border`, `attributes_used`, `no_op`, `engine`).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, target_faces, target_error=None, lock_border=false, attributes=None))]
 pub fn decimate_qem<'py>(

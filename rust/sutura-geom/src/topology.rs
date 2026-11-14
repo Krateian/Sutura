@@ -15,10 +15,15 @@
 //! identical.  Non-finite coordinates are rejected here so the Python wrapper
 //! can fall back to numpy (numpy orders NaN/inf differently from `partial_cmp`).
 
+#[cfg(feature = "python")]
 use numpy::ndarray::Array2;
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArray1, PyArray2, PyArrayLike1, PyArrayLike2};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::PyDict;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -149,6 +154,7 @@ fn unique_rows_f32(rows: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<i64>) {
     (uniq, inv)
 }
 
+#[cfg(feature = "python")]
 fn read_f32_rows(arr: &PyArrayLike2<'_, f32, AllowTypeChange>) -> PyResult<Vec<[f32; 3]>> {
     let v = arr.as_array();
     if v.ncols() != 3 {
@@ -162,6 +168,7 @@ fn read_f32_rows(arr: &PyArrayLike2<'_, f32, AllowTypeChange>) -> PyResult<Vec<[
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]>> {
     let v = arr.as_array();
     if v.ncols() != 3 {
@@ -175,6 +182,7 @@ fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[i64; 3]>> {
     let t = arr.as_array();
     if t.ncols() != 3 {
@@ -188,6 +196,7 @@ fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyArray2<i64>> {
     let mut a = Array2::<i64>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -198,6 +207,7 @@ fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyA
     PyArray2::from_owned_array(py, a)
 }
 
+#[cfg(feature = "python")]
 fn pairs_to_array2_i64<'py>(py: Python<'py>, pairs: &[(i64, i64)]) -> Bound<'py, PyArray2<i64>> {
     let mut a = Array2::<i64>::zeros((pairs.len(), 2));
     for (r, &(x, y)) in pairs.iter().enumerate() {
@@ -207,6 +217,7 @@ fn pairs_to_array2_i64<'py>(py: Python<'py>, pairs: &[(i64, i64)]) -> Bound<'py,
     PyArray2::from_owned_array(py, a)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_f32<'py>(py: Python<'py>, rows: &[[f32; 3]]) -> Bound<'py, PyArray2<f32>> {
     let mut a = Array2::<f32>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -226,6 +237,7 @@ fn rows_to_array2_f32<'py>(py: Python<'py>, rows: &[[f32; 3]]) -> Bound<'py, PyA
 /// table, `counts[n]` the number of half-edges using `edges[n]` (so boundary
 /// edges have count 1, non-manifold edges count > 2), and `inverse[h]` the
 /// edge id of the `h`-th half-edge.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (tris))]
 pub fn edge_table<'py>(
@@ -282,6 +294,7 @@ pub fn edge_table<'py>(
 }
 
 /// Remove duplicate faces (matching VCGLib / PyMeshLab meshing_remove_duplicate_faces).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (tris))]
 pub fn remove_duplicate_faces<'py>(
@@ -320,6 +333,7 @@ pub fn remove_duplicate_faces<'py>(
 /// these faces. Faces with a repeated index, an out-of-range index or a
 /// non-finite normal are always dropped (structurally invalid), and with
 /// ``safe=False`` the historical drop-everything behaviour is unchanged.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, safe=false))]
 pub fn remove_null_faces<'py>(
@@ -393,25 +407,22 @@ fn f32_canonical_bits(x: f32) -> u32 {
 /// Remove duplicate vertices (matching VCGLib / PyMeshLab meshing_remove_duplicate_vertices).
 /// Welds coincident vertices keeping first-occurrence order, drops degenerate faces
 /// with repeated vertex indices, and remaps surviving faces.
-#[pyfunction]
-#[pyo3(signature = (verts, tris))]
-pub fn remove_duplicate_vertices<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
-    let vrows = read_f32_rows(&verts)?;
-    let trows = read_i64_rows(&tris)?;
+///
+/// Pure-Rust core used by both the Python binding and downstream crates.
+pub fn remove_duplicate_vertices_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
     let nv = vrows.len();
     if nv == 0 {
-        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
+        return (vrows.to_vec(), trows.to_vec());
     }
 
     let mut map: HashMap<[u32; 3], usize> = HashMap::with_capacity(nv);
     let mut new_verts: Vec<[f32; 3]> = Vec::with_capacity(nv);
     let mut old_to_new: Vec<usize> = Vec::with_capacity(nv);
 
-    for p in &vrows {
+    for p in vrows {
         let key = [
             f32_canonical_bits(p[0]),
             f32_canonical_bits(p[1]),
@@ -430,7 +441,7 @@ pub fn remove_duplicate_vertices<'py>(
 
     let has_duplicates = new_verts.len() < nv;
     let mut has_degenerate = false;
-    for r in &trows {
+    for r in trows {
         let (i0, i1, i2) = (r[0] as usize, r[1] as usize, r[2] as usize);
         if i0 >= nv || i1 >= nv || i2 >= nv {
             has_degenerate = true;
@@ -444,11 +455,11 @@ pub fn remove_duplicate_vertices<'py>(
     }
 
     if !has_duplicates && !has_degenerate {
-        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
+        return (vrows.to_vec(), trows.to_vec());
     }
 
     let mut new_tris: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
-    for r in &trows {
+    for r in trows {
         let (i0, i1, i2) = (r[0] as usize, r[1] as usize, r[2] as usize);
         if i0 >= nv || i1 >= nv || i2 >= nv {
             continue;
@@ -460,6 +471,23 @@ pub fn remove_duplicate_vertices<'py>(
         new_tris.push([n0, n1, n2]);
     }
 
+    (new_verts, new_tris)
+}
+
+/// Remove duplicate vertices (matching VCGLib / PyMeshLab meshing_remove_duplicate_vertices).
+/// Welds coincident vertices keeping first-occurrence order, drops degenerate faces
+/// with repeated vertex indices, and remaps surviving faces.
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn remove_duplicate_vertices<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
+    let vrows = read_f32_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let (new_verts, new_tris) = remove_duplicate_vertices_core(&vrows, &trows);
     Ok((rows_to_array2_f32(py, &new_verts), rows_to_array2_i64(py, &new_tris)))
 }
 
@@ -507,6 +535,7 @@ pub(crate) fn remove_unreferenced_vertices_core(
 
 /// Remove unreferenced vertices (matching VCGLib / PyMeshLab meshing_remove_unreferenced_vertices).
 /// Compacts vertex array preserving original relative order of referenced vertices.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn remove_unreferenced_vertices<'py>(
@@ -525,6 +554,7 @@ pub fn remove_unreferenced_vertices<'py>(
 /// Components of faces connected via shared undirected edges with fewer than
 /// `min_faces` triangles are removed. If `remove_unreferenced` is true, dangling
 /// vertices are pruned and faces reindexed.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, min_faces, remove_unreferenced=true))]
 pub fn remove_connected_components<'py>(
@@ -591,6 +621,7 @@ pub fn remove_connected_components<'py>(
 
 /// Invert face orientation (matching VCGLib / PyMeshLab meshing_invert_face_orientation).
 /// Swaps the first two vertices of each triangle `[v0, v1, v2] -> [v1, v0, v2]`.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (tris))]
 pub fn invert_face_orientation<'py>(
@@ -615,6 +646,7 @@ pub enum TopologyError {
     NonManifold,
 }
 
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (tris))]
 pub fn re_orient_faces_coherently<'py>(
@@ -725,6 +757,7 @@ pub fn re_orient_faces_coherently_core(trows: &[[i64; 3]]) -> Result<Vec<[i64; 3
 ///
 /// Iteratively removes the minimum-area incident face from each non-manifold edge (degree > 2)
 /// until all edges have at most 2 incident faces.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn repair_non_manifold_edges<'py>(
@@ -862,6 +895,7 @@ pub fn repair_non_manifold_edges_core(
 }
 
 /// Repair non-manifold pinch vertices by splitting them (matching VCGLib meshing_repair_non_manifold_vertices).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn repair_non_manifold_vertices<'py>(
@@ -1027,6 +1061,7 @@ pub fn repair_non_manifold_vertices_core(
 }
 
 /// Remove selected faces matching VCGLib meshing_remove_selected_faces.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (tris, selected))]
 pub fn remove_selected_faces<'py>(
@@ -1053,6 +1088,7 @@ pub fn remove_selected_faces_core(
 }
 
 /// Compute unnormalized per-face normals matching VCGLib compute_normal_per_face ((p1-p0) x (p2-p0)).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn compute_normal_per_face<'py>(
@@ -1095,6 +1131,7 @@ pub fn compute_normal_per_face_core(
 }
 
 /// Compute unit per-vertex normals matching VCGLib compute_normal_per_vertex (Simple Average).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn compute_normal_per_vertex<'py>(
@@ -1152,6 +1189,7 @@ pub fn compute_normal_per_vertex_core(
 }
 
 /// Complete geometric measures of a triangle mesh (matching VCGLib / PyMeshLab get_geometric_measures).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn mesh_geometric_measures<'py>(
@@ -1247,6 +1285,7 @@ pub fn mesh_geometric_measures_core(
 }
 
 /// Complete topological measures of a triangle mesh (matching VCGLib / PyMeshLab get_topological_measures).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn mesh_topology<'py>(
@@ -1442,6 +1481,7 @@ pub fn mesh_topology<'py>(
 }
 
 /// `np.unique(v, axis=0, return_inverse=True)` for a float32 `(N, 3)` array.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts))]
 pub fn weld_vertices<'py>(
@@ -1464,6 +1504,7 @@ pub fn weld_vertices<'py>(
 /// Positions are cast to float32, exactly-coincident positions merged,
 /// degenerate and duplicate faces dropped and unreferenced vertices removed.
 /// Bit-for-bit identical to the pure-numpy oracle.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn weld_reload_equivalent<'py>(

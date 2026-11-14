@@ -5,13 +5,18 @@
 //! arguments, same report keys).  Triangles are accepted and returned as
 //! `int64`.
 
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArray2, PyArrayLike2};
+#[cfg(feature = "python")]
 use pyo3::exceptions::{PyKeyboardInterrupt, PyValueError};
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 use super::*;
 
+#[cfg(feature = "python")]
 fn parse_tris_i64(
     tris: &PyArrayLike2<'_, i64, AllowTypeChange>,
     n: usize,
@@ -36,6 +41,7 @@ fn parse_tris_i64(
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn norm_info_dict<'py>(py: Python<'py>, info: &topology::NormInfo) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("iterations", info.iterations)?;
@@ -59,6 +65,7 @@ fn norm_info_dict<'py>(py: Python<'py>, info: &topology::NormInfo) -> PyResult<B
     Ok(d)
 }
 
+#[cfg(feature = "python")]
 fn quality_dict<'py>(py: Python<'py>, q: &QualityAgg) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("n", q.n)?;
@@ -80,6 +87,7 @@ fn quality_dict<'py>(py: Python<'py>, q: &QualityAgg) -> PyResult<Bound<'py, PyD
 ///
 /// See the Python oracle `flap_fill_python` (`sutura_engine/flap.py`) for the reference
 /// semantics.  Returns `(verts, tris, report)`.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(name = "flap_fill")]
 #[pyo3(signature = (
@@ -92,6 +100,7 @@ fn quality_dict<'py>(py: Python<'py>, q: &QualityAgg) -> PyResult<Bound<'py, PyD
     work_budget=None
 ))]
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "python")]
 pub fn flap_fill_py<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,

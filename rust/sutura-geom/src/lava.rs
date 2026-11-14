@@ -14,9 +14,13 @@
 use crate::dual_contour::{jacobi_eigen, mesh_is_manifold};
 use crate::octree::{MeshBoundaries, Octree};
 use crate::winding::{Aabb, MeshBvh};
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArray2, PyArrayLike2};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::PyDict;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};

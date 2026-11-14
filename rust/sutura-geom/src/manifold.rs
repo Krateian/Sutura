@@ -12,9 +12,13 @@
 use std::collections::{BTreeMap, HashMap};
 
 use manifold_csg::{CsgError, Manifold, OpType};
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArrayLike1, PyArrayLike2, PyArrayLike3};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 const DEBRIS_VOLUME_EPS: f64 = 1e-3;
@@ -586,6 +590,7 @@ fn set_report_common(
 /// Stage 2: rebuild a closed mesh as a valid Manifold solid, merging
 /// overlapping shells and dropping flat/post-union debris. Same algorithm and
 /// report fields as the retired `manifold_bridge.run_bridge`.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn stage2_rebuild<'py>(
@@ -767,6 +772,7 @@ pub fn stage2_rebuild<'py>(
 
 /// Independent watertight/manifold verdict (the old
 /// `manifold_bridge.watertight_check`). Never raises for bad mesh input.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn watertight_check(
@@ -798,6 +804,7 @@ pub fn watertight_check(
 /// Union the edge-connected components of a multi-component mesh after
 /// dilating each around its area-weighted centroid, then keep the largest
 /// outer component. Replaces `hull.extract_outer_shell`'s manifold3d union.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, dilation=None))]
 pub fn outer_shell_union<'py>(
@@ -900,6 +907,7 @@ fn union_ladder(
 }
 
 /// Union two f64 meshes (Graft local stitch).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (av, at, bv, bt))]
 pub fn union_pair<'py>(
@@ -936,6 +944,7 @@ pub fn union_pair<'py>(
 /// The OBB is computed in Python (numpy eig) and passed in, so this function
 /// performs only the Manifold CSG sequence. Returns vertices, triangles,
 /// absolute volume change, destination boxes and the watertight verdict.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, center, extents, frame, transforms))]
 pub fn boolean_transplant<'py>(

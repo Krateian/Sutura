@@ -14,6 +14,7 @@ pub mod guard;
 pub mod refine;
 pub mod topology;
 
+#[cfg(feature = "python")]
 pub use binding::flap_fill_py;
 
 use std::collections::{HashMap, HashSet};

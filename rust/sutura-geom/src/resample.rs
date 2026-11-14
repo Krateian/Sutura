@@ -17,10 +17,15 @@
 //! contouring, so the output is already a closed, two-manifold surface; the
 //! caller still validates it (`_check_validity`) and drops debris components.
 
+#[cfg(feature = "python")]
 use numpy::ndarray::Array2;
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArray2, PyArrayLike2};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::PyDict;
 
 use crate::{dual_contour, plan_grid, winding};
@@ -220,6 +225,7 @@ fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyA
 /// pass: only winding-outside cells may be flipped, and only to inside, on a
 /// stable supermajority; see `resample_core`.  The default `False` is
 /// byte-identical to the winding-only field.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, voxel, offset=0.0, absdist=false, raystab_full=false, surface=None, vertex_mode=None))]
 pub fn resample_uniform<'py>(
