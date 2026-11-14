@@ -5,6 +5,7 @@
 Moved verbatim from sutura/repair.py; no logic change.
 """
 import hashlib
+import json
 import os
 import time
 from collections import OrderedDict
@@ -17,6 +18,9 @@ from sutura_engine.pipeline.p_weld import (
     reload_strict_holes_nm, weld_reload_equivalent,
 )
 from sutura_engine.pipeline.utils import _exact_si_face_count
+from sutura_engine.pipeline.tiers.engine import (
+    guard_params, tier_core, tier_engine,
+)
 from sutura_engine.policy import TIERS as _TIERS
 
 _FLAP_POLICY = _TIERS['flap']
@@ -119,6 +123,12 @@ def _flap_final_verdict(in_verts, in_tris, out_verts, out_tris,
 
 def _flap_si_rose(flap_rec):
     """Whether the Flap candidate raised the exact SI count (None = unknown)."""
+    core = tier_core()
+    if tier_engine('flap') == 'rust' and core is not None:
+        try:
+            return bool(core.tier_flap_si_rose(json.dumps(flap_rec or {})))
+        except Exception:  # noqa: BLE001 - a metric failure is not fatal
+            pass
     base = (flap_rec or {}).get('baseline_self_intersections')
     cand = (flap_rec or {}).get('candidate_self_intersections')
     if base is None or cand is None:
@@ -142,6 +152,19 @@ def _flap_final_needs_off(in_verts, in_tris, out_verts, out_tris,
     lower it (1038439: 383 -> 479 candidate -> 350 final).
     Returns ``(reason, metrics)`` with ``reason`` None when no re-run is needed.
     """
+    core = tier_core()
+    if tier_engine('flap') == 'rust' and core is not None:
+        try:
+            reason, metrics_json = core.tier_flap_final(
+                np.ascontiguousarray(in_verts, dtype=np.float64),
+                np.ascontiguousarray(in_tris, dtype=np.int64),
+                np.ascontiguousarray(out_verts, dtype=np.float64),
+                np.ascontiguousarray(out_tris, dtype=np.int64),
+                bool(measure_si), bool(si_flagged))
+            return reason, (json.loads(metrics_json)
+                            if metrics_json else None)
+        except Exception:  # noqa: BLE001 - the net never crashes a repair
+            pass
     holes, nm, parts_in, parts_out, metrics = _flap_final_verdict(
         in_verts, in_tris, out_verts, out_tris, measure_si=measure_si)
     if holes or nm:
@@ -162,6 +185,14 @@ def _flap_off_preferred(on_verdict, off_verdict):
     actually worse.  When either side's SI is unknown (above the exact
     classifier's face cap), SI is not used as a tie-breaker.
     """
+    core = tier_core()
+    if tier_engine('flap') == 'rust' and core is not None:
+        try:
+            return bool(core.tier_flap_off_preferred(
+                str(on_verdict[0]), json.dumps(on_verdict[1]),
+                json.dumps(off_verdict[1])))
+        except Exception:  # noqa: BLE001 - a comparison failure is not fatal
+            pass
     reason = on_verdict[0]
     on_m, off_m = on_verdict[1], off_verdict[1]
     on_damage = on_m['holes'] + on_m['non_manifold']
@@ -216,6 +247,13 @@ _FLAP_CACHE = OrderedDict()
 
 _FLAP_CACHE_MAX = 2
 
+# The Rust tier stores its full tier record; the Python cache stores the raw
+# Flap fill report.  Keeping them separate avoids treating a fill report as a
+# tier verdict on a cache hit.
+_FLAP_RUST_CACHE = OrderedDict()
+
+_FLAP_RUST_CACHE_MAX = 2
+
 
 def _flap_cache_key(base_v, base_t, work_budget=None):
     h = hashlib.sha256()
@@ -229,6 +267,92 @@ def _flap_cache_key(base_v, base_t, work_budget=None):
 
 def _flap_step(v, t, input_v=None, input_t=None, after=None, stats=None,
                _p=None):
+    """Flap pre-pass tier entry point (Python by default, Rust when opted in)."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    core = tier_core()
+    if tier_engine('flap') != 'rust' or core is None:
+        return _flap_step_python(v, t, input_v, input_t, after, stats, _p)
+    return _flap_step_rust(v, t, after, stats, core)
+
+
+def _flap_step_rust(v, t, after, stats, core):
+    """Rust-backed Flap pre-pass (same cache, decisions and report keys)."""
+    stats = stats if stats is not None else {}
+    intensity = stats.get('triage_intensity') or 'balanced'
+    budget = FLAP_WORK_BY_INTENSITY.get(intensity, FLAP_DEFAULT_WORK)
+    rec = {'ran': False, 'adopted': False, 'reason': None,
+           'baseline_holes': None, 'baseline_non_manifold': None,
+           'baseline_damage': None, 'candidate_holes': None,
+           'candidate_non_manifold': None, 'candidate_damage': None,
+           'loops_found': None, 'loops_filled': None, 'loops_skipped': None,
+           'loops_skipped_by_reason': None, 'patch_faces': None,
+           'new_vertices': None, 'time_s': None, 'cache_hit': False,
+           'work_units': None, 'work_budget': int(budget),
+           'max_orig_vertex_move_mm': None,
+           'input_faces': int(len(t)), 'input_vertices': int(len(v)),
+           'candidate_faces': None, 'candidate_vertices': None,
+           'loop_vertex_total': None, 'slack_units': None,
+           'baseline_self_intersections': None,
+           'candidate_self_intersections': None,
+           'si_flagged': False, 'si_checked': False, 'si_policy': None,
+           'guard_rejected': None, 'guard_reason': None}
+    stats['flap'] = rec
+
+    cache_key = _flap_cache_key(v, t, budget)
+    cached = _FLAP_RUST_CACHE.get(cache_key)
+    if cached is not None:
+        out_v, out_t, cached_rec, prev_time = cached
+        _FLAP_RUST_CACHE.move_to_end(cache_key)
+        rec.update(cached_rec)
+        rec['cache_hit'] = True
+        rec['time_s'] = prev_time
+        stats['flap'] = rec
+        if rec.get('adopted'):
+            return (np.asarray(out_v, dtype=np.float64),
+                    np.asarray(out_t, dtype=np.int64),
+                    topology.mesh_topology(
+                        np.asarray(out_v, dtype=np.float32),
+                        np.asarray(out_t, dtype=np.int32)))
+        return v, t, after
+
+    drill = json.dumps({
+        'work_budget': int(budget),
+        'intensity': intensity,
+        'input_faces': int(len(t)),
+        'guard': guard_params('flap'),
+    })
+    t0 = time.perf_counter()
+    payload = None
+    with method_health.tier_guard('flap', 'tier') as _g:
+        payload = core.tier_flap(
+            np.ascontiguousarray(v, dtype=np.float64),
+            np.ascontiguousarray(t, dtype=np.int64), drill)
+    if _g.error is not None or payload is None:
+        rec['reason'] = 'flap error: %s: %s' % (
+            type(_g.error).__name__, _g.error)
+        stats['flap'] = rec
+        return v, t, after
+    out_v, out_t, rec_json = payload
+    rec = json.loads(rec_json)
+    rec['time_s'] = round(time.perf_counter() - t0, 3)
+    rec['cache_hit'] = False
+    stats['flap'] = rec
+    _FLAP_RUST_CACHE[cache_key] = (np.asarray(out_v, dtype=np.float64),
+                                   np.asarray(out_t, dtype=np.int64),
+                                   dict(rec), rec['time_s'])
+    while len(_FLAP_RUST_CACHE) > _FLAP_RUST_CACHE_MAX:
+        _FLAP_RUST_CACHE.popitem(last=False)
+    if not rec.get('adopted'):
+        return v, t, after
+    return (np.asarray(out_v, dtype=np.float64),
+            np.asarray(out_t, dtype=np.int64),
+            topology.mesh_topology(np.asarray(out_v, dtype=np.float32),
+                                   np.asarray(out_t, dtype=np.int32)))
+
+
+def _flap_step_python(v, t, input_v=None, input_t=None, after=None, stats=None,
+                      _p=None):
     """Stage-1 hole fill via the Flap surface filler (on by default in the CLI).
 
     Runs ``sutura_engine.flap.flap_fill`` on the current arrays ``(v, t)`` (the
@@ -446,6 +570,10 @@ def drop_flap_debris(in_verts, in_tris, out_verts, out_tris):
     error. Returns ``(verts, tris, info)``; ``info['dropped']`` logs every removed
     component (faces, volume, thickness, diag, centroid).
     """
+    core = tier_core()
+    if tier_engine('flap') == 'rust' and core is not None:
+        return _drop_flap_debris_rust(in_verts, in_tris, out_verts, out_tris,
+                                      core)
     with method_health.tier_guard('flap_debris', 'cleanup') as _g:
         iv, _it = weld_reload_equivalent(in_verts, in_tris)
         wv, wt = weld_reload_equivalent(out_verts, out_tris)
@@ -508,3 +636,24 @@ def drop_flap_debris(in_verts, in_tris, out_verts, out_tris):
         return cv, ct, info
     return out_verts, out_tris, None
 
+
+
+def _drop_flap_debris_rust(in_verts, in_tris, out_verts, out_tris, core):
+    """Rust-backed debris cleanup (same thresholds and info keys)."""
+    with method_health.tier_guard('flap_debris', 'cleanup') as _g:
+        try:
+            cv, ct, info_json = core.tier_flap_debris(
+                np.ascontiguousarray(in_verts, dtype=np.float64),
+                np.ascontiguousarray(in_tris, dtype=np.int64),
+                np.ascontiguousarray(out_verts, dtype=np.float64),
+                np.ascontiguousarray(out_tris, dtype=np.int64),
+                json.dumps({
+                    'debris_volume_eps': float(FLAP_DEBRIS_VOLUME_EPS),
+                    'debris_volume_rel': float(FLAP_DEBRIS_VOLUME_REL),
+                    'debris_flatness': float(FLAP_DEBRIS_FLATNESS),
+                }))
+            return (np.asarray(cv, dtype=np.float64),
+                    np.asarray(ct, dtype=np.int64),
+                    json.loads(info_json) if info_json else None)
+        except Exception:  # noqa: BLE001 - cleanup never breaks a repair
+            return out_verts, out_tris, None
