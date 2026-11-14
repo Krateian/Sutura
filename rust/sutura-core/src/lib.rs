@@ -5,12 +5,16 @@
 //! them may depend on pyo3 or numpy.
 
 pub mod error;
+pub mod fmt;
 pub mod mesh;
 pub mod mesh_io;
 
 pub use error::{MeshError, MeshResult};
 pub use mesh::{Mesh, MeshBlock, SourceFormat};
-pub use mesh_io::{load_stl, read_stl, scan_stl_bad_coordinates, write_stl_binary};
+pub use mesh_io::{
+    load_stl, obj_has_material_refs, read_obj, read_stl, scan_stl_bad_coordinates, write_obj,
+    write_stl_binary,
+};
 
 #[cfg(test)]
 mod tests {
