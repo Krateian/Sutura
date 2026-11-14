@@ -67,10 +67,13 @@ jobs:
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
       - name: Build Rust CLI
+        if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
+        working-directory: rust
         run: cargo build --release -p sutura-cli
       - uses: actions/upload-artifact@v4
         with: { name: wheel-base, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
       - uses: actions/upload-artifact@v4
+        if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
         with: { name: sutura-cli-base, path: rust/target/release/sutura, retention-days: 3 }
   build-cand:
     needs: preflight
@@ -88,6 +91,8 @@ jobs:
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
       - name: Build Rust CLI
+        if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
+        working-directory: rust
         run: cargo build --release -p sutura-cli
       - name: Build bridge wheel (if the candidate has sutura-py)
         id: bridge
@@ -102,6 +107,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: wheel-cand, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
       - uses: actions/upload-artifact@v4
+        if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
         with: { name: sutura-cli-cand, path: rust/target/release/sutura, retention-days: 3 }
       - uses: actions/upload-artifact@v4
         if: steps.bridge.outputs.present == 'true'
@@ -198,6 +204,7 @@ jobs:
         if: inputs.candidate_ref != ''
         with: { name: sutura-cli-cand, path: cand-bin }
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         if: inputs.candidate_ref == ''
         with: { name: sutura-cli-base, path: cand-bin }
       - uses: actions/download-artifact@v4
@@ -219,8 +226,14 @@ jobs:
             cand-venv/bin/python -c "import sutura_core_py"
           fi
       - name: Mark Rust CLI executable
+        continue-on-error: true
         if: matrix.mode == 'io_parity'
-        run: chmod +x cand-bin/sutura
+        run: |
+          if [ -f cand-bin/sutura ]; then
+            chmod +x cand-bin/sutura
+          else
+            echo "no Rust CLI artifact; io_parity will use the Python path"
+          fi
       - name: Run shard
         run: |
           tools-venv/bin/python tools/scripts/gh_mesh_shard.py
