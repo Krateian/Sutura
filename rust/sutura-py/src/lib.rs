@@ -8,7 +8,7 @@ use std::path::Path;
 
 use numpy::ndarray::Array2;
 use numpy::{AllowTypeChange, PyArray2, PyArrayLike2};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyFileNotFoundError, PyOSError, PyPermissionError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
@@ -22,7 +22,23 @@ use sutura_core::{
     read_ply, read_stl, removed_small_parts as core_removed_small_parts, repair_confidence_json,
     rewrite_3mf_meshes, save_mesh as core_save_mesh, scan_bad_coordinates as core_scan,
     summary_args_json, summary_text_json, write_obj, write_ply, write_stl_binary, Mesh,
+    MeshError,
 };
+
+fn io_error(e: std::io::Error) -> PyErr {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => PyFileNotFoundError::new_err(e.to_string()),
+        std::io::ErrorKind::PermissionDenied => PyPermissionError::new_err(e.to_string()),
+        _ => PyOSError::new_err(e.to_string()),
+    }
+}
+
+fn mesh_error(e: MeshError) -> PyErr {
+    match e {
+        MeshError::Io(io) => io_error(io),
+        other => PyValueError::new_err(other.to_string()),
+    }
+}
 
 fn mesh_from_arrays<'py>(
     verts: PyArrayLike2<'py, f32, AllowTypeChange>,
@@ -83,7 +99,7 @@ fn load_mesh<'py>(
     py: Python<'py>,
     path: &str,
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>)> {
-    let mesh = core_load_mesh(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mesh = core_load_mesh(path).map_err(mesh_error)?;
     Ok(mesh_pair(py, &mesh))
 }
 
@@ -96,13 +112,13 @@ fn load_meshes<'py>(py: Python<'py>, path: &str) -> PyResult<Py<PyList>> {
         .unwrap_or(false)
     {
         let blocks =
-            parse_3mf_mesh_blocks(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+            parse_3mf_mesh_blocks(path).map_err(mesh_error)?;
         for b in blocks {
             let (v, t) = mesh_pair(py, &b.mesh);
             out.push((Some(b.model_name), v, t));
         }
     } else {
-        let mesh = core_load_mesh(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let mesh = core_load_mesh(path).map_err(mesh_error)?;
         let (v, t) = mesh_pair(py, &mesh);
         out.push((None, v, t));
     }
@@ -115,7 +131,7 @@ fn read_mesh<'py>(
     py: Python<'py>,
     path: &str,
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>)> {
-    let mesh = core_read_mesh(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mesh = core_read_mesh(path).map_err(mesh_error)?;
     Ok(mesh_pair(py, &mesh))
 }
 
@@ -124,7 +140,7 @@ fn read_stl_py<'py>(
     py: Python<'py>,
     path: &str,
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>)> {
-    let mesh = read_stl(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mesh = read_stl(path).map_err(mesh_error)?;
     Ok(mesh_pair(py, &mesh))
 }
 
@@ -133,7 +149,7 @@ fn load_stl_py<'py>(
     py: Python<'py>,
     path: &str,
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>)> {
-    let mesh = load_stl(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mesh = load_stl(path).map_err(mesh_error)?;
     Ok(mesh_pair(py, &mesh))
 }
 
@@ -142,7 +158,7 @@ fn read_obj_py<'py>(
     py: Python<'py>,
     path: &str,
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>)> {
-    let mesh = read_obj(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mesh = read_obj(path).map_err(mesh_error)?;
     Ok(mesh_pair(py, &mesh))
 }
 
@@ -151,7 +167,7 @@ fn read_ply_py<'py>(
     py: Python<'py>,
     path: &str,
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>)> {
-    let mesh = read_ply(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mesh = read_ply(path).map_err(mesh_error)?;
     Ok(mesh_pair(py, &mesh))
 }
 
@@ -163,7 +179,7 @@ fn save_mesh<'py>(
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
 ) -> PyResult<()> {
     let mesh = mesh_from_arrays(verts, tris)?;
-    core_save_mesh(path, &mesh).map_err(|e| PyValueError::new_err(e.to_string()))
+    core_save_mesh(path, &mesh).map_err(mesh_error)
 }
 
 #[pyfunction(name = "write_stl_binary")]
@@ -173,7 +189,7 @@ fn write_stl_binary_py<'py>(
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
 ) -> PyResult<()> {
     let mesh = mesh_from_arrays(verts, tris)?;
-    write_stl_binary(path, &mesh).map_err(|e| PyValueError::new_err(e.to_string()))
+    write_stl_binary(path, &mesh).map_err(mesh_error)
 }
 
 #[pyfunction(name = "write_obj")]
@@ -183,7 +199,7 @@ fn write_obj_py<'py>(
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
 ) -> PyResult<()> {
     let mesh = mesh_from_arrays(verts, tris)?;
-    write_obj(path, &mesh).map_err(|e| PyValueError::new_err(e.to_string()))
+    write_obj(path, &mesh).map_err(mesh_error)
 }
 
 #[pyfunction(name = "write_ply")]
@@ -193,12 +209,12 @@ fn write_ply_py<'py>(
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
 ) -> PyResult<()> {
     let mesh = mesh_from_arrays(verts, tris)?;
-    write_ply(path, &mesh).map_err(|e| PyValueError::new_err(e.to_string()))
+    write_ply(path, &mesh).map_err(mesh_error)
 }
 
 #[pyfunction]
 fn scan_bad_coordinates(path: &str) -> PyResult<Option<String>> {
-    core_scan(path).map_err(|e| PyValueError::new_err(e.to_string()))
+    core_scan(path).map_err(mesh_error)
 }
 
 #[pyfunction(name = "obj_has_material_refs")]
@@ -211,10 +227,10 @@ fn obj_has_material_refs_py(path: &str) -> bool {
 fn probe<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     let bytes_in = std::fs::metadata(path)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?
+        .map_err(io_error)?
         .len();
     let format = sutura_core::SourceFormat::from_extension(path)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        .map_err(mesh_error)?;
     out.set_item(
         "format",
         match format {
@@ -228,7 +244,7 @@ fn probe<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
     let meshes = PyList::empty(py);
     if format == sutura_core::SourceFormat::ThreeMf {
         let units = read_3mf_units(path);
-        for b in parse_3mf_mesh_blocks(path).map_err(|e| PyValueError::new_err(e.to_string()))? {
+        for b in parse_3mf_mesh_blocks(path).map_err(mesh_error)? {
             let d = PyDict::new(py);
             d.set_item("name", &b.model_name)?;
             d.set_item("index", b.index)?;
@@ -250,7 +266,7 @@ fn probe<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
             }
         }
     } else {
-        let mesh = core_load_mesh(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let mesh = core_load_mesh(path).map_err(mesh_error)?;
         let d = PyDict::new(py);
         d.set_item("name", Option::<String>::None)?;
         d.set_item("index", Option::<usize>::None)?;
@@ -270,7 +286,7 @@ fn probe<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("material_refs", obj_has_material_refs_py(path))?;
     out.set_item(
         "scan",
-        core_scan(path).map_err(|e| PyValueError::new_err(e.to_string()))?,
+        core_scan(path).map_err(mesh_error)?,
     )?;
     Ok(out)
 }
@@ -297,7 +313,7 @@ fn rewrite_3mf<'py>(
         &meshes,
         attr_source.as_deref().map(Path::new),
     )
-    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    .map_err(mesh_error)?;
     let list = PyList::empty(py);
     for st in stats {
         let d = PyDict::new(py);
@@ -315,7 +331,7 @@ fn rewrite_3mf<'py>(
 /// Parse every non-empty 3MF mesh block with its original spans.
 #[pyfunction(name = "parse_3mf_mesh_blocks")]
 fn parse_3mf_mesh_blocks_py<'py>(py: Python<'py>, path: &str) -> PyResult<Py<PyList>> {
-    let blocks = parse_3mf_mesh_blocks(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let blocks = parse_3mf_mesh_blocks(path).map_err(mesh_error)?;
     let out = PyList::empty(py);
     for b in blocks {
         let d = PyDict::new(py);
@@ -350,7 +366,7 @@ fn write_3mf_single_py<'py>(
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
 ) -> PyResult<()> {
     let mesh = mesh_from_arrays(verts, tris)?;
-    sutura_core::write_3mf_single(path, &mesh).map_err(|e| PyValueError::new_err(e.to_string()))
+    sutura_core::write_3mf_single(path, &mesh).map_err(mesh_error)
 }
 
 #[pyfunction(name = "check_units")]

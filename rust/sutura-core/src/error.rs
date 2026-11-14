@@ -41,7 +41,7 @@ impl fmt::Display for MeshError {
                 "triangle {triangle} references vertex {index} but the mesh has {vertices} vertices"
             ),
             MeshError::Malformed(msg) => write!(f, "malformed mesh: {msg}"),
-            MeshError::MalformedStl(msg) => write!(f, "malformed STL: {msg}"),
+            MeshError::MalformedStl(msg) => write!(f, "Malformed STL: {msg}"),
             MeshError::MalformedObj(msg) => write!(f, "malformed OBJ: {msg}"),
             MeshError::Malformed3mf(msg) => write!(f, "malformed 3MF: {msg}"),
             MeshError::MalformedPly(msg) => write!(f, "malformed PLY: {msg}"),
