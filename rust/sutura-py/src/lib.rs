@@ -14,7 +14,7 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 
 use sutura_core::{
     aggregate_print_reports_value, build_health_report_json, build_print_report_json,
-    build_record_json, p_weld_final, reload_strict_holes_nm,
+    build_record_json, p_weld_final, should_run_stage2, split_pinched_vertices, reload_strict_holes_nm,
     reload_topology, weld_reload_equivalent, check_units, classify_json, compute_fidelity_json, enforce_reload_verdict, compute_scores_json,
     detect_defects as core_detect_defects, estimate_confidence_json, human_line_json,
     load_mesh as core_load_mesh, load_stl, parse_3mf_mesh_blocks,
@@ -717,6 +717,29 @@ fn p_weld_enforce_verdict_py(
     Ok((changed, r.to_string()))
 }
 
+#[pyfunction(name = "stage2_should_run")]
+fn stage2_should_run_py(report_json: &str) -> PyResult<bool> {
+    let v: serde_json::Value = serde_json::from_str(report_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(should_run_stage2(&v))
+}
+
+#[pyfunction(name = "stage2_split_pinched")]
+fn stage2_split_pinched_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>, Option<String>)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let r = split_pinched_vertices(&v, &t);
+    let mut av = numpy::ndarray::Array2::<f32>::zeros((r.verts.len(), 3));
+    for (i, p) in r.verts.iter().enumerate() { av[[i,0]]=p[0]; av[[i,1]]=p[1]; av[[i,2]]=p[2]; }
+    let mut at = numpy::ndarray::Array2::<i32>::zeros((r.tris.len(), 3));
+    for (i, p) in r.tris.iter().enumerate() { at[[i,0]]=p[0]; at[[i,1]]=p[1]; at[[i,2]]=p[2]; }
+    Ok((PyArray2::from_owned_array(py, av), PyArray2::from_owned_array(py, at),
+        r.report.map(|x| x.to_string())))
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -757,6 +780,8 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(p_weld_reload_equivalent_py, m)?)?;
     m.add_function(wrap_pyfunction!(p_weld_final_py, m)?)?;
     m.add_function(wrap_pyfunction!(p_weld_enforce_verdict_py, m)?)?;
+    m.add_function(wrap_pyfunction!(stage2_should_run_py, m)?)?;
+    m.add_function(wrap_pyfunction!(stage2_split_pinched_py, m)?)?;
     m.add_function(wrap_pyfunction!(history_build_record_py, m)?)?;
     m.add_function(wrap_pyfunction!(history_summary_text_py, m)?)?;
     m.add_function(wrap_pyfunction!(health_build_report_py, m)?)?;

@@ -7,6 +7,8 @@ the arrays already in memory, gates Stage 2 behind the strict-watertight
 verdict, and splits pinched vertices on a closed Stage-1 result. Moved
 verbatim from sutura/repair.py; no logic change.
 """
+import json
+import os
 import time
 
 import numpy as np
@@ -14,6 +16,25 @@ import numpy as np
 import topology
 from sutura_engine.pipeline.mesh_io import read_obj, write_obj
 from sutura_engine.pipeline.utils import boundary_loop_stats
+
+
+_STAGE_CORE = None
+_STAGE_CORE_TRIED = False
+
+
+def _rust_core():
+    global _STAGE_CORE, _STAGE_CORE_TRIED
+    if os.environ.get('SUTURA_STAGE2_ENGINE', os.environ.get('SUTURA_STAGE_ENGINE', 'python')).strip().lower() != 'rust':
+        return None
+    if _STAGE_CORE_TRIED:
+        return _STAGE_CORE
+    _STAGE_CORE_TRIED = True
+    try:
+        import sutura_core_py as mod
+        _STAGE_CORE = mod
+    except Exception:
+        _STAGE_CORE = None
+    return _STAGE_CORE
 
 
 def run_stage2_arrays(verts, tris):
@@ -51,6 +72,16 @@ def _split_pinched_vertices(verts, tris, topo):
     did not apply, else a dict with ``before``/``after`` (pinched vertices),
     ``passes`` and ``adopted``.
     """
+    _core = _rust_core()
+    if _core is not None:
+        _v, _t, _rep = _core.stage2_split_pinched(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int64))
+        if _rep is None:
+            return (np.asarray(verts, dtype=np.float64),
+                    np.asarray(tris, dtype=np.int64), topo, False)
+        _topo = topology.mesh_topology(_v, _t)
+        return _v, _t, _topo, json.loads(_rep)
     pinched = topo.get('non_two_manifold_vertices', 0)
     v = np.asarray(verts, dtype=np.float64)
     t = np.asarray(tris, dtype=np.int64)
@@ -87,6 +118,10 @@ def maybe_run_stage2(report, verts, tris, tmpdir):
     input arrays unchanged otherwise.
     """
     del tmpdir  # arrays go straight to the Rust core; kept for callers
+    _core = _rust_core()
+    if _core is not None and not _core.stage2_should_run(
+            json.dumps(report, default=lambda o: o.item() if hasattr(o, 'item') else str(o))):
+        return verts, tris
     if (report.get('stage1', {}).get('two_manifold')
             and report.get('stage1', {}).get('holes_remaining', 0) == 0):
         _t_s2 = time.perf_counter()
