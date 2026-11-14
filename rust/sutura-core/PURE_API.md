@@ -58,3 +58,10 @@ Consequences:
   candidate builders remain in the Python method modules (the approved
   `pipeline/tiers/*` scope).  `local_remesh` remains Python and only its
   wall-clock gate was replaced with a deterministic work budget.
+
+## Open work
+
+- **f64 OBJ writer.** `mesh_io.write_obj` keeps float64 input on the Python
+  `%.9g` writer (R1). When the Python runtime is removed, the Rust writer needs
+  an f64 path that emits the same `%.9g` text; the current Rust writer is
+  float32-only.
