@@ -19,6 +19,8 @@ pub enum MeshError {
     MalformedStl(String),
     /// An OBJ file could not be decoded.
     MalformedObj(String),
+    /// A 3MF container could not be decoded.
+    Malformed3mf(String),
 }
 
 impl fmt::Display for MeshError {
@@ -39,6 +41,7 @@ impl fmt::Display for MeshError {
             MeshError::Malformed(msg) => write!(f, "malformed mesh: {msg}"),
             MeshError::MalformedStl(msg) => write!(f, "malformed STL: {msg}"),
             MeshError::MalformedObj(msg) => write!(f, "malformed OBJ: {msg}"),
+            MeshError::Malformed3mf(msg) => write!(f, "malformed 3MF: {msg}"),
         }
     }
 }

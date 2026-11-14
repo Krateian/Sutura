@@ -57,11 +57,18 @@ impl Mesh {
     }
 }
 
-/// One named mesh object from a multi-object container (3MF).
+/// One `<mesh>` block from a multi-object container (3MF).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeshBlock {
-    pub name: Option<String>,
+    pub model_name: String,
+    pub index: usize,
+    /// Byte span of the whole `<mesh>...</mesh>` block in the model XML.
+    pub span: (usize, usize),
+    pub open_tag: String,
+    pub close_tag: String,
+    pub prefix: String,
     pub mesh: Mesh,
+    pub triangle_attrs: Vec<Option<String>>,
 }
 
 /// Mesh container formats supported by the core.

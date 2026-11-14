@@ -13,3 +13,4 @@ path = "src/lib.rs"
 
 [dependencies]
 sutura-geom = { path = "../sutura-geom", default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }
