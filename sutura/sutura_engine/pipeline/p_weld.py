@@ -15,6 +15,7 @@ import numpy as np
 
 import topology
 from defects import detect as detect_defects
+from sutura_engine.rust_bridge import unavailable
 
 
 _PWELD_CORE = None
@@ -26,13 +27,16 @@ def _rust_core():
     if os.environ.get('SUTURA_PWELD_ENGINE', os.environ.get('SUTURA_STAGE_ENGINE', 'python')).strip().lower() != 'rust':
         return None
     if _PWELD_CORE_TRIED:
+        if _PWELD_CORE is None:
+            return unavailable('sutura_core_py is unavailable')
         return _PWELD_CORE
     _PWELD_CORE_TRIED = True
     try:
         import sutura_core_py as mod
         _PWELD_CORE = mod
-    except Exception:
+    except Exception as exc:
         _PWELD_CORE = None
+        return unavailable('sutura_core_py is unavailable: %s' % exc, exc)
     return _PWELD_CORE
 
 

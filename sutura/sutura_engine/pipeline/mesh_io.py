@@ -20,6 +20,7 @@ from collections import defaultdict, namedtuple
 import numpy as np
 
 from sutura_engine.pipeline.presets import SUTURA_DIR
+from sutura_engine.rust_bridge import require_rust
 
 
 # Transitional double path: the Rust bridge implements the same I/O contract.
@@ -31,19 +32,20 @@ _RUST_IO_MOD = None
 def _rust_io():
     """Return the optional sutura_core_py bridge, or None."""
     global _RUST_IO_STATE, _RUST_IO_MOD
-    strict = os.environ.get('SUTURA_IO_REQUIRE_RUST', '').strip().lower() in (
-        '1', 'true', 'yes')
+    strict = (require_rust()
+              or os.environ.get('SUTURA_IO_REQUIRE_RUST', '').strip().lower()
+              in ('1', 'true', 'yes'))
     requested = os.environ.get('SUTURA_IO_ENGINE', 'rust').strip().lower()
     if requested != 'rust':
         if strict:
             raise RuntimeError(
-                'SUTURA_IO_REQUIRE_RUST=1 requires SUTURA_IO_ENGINE=rust '
+                'SUTURA_REQUIRE_RUST=1 requires SUTURA_IO_ENGINE=rust '
                 '(got %r)' % requested)
         return None
     if _RUST_IO_STATE == 1:
         if strict:
             raise RuntimeError('sutura_core_py is unavailable while '
-                               'SUTURA_IO_REQUIRE_RUST=1')
+                               'SUTURA_REQUIRE_RUST=1')
         return None
     if _RUST_IO_STATE == 2:
         return _RUST_IO_MOD
@@ -52,7 +54,7 @@ def _rust_io():
     except Exception as exc:  # pragma: no cover - environment dependent
         if strict:
             raise RuntimeError(
-                'SUTURA_IO_REQUIRE_RUST=1 but sutura_core_py is unavailable: %s'
+                'SUTURA_REQUIRE_RUST=1 but sutura_core_py is unavailable: %s'
                 % exc) from exc
         # Default-rust installs without the bridge wheel fall back quietly;
         # an explicit request is worth a one-line warning.

@@ -12,6 +12,7 @@ import numpy as np
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.tiers.dressing import _dressing_suggestion_text
 import classification
+from sutura_engine.rust_bridge import unavailable
 
 
 _REPORT_CORE = None
@@ -23,13 +24,16 @@ def _rust_core():
     if os.environ.get('SUTURA_REPORT_ENGINE', 'rust').strip().lower() != 'rust':
         return None
     if _REPORT_CORE_TRIED:
+        if _REPORT_CORE is None:
+            return unavailable('sutura_core_py is unavailable')
         return _REPORT_CORE
     _REPORT_CORE_TRIED = True
     try:
         import sutura_core_py as mod
         _REPORT_CORE = mod
-    except Exception:
+    except Exception as exc:
         _REPORT_CORE = None
+        return unavailable('sutura_core_py is unavailable: %s' % exc, exc)
     return _REPORT_CORE
 
 
