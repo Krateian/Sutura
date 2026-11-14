@@ -25,6 +25,13 @@ const DEFAULT_BUDGET: f64 = 5.0;
 const SHAPE_BUDGET_MM: f64 = 0.1;
 const MOVE_EPS_MM: f64 = 1e-9;
 
+fn py_round(x: f64, nd: usize) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    format!("{:.*}", nd, x).parse::<f64>().unwrap_or(x)
+}
+
 fn as_f32(v: &[[f64; 3]]) -> Vec<[f32; 3]> {
     v.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect()
 }
@@ -185,17 +192,22 @@ impl Guard {
             self.buried = Some(buried_face_mask(&self.ref_v, &t0u, 0.1).mask);
         }
         if let Some(d0) = distances(v0, t0, &self.cent) {
-            let m = if self.mode == "local" {
+            let full = visible_from_distance(&d0, self.buried.as_deref());
+            let local = if self.mode == "local" || self.mode == "parity" {
                 local_buried(&self.ref_v, &self.ref_t, &d0, self.ctx.as_ref())
                     .and_then(|b| visible_from_distance(&d0, Some(&b)))
             } else {
-                visible_from_distance(&d0, self.buried.as_deref())
+                None
             };
+            let m = if self.mode == "local" { local } else { full };
+            if self.mode == "parity" {
+                self.record_parity("initial", full, local, 0);
+            }
             if let Some((vis, _all)) = m {
                 self.initial_vis = Some(vis);
                 self.last_vis = Some(vis);
                 if let Value::Object(ref mut sg) = self.report {
-                    sg.insert("initial_vis_mm".into(), json!((vis * 10000.0).round() / 10000.0));
+                    sg.insert("initial_vis_mm".into(), json!(py_round(vis, 4)));
                 }
             }
         }
@@ -205,7 +217,13 @@ impl Guard {
         }
     }
 
-    fn record_parity(&mut self, full: Option<(f64, f64)>, local: Option<(f64, f64)>, moved: usize) {
+    fn record_parity(
+        &mut self,
+        stage: &str,
+        full: Option<(f64, f64)>,
+        local: Option<(f64, f64)>,
+        moved: usize,
+    ) {
         if let Value::Object(ref mut sg) = self.report {
             let checks = sg.get("parity_checks").and_then(Value::as_i64).unwrap_or(0) + 1;
             sg.insert("parity_checks".into(), json!(checks));
@@ -213,8 +231,8 @@ impl Guard {
             sg.insert("parity_moved_max".into(), json!(mm.max(moved as i64)));
             let same = match (full, local) {
                 (Some(f), Some(l)) => {
-                    (f.0 * 10000.0).round() == (l.0 * 10000.0).round()
-                        && (f.1 * 10000.0).round() == (l.1 * 10000.0).round()
+                    py_round(f.0, 4) == py_round(l.0, 4)
+                        && py_round(f.1, 4) == py_round(l.1, 4)
                 }
                 (None, None) => true,
                 _ => false,
@@ -223,7 +241,11 @@ impl Guard {
                 sg.insert("parity_ok".into(), json!(false));
                 if let Some(arr) = sg.get_mut("parity_diffs").and_then(Value::as_array_mut) {
                     if arr.len() < 20 {
-                        arr.push(json!({"stage": "candidate"}));
+                        arr.push(json!({
+                            "stage": stage,
+                            "full": full.map(|x| [py_round(x.0, 9), py_round(x.1, 9)]),
+                            "local": local.map(|x| [py_round(x.0, 9), py_round(x.1, 9)]),
+                        }));
                     }
                 }
             }
@@ -242,7 +264,18 @@ impl Guard {
         if self.mode == "parity" {
             let lb = local_buried(&self.ref_v, &self.ref_t, &d, self.ctx.as_ref());
             let local = lb.as_deref().and_then(|b| visible_from_distance(&d, Some(b)));
-            self.record_parity(Some(full), local, moved);
+            if local.is_none() {
+                if let Value::Object(ref mut sg) = self.report {
+                    sg.insert("parity_ok".into(), json!(false));
+                    if let Some(arr) = sg.get_mut("parity_diffs").and_then(Value::as_array_mut) {
+                        if arr.len() < 20 {
+                            arr.push(json!({"stage": "candidate", "local_unavailable": true}));
+                        }
+                    }
+                }
+            } else {
+                self.record_parity("candidate", Some(full), local, moved);
+            }
             return Some((full.0, full.1, moved, true));
         }
         Some((full.0, full.1, 0, false))
@@ -410,13 +443,32 @@ pub fn run(
                 entry.insert("faces_after".into(), json!(after.faces));
                 entry.insert("dilation_rings".into(), json!(rings));
                 if let Some(pv) = post_vis {
-                    if let Some(arr) = report.get_mut("history").and_then(Value::as_array_mut) {
-                        entry.insert("pre_vis_mm".into(), guard.as_ref().and_then(|g| g.last_vis).map(|x| json!((x * 10000.0).round() / 10000.0)).unwrap_or(Value::Null));
-                        entry.insert("post_vis_mm".into(), json!((pv * 10000.0).round() / 10000.0));
-                        entry.insert("post_all_mm".into(), post_all.map(|x| json!((x * 10000.0).round() / 10000.0)).unwrap_or(Value::Null));
-                        entry.insert("new_face_mm".into(), new_face_mm.map(|x| json!((x * 10000.0).round() / 10000.0)).unwrap_or(Value::Null));
-                        arr.push(Value::Object(entry));
-                    }
+                    entry.insert(
+                        "pre_vis_mm".into(),
+                        guard
+                            .as_ref()
+                            .and_then(|g| g.last_vis)
+                            .map(|x| json!(py_round(x, 4)))
+                            .unwrap_or(Value::Null),
+                    );
+                    entry.insert("post_vis_mm".into(), json!(py_round(pv, 4)));
+                    entry.insert(
+                        "post_all_mm".into(),
+                        post_all
+                            .map(|x| json!(py_round(x, 4)))
+                            .unwrap_or(Value::Null),
+                    );
+                    entry.insert(
+                        "new_face_mm".into(),
+                        new_face_mm
+                            .map(|x| json!(py_round(x, 4)))
+                            .unwrap_or(Value::Null),
+                    );
+                }
+                if let Some(arr) = report.get_mut("history").and_then(Value::as_array_mut) {
+                    arr.push(Value::Object(entry));
+                }
+                if let Some(pv) = post_vis {
                     if let Some(g) = guard.as_mut() {
                         g.last_vis = Some(pv);
                     }
@@ -434,13 +486,31 @@ pub fn run(
             if !guard_ok {
                 v = saved_v.clone();
                 t = saved_t.clone();
+                let pre_vis = guard.as_ref().and_then(|g| g.last_vis);
                 if let Some(g) = guard.as_mut() {
                     if let Value::Object(ref mut sg) = g.report {
                         let rr = sg.get("rounds_rejected").and_then(Value::as_i64).unwrap_or(0) + 1;
                         sg.insert("rounds_rejected".into(), json!(rr));
                         sg.insert("rejected_round".into(), json!(round_idx + 1));
+                        sg.insert("pre_vis_mm".into(), pre_vis.map(|x| json!(py_round(x, 4))).unwrap_or(Value::Null));
+                        sg.insert("post_vis_mm".into(), post_vis.map(|x| json!(py_round(x, 4))).unwrap_or(Value::Null));
+                        sg.insert("post_all_mm".into(), post_all.map(|x| json!(py_round(x, 4))).unwrap_or(Value::Null));
+                        sg.insert("new_face_mm".into(), new_face_mm.map(|x| json!(py_round(x, 4))).unwrap_or(Value::Null));
                         sg.insert("reason".into(), json!("shape_guard"));
                     }
+                }
+                if let Some(arr) = report.get_mut("history").and_then(Value::as_array_mut) {
+                    arr.push(json!({
+                        "round": round_idx + 1,
+                        "si_before": current_si,
+                        "si_after": si_after,
+                        "faces_after": after.faces,
+                        "dilation_rings": rings,
+                        "reason": "shape_guard",
+                        "pre_vis_mm": pre_vis.map(|x| json!(py_round(x, 4))).unwrap_or(Value::Null),
+                        "post_vis_mm": post_vis.map(|x| json!(py_round(x, 4))).unwrap_or(Value::Null),
+                        "new_face_mm": new_face_mm.map(|x| json!(py_round(x, 4))).unwrap_or(Value::Null),
+                    }));
                 }
                 report.insert("reason".into(), json!("shape_guard"));
                 break;
@@ -465,10 +535,10 @@ pub fn run(
     report.insert("si_after".into(), json!(current_si));
     report.insert("removed_si".into(), json!(initial_si - current_si));
     report.insert("applied".into(), json!(accepted_any));
-    report.insert("seconds".into(), json!((t0.elapsed().as_secs_f64() * 1000.0).round() / 1000.0));
+    report.insert("seconds".into(), json!(py_round(t0.elapsed().as_secs_f64(), 3)));
     if let Some(g) = guard.as_ref() {
         let mut sg = g.report.as_object().cloned().unwrap_or_default();
-        sg.insert("final_vis_mm".into(), g.last_vis.map(|x| json!((x * 10000.0).round() / 10000.0)).unwrap_or(Value::Null));
+        sg.insert("final_vis_mm".into(), g.last_vis.map(|x| json!(py_round(x, 4))).unwrap_or(Value::Null));
         sg.insert("si_remaining_after".into(), json!(current_si));
         if !g.built && sg.get("reason").and_then(Value::as_str).is_none() {
             sg.insert("build_skipped".into(), json!("no_candidate"));
