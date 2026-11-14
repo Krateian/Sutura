@@ -16,6 +16,13 @@ pub const R_MAX_DIAG_FRACTION: f64 = 0.02;
 pub const HEALTHY_DIST_FACTOR: f64 = 1.5;
 pub const HEALTHY_NORMAL_DOT: f64 = 0.5;
 
+/// NumPy `einsum("ij,ij->i", a, b)` dot order (verified against numpy 1.x on
+/// this platform): `fma(a2,b2, a0*b0) + a1*b1`.
+#[inline]
+pub fn np_dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[2].mul_add(b[2], a[0] * b[0]) + a[1] * b[1]
+}
+
 pub fn bbox(v: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
     if v.is_empty() {
         return ([0.0; 3], [0.0; 3]);
@@ -63,10 +70,11 @@ pub fn face_normals(v: &[[f64; 3]], t: &[[i64; 3]]) -> Vec<[f64; 3]> {
 pub fn vertex_normals(v: &[[f64; 3]], t: &[[i64; 3]]) -> Vec<[f64; 3]> {
     let fnorm = face_normals(v, t);
     let mut n = vec![[0.0f64; 3]; v.len()];
-    for (fi, r) in t.iter().enumerate() {
-        let f = fnorm[fi];
-        for &vi in r {
-            let i = vi as usize;
+    // Match numpy's `np.add.at(n, t[:, k], fn)` k-major accumulation order.
+    for k in 0..3 {
+        for (fi, r) in t.iter().enumerate() {
+            let f = fnorm[fi];
+            let i = r[k] as usize;
             n[i][0] += f[0];
             n[i][1] += f[1];
             n[i][2] += f[2];
@@ -317,11 +325,355 @@ pub fn project_envelope(
         if fid == usize::MAX {
             continue;
         }
-        let ndot = vn[i][0] * fnorm[fid][0] + vn[i][1] * fnorm[fid][1] + vn[i][2] * fnorm[fid][2];
+        let ndot = np_dot3(vn[i], fnorm[fid]);
         if d < HEALTHY_DIST_FACTOR * r && ndot > HEALTHY_NORMAL_DOT {
             pv[i] = q;
             healthy[i] = true;
         }
     }
     (pv, healthy)
+}
+
+const REMESH_MAX_PASSES: usize = 6;
+
+fn unique_edges_with_inv(t: &[[i64; 3]]) -> (Vec<(i64, i64)>, Vec<usize>) {
+    let edges = unique_edges(t);
+    let map: HashMap<(i64, i64), usize> = edges
+        .iter()
+        .enumerate()
+        .map(|(i, &e)| (e, i))
+        .collect();
+    let mut inv = Vec::with_capacity(3 * t.len());
+    for r in t {
+        for (a, b) in [(r[0], r[1]), (r[1], r[2]), (r[2], r[0])] {
+            let k = if a <= b { (a, b) } else { (b, a) };
+            inv.push(map[&k]);
+        }
+    }
+    (edges, inv)
+}
+
+fn edge_len(v: &[[f64; 3]], e: (i64, i64)) -> f64 {
+    let a = v[e.0 as usize];
+    let b = v[e.1 as usize];
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
+
+pub fn split_long_edges(v: &[[f64; 3]], t: &[[i64; 3]], target: f64) -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
+    let thr = (4.0 / 3.0) * target;
+    let mut v = v.to_vec();
+    let mut t = t.to_vec();
+    for _ in 0..REMESH_MAX_PASSES {
+        let (edges, inv) = unique_edges_with_inv(&t);
+        let long: Vec<bool> = edges.iter().map(|&e| edge_len(&v, e) > thr).collect();
+        if !long.iter().any(|x| *x) {
+            break;
+        }
+        let long_ids: Vec<usize> = long
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| **x)
+            .map(|(i, _)| i)
+            .collect();
+        let mut mid_id = vec![-1i64; edges.len()];
+        let base = v.len();
+        for (k, &ei) in long_ids.iter().enumerate() {
+            let e = edges[ei];
+            let a = v[e.0 as usize];
+            let b = v[e.1 as usize];
+            v.push([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5]);
+            mid_id[ei] = (base + k) as i64;
+        }
+        let f = t.len();
+        let mut s0: Vec<[i64; 3]> = Vec::new();
+        let mut s1_01a: Vec<[i64; 3]> = Vec::new();
+        let mut s1_01b: Vec<[i64; 3]> = Vec::new();
+        let mut s1_12a: Vec<[i64; 3]> = Vec::new();
+        let mut s1_12b: Vec<[i64; 3]> = Vec::new();
+        let mut s1_20a: Vec<[i64; 3]> = Vec::new();
+        let mut s1_20b: Vec<[i64; 3]> = Vec::new();
+        let mut s2_20a: Vec<[i64; 3]> = Vec::new();
+        let mut s2_20b: Vec<[i64; 3]> = Vec::new();
+        let mut s2_20c: Vec<[i64; 3]> = Vec::new();
+        let mut s2_01a: Vec<[i64; 3]> = Vec::new();
+        let mut s2_01b: Vec<[i64; 3]> = Vec::new();
+        let mut s2_01c: Vec<[i64; 3]> = Vec::new();
+        let mut s2_12a: Vec<[i64; 3]> = Vec::new();
+        let mut s2_12b: Vec<[i64; 3]> = Vec::new();
+        let mut s2_12c: Vec<[i64; 3]> = Vec::new();
+        let mut s3a: Vec<[i64; 3]> = Vec::new();
+        let mut s3b: Vec<[i64; 3]> = Vec::new();
+        let mut s3c: Vec<[i64; 3]> = Vec::new();
+        let mut s3d: Vec<[i64; 3]> = Vec::new();
+        for fi in 0..f {
+            let m01 = mid_id[inv[3 * fi]];
+            let m12 = mid_id[inv[3 * fi + 1]];
+            let m20 = mid_id[inv[3 * fi + 2]];
+            let [a, b, c] = t[fi];
+            let s = (m01 >= 0) as i32 + (m12 >= 0) as i32 + (m20 >= 0) as i32;
+            match s {
+                0 => s0.push([a, b, c]),
+                1 => {
+                    if m01 >= 0 {
+                        s1_01a.push([a, m01, c]);
+                        s1_01b.push([m01, b, c]);
+                    }
+                    if m12 >= 0 {
+                        s1_12a.push([b, m12, a]);
+                        s1_12b.push([m12, c, a]);
+                    }
+                    if m20 >= 0 {
+                        s1_20a.push([c, m20, b]);
+                        s1_20b.push([m20, a, b]);
+                    }
+                }
+                2 => {
+                    if m20 < 0 {
+                        s2_20a.push([a, m01, c]);
+                        s2_20b.push([m01, b, m12]);
+                        s2_20c.push([m12, c, a]);
+                    } else if m01 < 0 {
+                        s2_01a.push([b, m12, a]);
+                        s2_01b.push([m12, c, m20]);
+                        s2_01c.push([m20, a, b]);
+                    } else {
+                        s2_12a.push([c, m20, b]);
+                        s2_12b.push([m20, a, m01]);
+                        s2_12c.push([m01, b, c]);
+                    }
+                }
+                _ => {
+                    s3a.push([a, m01, m20]);
+                    s3b.push([m01, b, m12]);
+                    s3c.push([m20, m12, c]);
+                    s3d.push([m01, m12, m20]);
+                }
+            }
+        }
+        let mut pieces: Vec<[i64; 3]> = Vec::new();
+        pieces.extend(s0);
+        pieces.extend(s1_01a);
+        pieces.extend(s1_01b);
+        pieces.extend(s1_12a);
+        pieces.extend(s1_12b);
+        pieces.extend(s1_20a);
+        pieces.extend(s1_20b);
+        pieces.extend(s2_20a);
+        pieces.extend(s2_20b);
+        pieces.extend(s2_20c);
+        pieces.extend(s2_01a);
+        pieces.extend(s2_01b);
+        pieces.extend(s2_01c);
+        pieces.extend(s2_12a);
+        pieces.extend(s2_12b);
+        pieces.extend(s2_12c);
+        pieces.extend(s3a);
+        pieces.extend(s3b);
+        pieces.extend(s3c);
+        pieces.extend(s3d);
+        t = pieces;
+    }
+    (v, t)
+}
+
+pub fn collapse_short_edges(v: &[[f64; 3]], t: &[[i64; 3]], target: f64) -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
+    let thr = (4.0 / 5.0) * target;
+    let mut v = v.to_vec();
+    let mut t = t.to_vec();
+    for _ in 0..REMESH_MAX_PASSES {
+        let (edges, _inv) = unique_edges_with_inv(&t);
+        if edges.is_empty() {
+            break;
+        }
+        let cand: Vec<(i64, i64)> = edges
+            .iter()
+            .copied()
+            .filter(|&e| edge_len(&v, e) < thr)
+            .collect();
+        if cand.is_empty() {
+            break;
+        }
+        let nv = v.len();
+        let mut adj: Vec<HashSet<usize>> = vec![HashSet::new(); nv];
+        for &(a, b) in &edges {
+            adj[a as usize].insert(b as usize);
+            adj[b as usize].insert(a as usize);
+        }
+        let mut parent: Vec<usize> = (0..nv).collect();
+        fn find(p: &mut [usize], mut x: usize) -> usize {
+            let mut root = x;
+            while p[root] != root {
+                root = p[root];
+            }
+            while p[x] != root {
+                let next = p[x];
+                p[x] = root;
+                x = next;
+            }
+            root
+        }
+        let mut merged = vec![false; nv];
+        let mut any_merge = false;
+        for (a, b) in cand {
+            let (a, b) = (a as usize, b as usize);
+            if merged[a] || merged[b] {
+                continue;
+            }
+            let common = adj[a].intersection(&adj[b]).count();
+            if common != 2 {
+                continue;
+            }
+            merged[a] = true;
+            merged[b] = true;
+            let ra = find(&mut parent, a);
+            let rb = find(&mut parent, b);
+            if ra != rb {
+                parent[rb] = ra;
+            }
+            any_merge = true;
+        }
+        if !any_merge {
+            break;
+        }
+        let root: Vec<usize> = (0..nv).map(|i| find(&mut parent, i)).collect();
+        let mut root_ids: HashMap<usize, usize> = HashMap::new();
+        let mut acc: Vec<[f64; 3]> = Vec::new();
+        let mut cnt: Vec<usize> = Vec::new();
+        for i in 0..nv {
+            let r = root[i];
+            let id = *root_ids.entry(r).or_insert_with(|| {
+                acc.push([0.0; 3]);
+                cnt.push(0);
+                acc.len() - 1
+            });
+            acc[id][0] += v[i][0];
+            acc[id][1] += v[i][1];
+            acc[id][2] += v[i][2];
+            cnt[id] += 1;
+        }
+        let new_v: Vec<[f64; 3]> = acc
+            .iter()
+            .zip(cnt.iter())
+            .map(|(a, c)| [a[0] / *c as f64, a[1] / *c as f64, a[2] / *c as f64])
+            .collect();
+        let remap: Vec<i64> = root.iter().map(|r| root_ids[r] as i64).collect();
+        let mut nt: Vec<[i64; 3]> = t
+            .iter()
+            .map(|r| [remap[r[0] as usize], remap[r[1] as usize], remap[r[2] as usize]])
+            .filter(|r| r[0] != r[1] && r[1] != r[2] && r[0] != r[2])
+            .collect();
+        if nt.is_empty() {
+            break;
+        }
+        let mut seen: HashSet<[i64; 3]> = HashSet::new();
+        nt.retain(|r| {
+            let mut k = *r;
+            k.sort_unstable();
+            seen.insert(k)
+        });
+        let mut used: Vec<i64> = nt.iter().flat_map(|r| r.iter().copied()).collect();
+        used.sort_unstable();
+        used.dedup();
+        let mut new_id: HashMap<i64, i64> = HashMap::new();
+        for (i, &u) in used.iter().enumerate() {
+            new_id.insert(u, i as i64);
+        }
+        v = used.iter().map(|&u| new_v[u as usize]).collect();
+        t = nt
+            .iter()
+            .map(|r| [new_id[&r[0]], new_id[&r[1]], new_id[&r[2]]])
+            .collect();
+    }
+    (v, t)
+}
+
+pub fn smooth_tangential(v: &[[f64; 3]], t: &[[i64; 3]], iterations: usize) -> Vec<[f64; 3]> {
+    if v.is_empty() || t.is_empty() {
+        return v.to_vec();
+    }
+    // Python builds a = concat(t[:,0], t[:,1], t[:,2]) and
+    // b = concat(t[:,1], t[:,2], t[:,0]); src = [a, b], dst = [b, a].
+    // The accumulation order is part of the float result.
+    let mut a = Vec::with_capacity(3 * t.len());
+    let mut b = Vec::with_capacity(3 * t.len());
+    for r in t {
+        a.push(r[0] as usize);
+        a.push(r[1] as usize);
+        a.push(r[2] as usize);
+    }
+    for r in t {
+        b.push(r[1] as usize);
+        b.push(r[2] as usize);
+        b.push(r[0] as usize);
+    }
+    let mut src = Vec::with_capacity(6 * t.len());
+    let mut dst = Vec::with_capacity(6 * t.len());
+    src.extend_from_slice(&a);
+    src.extend_from_slice(&b);
+    dst.extend_from_slice(&b);
+    dst.extend_from_slice(&a);
+    let mut deg = vec![0.0f64; v.len()];
+    for &s in &src {
+        deg[s] += 1.0;
+    }
+    let mut boundary = vec![false; v.len()];
+    let mut counts: HashMap<(i64, i64), usize> = HashMap::new();
+    for r in t {
+        for (a, b) in [(r[0], r[1]), (r[1], r[2]), (r[2], r[0])] {
+            let k = if a <= b { (a, b) } else { (b, a) };
+            *counts.entry(k).or_insert(0) += 1;
+        }
+    }
+    for ((a, b), c) in counts {
+        if c == 1 {
+            boundary[a as usize] = true;
+            boundary[b as usize] = true;
+        }
+    }
+    let free: Vec<bool> = (0..v.len()).map(|i| !boundary[i] && deg[i] > 0.0).collect();
+    if !free.iter().any(|x| *x) {
+        return v.to_vec();
+    }
+    let mut out = v.to_vec();
+    for _ in 0..iterations {
+        let vn = vertex_normals(&out, t);
+        let mut acc = vec![[0.0f64; 3]; out.len()];
+        for k in 0..src.len() {
+            let s = src[k];
+            let d = dst[k];
+            acc[s][0] += out[d][0];
+            acc[s][1] += out[d][1];
+            acc[s][2] += out[d][2];
+        }
+        for i in 0..out.len() {
+            if !free[i] {
+                continue;
+            }
+            let cen = [
+                acc[i][0] / deg[i],
+                acc[i][1] / deg[i],
+                acc[i][2] / deg[i],
+            ];
+            let mut disp = [cen[0] - out[i][0], cen[1] - out[i][1], cen[2] - out[i][2]];
+            let dot = np_dot3(disp, vn[i]);
+            disp[0] -= dot * vn[i][0];
+            disp[1] -= dot * vn[i][1];
+            disp[2] -= dot * vn[i][2];
+            out[i][0] += 0.5 * disp[0];
+            out[i][1] += 0.5 * disp[1];
+            out[i][2] += 0.5 * disp[2];
+        }
+    }
+    out
+}
+
+pub fn isotropic_remesh(v: &[[f64; 3]], t: &[[i64; 3]], target: f64) -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
+    if target <= 0.0 || t.is_empty() {
+        return (v.to_vec(), t.to_vec());
+    }
+    let (v1, t1) = split_long_edges(v, t, target);
+    let (v2, t2) = collapse_short_edges(&v1, &t1, target);
+    let v3 = smooth_tangential(&v2, &t2, 2);
+    (v3, t2)
 }

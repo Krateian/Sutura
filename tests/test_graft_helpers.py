@@ -48,3 +48,42 @@ def test_graft_g0_helpers_match_python():
         assert got['median_edge'] == _median_edge_length(v, t), name
         assert got['ladder'] == ladder, (name, got['ladder'], ladder)
         assert got['info'] == info, (name, got['info'], info)
+
+
+def test_graft_g0b_remesh_matches_python():
+    try:
+        import sutura_core_py
+        from sutura_core_py import load_stl
+    except Exception as exc:  # noqa: BLE001
+        import pytest
+        pytest.skip('bridge unavailable: %s' % exc)
+
+    from sutura_engine.graft import (
+        _collapse_short_edges, _isotropic_remesh, _smooth_tangential,
+        _split_long_edges,
+    )
+    root = os.path.join(REPO, 'tests', 'real-world-samples')
+    for name in ('thingi10k_100173.stl', 'thingi10k_100045.stl'):
+        v, t = load_stl(os.path.join(root, name))
+        v = np.asarray(v, dtype=np.float64)
+        t = np.asarray(t, dtype=np.int64)
+        target = _median_edge_length(v, t) * 1.2
+        for step, fn in (
+            ('split', _split_long_edges),
+            ('collapse', _collapse_short_edges),
+            ('isotropic', _isotropic_remesh),
+        ):
+            pv, pt = fn(v, t, target)
+            rv, rt = sutura_core_py.graft_remesh_probe(v, t, target, step)
+            # smooth/isotropic: numpy's second-iteration accumulation leaves a
+            # <=7.1e-15 float-order difference (split/collapse/normals exact).
+            # The final A2 mesh gate stays byte-exact.
+            if step in ('smooth', 'isotropic'):
+                assert np.allclose(pv, rv, rtol=0.0, atol=1e-12), (
+                    name, step, 'verts')
+            else:
+                assert np.array_equal(pv, rv), (name, step, 'verts')
+            assert np.array_equal(pt, rt), (name, step, 'tris')
+        pv = _smooth_tangential(v, t, iterations=2)
+        rv, _rt = sutura_core_py.graft_remesh_probe(v, t, target, 'smooth')
+        assert np.allclose(pv, rv, rtol=0.0, atol=1e-12), (name, 'smooth')

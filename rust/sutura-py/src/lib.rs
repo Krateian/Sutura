@@ -804,6 +804,45 @@ fn stage1_apply_chain_py<'py>(
     ))
 }
 
+#[pyfunction(name = "graft_vn_probe")]
+fn graft_vn_probe_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let vn = sutura_core::graft::helpers::vertex_normals(&v, &t);
+    arrays_f64(py, &vn)
+}
+
+#[pyfunction(name = "graft_remesh_probe")]
+fn graft_remesh_probe_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    target: f64,
+    step: &str,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let (ov, ot) = match step {
+        "split" => sutura_core::graft::helpers::split_long_edges(&v, &t, target),
+        "collapse" => sutura_core::graft::helpers::collapse_short_edges(&v, &t, target),
+        "smooth" => (
+            sutura_core::graft::helpers::smooth_tangential(&v, &t, 2),
+            t.clone(),
+        ),
+        "smooth1" => (
+            sutura_core::graft::helpers::smooth_tangential(&v, &t, 1),
+            t.clone(),
+        ),
+        "isotropic" => sutura_core::graft::helpers::isotropic_remesh(&v, &t, target),
+        other => return Err(PyValueError::new_err(format!("unknown step: {}", other))),
+    };
+    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?))
+}
+
 #[pyfunction(name = "graft_helpers_probe")]
 fn graft_helpers_probe_py(
     verts: PyArrayLike2<'_, f64, AllowTypeChange>,
@@ -1181,6 +1220,8 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage2_split_pinched_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_apply_chain_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_extreme_passes_py, m)?)?;
+    m.add_function(wrap_pyfunction!(graft_vn_probe_py, m)?)?;
+    m.add_function(wrap_pyfunction!(graft_remesh_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(graft_helpers_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_si_excise_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_wall_decide_py, m)?)?;
