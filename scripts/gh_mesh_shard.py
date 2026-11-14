@@ -148,8 +148,22 @@ def main():
                 '--repo', os.path.abspath('cand'),
                 '--python', os.path.abspath('cand-venv/bin/python'),
                 '--out-dir', outdir]
+        if mode not in ('determinism', 'io_parity'):
+            cmd += ['--baseline-env', 'SUTURA_IO_ENGINE=python']
+            try:
+                probe = subprocess.run(
+                    [os.path.abspath('cand-venv/bin/python'), '-c',
+                     'import sutura_core_py'],
+                    capture_output=True, text=True)
+                bridge = probe.returncode == 0
+            except OSError:
+                bridge = False
+        else:
+            bridge = False
         if env_c:
             cmd += ['--opt-out-env', env_c]
+        if bridge:
+            cmd += ['--opt-out-env', 'SUTURA_IO_REQUIRE_RUST=1']
         if mode == 'determinism':
             # The baseline half is cached by input SHA + flags + repo head, so a
             # warmed cache would compare a run against itself.  A fresh cache

@@ -644,7 +644,8 @@ def main():
         help='main/baseline output cache (SHA + flags)')
     ap.add_argument('--jobs', type=int, default=1, help='parallel meshes (e.g. 4)')
     ap.add_argument('--opt-out-flag', default=None)
-    ap.add_argument('--opt-out-env', default=None)
+    ap.add_argument('--opt-out-env', action='append', default=[])
+    ap.add_argument('--baseline-env', action='append', default=[])
     ap.add_argument('--extra-arg', action='append', default=[])
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--timeout', type=int, default=900)
@@ -725,9 +726,14 @@ def main():
         cmd = [python_x, os.path.join(repo_x, 'sutura', 'repair.py'), in_path,
                '-o', out_stl, '--no-history'] + flags
         run_env = env.copy()
-        if side in ('optout', 'candidate') and args.opt_out_env:
-            k, v = args.opt_out_env.split('=', 1)
-            run_env[k] = v
+        if side in ('optout', 'candidate'):
+            for spec in args.opt_out_env:
+                k, v = spec.split('=', 1)
+                run_env[k] = v
+        elif side == 'baseline':
+            for spec in args.baseline_env:
+                k, v = spec.split('=', 1)
+                run_env[k] = v
         rc, sout, serr, el = run_cli(cmd, run_env, repo_x, args.timeout)
         if not os.path.exists(out_stl):
             print('  %s: no output (rc=%d) %s' % (side, rc, serr.strip()[:160]), flush=True)
