@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "notes": "CLI JSON contract for repair --json. Compare parsed JSON, not serialized bytes. Human output is a separate byte contract.",
+  "classes": {
+    "A": "structural: keys, types, nulls, order, strings, enums exact",
+    "B": "integer/score: exact",
+    "C": "pre-rounded float: exact after the listed decimals",
+    "D": "raw float: abs <= 1e-12 + 1e-9 * max(|a|,|b|)",
+    "ignore": "value not compared"
+  },
+  "tolerance": {
+    "abs": 1e-12,
+    "rel": 1e-09
+  },
+  "default_nested_float": "D",
+  "ignore_paths": [
+    "timings",
+    "timings.*",
+    "*.seconds",
+    "*.time_s",
+    "*.elapsed_ms",
+    "*.duration"
+  ],
+  "top_level": {
+    "input": "A",
+    "output": "A",
+    "stage1": "A",
+    "timings": "ignore",
+    "triage_intensity": "A",
+    "si_mode": "A",
+    "classifier_engine": "A",
+    "detected_type": "A",
+    "detected_confidence": "D",
+    "repair_mode": "A",
+    "tuning_applied": "A",
+    "tamponade": "A",
+    "flap": "A",
+    "experimental_autorefine": "A",
+    "experimental_indirect_autorefine": "A",
+    "experimental_join_components": "A",
+    "extreme_passes_applied": "A",
+    "experimental_ftetwild": "A",
+    "solid_engine": "A",
+    "deep_repair": "A",
+    "pinched_vertices_split": "A",
+    "method_errors": "A",
+    "defects": "A",
+    "stage2": "A",
+    "print_report": "A",
+    "si_escalation": "A",
+    "method_used": "A",
+    "methods_tried": "A",
+    "method_reached_watertight": "A",
+    "repair_fidelity": "B",
+    "repair_fidelity_factors": "A",
+    "repair_fidelity_note": "A",
+    "interior_walls_note": "A",
+    "repair_fidelity_metrics": "A",
+    "repair_verdict_code": "A",
+    "repair_verdict_areas": "B",
+    "repair_verdict_low_confidence": "A",
+    "repair_verdict_reasons": "A",
+    "repair_confidence": "B",
+    "repair_confidence_label": "A",
+    "repair_confidence_factors": "A",
+    "repair_health": "B",
+    "repair_health_factors": "A",
+    "repair_risk": "B",
+    "repair_risk_factors": "A",
+    "repair_status": "A",
+    "repair_status_code": "A",
+    "method_health": "A",
+    "category": "A",
+    "issues": "A",
+    "policy": "A",
+    "method_control": "A",
+    "unit_warning": "A",
+    "unit_hint": "A",
+    "p_weld": "A",
+    "suggestions": "A"
+  },
+  "nested": [
+    {
+      "path": "defects.holes[].diameter",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "stage1.removed_small_parts.parts[].size_mm",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "stage1.removed_small_parts.parts[].size_pct",
+      "class": "C",
+      "decimals": 3
+    },
+    {
+      "path": "stage1.removed_small_parts.parts[].distance_mm",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "stage1.possible_debris.parts[].volume_pct",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "stage1.possible_debris.parts[].size_pct",
+      "class": "C",
+      "decimals": 3
+    },
+    {
+      "path": "stage1.possible_debris.parts[].distance_mm",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "stage1.volume_change_percent",
+      "class": "C",
+      "decimals": 2
+    },
+    {
+      "path": "stage1.surface_area_change_percent",
+      "class": "C",
+      "decimals": 2
+    },
+    {
+      "path": "print_report.geometry.*_pct",
+      "class": "C",
+      "decimals": 2
+    },
+    {
+      "path": "print_report.advisories[].pct",
+      "class": "C",
+      "decimals": 2
+    },
+    {
+      "path": "print_report.advisories[].thin_ratio",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "print_report.advisories[].thin_area_frac",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "print_report.advisories[].min_norm",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "print_report.advisories[].median_norm",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "print_report.advisories[].threshold_norm",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "print_report.advisories[].min_mm",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "print_report.advisories[].median_mm",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "print_report.advisories[].threshold_mm",
+      "class": "C",
+      "decimals": 4
+    },
+    {
+      "path": "si_escalation.baseline.dev_pct",
+      "class": "C",
+      "decimals": 2
+    },
+    {
+      "path": "si_escalation.baseline.vol_pct",
+      "class": "C",
+      "decimals": 2
+    }
+  ]
+}
