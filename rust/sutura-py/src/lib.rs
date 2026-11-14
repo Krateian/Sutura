@@ -13,8 +13,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 use sutura_core::{
-    check_units, classify_json, detect_defects as core_detect_defects, estimate_confidence_json,
-    load_mesh as core_load_mesh, load_stl, parse_3mf_mesh_blocks,
+    check_units, classify_json, compute_scores_json, detect_defects as core_detect_defects,
+    estimate_confidence_json, load_mesh as core_load_mesh, load_stl, parse_3mf_mesh_blocks,
     possible_debris as core_possible_debris, read_3mf_units, read_mesh as core_read_mesh, read_obj,
     read_ply, read_stl, removed_small_parts as core_removed_small_parts, repair_confidence_json,
     rewrite_3mf_meshes, save_mesh as core_save_mesh, scan_bad_coordinates as core_scan,
@@ -540,6 +540,11 @@ fn summary_args_py<'py>(py: Python<'py>, data_json: &str) -> PyResult<Bound<'py,
     Ok(PyTuple::new(py, v)?)
 }
 
+#[pyfunction(name = "repair_scores")]
+fn repair_scores_py(report_json: &str, config_json: &str) -> PyResult<String> {
+    compute_scores_json(report_json, config_json).map_err(PyValueError::new_err)
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -573,6 +578,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(repair_confidence_py, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_confidence_py, m)?)?;
     m.add_function(wrap_pyfunction!(summary_args_py, m)?)?;
+    m.add_function(wrap_pyfunction!(repair_scores_py, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
