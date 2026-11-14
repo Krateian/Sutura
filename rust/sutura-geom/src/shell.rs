@@ -178,52 +178,7 @@ pub fn buried_face_mask(
     // 0 = buried, 1 = debris, 2 = degenerate, 3 = other (outer/cavity/ambiguous).
     let results: Vec<(u8, f64)> = (0..tris.len())
         .into_par_iter()
-        .map(|i| {
-            let t = tris[i];
-            let v0 = verts[t[0] as usize];
-            let v1 = verts[t[1] as usize];
-            let v2 = verts[t[2] as usize];
-
-            let normal = cross3(sub3(v1, v0), sub3(v2, v0));
-            let area2 = norm3(normal);
-            if area2 < 1e-14 {
-                return (2u8, 0.0);
-            }
-            let area = 0.5 * area2;
-            let unorm = scale3(normal, 1.0 / area2);
-            let c = scale3(add3(add3(v0, v1), v2), 1.0 / 3.0);
-
-            let w_front = bvh.winding_at(add3(c, scale3(unorm, eps)));
-            let w_back = bvh.winding_at(sub3(c, scale3(unorm, eps)));
-            let w_min = w_front.min(w_back);
-            let w_max = w_front.max(w_back);
-            let integral = |w: f64| (w - w.round()).abs() <= d;
-
-            if w_min >= 1.0 - d && integral(w_front) && integral(w_back) {
-                let mut buried = true;
-                for v in [v0, v1, v2] {
-                    // Sample 10% away from each vertex toward the centroid so a
-                    // triangle that is only partly inside another part is not
-                    // mistaken for an interior wall.
-                    let p = add3(scale3(v, 0.9), scale3(c, 0.1));
-                    let w1 = bvh.winding_at(add3(p, scale3(unorm, eps)));
-                    let w2 = bvh.winding_at(sub3(p, scale3(unorm, eps)));
-                    if w1.min(w2) < 1.0 - d || !integral(w1) || !integral(w2) {
-                        buried = false;
-                        break;
-                    }
-                }
-                if buried {
-                    (0u8, area)
-                } else {
-                    (3u8, 0.0)
-                }
-            } else if w_max < d {
-                (1u8, area)
-            } else {
-                (3u8, 0.0)
-            }
-        })
+        .map(|i| classify_buried_face(verts, tris, &bvh, eps, d, i))
         .collect();
 
     for (i, (class, area)) in results.iter().enumerate() {
@@ -242,6 +197,166 @@ pub fn buried_face_mask(
         }
     }
     out
+}
+
+/// Classify one face as buried (0), debris (1), degenerate (2) or other (3).
+///
+/// Shared by the full mask and the subset mask so both produce bit-identical
+/// classes for the same face: same reference BVH, same probe epsilon, same
+/// criterion. The caller owns the per-mesh BVH and epsilon.
+fn classify_buried_face(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    bvh: &MeshBvh,
+    eps: f64,
+    d: f64,
+    i: usize,
+) -> (u8, f64) {
+    let t = tris[i];
+    let v0 = verts[t[0] as usize];
+    let v1 = verts[t[1] as usize];
+    let v2 = verts[t[2] as usize];
+
+    let normal = cross3(sub3(v1, v0), sub3(v2, v0));
+    let area2 = norm3(normal);
+    if area2 < 1e-14 {
+        return (2u8, 0.0);
+    }
+    let area = 0.5 * area2;
+    let unorm = scale3(normal, 1.0 / area2);
+    let c = scale3(add3(add3(v0, v1), v2), 1.0 / 3.0);
+
+    let w_front = bvh.winding_at(add3(c, scale3(unorm, eps)));
+    let w_back = bvh.winding_at(sub3(c, scale3(unorm, eps)));
+    let w_min = w_front.min(w_back);
+    let w_max = w_front.max(w_back);
+    let integral = |w: f64| (w - w.round()).abs() <= d;
+
+    if w_min >= 1.0 - d && integral(w_front) && integral(w_back) {
+        let mut buried = true;
+        for v in [v0, v1, v2] {
+            // Sample 10% away from each vertex toward the centroid so a
+            // triangle that is only partly inside another part is not
+            // mistaken for an interior wall.
+            let p = add3(scale3(v, 0.9), scale3(c, 0.1));
+            let w1 = bvh.winding_at(add3(p, scale3(unorm, eps)));
+            let w2 = bvh.winding_at(sub3(p, scale3(unorm, eps)));
+            if w1.min(w2) < 1.0 - d || !integral(w1) || !integral(w2) {
+                buried = false;
+                break;
+            }
+        }
+        if buried {
+            (0u8, area)
+        } else {
+            (3u8, 0.0)
+        }
+    } else if w_max < d {
+        (1u8, area)
+    } else {
+        (3u8, 0.0)
+    }
+}
+
+/// Reusable full-reference classifier for local guard masks.
+///
+/// Builds the reference BVH and probe epsilon ONCE; `classify` can then be
+/// called per excise round and only pays the winding queries for the faces
+/// whose distance changed. Query geometry is always the full reference, so a
+/// classified face gets the same class as in `buried_face_mask`.
+pub struct BuriedMaskContext {
+    verts: Vec<[f64; 3]>,
+    tris: Vec<[u32; 3]>,
+    bvh: MeshBvh,
+    eps: f64,
+    d: f64,
+}
+
+impl BuriedMaskContext {
+    pub fn new(verts: &[[f64; 3]], tris: &[[u32; 3]], delta: f64) -> Self {
+        let rt: Vec<[usize; 3]> = tris
+            .iter()
+            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+            .collect();
+        let bvh = MeshBvh::from_arrays(verts, &rt);
+        let mut lo = [0.0f64; 3];
+        let mut hi = [0.0f64; 3];
+        if let Some(first) = verts.first() {
+            lo = *first;
+            hi = *first;
+            for v in verts {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(v[k]);
+                    hi[k] = hi[k].max(v[k]);
+                }
+            }
+        }
+        let eps = (1e-4 * norm3(sub3(hi, lo))).max(1e-6);
+        Self {
+            verts: verts.to_vec(),
+            tris: tris.to_vec(),
+            bvh,
+            eps,
+            d: delta.max(0.0),
+        }
+    }
+
+    pub fn classify(&self, face_ids: &[u32]) -> BuriedFaceMask {
+        let mut out = BuriedFaceMask {
+            mask: vec![false; self.tris.len()],
+            epsilon_mm: self.eps,
+            ..Default::default()
+        };
+        if self.tris.is_empty() || self.verts.is_empty() || face_ids.is_empty() {
+            return out;
+        }
+        let results: Vec<(usize, u8, f64)> = face_ids
+            .par_iter()
+            .filter_map(|&fi| {
+                let i = fi as usize;
+                if i < self.tris.len() {
+                    let (class, area) = classify_buried_face(
+                        &self.verts, &self.tris, &self.bvh, self.eps, self.d, i);
+                    Some((i, class, area))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (i, class, area) in results {
+            match class {
+                0 => {
+                    out.mask[i] = true;
+                    out.buried_count += 1;
+                    out.buried_area_mm2 += area;
+                }
+                1 => {
+                    out.debris_count += 1;
+                    out.debris_area_mm2 += area;
+                }
+                2 => out.degenerate_count += 1,
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+/// Classify only `face_ids` as buried, against the FULL reference mesh.
+///
+/// The returned mask has length `len(tris)` and is `false` outside
+/// `face_ids`; counts/areas cover the classified subset only. The reference
+/// BVH and probe epsilon are built exactly as in `buried_face_mask`, so a
+/// face in `face_ids` gets the same class as in the full mask. This keeps the
+/// guard metric exact when only moved faces need a class: an unchanged face
+/// has distance 0 and cannot raise the visible maximum.
+pub fn buried_face_mask_subset(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    face_ids: &[u32],
+    delta: f64,
+) -> BuriedFaceMask {
+    BuriedMaskContext::new(verts, tris, delta).classify(face_ids)
 }
 
 #[inline]
@@ -3511,6 +3626,49 @@ mod tests {
         assert!(!mask2.mask[debris], "debris must not be an interior wall");
         assert_eq!(mask2.debris_count, 12);
         assert_eq!(mask2.buried_count, mask.buried_count);
+    }
+
+    #[test]
+    fn buried_face_mask_subset_matches_full_on_classified_faces() {
+        let a = unit_box([0.25, 0.25, 0.25], [1.0, 1.0, 1.0]);
+        let b = unit_box([0.0, 0.0, 0.0], [2.0, 2.0, 2.0]);
+        let (verts, tris) = combine_meshes(a, b);
+        let full = buried_face_mask(&verts, &tris, 0.1);
+
+        // Mix buried and visible faces; every index must keep the full class.
+        let ids: Vec<u32> = (0..tris.len() as u32)
+            .step_by(3)
+            .chain((1..tris.len() as u32).step_by(7))
+            .collect();
+        let sub = buried_face_mask_subset(&verts, &tris, &ids, 0.1);
+        assert_eq!(sub.mask.len(), tris.len());
+        let mut expected_buried = 0;
+        for &i in &ids {
+            assert_eq!(sub.mask[i as usize], full.mask[i as usize],
+                       "face {i} must match the full mask");
+            if full.mask[i as usize] {
+                expected_buried += 1;
+            }
+        }
+        assert_eq!(sub.buried_count, expected_buried);
+        for i in 0..tris.len() {
+            if !ids.contains(&(i as u32)) {
+                assert!(!sub.mask[i], "unclassified face {i} must stay false");
+            }
+        }
+
+        // An empty subset is the zero mask.
+        let empty = buried_face_mask_subset(&verts, &tris, &[], 0.1);
+        assert_eq!(empty.buried_count, 0);
+        assert!(empty.mask.iter().all(|m| !*m));
+    }
+
+    #[test]
+    fn buried_face_mask_subset_ignores_out_of_range_ids() {
+        let (verts, tris) = unit_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let sub = buried_face_mask_subset(&verts, &tris, &[0, 9999], 0.1);
+        assert_eq!(sub.mask.len(), tris.len());
+        assert_eq!(sub.buried_count, 0);
     }
 
     #[test]

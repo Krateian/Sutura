@@ -1341,6 +1341,84 @@ fn buried_face_mask_py<'py>(
     Ok((PyArray1::from_vec(py, res.mask), d))
 }
 
+/// Subset form of `buried_face_mask`: classify only `face_ids` against the
+/// full reference. The returned mask has length `len(tris)` and is false
+/// outside `face_ids`; counts/areas cover the subset.
+#[pyfunction]
+#[pyo3(name = "buried_face_mask_subset")]
+#[pyo3(signature = (verts, tris, face_ids, delta=0.1))]
+fn buried_face_mask_subset_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    face_ids: PyArrayLike1<'py, i32, AllowTypeChange>,
+    delta: f64,
+) -> PyResult<(Bound<'py, PyArray1<bool>>, Bound<'py, PyDict>)> {
+    let (rv, rt_usize) = parse_mesh(&verts, &tris)?;
+    let rt: Vec<[u32; 3]> = rt_usize
+        .iter()
+        .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+        .collect();
+    let ids: Vec<u32> = face_ids.as_array().iter().map(|&v| v as u32).collect();
+    let res = shell::buried_face_mask_subset(&rv, &rt, &ids, delta);
+
+    let d = PyDict::new(py);
+    d.set_item("buried_count", res.buried_count)?;
+    d.set_item("buried_area_mm2", res.buried_area_mm2)?;
+    d.set_item("debris_count", res.debris_count)?;
+    d.set_item("debris_area_mm2", res.debris_area_mm2)?;
+    d.set_item("degenerate_count", res.degenerate_count)?;
+    d.set_item("epsilon_mm", res.epsilon_mm)?;
+    d.set_item("delta", delta)?;
+    d.set_item("classified", ids.len())?;
+    Ok((PyArray1::from_vec(py, res.mask), d))
+}
+
+/// Reusable full-reference mask context: build the BVH once, classify per
+/// round. Same classes as `buried_face_mask` for the classified faces.
+#[pyclass(module = "sutura_geom", name = "BuriedMaskContext")]
+struct PyBuriedMaskContext {
+    inner: shell::BuriedMaskContext,
+}
+
+#[pymethods]
+impl PyBuriedMaskContext {
+    #[new]
+    #[pyo3(signature = (verts, tris, delta=0.1))]
+    fn new(
+        verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+        tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+        delta: f64,
+    ) -> PyResult<Self> {
+        let (rv, rt_usize) = parse_mesh(&verts, &tris)?;
+        let rt: Vec<[u32; 3]> = rt_usize
+            .iter()
+            .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+            .collect();
+        Ok(Self {
+            inner: shell::BuriedMaskContext::new(&rv, &rt, delta),
+        })
+    }
+
+    fn classify<'py>(
+        &self,
+        py: Python<'py>,
+        face_ids: PyArrayLike1<'py, i32, AllowTypeChange>,
+    ) -> PyResult<(Bound<'py, PyArray1<bool>>, Bound<'py, PyDict>)> {
+        let ids: Vec<u32> = face_ids.as_array().iter().map(|&v| v as u32).collect();
+        let res = self.inner.classify(&ids);
+        let d = PyDict::new(py);
+        d.set_item("buried_count", res.buried_count)?;
+        d.set_item("buried_area_mm2", res.buried_area_mm2)?;
+        d.set_item("debris_count", res.debris_count)?;
+        d.set_item("debris_area_mm2", res.debris_area_mm2)?;
+        d.set_item("degenerate_count", res.degenerate_count)?;
+        d.set_item("epsilon_mm", res.epsilon_mm)?;
+        d.set_item("classified", ids.len())?;
+        Ok((PyArray1::from_vec(py, res.mask), d))
+    }
+}
+
 fn parse_point_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]>> {
     let view = arr.as_array();
     if view.ncols() != 3 {
@@ -2574,6 +2652,8 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;
     m.add_function(wrap_pyfunction!(shell_analyze_py, m)?)?;
     m.add_function(wrap_pyfunction!(buried_face_mask_py, m)?)?;
+    m.add_function(wrap_pyfunction!(buried_face_mask_subset_py, m)?)?;
+    m.add_class::<PyBuriedMaskContext>()?;
     m.add_function(wrap_pyfunction!(splint_cut_py, m)?)?;
     m.add_class::<PyMeshBvh>()?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;

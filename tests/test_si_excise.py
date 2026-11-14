@@ -160,27 +160,66 @@ def test_shape_guard_commits_a_round_within_the_budget():
     assert rep['history'][0]['post_vis_mm'] <= sg['budget_mm']
 
 
+def test_local_guard_matches_full_decision():
+    """Local (moved-faces-only) mask must reproduce the full-mask result."""
+    v, t = _sphere_with_bump(0.02)
+    os.environ['SUTURA_SI_EXCISE_GUARD_MODE'] = 'full'
+    try:
+        vf, tf, rf = pipeline_mod.si_excise_recap(v, t, time_budget=30.0)
+    finally:
+        del os.environ['SUTURA_SI_EXCISE_GUARD_MODE']
+    os.environ['SUTURA_SI_EXCISE_GUARD_MODE'] = 'local'
+    try:
+        vl, tl, rl = pipeline_mod.si_excise_recap(v, t, time_budget=30.0)
+    finally:
+        del os.environ['SUTURA_SI_EXCISE_GUARD_MODE']
+    assert np.array_equal(vf, vl) and np.array_equal(tf, tl)
+    assert rf['reason'] == rl['reason'], (rf['reason'], rl['reason'])
+    assert rf['applied'] == rl['applied']
+    sf, sl = rf['shape_guard'], rl['shape_guard']
+    assert sl['mode'] == 'local' and sl['local_fallback_full'] is False, sl
+    assert sf['initial_vis_mm'] == sl['initial_vis_mm'], (sf, sl)
+    assert sf['final_vis_mm'] == sl['final_vis_mm'], (sf, sl)
+    assert len(rf['history']) == len(rl['history'])
+    for a, b in zip(rf['history'], rl['history']):
+        assert a.get('post_vis_mm') == b.get('post_vis_mm'), (a, b)
+        assert a.get('new_face_mm') == b.get('new_face_mm'), (a, b)
+
+
+def test_parity_mode_reports_no_difference():
+    v, t = _sphere_with_bump(0.02)
+    os.environ['SUTURA_SI_EXCISE_GUARD_MODE'] = 'parity'
+    try:
+        _v, _t, rep = pipeline_mod.si_excise_recap(v, t, time_budget=30.0)
+    finally:
+        del os.environ['SUTURA_SI_EXCISE_GUARD_MODE']
+    sg = rep['shape_guard']
+    assert sg['mode'] == 'parity', sg
+    assert sg['parity_ok'] is True, sg
+    assert sg['parity_checks'] >= 1, sg
+    assert sg['parity_diffs'] == [], sg
+
+
 def test_shape_guard_is_lazy_without_a_candidate():
-    """No round reaches the topology gate -> the expensive mask is never built.
+    """No round reaches the topology gate -> the expensive guard work never runs.
 
     The maxholesize=1 fixture rejects every round before the shape guard, so
-    `_si_excise_visible_metrics` must not be called at all (it would run the
-    O(faces) mask on a real mesh)."""
+    the distance query (and any mask) must not be called at all."""
     v, t = _sphere_with_blade(3)
     from sutura_engine.pipeline import stage1 as s1
     calls = []
-    saved = s1._si_excise_visible_metrics
+    saved = s1._si_excise_face_distances
 
     def _boom(*_a, **_kw):
         calls.append(1)
         raise AssertionError('shape guard must stay unbuilt without a candidate')
 
-    s1._si_excise_visible_metrics = _boom
+    s1._si_excise_face_distances = _boom
     try:
         _v, _t, rep = pipeline_mod.si_excise_recap(
             v, t, maxholesize=1, time_budget=30.0)
     finally:
-        s1._si_excise_visible_metrics = saved
+        s1._si_excise_face_distances = saved
     assert calls == [], rep
     assert rep['applied'] is False, rep
     sg = rep['shape_guard']

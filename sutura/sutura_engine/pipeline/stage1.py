@@ -327,11 +327,83 @@ def _si_excise_visible_metrics(ref_v, ref_t, cand_v, cand_t, *, buried=None,
             np.ascontiguousarray(centroids, dtype=np.float64))[1], dtype=np.float64)
     except Exception:  # noqa: BLE001 - the guard must never crash the repair
         return None
+    return _si_excise_visible_from_distance(d, buried)
+
+
+def _si_excise_face_distances(ref_v, ref_t, cand_v, cand_t, centroids):
+    """Per-ref-face distance from ``centroids`` to the candidate surface."""
+    import sutura_geom
+    try:
+        return np.asarray(sutura_geom.closest_points(
+            np.ascontiguousarray(cand_v, dtype=np.float64),
+            np.ascontiguousarray(cand_t, dtype=np.int32),
+            np.ascontiguousarray(centroids, dtype=np.float64))[1],
+            dtype=np.float64)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _si_excise_visible_from_distance(d, buried):
+    """Visible/all maxima from a precomputed distance array."""
     if d.size == 0:
         return None
-    visible = ~buried
+    if buried is None:
+        visible = np.ones(d.size, dtype=bool)
+    else:
+        visible = ~np.asarray(buried, dtype=bool)
     vis_mm = float(d[visible].max()) if visible.any() else 0.0
     return vis_mm, float(d.max())
+
+
+# Below this a face's distance is numerical noise, not movement. It is 8
+# orders of magnitude under the 0.1 mm budget and invisible in the 4-decimal
+# report, but excluding it keeps the local subset from swallowing a mesh
+# whose ref-vs-ref distances are ~1e-14.
+_SI_GUARD_MOVE_EPS_MM = 1e-9
+
+
+def _si_excise_local_buried(ref_v, ref_t, d, ctx=None):
+    """Buried mask restricted to faces whose distance actually changed.
+
+    An unchanged face contributes only sub-1e-12 numerical noise (measured:
+    55% of a 2M-face mesh has d in (0, 1e-14]); a face with d <= 1e-9 cannot
+    affect a 0.1 mm budget or the 4-decimal report. Classifying only
+    ``d > _SI_GUARD_MOVE_EPS_MM`` therefore yields the full-mask result while
+    touching only the excised region. ``ctx`` is the once-per-pass
+    ``BuriedMaskContext`` (full reference BVH); without it the subset entry
+    point rebuilds the BVH for this call. ``None`` means the kernel lacks the
+    subset entry point (caller falls back to the full mask).
+    """
+    import sutura_geom
+    moved = d > _SI_GUARD_MOVE_EPS_MM
+    if not moved.any():
+        return np.zeros(d.size, dtype=bool)
+    ids = np.flatnonzero(moved).astype(np.int32)
+    try:
+        if ctx is not None:
+            buried, _detail = ctx.classify(ids)
+        elif hasattr(sutura_geom, 'buried_face_mask_subset'):
+            buried, _detail = sutura_geom.buried_face_mask_subset(
+                np.ascontiguousarray(ref_v, dtype=np.float64),
+                np.ascontiguousarray(ref_t, dtype=np.int32), ids, 0.1)
+        else:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return np.asarray(buried, dtype=bool)
+
+
+def si_excise_guard_mode():
+    """Guard mask mode: ``local`` (default), ``full`` or ``parity``.
+
+    ``parity`` builds the full mask once and compares it with the local mask
+    on every candidate; a one-face or one-float difference is recorded in
+    ``shape_guard.parity_*``. The real-set parity sweep passed (samples40,
+    oracle36, core150, bench115 large-SI; DIFF=0), so the default is ``local``;
+    ``full`` remains available as the ground truth.
+    """
+    mode = os.environ.get('SUTURA_SI_EXCISE_GUARD_MODE', '').strip().lower()
+    return mode if mode in ('full', 'local', 'parity') else 'local'
 
 
 def _si_excise_new_face_max_mm(ref_v, ref_t, cand_v, cand_t, new_faces):
@@ -449,8 +521,10 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
         'seconds': 0.0, 'history': [],
     }
     guard_on = si_excise_shape_guard_enabled(shape_guard)
+    guard_mode = si_excise_guard_mode()
     guard_ref_v = guard_ref_t = None
     guard_buried = guard_centroids = None
+    guard_mask_ctx = None
     guard_available = False
     guard_built = False
     initial_vis = None
@@ -491,6 +565,12 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
             'built': False,
             'build_skipped': None,
             'guard_build_seconds': 0.0,
+            'mode': guard_mode,
+            'local_fallback_full': False,
+            'parity_ok': True,
+            'parity_checks': 0,
+            'parity_moved_max': 0,
+            'parity_diffs': [],
             'budget_mm': float(SI_EXCISE_SHAPE_BUDGET_MM),
             'initial_vis_mm': None,
             'final_vis_mm': None,
@@ -503,16 +583,14 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
             report['shape_guard']['reason'] = 'unavailable'
 
     def _ensure_guard():
-        """Build the guard reference/mask/initial metric on first use.
+        """Build the guard reference/initial metric on first use.
 
-        Returns immediately when the guard is off, unavailable, or already
-        built. The numbers are identical to the former eager block: the
-        reference is `ref_verts/ref_tris` (or the pass input), the initial
-        metric is measured against the mesh the pass received, and the mask
-        is computed over the whole reference.
+        ``full``/``parity`` build the full buried mask once (ground truth);
+        ``local`` skips it and classifies only moved faces per evaluation.
+        The initial metric is measured against the mesh the pass received.
         """
         nonlocal guard_ref_v, guard_ref_t, guard_buried, guard_centroids
-        nonlocal guard_built, initial_vis, last_vis
+        nonlocal guard_built, initial_vis, last_vis, guard_mask_ctx
         if guard_built or not guard_on or not guard_available:
             return
         import sutura_geom as _geom
@@ -522,23 +600,113 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
                        dtype=np.float64))
         guard_ref_t = np.ascontiguousarray(
             np.asarray(tris if ref_tris is None else ref_tris, dtype=np.int64))
-        # REF is fixed for the whole pass, so the mask and the centroids are
-        # built once; only the candidate BVH is rebuilt per evaluation.
-        guard_buried, _gd = _geom.buried_face_mask(
-            guard_ref_v, guard_ref_t.astype(np.int32), 0.1)
-        guard_buried = np.asarray(guard_buried, dtype=bool)
         guard_centroids = guard_ref_v[guard_ref_t].mean(axis=1)
-        _init = _si_excise_visible_metrics(
-            guard_ref_v, guard_ref_t, pass_v0, pass_t0, buried=guard_buried,
-            centroids=guard_centroids)
+        sg = report['shape_guard']
+        if guard_mode in ('local', 'parity'):
+            try:
+                guard_mask_ctx = _geom.BuriedMaskContext(
+                    guard_ref_v, guard_ref_t.astype(np.int32), 0.1)
+            except Exception:  # noqa: BLE001 - fall back to the subset call
+                guard_mask_ctx = None
+        if guard_mode in ('full', 'parity'):
+            guard_buried, _gd = _geom.buried_face_mask(
+                guard_ref_v, guard_ref_t.astype(np.int32), 0.1)
+            guard_buried = np.asarray(guard_buried, dtype=bool)
+
+        _init = _local_init = None
+        d0 = _si_excise_face_distances(
+            guard_ref_v, guard_ref_t, pass_v0, pass_t0, guard_centroids)
+        if d0 is not None:
+            if guard_mode == 'local':
+                _lb = _si_excise_local_buried(
+                    guard_ref_v, guard_ref_t, d0, ctx=guard_mask_ctx)
+                if _lb is None:
+                    guard_buried, _gd = _geom.buried_face_mask(
+                        guard_ref_v, guard_ref_t.astype(np.int32), 0.1)
+                    guard_buried = np.asarray(guard_buried, dtype=bool)
+                    _lb = guard_buried
+                    sg['local_fallback_full'] = True
+                _init = _si_excise_visible_from_distance(d0, _lb)
+            else:
+                _init = _si_excise_visible_from_distance(d0, guard_buried)
+                if guard_mode == 'parity':
+                    _lb = _si_excise_local_buried(
+                        guard_ref_v, guard_ref_t, d0, ctx=guard_mask_ctx)
+                    if _lb is not None:
+                        _local_init = _si_excise_visible_from_distance(d0, _lb)
+                        _record_parity(_init, _local_init, 0, 'initial')
         if _init is not None:
             initial_vis = last_vis = float(_init[0])
         guard_built = True
-        sg = report['shape_guard']
         sg['built'] = True
         sg['guard_build_seconds'] = round(time.perf_counter() - _t_guard, 3)
         sg['initial_vis_mm'] = (round(initial_vis, 4)
                                 if initial_vis is not None else None)
+
+    def _record_parity(full, local, moved, stage):
+        sg = report['shape_guard']
+        sg['parity_checks'] = int(sg['parity_checks']) + 1
+        sg['parity_moved_max'] = max(int(sg['parity_moved_max']), int(moved))
+        if full != local:
+            same = (full is not None and local is not None
+                    and round(full[0], 4) == round(local[0], 4)
+                    and round(full[1], 4) == round(local[1], 4))
+            if not same:
+                sg['parity_ok'] = False
+                if len(sg['parity_diffs']) < 20:
+                    sg['parity_diffs'].append({
+                        'stage': stage,
+                        'full': [None if full is None else round(full[0], 9),
+                                 None if full is None else round(full[1], 9)],
+                        'local': [None if local is None else round(local[0], 9),
+                                  None if local is None else round(local[1], 9)],
+                    })
+
+    def _guard_eval(cand_v, cand_t):
+        """Return (visible_mm, all_mm, moved_faces, parity) for one candidate.
+
+        Full mode uses the once-per-pass mask; local mode classifies only
+        faces with ``d > 0``; parity compares both and keeps the full result
+        for the actual decision. ``None`` means the kernel could not answer.
+        """
+        nonlocal guard_buried
+        d = _si_excise_face_distances(
+            guard_ref_v, guard_ref_t, cand_v, cand_t, guard_centroids)
+        if d is None:
+            return None
+        moved = int(np.count_nonzero(d > _SI_GUARD_MOVE_EPS_MM))
+        if guard_mode == 'local':
+            lb = _si_excise_local_buried(
+                guard_ref_v, guard_ref_t, d, ctx=guard_mask_ctx)
+            if lb is None:
+                import sutura_geom as _geom
+                if guard_buried is None:
+                    guard_buried, _gd = _geom.buried_face_mask(
+                        guard_ref_v, guard_ref_t.astype(np.int32), 0.1)
+                    guard_buried = np.asarray(guard_buried, dtype=bool)
+                lb = guard_buried
+                report['shape_guard']['local_fallback_full'] = True
+            m = _si_excise_visible_from_distance(d, lb)
+            return None if m is None else (m[0], m[1], moved, None)
+
+        full = _si_excise_visible_from_distance(d, guard_buried)
+        if guard_mode == 'parity':
+            lb = _si_excise_local_buried(
+                guard_ref_v, guard_ref_t, d, ctx=guard_mask_ctx)
+            local = (None if lb is None
+                     else _si_excise_visible_from_distance(d, lb))
+            if local is None:
+                report['shape_guard']['parity_ok'] = False
+                report['shape_guard']['parity_diffs'].append(
+                    {'stage': 'candidate', 'local_unavailable': True})
+            else:
+                _record_parity(full, local, moved, 'candidate')
+            if full is None:
+                return None
+            return (full[0], full[1], moved, True)
+        if full is None:
+            return None
+        return (full[0], full[1], 0, None)
 
     report['ran'] = True
     current_si = report['initial_si']
@@ -612,9 +780,7 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
             post_vis = post_all = new_face_mm = None
             if topo_ok and guard_on and guard_available:
                 _ensure_guard()
-                _post = _si_excise_visible_metrics(
-                    guard_ref_v, guard_ref_t, v_work, t_work,
-                    buried=guard_buried, centroids=guard_centroids)
+                _post = _guard_eval(v_work, t_work)
                 if _post is not None:
                     post_vis = float(_post[0])
                     post_all = float(_post[1])
