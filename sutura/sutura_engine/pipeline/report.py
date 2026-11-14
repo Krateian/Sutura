@@ -819,7 +819,7 @@ def _score_field(name, value):
     return '%s: n/a' % name if value is None else '%s: %s/100' % (name, value)
 
 
-def human_report(r, show_defects=False, show_diff=False):
+def human_report(r, show_defects=False, show_diff=False, lang=None):
     if 'error' in r and 'stage1' not in r:
         return 'ERROR: %s' % r['error']
     brief = classification.brief(r)
@@ -1256,7 +1256,12 @@ def human_report(r, show_defects=False, show_diff=False):
         if _sug.get('method') == 'dressing':
             lines.append('')
             lines.append(_dressing_suggestion_text(_sug))
-    return '\n'.join(lines)
+    _text = '\n'.join(lines)
+    _lang = lang or os.environ.get('SUTURA_LANG', 'en')
+    if _lang == 'tr':
+        import report_lang
+        return report_lang.translate(_text, 'tr')
+    return _text
 
 
 def human_validate(r, show_defects=False):
