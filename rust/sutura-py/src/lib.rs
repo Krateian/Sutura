@@ -804,6 +804,37 @@ fn stage1_apply_chain_py<'py>(
     ))
 }
 
+#[pyfunction(name = "stage1_extreme_passes")]
+fn stage1_extreme_passes_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    params_json: &str,
+) -> PyResult<(
+    bool,
+    i64,
+    usize,
+    usize,
+    String,
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let params = parse_params(params_json)?;
+    let (applied, found, removed, applied2, skipped2, ov, ot) =
+        sutura_core::stage1::chain::extreme_extra_passes(&v, &t, &params);
+    Ok((
+        applied,
+        found,
+        removed,
+        applied2,
+        skipped2.to_string(),
+        arrays_f64(py, &ov)?,
+        arrays_i64(py, &ot)?,
+    ))
+}
+
 #[pyfunction(name = "tier_wall_decide")]
 fn tier_wall_decide_py<'py>(
     py: Python<'py>,
@@ -1105,6 +1136,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage2_should_run_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage2_split_pinched_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_apply_chain_py, m)?)?;
+    m.add_function(wrap_pyfunction!(stage1_extreme_passes_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_wall_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_repeat_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_closing_decide_py, m)?)?;
