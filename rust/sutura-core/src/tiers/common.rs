@@ -806,3 +806,140 @@ pub fn repair_welded_topology(v: &[[f32; 3]], t: &[[i64; 3]]) -> (Vec<[f32; 3]>,
     tt = nt;
     remove_unreferenced_vertices_core(&vv, &tt)
 }
+
+pub fn dilate_face_selection(tris: &[[i64; 3]], selected: &[bool], rings: usize) -> Vec<bool> {
+    let nv = tris.iter().flat_map(|t| t.iter().copied()).max().unwrap_or(-1) + 1;
+    if nv <= 0 || tris.is_empty() || !selected.iter().any(|x| *x) || rings == 0 {
+        return selected.to_vec();
+    }
+    let mut v_faces: Vec<Vec<usize>> = vec![Vec::new(); nv as usize];
+    for (fi, t) in tris.iter().enumerate() {
+        for &v in t {
+            if v >= 0 {
+                v_faces[v as usize].push(fi);
+            }
+        }
+    }
+    let mut sel = selected.to_vec();
+    for _ in 0..rings {
+        let mut out = sel.clone();
+        for (fi, &on) in sel.iter().enumerate() {
+            if !on {
+                continue;
+            }
+            for &v in &tris[fi] {
+                if v >= 0 {
+                    for &nf in &v_faces[v as usize] {
+                        out[nf] = true;
+                    }
+                }
+            }
+        }
+        sel = out;
+    }
+    sel
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TopologySummary {
+    pub boundary_edges: usize,
+    pub non_two_manifold_edges: usize,
+    pub non_two_manifold_vertices: usize,
+    pub components: usize,
+    pub faces: usize,
+}
+
+pub fn topology_summary(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> TopologySummary {
+    let nv = verts.len();
+    let nf = tris.len();
+    if nf == 0 {
+        return TopologySummary { faces: 0, ..Default::default() };
+    }
+    let mut edge_counts: HashMap<(i64, i64), usize> = HashMap::new();
+    for t in tris {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let k = if a <= b { (a, b) } else { (b, a) };
+            *edge_counts.entry(k).or_insert(0) += 1;
+        }
+    }
+    let mut boundary = 0;
+    let mut nm_edges = 0;
+    let mut nm_verts = HashSet::new();
+    for (&(a, b), &c) in &edge_counts {
+        if c == 1 {
+            boundary += 1;
+        } else if c > 2 {
+            nm_edges += 1;
+            nm_verts.insert(a);
+            nm_verts.insert(b);
+        }
+    }
+    let mut v_faces: Vec<Vec<usize>> = vec![Vec::new(); nv];
+    for (fi, t) in tris.iter().enumerate() {
+        let mut uv = vec![t[0], t[1], t[2]];
+        uv.sort_unstable();
+        uv.dedup();
+        for v in uv {
+            if v >= 0 && (v as usize) < nv {
+                v_faces[v as usize].push(fi);
+            }
+        }
+    }
+    let mut nm_vertices = 0usize;
+    for v in 0..nv {
+        if nm_verts.contains(&(v as i64)) {
+            continue;
+        }
+        let inc = &v_faces[v];
+        if inc.len() <= 1 {
+            continue;
+        }
+        let n_inc = inc.len();
+        let mut parent: Vec<usize> = (0..n_inc).collect();
+        fn find(p: &mut [usize], mut x: usize) -> usize {
+            let mut root = x;
+            while p[root] != root {
+                root = p[root];
+            }
+            while p[x] != root {
+                let next = p[x];
+                p[x] = root;
+                x = next;
+            }
+            root
+        }
+        let mut by_other: HashMap<i64, Vec<usize>> = HashMap::new();
+        for (li, &fi) in inc.iter().enumerate() {
+            for &w in &tris[fi] {
+                if w != v as i64 {
+                    by_other.entry(w).or_default().push(li);
+                }
+            }
+        }
+        for list in by_other.values() {
+            if list.len() > 1 {
+                let r0 = find(&mut parent, list[0]);
+                for &k in &list[1..] {
+                    let rk = find(&mut parent, k);
+                    if rk != r0 {
+                        parent[rk] = r0;
+                    }
+                }
+            }
+        }
+        let mut roots: Vec<usize> = (0..n_inc).map(|i| find(&mut parent, i)).collect();
+        roots.sort_unstable();
+        roots.dedup();
+        if roots.len() > 1 {
+            nm_vertices += 1;
+        }
+    }
+    let components = count_vertex_components(nv, tris);
+    TopologySummary {
+        boundary_edges: boundary,
+        non_two_manifold_edges: nm_edges,
+        non_two_manifold_vertices: nm_vertices,
+        components,
+        faces: nf,
+    }
+}

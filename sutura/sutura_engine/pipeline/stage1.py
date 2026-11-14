@@ -540,6 +540,29 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
 
     Returns ``(verts, tris, report)``.
     """
+    _core = _stage1_core()
+    if _core is not None:
+        _rv = np.ascontiguousarray(
+            np.asarray(verts if ref_verts is None else ref_verts,
+                       dtype=np.float64))
+        _rt = np.ascontiguousarray(
+            np.asarray(tris if ref_tris is None else ref_tris,
+                       dtype=np.int64))
+        _params = {
+            'maxholesize': int(maxholesize),
+            'max_rounds': int(max_rounds),
+            'time_budget': (None if time_budget is None else float(time_budget)),
+            'face_fraction': float(face_fraction),
+            'shape_guard': bool(si_excise_shape_guard_enabled(shape_guard)),
+            'guard_mode': si_excise_guard_mode(),
+        }
+        _ov, _ot, _report_json = _core.stage1_si_excise(
+            np.ascontiguousarray(verts, dtype=np.float64),
+            np.ascontiguousarray(tris, dtype=np.int64),
+            _rv, _rt, json.dumps(_params))
+        return (np.asarray(_ov, dtype=np.float64),
+                np.asarray(_ot, dtype=np.int64),
+                json.loads(_report_json))
     # Started before any work so the reported ``seconds`` covers the whole
     # pass, including the lazily built shape-guard mask (it used to start
     # after the mask, hiding its cost).
