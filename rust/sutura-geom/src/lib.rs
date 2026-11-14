@@ -8,9 +8,13 @@
 //! exact predicates on explicit and implicit points (`orient3d`, `orient2d`,
 //! `incircle`), and the predicate core for the future arrangement-lite engine.
 
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArrayLike1, PyArrayLike2, PyArrayLike3};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::{PyDict, PyModule};
 use robust::{insphere as robust_insphere, orient3d as robust_orient3d, Coord3D};
 
@@ -20,8 +24,11 @@ pub mod cdt2d;
 pub mod cdt3d;
 mod budget;
 mod cancel;
+#[cfg(feature = "python")]
 pub mod cluster;
+#[cfg(feature = "python")]
 pub mod decimate;
+#[cfg(feature = "python")]
 pub mod diagnosis;
 pub mod dressing;
 pub mod dual_contour;
@@ -31,6 +38,7 @@ pub mod hole;
 pub mod interval;
 pub mod lava;
 pub mod melt;
+#[cfg(feature = "python")]
 pub mod manifold;
 pub mod mincut;
 pub mod morph;
@@ -42,6 +50,7 @@ pub mod predicates3d;
 pub mod profile;
 pub mod rbf;
 pub mod raycast;
+#[cfg(feature = "python")]
 pub mod resample;
 pub mod roi;
 pub mod shell;
@@ -51,8 +60,14 @@ pub mod topology;
 pub mod triangle_intersection;
 pub mod winding;
 
+/// Pure-Rust vertex weld used by downstream crates (no Python types).
+pub use topology::remove_duplicate_vertices_core;
+
+#[cfg(feature = "python")]
 use numpy::ndarray::{Array2, Array3, ShapeBuilder};
+#[cfg(feature = "python")]
 use numpy::{PyArray1, PyArray2, PyArray3};
+#[cfg(feature = "python")]
 use pyo3::types::PyList;
 use rayon::prelude::*;
 
@@ -68,6 +83,7 @@ pub const SI_MAX_FACES: usize = 2_000_000;
 
 /// Parse a point argument into `[f64; 3]`, accepting a tuple, list, or numpy
 /// 1-D array of length 3.
+#[cfg(feature = "python")]
 fn parse_point(arr: &PyArrayLike1<'_, f64, AllowTypeChange>) -> PyResult<[f64; 3]> {
     let view = arr.as_array();
     if view.len() != 3 {
@@ -113,6 +129,7 @@ fn orient3d_coords(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3], pd: [f64; 3]) -> f6
 /// negative value when `pd` lies above it, and exactly `0` when the four points
 /// are coplanar.  Each point is a length-3 sequence (tuple, list, or numpy
 /// 1-D array).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (pa, pb, pc, pd))]
 fn orient3d<'py>(
@@ -166,6 +183,7 @@ fn insphere_coords(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3], pd: [f64; 3], pe: [
 /// when it is outside, and exactly `0` when the five points are cospherical.
 /// The first four points must be positively oriented (see `orient3d`). Each
 /// point is a length-3 sequence (tuple, list, or numpy 1-D array).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (pa, pb, pc, pd, pe))]
 #[allow(clippy::too_many_arguments)]
@@ -189,6 +207,7 @@ fn insphere<'py>(
 /// `verts_out` is `(N, 3)` float64, `tris_out` is `(M, 3)` int32, and
 /// `report` is a dict with `input_faces`, `output_faces`,
 /// `si_pairs_detected`, `degenerate_cases`, and `converged`.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 fn arrangement_lite<'py>(
@@ -364,6 +383,7 @@ fn run_cdt3d(
     Ok((solid, face.report, plc.report, seconds))
 }
 
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(name = "cdt3d_solid")]
 #[pyo3(signature = (verts, tris, opts=None))]
@@ -511,6 +531,7 @@ fn cdt3d_solid_py<'py>(
 /// (`cdt2d::experimental` bits: 1 = keep constraint flags on flip,
 /// 2 = Sloan flips, 4 = propagate edge points) for the calling thread; 0 restores
 /// the reference behaviour.  Returns the previous value.
+#[cfg(feature = "python")]
 #[pyfunction]
 fn _set_cdt_experimental(bits: u8) -> u8 {
     let prev = cdt2d::experimental::options();
@@ -519,6 +540,7 @@ fn _set_cdt_experimental(bits: u8) -> u8 {
 }
 
 /// Parse `(N, 3)` arrays into Rust point/index vectors.
+#[cfg(feature = "python")]
 fn parse_mesh(
     verts: &PyArrayLike2<'_, f64, AllowTypeChange>,
     tris: &PyArrayLike2<'_, i32, AllowTypeChange>,
@@ -583,6 +605,7 @@ fn bbox_of(verts: &[[f64; 3]]) -> winding::Aabb {
     b
 }
 
+#[cfg(feature = "python")]
 fn parse_box(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<([f64; 3], [f64; 3])> {
     let v = arr.as_array();
     if v.nrows() != 2 || v.ncols() != 3 {
@@ -634,6 +657,7 @@ pub(crate) fn plan_grid(
     }
 }
 
+#[cfg(feature = "python")]
 fn vec_to_pyarray3<'py>(
     py: Python<'py>,
     data: Vec<f32>,
@@ -644,10 +668,12 @@ fn vec_to_pyarray3<'py>(
     Ok(PyArray3::from_owned_array(py, arr))
 }
 
+#[cfg(feature = "python")]
 fn dims_to_list<'py>(py: Python<'py>, dims: [usize; 3]) -> PyResult<Bound<'py, PyList>> {
     PyList::new(py, [dims[0], dims[1], dims[2]])
 }
 
+#[cfg(feature = "python")]
 fn vec_to_pyarray3_u8<'py>(
     py: Python<'py>,
     data: Vec<u8>,
@@ -658,6 +684,7 @@ fn vec_to_pyarray3_u8<'py>(
     Ok(PyArray3::from_owned_array(py, arr))
 }
 
+#[cfg(feature = "python")]
 fn vec_to_pyarray3_i32<'py>(
     py: Python<'py>,
     data: Vec<i32>,
@@ -684,6 +711,7 @@ fn build_stabber(
     )
 }
 
+#[cfg(feature = "python")]
 fn raystab_info<'py>(
     py: Python<'py>,
     dirs: usize,
@@ -704,6 +732,7 @@ fn raystab_info<'py>(
     Ok(d)
 }
 
+#[cfg(feature = "python")]
 fn antipodal_info<'py>(
     py: Python<'py>,
     stats: &antipodal::AntipodalStats,
@@ -734,6 +763,7 @@ fn antipodal_info<'py>(
 /// winding number (`antipodal`) and restores the classic winding path.  It is
 /// ON by default; when both raystab and antipodal are enabled, antipodal runs
 /// last and wins.  `SUTURA_ANTIPODAL=0` opts out in the environment.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, voxel=None, r#box=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None))]
 fn sdf_grid<'py>(
@@ -860,6 +890,7 @@ fn sdf_grid<'py>(
 /// winding number instead and restores the classic winding path.  It is ON by
 /// default; when both raystab and antipodal are enabled, antipodal runs last
 /// and wins.  `SUTURA_ANTIPODAL=0` opts out in the environment.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None, hermite=None))]
 fn morph_close<'py>(
@@ -1040,6 +1071,7 @@ fn morph_close<'py>(
 /// `drain * (1 - g)` (with `g` the defect influence) so the healthy isosurface
 /// re-centres on the original boundary while the defect coverage is kept.
 /// `0.0` (the default) leaves the plain outward coat.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0, corr_origin=None, corr_dims=None, corr_voxel=None, corr_values=None))]
 fn dressing_coat<'py>(
@@ -1140,6 +1172,7 @@ fn dressing_coat<'py>(
 /// (`info["plugs_rejected"]` counts those loops). Returns `(verts, tris,
 /// info)`; a closed, empty or boundary-free input is returned byte-identical
 /// with `info["reason"] == "no_holes"`.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(name = "tamponade")]
 #[pyo3(signature = (verts, tris, h_min=None, melt_si=true, max_nodes=None, work_budget=None))]
@@ -1241,6 +1274,7 @@ fn tamponade_py<'py>(
 
 /// Complete shell analysis & filter pre-pass for Tamponade.
 /// Returns (candidate_verts, candidate_tris, info_dict).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(name = "shell_analyze")]
 #[pyo3(signature = (verts, tris, delta=0.1, keep_cavities=true, split_intersections=true))]
@@ -1314,6 +1348,7 @@ fn shell_analyze_py<'py>(
 /// probe epsilon.  Case B only (`min(w+, w-) >= 1 - delta` on the input alone);
 /// floating debris (Case C) and cavity walls are never marked.  The defect mask
 /// and integrality gate live with the caller, so this stays stateless.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(name = "buried_face_mask")]
 #[pyo3(signature = (verts, tris, delta=0.1))]
@@ -1344,6 +1379,7 @@ fn buried_face_mask_py<'py>(
 /// Subset form of `buried_face_mask`: classify only `face_ids` against the
 /// full reference. The returned mask has length `len(tris)` and is false
 /// outside `face_ids`; counts/areas cover the subset.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(name = "buried_face_mask_subset")]
 #[pyo3(signature = (verts, tris, face_ids, delta=0.1))]
@@ -1376,11 +1412,13 @@ fn buried_face_mask_subset_py<'py>(
 
 /// Reusable full-reference mask context: build the BVH once, classify per
 /// round. Same classes as `buried_face_mask` for the classified faces.
+#[cfg(feature = "python")]
 #[pyclass(module = "sutura_geom", name = "BuriedMaskContext")]
 struct PyBuriedMaskContext {
     inner: shell::BuriedMaskContext,
 }
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl PyBuriedMaskContext {
     #[new]
@@ -1419,6 +1457,7 @@ impl PyBuriedMaskContext {
     }
 }
 
+#[cfg(feature = "python")]
 fn parse_point_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]>> {
     let view = arr.as_array();
     if view.ncols() != 3 {
@@ -1433,6 +1472,7 @@ fn parse_point_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Ve
     }
 }
 
+#[cfg(feature = "python")]
 fn nearest_output<'py>(
     py: Python<'py>,
     dist: Vec<f64>,
@@ -1468,6 +1508,7 @@ fn nearest_output<'py>(
 /// `(M,)`; with `k > 1` they are 2-D `(M, k)` sorted by distance.  Distances
 /// are exact f64 Euclidean distances.  Exact ties select the smallest source
 /// index, so the result is deterministic.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (points, queries, k = 1))]
 fn nearest_points<'py>(
@@ -1497,12 +1538,14 @@ fn nearest_points<'py>(
 ///
 /// Build once and call `query(queries, k=1)` in a loop (for example an ICP
 /// iteration) so the tree is not rebuilt for every batch.
+#[cfg(feature = "python")]
 #[pyclass(name = "KdTree")]
 struct PyKdTree {
     inner: pointcloud::PointTree,
     point_count: usize,
 }
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl PyKdTree {
     #[new]
@@ -1541,6 +1584,7 @@ impl PyKdTree {
 /// `seed_mask[i] != 0` marks a seed (distance 0).  Returns `(nx, ny, nz)`
 /// float32 distances in cell units.  Replaces
 /// `scipy.ndimage.distance_transform_edt(~mask)`.
+#[cfg(feature = "python")]
 #[pyfunction]
 fn edt_grid<'py>(
     py: Python<'py>,
@@ -1566,6 +1610,7 @@ fn edt_grid<'py>(
 ///
 /// Uses the exact Euclidean ball structuring element.  Replaces
 /// `scipy.ndimage.binary_dilation(occ, structure=ball(radius))`.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (occupancy, radius = 1))]
 fn dilate_occupancy<'py>(
@@ -1592,6 +1637,7 @@ fn dilate_occupancy<'py>(
 /// Returns `(xyz, distance, face_index)`; each query gives the closest point
 /// on the surface, its Euclidean distance and the index of the triangle
 /// (or `-1` for an empty mesh).  Queries are evaluated in parallel.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, points))]
 fn closest_points<'py>(
@@ -1763,6 +1809,7 @@ pub(crate) fn rasterize_core(
 /// the repair pipeline.
 /// Returns `(rgb, depth, silhouette)`; `colors` is one RGB per face and
 /// `depth_colors` one byte per face.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, rot, center, view_center, scale, width, height, colors = None, depth_colors = None, silhouette_only = false, order = None))]
 fn rasterize<'py>(
@@ -1885,6 +1932,7 @@ fn rasterize<'py>(
 /// Coplanar overlaps are a separate defect and are NOT flagged.  This is the
 /// authoritative SI mask: the diagnosis `self_intersection` face bit (16) is
 /// derived from it.  Returns `(mask, count)`; `count = -1` when skipped.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 fn si_faces_exact<'py>(
@@ -1908,6 +1956,7 @@ fn si_faces_exact<'py>(
 /// sharing a vertex index are ignored, as are coplanar/boundary contacts).
 /// Returns `(mask, count)` where `count` is the number of flagged faces, or
 /// `-1` when the mesh exceeds `SI_MAX_FACES` (the classifier is skipped).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, bvh = None))]
 fn self_intersecting_faces<'py>(
@@ -1943,6 +1992,7 @@ fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool
 /// caller runs the same metric on the base mesh's changed faces and rejects
 /// when the candidate's count rises.  `0` when the mesh exceeds
 /// `SI_MAX_FACES` or the subset is empty.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, subset))]
 fn self_intersections_subset<'py>(
@@ -2001,6 +2051,7 @@ pub(crate) fn self_intersections_subset_core(
 /// orientation-inconsistent rays; `parity=True` forces parity everywhere.  A ray
 /// escaping without a hit is an outside vote weighted `escape_weight` in the
 /// majority score (it is still reported once in `escape_votes`).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, points, n_dirs=None, seed=0, parity=false, escape_weight=2.0))]
 fn raystab_points<'py>(
@@ -2062,6 +2113,7 @@ fn raystab_points<'py>(
 /// bounding-box diagonal; `merge_eps` is an absolute distance along the ray
 /// used to merge coincident hits from adjacent triangles.  Queries are
 /// evaluated in parallel.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, origins, dirs, max_t = None, merge_eps = 0.0))]
 fn raycast_points<'py>(
@@ -2141,6 +2193,7 @@ fn raycast_points<'py>(
 /// term, coupled through one exact determinant so the field cannot jump by
 /// ~+-1 near the surface (Martens, Trettner & Bessmeltsev, ACM TOG 45(4), 2026,
 /// art. 43).  Deterministic and independent of triangle/vertex ordering.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, points))]
 fn antipodal_points<'py>(
@@ -2176,6 +2229,7 @@ fn antipodal_points<'py>(
 /// `score` is `inside_votes - (outside_votes + escape_votes)` per cell.  This
 /// votes every cell and is therefore much more expensive than the
 /// ambiguous-band pass used by `morph_close`.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, voxel=None, r#box=None, n_dirs=None, seed=0, parity=false, escape_weight=2.0))]
 fn raystab_grid<'py>(
@@ -2238,6 +2292,7 @@ fn raystab_grid<'py>(
 ///
 /// Build it once over the whole mesh and reuse it for many query points; the
 /// structure is read-only and the query methods are parallelised with rayon.
+#[cfg(feature = "python")]
 #[pyclass]
 pub struct PyMeshBvh {
     inner: winding::MeshBvh,
@@ -2245,6 +2300,7 @@ pub struct PyMeshBvh {
     tris: Vec<[usize; 3]>,
 }
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl PyMeshBvh {
     #[new]
@@ -2316,6 +2372,7 @@ impl PyMeshBvh {
 ///
 /// Steps 1–8 only (no step-9 dual-contour `thin_mesh`). The output is the raw
 /// inside/outside boundary; fix-A island cleanup is on, the soft band is off.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(name = "splint_cut")]
 #[pyo3(signature = (verts, tris, res, adaptive=None, opts=None))]
@@ -2412,6 +2469,7 @@ fn splint_cut_py<'py>(
     }
 }
 
+#[cfg(feature = "python")]
 fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyResult<()> {
     d.set_item("ok", r.ok)?;
     d.set_item("res", r.res)?;
@@ -2502,6 +2560,7 @@ fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyR
     Ok(())
 }
 
+#[cfg(feature = "python")]
 fn splint_error<'py>(
     py: Python<'py>,
     rv: &[[f64; 3]],
@@ -2527,6 +2586,7 @@ fn splint_error<'py>(
 }
 
 /// Phase-1 diagnosis: topology channels, part analysis, masks and regions.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, detail="fast", masks=true))]
 fn diagnose<'py>(
@@ -2547,6 +2607,7 @@ fn diagnose<'py>(
 
 /// Normalized maximum interior depth (deepest winding-occupancy cell / bbox
 /// diagonal). Reuses the Tamponade melt depth field at a fixed 32^3 budget.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, max_cells = 32768))]
 fn interior_depth(
@@ -2565,6 +2626,7 @@ fn interior_depth(
 /// concatenation `loop_a ++ loop_b`, or `None` when the seam cannot be built
 /// safely (not near-planar, a loop not simple, loops not nested, or a folded
 /// band whose area does not match the annulus).
+#[cfg(feature = "python")]
 #[pyfunction]
 fn triangulate_annulus<'py>(
     py: Python<'py>,
@@ -2596,6 +2658,7 @@ fn triangulate_annulus<'py>(
     }
 }
 
+#[cfg(feature = "python")]
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;

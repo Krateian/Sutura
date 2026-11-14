@@ -20,14 +20,19 @@ cdt-diag = []
 # Cross-checks every accelerated CDT query against the linear reference
 # scan (slow; differential testing only).
 cdt-check = []
-extension-module = ["pyo3/extension-module"]
-default = []
+# The Python extension surface. The pure-Rust geometry API is always built;
+# pyo3/numpy are only pulled in when this feature (or extension-module) is on,
+# so downstream Rust crates can depend on the kernels with
+# ``default-features = false``.
+python = ["dep:pyo3", "dep:numpy"]
+extension-module = ["python", "pyo3/extension-module"]
+default = ["python"]
 
 [dependencies]
 robust = "=1.2.0"
 libc = "0.2"
-pyo3 = { version = "=0.29.2", features = ["abi3-py311"] }
-numpy = "=0.29.0"
+pyo3 = { version = "=0.29.2", features = ["abi3-py311"], optional = true }
+numpy = { version = "=0.29.0", optional = true }
 num-bigint = "0.4"
 num-rational = "0.4"
 num-traits = "0.2"

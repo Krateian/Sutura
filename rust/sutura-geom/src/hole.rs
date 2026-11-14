@@ -18,9 +18,13 @@
 //! `refinehole=True` (the Liepa subdivision) is deliberately **not** ported in
 //! this stage; the Python layer keeps those call sites on PyMeshLab.
 
+#[cfg(feature = "python")]
 use numpy::ndarray::Array2;
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArray2, PyArrayLike2};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -1081,6 +1085,7 @@ pub fn close_holes_core(
     })
 }
 
+#[cfg(feature = "python")]
 fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<V3>> {
     let v = arr.as_array();
     if v.ncols() != 3 {
@@ -1094,6 +1099,7 @@ fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<V
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[i64; 3]>> {
     let t = arr.as_array();
     if t.ncols() != 3 {
@@ -1107,6 +1113,7 @@ fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_f64<'py>(py: Python<'py>, rows: &[V3]) -> Bound<'py, PyArray2<f64>> {
     let mut a = Array2::<f64>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -1117,6 +1124,7 @@ fn rows_to_array2_f64<'py>(py: Python<'py>, rows: &[V3]) -> Bound<'py, PyArray2<
     PyArray2::from_owned_array(py, a)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyArray2<i64>> {
     let mut a = Array2::<i64>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -1134,6 +1142,7 @@ fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyA
 /// surface.  `new_faces_selected` is accepted for PyMeshLab signature parity
 /// but has no geometric effect.  Returns `(verts, tris, closed_holes,
 /// new_faces)`.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, max_hole_size=1000, self_intersection=true, new_faces_selected=false))]
 pub fn close_holes<'py>(
