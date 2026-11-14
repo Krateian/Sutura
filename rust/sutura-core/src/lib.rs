@@ -20,8 +20,10 @@ pub use mesh_io::{
     TriangleAttrStats, UnitWarning,
 };
 pub use report::{
-    detect_defects, possible_debris, removed_small_parts, DefectReport, Hole, NonManifoldRegion,
-    PossibleDebris, PossibleDebrisPart, RemovedSmallParts, SmallPart,
+    classify_json, classify_value, detect_defects, estimate_confidence_json, possible_debris,
+    removed_small_parts, repair_confidence_json, repair_confidence_value, summary_args_json,
+    summary_args_value, Confidence, DefectReport, Hole, NonManifoldRegion, PossibleDebris,
+    PossibleDebrisPart, RemovedSmallParts, SmallPart,
 };
 
 #[cfg(test)]
