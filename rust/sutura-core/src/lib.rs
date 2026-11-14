@@ -8,6 +8,7 @@ pub mod error;
 pub mod fmt;
 pub mod mesh;
 pub mod mesh_io;
+pub mod report;
 
 pub use error::{MeshError, MeshResult};
 pub use mesh::{Mesh, MeshBlock, SourceFormat};
@@ -17,6 +18,10 @@ pub use mesh_io::{
     rewrite_3mf_meshes, save_mesh, scan_bad_coordinates, scan_obj_bad_coordinates,
     scan_stl_bad_coordinates, write_3mf_single, write_obj, write_ply, write_stl_binary,
     TriangleAttrStats, UnitWarning,
+};
+pub use report::{
+    detect_defects, possible_debris, removed_small_parts, DefectReport, Hole, NonManifoldRegion,
+    PossibleDebris, PossibleDebrisPart, RemovedSmallParts, SmallPart,
 };
 
 #[cfg(test)]

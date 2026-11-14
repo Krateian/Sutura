@@ -14,7 +14,29 @@ TODO(rust): port rule F into ``sutura_geom``'s diagnosis ``part_report`` so the
 signal has one source; kept in Python here because extending the Rust report
 needs new plumbing.
 """
+import os
+
 import numpy as np
+
+_REPORT_CORE = None
+_REPORT_CORE_TRIED = False
+
+
+def _rust_core():
+    """Optional sutura_core_py for SUTURA_REPORT_ENGINE=rust."""
+    global _REPORT_CORE, _REPORT_CORE_TRIED
+    if os.environ.get('SUTURA_REPORT_ENGINE', 'python').strip().lower() != 'rust':
+        return None
+    if _REPORT_CORE_TRIED:
+        return _REPORT_CORE
+    _REPORT_CORE_TRIED = True
+    try:
+        import sutura_core_py as mod
+        _REPORT_CORE = mod
+    except Exception:
+        _REPORT_CORE = None
+    return _REPORT_CORE
+
 
 MAX_REPORTED = 32              # capped per-component list in the report
 MAX_DISTANCE_SAMPLES = 20000   # closest_points query budget per component
@@ -145,6 +167,11 @@ def removed_small_parts(verts, tris, min_faces, cap=MAX_REPORTED):
     nothing is removed. Each part carries face count, bounding-box size (mm and
     % of the model) and the distance to the main (largest) body.
     """
+    _core = _rust_core()
+    if _core is not None and cap == MAX_REPORTED:
+        return _core.debris_removed_small_parts(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int32), min_faces)
     tab = _tables(verts, tris)
     if tab is None:
         return None
@@ -184,6 +211,11 @@ def possible_debris(verts, tris, min_faces=8, cap=MAX_REPORTED, tau=TAU_VOL):
     or None. Components with fewer than ``min_faces`` triangles are excluded --
     those are the ones the Stage-1 ``<min_faces`` removal already reports.
     """
+    _core = _rust_core()
+    if _core is not None and cap == MAX_REPORTED:
+        return _core.debris_possible_debris(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int32), min_faces, tau)
     tab = _tables(verts, tris)
     if tab is None or tab['n_comp'] <= 1:
         return None
