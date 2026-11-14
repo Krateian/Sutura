@@ -183,14 +183,37 @@ jobs:
           if [ -d wheels-cand ]; then cp wheels-cand/*.whl cand-wheels/; else cp wheels-base/*.whl cand-wheels/; fi
           python3 -m venv cand-venv
           cand-venv/bin/pip install --quiet -r cand/requirements.txt cand-wheels/*.whl
+      # Large bench115 meshes peak at ~6.3 GB of process-tree RSS (measured
+      # locally on fountain-basin); with two venvs and page cache the 16 GB
+      # runner has been shut down mid-shard (exit 143).  Extra swap on the
+      # roomy /mnt disk keeps a spike from killing the runner.
+      - name: Extra swap on /mnt
+        run: |
+          if [ -d /mnt ] && [ "$(df -Pm /mnt | awk 'NR==2{print $4}')" -gt 20000 ]; then
+            sudo fallocate -l 12G /mnt/sutura-swap && sudo chmod 600 /mnt/sutura-swap
+            sudo mkswap /mnt/sutura-swap >/dev/null && sudo swapon /mnt/sutura-swap
+          fi
+          free -m | awk 'NR>1{print $1, $2, $3}'
       - name: Run shard
         run: |
-          tools-venv/bin/python tools/scripts/gh_mesh_shard.py
+          # Numeric-only memory trace in the live job log (epoch, used MB,
+          # swap used MB, free disk MB on the workspace) so a runner that dies
+          # mid-shard still leaves its last readings behind.
+          ( while true; do
+              echo "mem $(date +%s) $(free -m | awk '/^Mem:/{print $3}') $(free -m | awk '/^Swap:/{print $3}') $(df -Pm . | awk 'NR==2{print $4}')"
+              sleep 60
+            done ) &
+          sampler=$!
+          rc=0
+          tools-venv/bin/python tools/scripts/gh_mesh_shard.py || rc=$?
+          kill "$sampler" 2>/dev/null || true
+          exit "$rc"
       - name: Sanitized error tail on failure
         if: failure()
         run: |
           [ -f error.json ] && cat error.json >> "$GITHUB_STEP_SUMMARY" || true
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: 'summary-${{ matrix.set }}-${{ matrix.mode }}-${{ matrix.shard }}'
           path: |
