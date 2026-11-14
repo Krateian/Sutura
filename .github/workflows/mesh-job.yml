@@ -89,10 +89,23 @@ jobs:
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
       - name: Build Rust CLI
         run: cargo build --release -p sutura-cli
+      - name: Build bridge wheel (if the candidate has sutura-py)
+        id: bridge
+        run: |
+          if [ -f rust/sutura-py/Cargo.toml ]; then
+            (cd rust/sutura-py && ../../venv/bin/maturin build --release --out dist)
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "candidate has no sutura-py crate; bridge wheel skipped"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/upload-artifact@v4
         with: { name: wheel-cand, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
       - uses: actions/upload-artifact@v4
         with: { name: sutura-cli-cand, path: rust/target/release/sutura, retention-days: 3 }
+      - uses: actions/upload-artifact@v4
+        if: steps.bridge.outputs.present == 'true'
+        with: { name: wheel-cand-py, path: rust/sutura-py/dist/*.whl, retention-days: 3 }
   # The harness, the shard/board scripts and the geometry kernel they import
   # come from the workflow's own commit (github.sha), never from base/cand:
   # an older base ref (e.g. a release tag) predates these tools entirely.
@@ -187,6 +200,10 @@ jobs:
       - uses: actions/download-artifact@v4
         if: inputs.candidate_ref == ''
         with: { name: sutura-cli-base, path: cand-bin }
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        if: inputs.candidate_ref != ''
+        with: { name: wheel-cand-py, path: wheels-cand-py }
       - name: Fresh venvs with their own wheel
         run: |
           python3 -m venv tools-venv
@@ -197,6 +214,10 @@ jobs:
           if [ -d wheels-cand ]; then cp wheels-cand/*.whl cand-wheels/; else cp wheels-base/*.whl cand-wheels/; fi
           python3 -m venv cand-venv
           cand-venv/bin/pip install --quiet -r cand/requirements.txt cand-wheels/*.whl
+          if [ -d wheels-cand-py ]; then
+            cand-venv/bin/pip install --quiet wheels-cand-py/*.whl
+            cand-venv/bin/python -c "import sutura_core_py"
+          fi
       - name: Mark Rust CLI executable
         if: matrix.mode == 'io_parity'
         run: chmod +x cand-bin/sutura
