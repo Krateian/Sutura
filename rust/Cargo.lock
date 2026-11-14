@@ -1276,6 +1276,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sutura-core"
+version = "0.1.0"
+dependencies = [
+ "sutura-geom",
+]
+
+[[package]]
 name = "sutura-geom"
 version = "0.1.0"
 dependencies = [
