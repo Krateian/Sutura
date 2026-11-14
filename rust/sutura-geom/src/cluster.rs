@@ -16,9 +16,13 @@
 //! * unreferenced representatives are dropped; the output order is
 //!   deterministic (first-appearance cell order, faces in input order).
 
+#[cfg(feature = "python")]
 use numpy::ndarray::Array2;
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArray2, PyArrayLike2};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
@@ -185,6 +189,7 @@ fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyA
 ///
 /// `threshold` is the absolute cell size in model units.  Returns
 /// `(verts, tris, faces_in, faces_out)`.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, threshold))]
 pub fn cluster_decimate<'py>(
