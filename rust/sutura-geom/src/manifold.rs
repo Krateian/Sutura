@@ -701,6 +701,13 @@ pub fn stage2_rebuild_core(
             Manifold::batch_boolean(&kept, OpType::Add)
         };
         rep.volume_after_union = Some(cur.volume());
+        // The `Add` union reorients every part outward, so it turns a genuine
+        // inner cavity into solid and the union volume grows past the
+        // cavity-aware `volume_before`. Keep the whole oriented solid instead,
+        // but only when nothing was dropped (a kept `whole` would resurrect
+        // debris the filter already removed) and the input really has an
+        // inverted component — a buried *positive* shell never grows the
+        // volume and is left to the union as before.
         if dropped == 0
             && cur.volume() - volume_before > CAVITY_VOLUME_REL_TOL * volume_before.abs()
             && has_inverted_component(v, &tu)
@@ -712,10 +719,20 @@ pub fn stage2_rebuild_core(
                 1.0
             };
             rep.cavity_bbox_ratio = Some(bbox_ratio);
+            // A cavity must be a meaningful pocket, not a near-copy of the
+            // body: reject when the largest inverted shell is not clearly
+            // smaller than the body's bounding box (39344 interior).
             if body_diag <= 0.0 || cav_diag >= CAVITY_MAX_BBOX_RATIO * body_diag {
                 rep.cavity_preserved = Some(false);
                 rep.cavity_rejected_bbox = Some(true);
             } else {
+                // Keep the cavity only when it does not add self-intersections:
+                // a clean void does not cross its host shell, so the whole and
+                // the union report the same exact SI count. A higher whole
+                // count means the "cavity" shells cross the body or each other
+                // (44041), and the union is the better result. Part count is
+                // deliberately NOT a criterion: a clean cavity legitimately
+                // adds one shell (43766).
                 let (uv, ut) = mesh_to_f64(&cur);
                 let (_, si_union, skipped_union) = crate::self_intersections_core(&uv, &ut);
                 let (_, si_whole, skipped_whole) = crate::self_intersections_core(v, &tu);
