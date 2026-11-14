@@ -96,6 +96,25 @@ _HEAD_MARGIN = 0.15              # |p_mech - 0.5| below this counts as no opinio
 _CLASSIC_STRONG = 0.70           # classic class-score floor for the fallback
 
 
+def _rust_features(verts, tris):
+    """Rust numeric features when the shared kernel is available (default).
+
+    The classifier's heavy numeric core lives in sutura_geom::classify and is
+    exported as ``classifier_features``. Keeping the feature computation in one
+    place removes the NumPy eigh/dot last-bit drift between the Rust and Python
+    engines; the NumPy path below stays as the fallback for old wheels.
+    """
+    try:
+        import sutura_geom
+        if not hasattr(sutura_geom, 'classifier_features'):
+            return None
+        return sutura_geom.classifier_features(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int32))
+    except Exception:
+        return None
+
+
 def _sigmoid(x):
     """Stable logistic sigmoid."""
     x = np.clip(x, -50.0, 50.0)
@@ -489,9 +508,18 @@ def classify_mesh(verts, tris, extra_features=False):
     baked weights: the classic decision verbatim (metrics gain the RANSAC
     features).
     """
-    near90, flat, gentle = _dihedral_stats(verts, tris)
-    plane_count, plane_area = _ransac_plane_features(verts, tris)
-    developable = _curvature_developable_fraction(verts, tris)
+    features = _rust_features(verts, tris)
+    if features is not None:
+        near90 = float(features['near90'])
+        flat = float(features['flat'])
+        gentle = float(features['gentle'])
+        plane_count = int(features['plane_count'])
+        plane_area = float(features['plane_area'])
+        developable = float(features['developable_fraction'])
+    else:
+        near90, flat, gentle = _dihedral_stats(verts, tris)
+        plane_count, plane_area = _ransac_plane_features(verts, tris)
+        developable = _curvature_developable_fraction(verts, tris)
     mechanical, organic = _class_scores(near90, flat, gentle)
 
     metrics = {

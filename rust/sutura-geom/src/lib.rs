@@ -22,6 +22,7 @@ pub mod antipodal;
 pub mod arrangement;
 pub mod cdt2d;
 pub mod cdt3d;
+pub mod classify;
 mod budget;
 mod cancel;
 #[cfg(feature = "python")]
@@ -48,6 +49,7 @@ pub mod predicates3d;
 pub mod profile;
 pub mod rbf;
 pub mod raycast;
+pub mod rng;
 pub mod resample;
 pub mod roi;
 pub mod shell;
@@ -2872,6 +2874,26 @@ fn triangulate_annulus<'py>(
 }
 
 #[cfg(feature = "python")]
+/// Numeric classifier features shared with the Python v2 engine.
+#[pyfunction]
+fn classifier_features<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let f = crate::classify::features(&rv, &rt);
+    let d = PyDict::new(py);
+    d.set_item("near90", f.near90)?;
+    d.set_item("flat", f.flat)?;
+    d.set_item("gentle", f.gentle)?;
+    d.set_item("plane_count", f.plane_count)?;
+    d.set_item("plane_area", f.plane_area)?;
+    d.set_item("developable_fraction", f.developable_fraction)?;
+    Ok(d)
+}
+
+#[cfg(feature = "python")]
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
@@ -2894,6 +2916,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(closest_points, m)?)?;
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
+    m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
     m.add_function(wrap_pyfunction!(si_faces_exact, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;

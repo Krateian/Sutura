@@ -75,6 +75,19 @@ _MECH_FLOOR = 0.7
 _ORG_FLOOR = 0.5
 
 
+def _rust_features(verts, tris):
+    """Rust numeric features when available (shared sutura_geom kernel)."""
+    try:
+        import sutura_geom
+        if not hasattr(sutura_geom, 'classifier_features'):
+            return None
+        return sutura_geom.classifier_features(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int32))
+    except Exception:
+        return None
+
+
 def _sigmoid(x):
     """Stable logistic sigmoid."""
     x = np.clip(x, -50.0, 50.0)
@@ -156,7 +169,13 @@ def classify_mesh(verts, tris):
     metrics: {'near90', 'flat', 'gentle', 'mechanical_score',
               'organic_score', 'leaning' (unknown only)}
     """
-    near90, flat, gentle = _dihedral_stats(verts, tris)
+    features = _rust_features(verts, tris)
+    if features is not None:
+        near90 = float(features['near90'])
+        flat = float(features['flat'])
+        gentle = float(features['gentle'])
+    else:
+        near90, flat, gentle = _dihedral_stats(verts, tris)
     mechanical, organic = _class_scores(near90, flat, gentle)
     metrics = {
         'near90': round(near90, 2),

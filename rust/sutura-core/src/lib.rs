@@ -14,7 +14,7 @@ pub mod p_weld;
 pub mod stage1;
 pub mod stage2;
 pub mod report;
-pub mod rng;
+pub use sutura_geom::rng;
 pub mod tiers;
 
 pub use error::{MeshError, MeshResult};
