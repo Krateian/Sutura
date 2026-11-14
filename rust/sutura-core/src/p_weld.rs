@@ -43,7 +43,33 @@ pub fn reload_strict_holes_nm(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> (usize, 
     (d.holes.len(), d.non_manifold.len())
 }
 
-fn pinched_count(vrows: &[[f32; 3]], trows: &[[i64; 3]]) -> usize {
+pub fn spacing_f32(x: f32) -> f32 {
+    if x == 0.0 {
+        return f32::from_bits(1);
+    }
+    let a = x.abs();
+    let next = f32::from_bits(a.to_bits() + 1);
+    (next - a).abs()
+}
+
+fn index_boundary_nm(tris: &[[i64; 3]]) -> (usize, usize) {
+    let mut edges: HashMap<(i64, i64), usize> = HashMap::new();
+    for t in tris {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let k = if a <= b { (a, b) } else { (b, a) };
+            *edges.entry(k).or_insert(0) += 1;
+        }
+    }
+    let mut boundary = 0;
+    let mut nm = 0;
+    for c in edges.values() {
+        if *c == 1 { boundary += 1; }
+        if *c > 2 { nm += 1; }
+    }
+    (boundary, nm)
+}
+
+pub fn pinched_count(vrows: &[[f32; 3]], trows: &[[i64; 3]]) -> usize {
     let nv = vrows.len();
     let nf = trows.len();
     if nf == 0 || nv == 0 {
@@ -142,7 +168,7 @@ fn close_small_holes(v: &[[f64; 3]], t: &[[i64; 3]]) -> (Vec<[f32; 3]>, Vec<[i64
     remove_unreferenced_vertices_core(&ov32, &ot)
 }
 
-fn separate_weld_collisions(v: &[[f64; 3]], t: &[[i64; 3]]) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+pub fn separate_weld_collisions(v: &[[f64; 3]], t: &[[i64; 3]]) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
     let v32: Vec<[f32; 3]> = v.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
     let (_, inv) = match weld_vertices_core(&v32) {
         Ok(x) => x,
@@ -157,11 +183,14 @@ fn separate_weld_collisions(v: &[[f64; 3]], t: &[[i64; 3]]) -> (Vec<[f32; 3]>, V
     order.sort_by_key(|&i| inv[i]);
     let mut pos = vec![0usize; inv.len()];
     for (p, &i) in order.iter().enumerate() { pos[i] = p; }
-    let mut group_start = vec![0usize; counts.len()];
+    let ngroups = counts.keys().copied().max().unwrap_or(-1) as usize + 1;
+    let mut count_vec = vec![0usize; ngroups];
+    for (&g, &c) in &counts { count_vec[g as usize] = c; }
+    let mut group_start = vec![0usize; ngroups];
     let mut acc = 0usize;
-    for (g, c) in counts.iter() {
-        group_start[*g as usize] = acc;
-        acc += c;
+    for g in 0..ngroups {
+        group_start[g] = acc;
+        acc += count_vec[g];
     }
     let rank: Vec<f64> = (0..inv.len())
         .map(|i| (pos[i] - group_start[inv[i] as usize]) as f64)
@@ -172,8 +201,15 @@ fn separate_weld_collisions(v: &[[f64; 3]], t: &[[i64; 3]]) -> (Vec<[f32; 3]>, V
         let mut d = v.to_vec();
         for i in 0..d.len() {
             if nonrep[i] {
-                let mag = v32[i][0].abs().max(v32[i][1].abs()).max(v32[i][2].abs()).max(1.0) as f64;
-                let ulp = (mag * f64::from(f32::EPSILON)).max(1e-7);
+                let mag = [
+                    (v32[i][0].abs() as f64).max(1.0),
+                    (v32[i][1].abs() as f64).max(1.0),
+                    (v32[i][2].abs() as f64).max(1.0),
+                ];
+                let ulp = mag
+                    .iter()
+                    .map(|&m| spacing_f32(m as f32) as f64)
+                    .fold(1e-7f64, f64::max);
                 let step = ulp * rank[i] * 2f64.powi(attempt as i32 + 1);
                 d[i][0] += step * dir;
                 d[i][1] += step * dir;
@@ -209,8 +245,8 @@ pub fn p_weld_final(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> PWeldResult {
     });
     let t32: Vec<[i32; 3]> = tris.iter().map(|t| [t[0] as i32, t[1] as i32, t[2] as i32]).collect();
     let v32: Vec<[f32; 3]> = verts.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
-    let d = detect_defects(&v32, &t32, false);
-    if d.holes.is_empty() && d.non_manifold.is_empty() {
+    let (orig_boundary, orig_nm) = index_boundary_nm(tris);
+    if orig_boundary == 0 && orig_nm == 0 {
         let (cv, ct) = separate_weld_collisions(verts, tris);
         let cv64: Vec<[f64; 3]> = cv.iter().map(|p| [p[0] as f64, p[1] as f64, p[2] as f64]).collect();
         let (ch, cnm, cn2m) = reload_topology(&cv64, &ct);

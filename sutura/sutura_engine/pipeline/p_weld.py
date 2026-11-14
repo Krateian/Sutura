@@ -23,7 +23,7 @@ _PWELD_CORE_TRIED = False
 
 def _rust_core():
     global _PWELD_CORE, _PWELD_CORE_TRIED
-    if os.environ.get('SUTURA_STAGE_ENGINE', 'python').strip().lower() != 'rust':
+    if os.environ.get('SUTURA_PWELD_ENGINE', os.environ.get('SUTURA_STAGE_ENGINE', 'python')).strip().lower() != 'rust':
         return None
     if _PWELD_CORE_TRIED:
         return _PWELD_CORE
