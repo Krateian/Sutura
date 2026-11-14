@@ -1366,6 +1366,7 @@ fn rle(mask: &[u8]) -> Vec<(usize, usize, u8)> {
     out
 }
 
+#[cfg(feature = "python")]
 fn channel_dict<'py>(
     py: Python<'py>,
     count: Option<i64>,
@@ -1385,6 +1386,7 @@ fn channel_dict<'py>(
     Ok(d)
 }
 
+#[cfg(feature = "python")]
 fn mask_dict<'py>(py: Python<'py>, mask: &[u8], encoding: &str) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("encoding", encoding)?;
@@ -1405,6 +1407,7 @@ fn mask_dict<'py>(py: Python<'py>, mask: &[u8], encoding: &str) -> PyResult<Boun
     Ok(d)
 }
 
+#[cfg(feature = "python")]
 pub fn report_to_pydict<'py>(
     py: Python<'py>,
     r: &DiagReport,

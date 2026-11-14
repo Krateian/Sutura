@@ -28,7 +28,6 @@ mod cancel;
 pub mod cluster;
 #[cfg(feature = "python")]
 pub mod decimate;
-#[cfg(feature = "python")]
 pub mod diagnosis;
 pub mod dressing;
 pub mod dual_contour;
