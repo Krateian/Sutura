@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Sutura Authors
 # SPDX-License-Identifier: Apache-2.0
 """graft tier (P1a split). Moved verbatim from sutura/repair.py; no logic change."""
+import json
 import os
 
 import numpy as np
@@ -12,6 +13,9 @@ from sutura_engine.pipeline.p_weld import (
     _repair_welded_topology, weld_reload_equivalent,
 )
 from sutura_engine.pipeline.presets import GRAFT_MAX_FACES, GRAFT_TIMEOUT
+from sutura_engine.pipeline.tiers.engine import (
+    guard_params, tier_core, tier_engine,
+)
 
 
 from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
@@ -19,6 +23,82 @@ from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
 
 def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
                intensity=None, spec=None):
+    """Graft tier entry point (Python by default, Rust gate when opted in)."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v,
+                         dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
+    if not graft:
+        return v, t, after
+    core = tier_core()
+    if tier_engine('graft') != 'rust' or core is None:
+        return _graft_tier_python(
+            v, t, input_v, input_t, after, stats, tmpdir, graft, intensity,
+            spec)
+    cap = (getattr(spec, 'graft_max_faces', GRAFT_MAX_FACES)
+           if spec is not None else GRAFT_MAX_FACES)
+    if cap is not None and len(input_t) > int(cap):
+        return _graft_tier_python(
+            v, t, input_v, input_t, after, stats, tmpdir, graft, intensity,
+            spec)
+    timeout = (getattr(spec, 'graft_timeout', GRAFT_TIMEOUT)
+               if spec is not None else GRAFT_TIMEOUT)
+    return _graft_tier_rust(
+        v, t, input_v, input_t, after, stats, tmpdir, intensity, spec, cap,
+        timeout, core)
+
+
+def _graft_tier_rust(v, t, input_v, input_t, after, stats, tmpdir, intensity,
+                     spec, cap, timeout, core):
+    """Rust-backed Graft gate around the Python shell-wrap candidate."""
+    stats = stats if stats is not None else {}
+    payload = None
+    grec = {}
+    cand_v = cand_t = None
+    with method_health.tier_guard('graft', 'tier') as _g:
+        try:
+            from sutura_engine import graft as _graft
+        except Exception:  # noqa: BLE001
+            import shell_wrap as _graft
+        cand_v, cand_t, grec = _graft.shell_wrap(
+            input_v, input_t, hybrid=True, intensity=intensity,
+            time_budget=timeout)
+        params = {
+            'max_faces': (int(cap) if cap is not None else None),
+            'time_budget': (float(timeout) if timeout else None),
+            'stage1_holes': (stats.get('stage1') or {}).get('holes_remaining'),
+            'stage1_nm': (stats.get('stage1') or {}).get(
+                'non_manifold_edges_remaining'),
+            'guard': guard_params('graft'),
+        }
+        payload = core.tier_graft_decide(
+            np.ascontiguousarray(v, dtype=np.float64),
+            np.ascontiguousarray(t, dtype=np.int64),
+            np.ascontiguousarray(input_v, dtype=np.float64),
+            np.ascontiguousarray(input_t, dtype=np.int64),
+            np.ascontiguousarray(cand_v, dtype=np.float64),
+            np.ascontiguousarray(cand_t, dtype=np.int64),
+            json.dumps(grec, default=str), json.dumps(params))
+    if _g.error is not None or payload is None:
+        rec = {'tier': 'graft', 'ran': False, 'adopted': False,
+               'reason': 'error: %s: %s' % (type(_g.error).__name__, _g.error)}
+        stats['graft'] = rec
+        return v, t, after
+    out_v, out_t, rec_json = payload
+    rec = json.loads(rec_json)
+    stats['graft'] = rec
+    if not rec.get('adopted'):
+        return v, t, after
+    out_v = np.asarray(out_v, dtype=np.float64)
+    out_t = np.asarray(out_t, dtype=np.int64)
+    return (out_v, out_t,
+            topology.mesh_topology(np.asarray(out_v, dtype=np.float32),
+                                   np.asarray(out_t, dtype=np.int32)))
+
+
+def _graft_tier_python(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
+                       intensity=None, spec=None):
     """Morphology shell-wrap tier for registry method 13 (Graft).
 
     ``v``/``t`` is the result the ladder currently holds and

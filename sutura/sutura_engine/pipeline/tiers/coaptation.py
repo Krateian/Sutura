@@ -27,6 +27,7 @@ strictly below the baseline's measurable count, and no worse on holes,
 non-manifold edges or component count.  Otherwise the current result is
 returned byte-identical.  Never raises.
 """
+import json
 import time
 
 import numpy as np
@@ -37,6 +38,9 @@ from sutura_engine.pipeline.p_weld import reload_strict_holes_nm
 from sutura_engine.pipeline.presets import (
     COAPTATION_DEFAULT_WORK, COAPTATION_MAX_FACES, COAPTATION_SEAM_ULP_K,
     COAPTATION_WORK_BY_INTENSITY,
+)
+from sutura_engine.pipeline.tiers.engine import (
+    guard_params, tier_core, tier_engine,
 )
 
 
@@ -169,6 +173,70 @@ from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
 
 def coaptation_tier(v, t, input_v, input_t, after, stats, tmpdir,
                     coaptation=False, intensity=None, spec=None):
+    """Coaptation tier entry point (Python by default, Rust when opted in)."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v,
+                         dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
+    if not coaptation:
+        return v, t, after
+    core = tier_core()
+    if tier_engine('coaptation') != 'rust' or core is None:
+        return _coaptation_tier_python(
+            v, t, input_v, input_t, after, stats, tmpdir, coaptation,
+            intensity, spec)
+    return _coaptation_tier_rust(
+        v, t, input_v, input_t, after, stats, tmpdir, intensity, spec, core)
+
+
+def _coaptation_tier_rust(v, t, input_v, input_t, after, stats, tmpdir,
+                          intensity, spec, core):
+    """Rust-backed Coaptation tier (same ULP weld, gates and report keys)."""
+    stats = stats if stats is not None else {}
+    cap = (getattr(spec, 'coaptation_max_faces', COAPTATION_MAX_FACES)
+           if spec is not None else COAPTATION_MAX_FACES)
+    key = (intensity or getattr(spec, 'base', None)
+           or getattr(spec, 'name', None))
+    work_limit = int(getattr(
+        spec, 'coaptation_work',
+        COAPTATION_WORK_BY_INTENSITY.get(key, COAPTATION_DEFAULT_WORK))
+        if spec is not None else
+        COAPTATION_WORK_BY_INTENSITY.get(key, COAPTATION_DEFAULT_WORK))
+    drill = json.dumps({
+        'cap': (int(cap) if cap is not None else 0),
+        'work_limit': work_limit,
+        'ulp_k': int(COAPTATION_SEAM_ULP_K),
+        'input_faces': int(len(input_t)),
+        'intensity': key,
+        'guard': guard_params('coaptation'),
+    })
+    payload = None
+    with method_health.tier_guard('coaptation', 'tier') as _g:
+        payload = core.tier_coaptation(
+            np.ascontiguousarray(v, dtype=np.float64),
+            np.ascontiguousarray(t, dtype=np.int64),
+            np.ascontiguousarray(input_v, dtype=np.float64),
+            np.ascontiguousarray(input_t, dtype=np.int64), drill)
+    if _g.error is not None or payload is None:
+        rec = {'tier': 'coaptation', 'ran': False, 'adopted': False,
+               'reason': 'error: %s: %s' % (type(_g.error).__name__, _g.error)}
+        stats['coaptation'] = rec
+        return v, t, after
+    out_v, out_t, rec_json = payload
+    rec = json.loads(rec_json)
+    stats['coaptation'] = rec
+    if not rec.get('adopted'):
+        return v, t, after
+    out_v = np.asarray(out_v, dtype=np.float64)
+    out_t = np.asarray(out_t, dtype=np.int64)
+    return (out_v, out_t,
+            topology.mesh_topology(np.asarray(out_v, dtype=np.float32),
+                                   np.asarray(out_t, dtype=np.int32)))
+
+
+def _coaptation_tier_python(v, t, input_v, input_t, after, stats, tmpdir,
+                            coaptation=False, intensity=None, spec=None):
     """Tolerance seam-weld + per-body union tier (registry method #19).
 
     ``v``/``t`` is the result the ladder currently holds and

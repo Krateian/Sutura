@@ -293,18 +293,11 @@ pub fn edge_table<'py>(
     ))
 }
 
-/// Remove duplicate faces (matching VCGLib / PyMeshLab meshing_remove_duplicate_faces).
-#[cfg(feature = "python")]
-#[pyfunction]
-#[pyo3(signature = (tris))]
-pub fn remove_duplicate_faces<'py>(
-    py: Python<'py>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-) -> PyResult<Bound<'py, PyArray2<i64>>> {
-    let trows = read_i64_rows(&tris)?;
+/// Pure duplicate-face removal (no Python).
+pub fn remove_duplicate_faces_core(trows: &[[i64; 3]]) -> Vec<[i64; 3]> {
     let nf = trows.len();
     if nf <= 1 {
-        return Ok(rows_to_array2_i64(py, &trows));
+        return trows.to_vec();
     }
     let keys: Vec<[i64; 3]> = trows
         .iter()
@@ -315,10 +308,19 @@ pub fn remove_duplicate_faces<'py>(
         })
         .collect();
     let kept_indices = unique_rows_i64_last(&keys);
-    if kept_indices.len() == nf {
-        return Ok(rows_to_array2_i64(py, &trows));
-    }
-    let out: Vec<[i64; 3]> = kept_indices.iter().map(|&i| trows[i]).collect();
+    kept_indices.iter().map(|&i| trows[i]).collect()
+}
+
+/// Remove duplicate faces (matching VCGLib / PyMeshLab meshing_remove_duplicate_faces).
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (tris))]
+pub fn remove_duplicate_faces<'py>(
+    py: Python<'py>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let trows = read_i64_rows(&tris)?;
+    let out = remove_duplicate_faces_core(&trows);
     Ok(rows_to_array2_i64(py, &out))
 }
 

@@ -187,6 +187,7 @@ fn mesh_to_f64(m: &Manifold) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
     (verts, tris)
 }
 
+#[cfg(feature = "python")]
 fn parse_verts2<'py>(a: &PyArrayLike2<'py, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]>> {
     let v = a.as_array();
     if v.ncols() != 3 {
@@ -197,6 +198,7 @@ fn parse_verts2<'py>(a: &PyArrayLike2<'py, f64, AllowTypeChange>) -> PyResult<Ve
         .collect())
 }
 
+#[cfg(feature = "python")]
 fn parse_tris2<'py>(
     a: &PyArrayLike2<'py, i32, AllowTypeChange>,
     n: usize,
@@ -218,6 +220,7 @@ fn parse_tris2<'py>(
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn f32_arrays<'py>(
     py: Python<'py>,
     verts: &[[f64; 3]],
@@ -240,6 +243,7 @@ fn f32_arrays<'py>(
     ))
 }
 
+#[cfg(feature = "python")]
 fn f64_arrays<'py>(
     py: Python<'py>,
     verts: &[[f64; 3]],
@@ -259,6 +263,7 @@ fn f64_arrays<'py>(
     ))
 }
 
+#[cfg(feature = "python")]
 fn parse_point3<'py>(a: &PyArrayLike1<'py, f64, AllowTypeChange>) -> PyResult<[f64; 3]> {
     let v = a.as_array();
     if v.len() != 3 {
@@ -269,6 +274,7 @@ fn parse_point3<'py>(a: &PyArrayLike1<'py, f64, AllowTypeChange>) -> PyResult<[f
     Ok([v[0], v[1], v[2]])
 }
 
+#[cfg(feature = "python")]
 fn parse_frame<'py>(a: &PyArrayLike2<'py, f64, AllowTypeChange>) -> PyResult<[[f64; 3]; 3]> {
     let v = a.as_array();
     if v.nrows() != 3 || v.ncols() != 3 {
@@ -572,6 +578,7 @@ fn largest_component(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<[f64; 3]>,
     comps.into_iter().nth(best).unwrap()
 }
 
+#[cfg(feature = "python")]
 fn set_report_common(
     report: &Bound<'_, PyDict>,
     input_v: usize,
@@ -906,6 +913,37 @@ fn union_ladder(
     }
 }
 
+/// Pure union of two f64 meshes (no Python).  Returns `(verts, tris)`.
+pub fn union_pair_core(
+    av: &[[f64; 3]],
+    at: &[[usize; 3]],
+    bv: &[[f64; 3]],
+    bt: &[[usize; 3]],
+) -> Result<(Vec<[f64; 3]>, Vec<[usize; 3]>), String> {
+    let a = f64_mesh(av, at).map_err(|e| format!("manifold import failed: {e:?}"))?;
+    let b = f64_mesh(bv, bt).map_err(|e| format!("manifold import failed: {e:?}"))?;
+    let out = a.union(&b);
+    if out.status().is_err() {
+        return Err(format!("manifold union failed: {:?}", out.status()));
+    }
+    Ok(mesh_to_f64(&out))
+}
+
+/// Pure watertight/manifold verdict (the `watertight_check` body).
+pub fn watertight_check_core(verts: &[[f64; 3]], tris: &[[i32; 3]]) -> bool {
+    if verts.is_empty() || tris.is_empty() {
+        return false;
+    }
+    let t: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f32_mesh(verts, &t))) {
+        Ok(Ok(m)) => m.status().is_ok() && !m.is_empty(),
+        _ => false,
+    }
+}
+
 /// Union two f64 meshes (Graft local stitch).
 #[cfg(feature = "python")]
 #[pyfunction]
@@ -924,18 +962,8 @@ pub fn union_pair<'py>(
     let a_t = parse_tris2(&at, a_v.len())?;
     let b_v = parse_verts2(&bv)?;
     let b_t = parse_tris2(&bt, b_v.len())?;
-    let a = f64_mesh(&a_v, &a_t)
-        .map_err(|e| PyValueError::new_err(format!("manifold import failed: {e:?}")))?;
-    let b = f64_mesh(&b_v, &b_t)
-        .map_err(|e| PyValueError::new_err(format!("manifold import failed: {e:?}")))?;
-    let out = a.union(&b);
-    if out.status().is_err() {
-        return Err(PyValueError::new_err(format!(
-            "manifold union failed: {:?}",
-            out.status()
-        )));
-    }
-    let (ov, ot) = mesh_to_f64(&out);
+    let (ov, ot) = union_pair_core(&a_v, &a_t, &b_v, &b_t)
+        .map_err(PyValueError::new_err)?;
     f64_arrays(py, &ov, &ot)
 }
 

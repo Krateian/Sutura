@@ -188,6 +188,26 @@
       "path": "si_escalation.baseline.vol_pct",
       "class": "C",
       "decimals": 2
+    },
+    {
+      "path": "*graft.input_coverage",
+      "class": "C",
+      "decimals": 2
+    },
+    {
+      "path": "*graft.hausdorff_one_sided",
+      "class": "C",
+      "decimals": 3
+    },
+    {
+      "path": "*graft.hausdorff_healthy",
+      "class": "C",
+      "decimals": 3
+    },
+    {
+      "path": "*graft.hausdorff_healthy_behind",
+      "class": "C",
+      "decimals": 3
     }
   ]
 }

@@ -37,7 +37,6 @@ pub mod hole;
 pub mod interval;
 pub mod lava;
 pub mod melt;
-#[cfg(feature = "python")]
 pub mod manifold;
 pub mod mincut;
 pub mod morph;

@@ -26,13 +26,20 @@ means callable without pyo3; the Python symbol surface stays unchanged.
 | antipodal winding | `antipodal::AntipodalGwn` | exists |
 | Flap fill | `flap::flap_fill` | exists |
 | Tamponade plug | `tamponade::tamponade_repair` | exists |
+| duplicate faces | `topology::remove_duplicate_faces_core` | **added** (P4 Coaptation/Graft) |
+| Manifold union | `manifold::union_pair_core` | **added** (P4 Coaptation) |
+| Manifold verdict | `manifold::watertight_check_core` | **added** (P4 Coaptation) |
 | Splint cut | `splint_cut_core_opts` | `pub(crate)`; needs `pub` before the Splint slice |
 | Graft core | `morph_close`, `resample_uniform`, `union_pair` | pyfunction only; needs a pure surface before the Graft slice |
 
 Consequences:
 
-- Tamponade and Flap no longer need exact-SI or subset wrappers from pyo3; the
-  pure cores are called from `sutura-core/src/tiers/`.
+- Tamponade, Flap, Coaptation and the Graft admission gate no longer need
+  exact-SI, subset or Manifold wrappers from pyo3; the pure cores are called
+  from `sutura-core/src/tiers/`.
+- The `manifold` module is now compiled without the `python` feature (the
+  pyo3 helpers inside it are individually gated) so `sutura-core` can use the
+  Manifold boolean and watertight cores.
 - `P-WELD` still needs `mesh_topology_core` for the pinched-vertex count; the
   weld/core subset used by the tiers is covered.
 - Stage 2 still needs `stage2_rebuild_core` for a fully Python-free core.
@@ -40,4 +47,5 @@ Consequences:
   The new tier entry points live in the `sutura_core_py` bridge
   (`tier_tamponade`, `tier_flap`, `tier_flap_debris`,
   `tier_flap_final`, `tier_flap_off_preferred`, `tier_flap_si_rose`,
-  `tier_tamponade_final`, `tier_tamponade_off_preferred`).
+  `tier_tamponade_final`, `tier_tamponade_off_preferred`, `tier_coaptation`,
+  `tier_graft_decide`).
