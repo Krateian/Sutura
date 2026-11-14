@@ -28,11 +28,13 @@ means callable without pyo3; the Python symbol surface stays unchanged.
 | Tamponade plug | `tamponade::tamponade_repair` | exists |
 | duplicate faces | `topology::remove_duplicate_faces_core` | **added** (P4 Coaptation/Graft) |
 | Manifold union | `manifold::union_pair_core` | **added** (P4 Coaptation) |
+| Repeat transplant | `manifold::boolean_transplant_core` | **added** (P4 Repeat) |
 | Manifold verdict | `manifold::watertight_check_core` | **added** (P4 Coaptation) |
 | Splint cut | `splint_cut_core_opts` | **made pub** (P4) |
 | Graft/Closing core | `morph_close_core` | **added** (P4 Closing/Proxy/Mirror) |
 | Resampling | `resample::resample_uniform_core` | **added** (P4; `resample_core` was already pure) |
 | Manifold union | `manifold::union_pair_core` | **added** (P4 Coaptation) |
+| Repeat transplant | `manifold::boolean_transplant_core` | **added** (P4 Repeat) |
 
 Consequences:
 
@@ -51,7 +53,7 @@ Consequences:
   `tier_flap_final`, `tier_flap_off_preferred`, `tier_flap_si_rose`,
   `tier_tamponade_final`, `tier_tamponade_off_preferred`, `tier_coaptation`,
   `tier_graft_decide`, `tier_cdt`, `tier_splint`,
-  `tier_closing_decide`).
+  `tier_closing_decide`, `tier_wall_decide`, `tier_repeat_decide`).
 - `cdt3d_solid_core`, `splint_cut_core_opts`, `stage2_rebuild_core`,
   `morph_close_core`, `resample_uniform_core` and `is_two_manifold` are pure
   Rust APIs.  The Closing/Proxy/Mirror tier owns the reload-honest gate; their
