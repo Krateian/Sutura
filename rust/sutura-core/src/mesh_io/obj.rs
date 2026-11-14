@@ -97,6 +97,25 @@ pub fn write_obj(path: impl AsRef<Path>, mesh: &Mesh) -> MeshResult<()> {
     Ok(())
 }
 
+/// Return a description of NaN/Inf OBJ vertex coordinates, or `None`.
+pub fn scan_obj_bad_coordinates(path: impl AsRef<Path>) -> MeshResult<Option<String>> {
+    let bytes = std::fs::read(path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    for line in text.lines() {
+        if !line.starts_with("v ") {
+            continue;
+        }
+        for tok in line.split_whitespace().skip(1).take(3) {
+            if let Ok(v) = tok.parse::<f64>() {
+                if !v.is_finite() {
+                    return Ok(Some("NaN or infinite coordinates".to_string()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// True when an OBJ references `mtllib` or `usemtl` (repair drops materials).
 pub fn obj_has_material_refs(path: impl AsRef<Path>) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
