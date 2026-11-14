@@ -13,12 +13,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 use sutura_core::{
-    check_units, detect_defects as core_detect_defects, load_mesh as core_load_mesh, load_stl,
-    parse_3mf_mesh_blocks, possible_debris as core_possible_debris, read_3mf_units,
-    read_mesh as core_read_mesh, read_obj, read_ply, read_stl,
-    removed_small_parts as core_removed_small_parts, rewrite_3mf_meshes,
-    save_mesh as core_save_mesh, scan_bad_coordinates as core_scan, write_obj, write_ply,
-    write_stl_binary, Mesh,
+    check_units, classify_json, detect_defects as core_detect_defects, estimate_confidence_json,
+    load_mesh as core_load_mesh, load_stl, parse_3mf_mesh_blocks,
+    possible_debris as core_possible_debris, read_3mf_units, read_mesh as core_read_mesh, read_obj,
+    read_ply, read_stl, removed_small_parts as core_removed_small_parts, repair_confidence_json,
+    rewrite_3mf_meshes, save_mesh as core_save_mesh, scan_bad_coordinates as core_scan,
+    summary_args_json, write_obj, write_ply, write_stl_binary, Mesh,
 };
 
 fn mesh_from_arrays<'py>(
@@ -496,6 +496,50 @@ fn debris_possible_debris_py<'py>(
     Ok(Some(d))
 }
 
+fn confidence_dict<'py>(
+    py: Python<'py>,
+    c: sutura_core::Confidence,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("score", c.score)?;
+    d.set_item("label", c.label)?;
+    let factors = PyDict::new(py);
+    for (k, v) in c.factors {
+        factors.set_item(k, v.as_i64().unwrap_or(0))?;
+    }
+    d.set_item("factors", factors)?;
+    Ok(d)
+}
+
+#[pyfunction(name = "classify")]
+fn classify_py(data_json: &str) -> PyResult<(String, Vec<String>, String)> {
+    classify_json(data_json).map_err(PyValueError::new_err)
+}
+
+#[pyfunction(name = "repair_confidence")]
+fn repair_confidence_py<'py>(py: Python<'py>, data_json: &str) -> PyResult<Bound<'py, PyDict>> {
+    let c = repair_confidence_json(data_json).map_err(PyValueError::new_err)?;
+    confidence_dict(py, c)
+}
+
+#[pyfunction(name = "estimate_confidence_pre_repair")]
+fn estimate_confidence_py<'py>(
+    py: Python<'py>,
+    signals_json: &str,
+    mech_gate: f64,
+    org_gate: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    let c = estimate_confidence_json(signals_json, mech_gate, org_gate)
+        .map_err(PyValueError::new_err)?;
+    confidence_dict(py, c)
+}
+
+#[pyfunction(name = "summary_args")]
+fn summary_args_py<'py>(py: Python<'py>, data_json: &str) -> PyResult<Bound<'py, PyTuple>> {
+    let v = summary_args_json(data_json).map_err(PyValueError::new_err)?;
+    Ok(PyTuple::new(py, v)?)
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -525,6 +569,10 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(detect_defects_py, m)?)?;
     m.add_function(wrap_pyfunction!(debris_removed_small_parts_py, m)?)?;
     m.add_function(wrap_pyfunction!(debris_possible_debris_py, m)?)?;
+    m.add_function(wrap_pyfunction!(classify_py, m)?)?;
+    m.add_function(wrap_pyfunction!(repair_confidence_py, m)?)?;
+    m.add_function(wrap_pyfunction!(estimate_confidence_py, m)?)?;
+    m.add_function(wrap_pyfunction!(summary_args_py, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
