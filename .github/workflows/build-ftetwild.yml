@@ -1,0 +1,67 @@
+name: Build fTetWild Binaries
+
+# Builds standalone deterministic fTetWild binaries (third_party/ftetwild)
+# for Linux x86_64 and macOS arm64. Caches build outputs with ccache and
+# uploads binary artifacts. Not yet hooked to GitHub Releases.
+
+on:
+  push:
+    paths:
+      - 'third_party/ftetwild/**'
+      - '.github/workflows/build-ftetwild.yml'
+  pull_request:
+    paths:
+      - 'third_party/ftetwild/**'
+      - '.github/workflows/build-ftetwild.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build fTetWild (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            os: ubuntu-22.04
+          - target: macos-arm64
+            os: macos-14
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev ccache ninja-build
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install gmp ccache ninja
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ftetwild-${{ matrix.target }}
+          max-size: 500M
+
+      - name: Build fTetWild binary
+        run: |
+          bash third_party/ftetwild/build.sh
+
+      - name: Smoke test binary
+        run: |
+          ./third_party/ftetwild/bin/ftetwild --help
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ftetwild-${{ matrix.target }}
+          path: third_party/ftetwild/bin/ftetwild
+          if-no-files-found: error

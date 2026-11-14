@@ -22,7 +22,11 @@ a crash.
 """
 import json
 import os
+import shutil
+import signal
+import subprocess
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -101,12 +105,145 @@ def _import_pytetwild():
         return pytetwild
 
 
-def run_bridge(src, dst, params=None):
+def _find_binary():
+    try:
+        from sutura.ftetwild_manager import find_ftetwild_binary
+        return find_ftetwild_binary()
+    except Exception:
+        _this = os.path.dirname(os.path.abspath(__file__))
+        _repo = os.path.dirname(_this)
+        if _repo not in sys.path:
+            sys.path.insert(0, _repo)
+        try:
+            from sutura.ftetwild_manager import find_ftetwild_binary
+            return find_ftetwild_binary()
+        except Exception:
+            return None
+
+
+def run_binary(bin_path, src, dst, params=None, timeout=180):
+    """Run the deterministic standalone fTetWild CLI binary via subprocess.
+
+    Enforces --max-threads 1 for bitwise determinism and reads the boundary
+    surface directly from the generated __sf.obj. Kills the entire process
+    group on timeout or error.
+    """
+    from sutura_engine.pipeline.mesh_io import read_mesh, read_obj
+
+    t0 = time.perf_counter()
+    report = {'engine': 'binary', 'binary': bin_path}
+    kw = tetrahedralize_params(params)
+    report['params'] = kw
+
+    try:
+        in_v, in_t = read_mesh(src)
+        report['input_vertices'] = int(len(in_v))
+        report['input_faces'] = int(len(in_t))
+    except Exception as e:
+        report['error'] = f'failed reading input mesh: {e}'
+        report['time'] = round(time.perf_counter() - t0, 2)
+        return report
+
+    with tempfile.TemporaryDirectory(prefix='sutura_ftw_') as tmpdir:
+        msh_out = os.path.join(tmpdir, 'out.msh')
+        sf_obj = os.path.join(tmpdir, 'out.msh__sf.obj')
+
+        cmd = [
+            bin_path,
+            '-i', os.path.abspath(src),
+            '-o', msh_out,
+            '--max-threads', '1',
+            '-q',
+            '--no-color',
+        ]
+
+        if kw.get('optimize') is False:
+            cmd.extend(['--max-its', '0'])
+        elif 'max_its' in kw:
+            cmd.extend(['--max-its', str(kw['max_its'])])
+
+        if kw.get('simplify') is False or kw.get('skip_simplify') is True:
+            cmd.append('--skip-simplify')
+
+        if 'stop_energy' in kw:
+            cmd.extend(['--stop-energy', str(kw['stop_energy'])])
+
+        if 'ideal_edge_length' in kw:
+            cmd.extend(['-e', str(kw['ideal_edge_length'])])
+        elif 'edge_length_abs' in kw and kw['edge_length_abs'] is not None:
+            cmd.extend(['-e', str(kw['edge_length_abs'])])
+        elif 'lr' in kw:
+            cmd.extend(['-l', str(kw['lr'])])
+        elif 'edge_length_fac' in kw and kw['edge_length_fac'] is not None:
+            cmd.extend(['-l', str(kw['edge_length_fac'])])
+
+        if 'epsilon' in kw:
+            cmd.extend(['--eps', str(kw['epsilon'])])
+
+        proc_timeout = kw.get('timeout', timeout)
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=tmpdir,
+                start_new_session=True,
+            )
+            stdout, stderr = proc.communicate(timeout=proc_timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:
+                pass
+            report['error'] = 'timeout'
+            report['time'] = round(time.perf_counter() - t0, 2)
+            return report
+        except Exception as e:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+            report['error'] = f'process launch error: {e}'
+            report['time'] = round(time.perf_counter() - t0, 2)
+            return report
+
+        report['time'] = round(time.perf_counter() - t0, 2)
+        report['returncode'] = proc.returncode
+
+        if proc.returncode != 0:
+            err_tail = (stderr.decode('utf-8', errors='replace') if stderr else '').strip()
+            report['error'] = f'fTetWild failed (rc={proc.returncode}): {err_tail[-300:]}'
+            return report
+
+        if not os.path.isfile(sf_obj):
+            report['error'] = 'fTetWild completed but produced no surface mesh (__sf.obj)'
+            return report
+
+        try:
+            out_v, out_t = read_obj(sf_obj)
+            if len(out_t) == 0:
+                report['error'] = 'fTetWild produced empty surface mesh'
+                return report
+            shutil.copyfile(sf_obj, dst)
+            report['output_vertices'] = int(len(out_v))
+            report['output_faces'] = int(len(out_t))
+            report['ok'] = True
+        except Exception as e:
+            report['error'] = f'failed reading/copying surface mesh: {e}'
+            return report
+
+        return report
+
+
+def run_pytetwild(src, dst, params=None):
     """Tetrahedralize the surface mesh at src and write the boundary surface
-    to dst. ``params`` overrides DEFAULT_PARAMS (pytetwild.tetrahedralize
-    keyword arguments). Returns the report dict; ``ok`` is True on success.
-    Never raises for missing dependencies (reports an explicit skip
-    instead)."""
+    to dst via pytetwild fallback. Returns the report dict; ok is True on success.
+    Never raises for missing dependencies (reports an explicit skip instead)."""
     report = {}
     try:
         pytetwild = _import_pytetwild()
@@ -154,6 +291,17 @@ def run_bridge(src, dst, params=None):
         report['error'] = '%s: %s' % (type(e).__name__, e)
         report['time'] = round(time.perf_counter() - t0, 2)
     return report
+
+
+def run_bridge(src, dst, params=None):
+    """Tetrahedralize the surface mesh at src and write the boundary surface
+    to dst. Uses deterministic standalone fTetWild binary when available,
+    falling back to pytetwild. Returns the report dict; ok is True on success.
+    Never raises for missing dependencies (reports an explicit skip instead)."""
+    bin_path = _find_binary()
+    if bin_path:
+        return run_binary(bin_path, src, dst, params)
+    return run_pytetwild(src, dst, params)
 
 
 def main():
