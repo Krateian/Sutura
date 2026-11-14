@@ -7,9 +7,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sutura_core::{
-    check_units, load_mesh, parse_3mf_mesh_blocks, read_3mf_units, read_mesh, save_mesh,
-    scan_bad_coordinates, Mesh, SourceFormat,
+    check_units, load_mesh, parse_3mf_mesh_blocks, read_3mf_units, save_mesh, scan_bad_coordinates,
+    Mesh, SourceFormat,
 };
 
 fn main() -> ExitCode {
@@ -160,7 +161,7 @@ fn probe(path: &Path, json_out: bool) -> Result<(), (u8, String)> {
 }
 
 fn convert(input: &Path, output: &Path, json_out: bool) -> Result<(), (u8, String)> {
-    let mesh = read_mesh(input).map_err(|e| (1, format!("{}: {e}", input.display())))?;
+    let mesh = load_mesh(input).map_err(|e| (1, format!("{}: {e}", input.display())))?;
     save_mesh(output, &mesh).map_err(|e| (1, format!("{}: {e}", output.display())))?;
     if json_out {
         println!(
@@ -201,7 +202,23 @@ fn mesh_json(name: Option<&str>, index: Option<usize>, mesh: &Mesh) -> Value {
         "verts": mesh.vertex_count(),
         "tris": mesh.triangle_count(),
         "bbox": bbox,
+        "array_sha256": array_sha256(mesh),
     })
+}
+
+fn array_sha256(mesh: &Mesh) -> String {
+    let mut h = Sha256::new();
+    for v in &mesh.verts {
+        for c in v {
+            h.update(c.to_le_bytes());
+        }
+    }
+    for t in &mesh.tris {
+        for i in t {
+            h.update(i.to_le_bytes());
+        }
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn format_of(path: &Path) -> Result<SourceFormat, (u8, String)> {

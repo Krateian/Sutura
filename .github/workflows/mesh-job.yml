@@ -4,8 +4,8 @@ on:
     inputs:
       base_ref:      { description: 'Side A ref (branch, tag or SHA)', required: true, default: 'main' }
       candidate_ref: { description: 'Side B ref (empty = single-side)', required: false, default: '' }
-      sets:          { description: 'Comma list; each entry NAME or NAME@mode (quality_ab|byte|determinism|single_side|bench115). Full run: derived264@quality_ab,samples40@quality_ab,bench115@bench115', required: true, default: 'samples40@quality_ab,oracle36@quality_ab' }
-      mode:          { description: 'Default mode for entries without @mode: quality_ab | byte | determinism | single_side | bench115', required: true, default: 'quality_ab' }
+      sets:          { description: 'Comma list; each entry NAME or NAME@mode (quality_ab|byte|determinism|single_side|bench115|io_parity). Full run: derived264@quality_ab,samples40@quality_ab,bench115@bench115', required: true, default: 'samples40@quality_ab,oracle36@quality_ab' }
+      mode:          { description: 'Default mode for entries without @mode: quality_ab | byte | determinism | single_side | bench115 | io_parity', required: true, default: 'quality_ab' }
       env_base:      { description: 'Side A env (unsupported by the harness; candidate side only)', required: false, default: '' }
       env_candidate: { description: 'Side B env, e.g. SUTURA_SI_EXCISE=0', required: false, default: '' }
       shards:        { description: 'Shard count override (per set)', required: false, default: '' }
@@ -31,7 +31,7 @@ jobs:
           python3 - <<'PY'
           import json, os, re
           counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5,'derived264':20,'bench115':12}
-          modes=('quality_ab','byte','determinism','single_side','bench115')
+          modes=('quality_ab','byte','determinism','single_side','bench115','io_parity')
           override=int(os.environ.get('SHARDS') or 0)
           default_mode=os.environ['MODE']
           inc=[]
@@ -66,8 +66,12 @@ jobs:
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
+      - name: Build Rust CLI
+        run: cargo build --release -p sutura-cli
       - uses: actions/upload-artifact@v4
         with: { name: wheel-base, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
+      - uses: actions/upload-artifact@v4
+        with: { name: sutura-cli-base, path: rust/target/release/sutura, retention-days: 3 }
   build-cand:
     needs: preflight
     if: inputs.candidate_ref != ''
@@ -83,8 +87,12 @@ jobs:
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
+      - name: Build Rust CLI
+        run: cargo build --release -p sutura-cli
       - uses: actions/upload-artifact@v4
         with: { name: wheel-cand, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
+      - uses: actions/upload-artifact@v4
+        with: { name: sutura-cli-cand, path: rust/target/release/sutura, retention-days: 3 }
   # The harness, the shard/board scripts and the geometry kernel they import
   # come from the workflow's own commit (github.sha), never from base/cand:
   # an older base ref (e.g. a release tag) predates these tools entirely.
@@ -173,6 +181,12 @@ jobs:
       - uses: actions/download-artifact@v4
         if: inputs.candidate_ref != ''
         with: { name: wheel-cand, path: wheels-cand }
+      - uses: actions/download-artifact@v4
+        if: inputs.candidate_ref != ''
+        with: { name: sutura-cli-cand, path: cand-bin }
+      - uses: actions/download-artifact@v4
+        if: inputs.candidate_ref == ''
+        with: { name: sutura-cli-base, path: cand-bin }
       - name: Fresh venvs with their own wheel
         run: |
           python3 -m venv tools-venv
@@ -183,6 +197,9 @@ jobs:
           if [ -d wheels-cand ]; then cp wheels-cand/*.whl cand-wheels/; else cp wheels-base/*.whl cand-wheels/; fi
           python3 -m venv cand-venv
           cand-venv/bin/pip install --quiet -r cand/requirements.txt cand-wheels/*.whl
+      - name: Mark Rust CLI executable
+        if: matrix.mode == 'io_parity'
+        run: chmod +x cand-bin/sutura
       - name: Run shard
         run: |
           tools-venv/bin/python tools/scripts/gh_mesh_shard.py
@@ -207,7 +224,7 @@ jobs:
           python3 - <<'PY' > plan.json
           import json, os, re
           counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5,'derived264':20,'bench115':12}
-          modes=('quality_ab','byte','determinism','single_side','bench115')
+          modes=('quality_ab','byte','determinism','single_side','bench115','io_parity')
           override=int(os.environ.get('SHARDS') or 0)
           inc=[]
           # Same validation as preflight: this job runs with if: always(), so a

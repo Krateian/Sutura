@@ -17,7 +17,7 @@ import json
 import sys
 
 FAILING = ('WORSE', 'FAIL', 'ERROR', 'CHANGED', 'MISSING', 'VISUAL-WORSE',
-           'TIMEOUT')
+           'TIMEOUT', 'DIFF')
 COLS = [
     ('Holes b/c', 'reload_holes', '%s'),
     ('NM b/c', 'reload_non_manifold_edges', '%s'),
