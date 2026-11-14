@@ -87,7 +87,8 @@ fn cmp_f32_row(a: &[f32; 3], b: &[f32; 3]) -> Ordering {
 
 /// Unique rows of a fixed-width 3-column i64 table, sorted lexicographically,
 /// with the index of each unique row's first occurrence in the input.  The
-/// stable sort makes the "first occurrence" rule explicit.
+/// stable sort makes the "first occurrence" rule explicit; this mirrors the
+/// oracle's `np.unique(..., return_index=True)` choice.
 fn unique_rows_i64_first(rows: &[[i64; 3]]) -> (Vec<[i64; 3]>, Vec<usize>) {
     let n = rows.len();
     let mut order: Vec<usize> = (0..n).collect();
@@ -108,6 +109,9 @@ fn unique_rows_i64_first(rows: &[[i64; 3]]) -> (Vec<[i64; 3]>, Vec<usize>) {
     (uniq, first)
 }
 
+/// Keep the LAST input index for each equal row.  This mirrors the oracle
+/// (`meshing_remove_duplicate_faces` keeps one representative per duplicate
+/// group); reversing the input lets a stable sort make the last occurrence win.
 fn unique_rows_i64_last(rows: &[[i64; 3]]) -> Vec<usize> {
     let n = rows.len();
     if n <= 1 {
