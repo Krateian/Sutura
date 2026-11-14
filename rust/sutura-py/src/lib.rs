@@ -804,6 +804,31 @@ fn stage1_apply_chain_py<'py>(
     ))
 }
 
+#[pyfunction(name = "graft_helpers_probe")]
+fn graft_helpers_probe_py(
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i64, AllowTypeChange>,
+    grid_budget: Option<i64>,
+) -> PyResult<String> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let diag = sutura_core::graft::helpers::diag(&v);
+    let voxel = sutura_core::graft::helpers::auto_voxel(&v, &t, grid_budget);
+    let cells = sutura_core::graft::helpers::grid_cell_count(&v, voxel);
+    let (gap, info, _mask) = sutura_core::graft::helpers::gap_estimate(&v, &t);
+    let ladder = sutura_core::graft::helpers::r_ladder(gap, voxel, diag, 12);
+    let out = serde_json::json!({
+        "diag": diag,
+        "median_edge": sutura_core::graft::helpers::median_edge_length(&v, &t),
+        "voxel": voxel,
+        "cells": cells,
+        "gap": gap,
+        "info": info,
+        "ladder": ladder,
+    });
+    Ok(out.to_string())
+}
+
 #[pyfunction(name = "stage1_si_excise")]
 fn stage1_si_excise_py<'py>(
     py: Python<'py>,
@@ -1156,6 +1181,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage2_split_pinched_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_apply_chain_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_extreme_passes_py, m)?)?;
+    m.add_function(wrap_pyfunction!(graft_helpers_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_si_excise_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_wall_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_repeat_decide_py, m)?)?;
