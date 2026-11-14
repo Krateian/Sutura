@@ -4,6 +4,7 @@ The JSON contract is language-neutral; only ``--human --lang tr`` runs this
 post-processor. English output is never touched, so existing CLI text stays
 byte-identical. Technical identifiers/paths/codes are deliberately kept.
 """
+import os
 import re
 
 _VERDICTS = {
@@ -97,41 +98,72 @@ _LABELS = [
 ]
 
 
+_VALUES = [
+    ('stage 2 skipped', 'aşama 2 atlandı'),
+    ('stage 2 error', 'aşama 2 hatası'),
+    ('no improvement (kept reload-welded state)',
+     'iyileşme yok (reload-welded durum korundu)'),
+    ('default thresholds (below confidence gate)',
+     'varsayılan eşikler (güven kapısının altında)'),
+    ('nothing (input was already sound)', 'yok (girdi zaten sağlamdı)'),
+    ('within budget', 'bütçe içinde'),
+    ('reduced budget', 'azaltılmış bütçe'),
+    ('tuned thresholds', 'ayarlanmış eşikler'),
+    ('already correct', 'zaten doğru'),
+    ('not kept', 'korunmadı'),
+    ('adopted', 'benimsendi'),
+    ('EXCEEDED', 'AŞILDI'),
+    ('YES', 'EVET'),
+    ('NO', 'HAYIR'),
+    ('watertight', 'su geçirmez'),
+    ('deviation max', 'maksimum sapma'),
+    (' of size', ' (boyuta göre)'),
+    ('volume ', 'hacim '),
+    (' kept', ' korundu'),
+    ('confidence ', 'güven '),
+    ('Medium', 'Orta'),
+    ('High', 'Yüksek'),
+    ('Low', 'Düşük'),
+]
+
+_PATH_EXTS = ('.stl', '.obj', '.3mf', '.ply', '.gcode', '.zip', '.json')
+
+
+def _looks_like_path(text):
+    body = text.strip().rstrip('.,;')
+    if not body:
+        return False
+    if '/' in body or '\\' in body:
+        return True
+    return os.path.splitext(body)[1].lower() in _PATH_EXTS
+
+
+def _translate_values(text):
+    if _looks_like_path(text):
+        return text
+    for src, dst in _VALUES:
+        text = text.replace(src, dst)
+    return text
+
+
 def translate(text, lang='tr'):
     if lang != 'tr':
         return text
     for src, dst in _VERDICTS.items():
         text = text.replace(src, dst)
-    for src, dst in (
-        ('Orientation:', 'Yönelim:'),
-        ('Parts:', 'Parçalar:'),
-        ('Shape change:', 'Şekil değişimi:'),
-        ('already correct', 'zaten doğru'),
-        ('default thresholds (below confidence gate)',
-         'varsayılan eşikler (güven kapısının altında)'),
-        ('tuned thresholds', 'ayarlanmış eşikler'),
-        ('reduced budget', 'azaltılmış bütçe'),
-        ('nothing (input was already sound)', 'yok (girdi zaten sağlamdı)'),
-        ('Remaining: none', 'Kalan: yok'),
-        ('confidence', 'güven'),
-        ('deviation max', 'maksimum sapma'),
-        (' of size', ' (boyuta göre)'),
-        ('volume ', 'hacim '),
-        (' kept', ' korundu'),
-        ('Fidelity:', 'Sadakat:'),
-        ('Medium', 'Orta'),
-        ('High', 'Yüksek'),
-        ('Low', 'Düşük'),
-    ):
-        text = text.replace(src, dst)
     out = []
     for line in text.splitlines():
         m = re.match(r'^(\s*)(.*)$', line)
         indent, body = m.group(1), m.group(2)
+        matched = False
         for src, dst in _LABELS:
             if body.startswith(src):
-                body = dst + body[len(src):]
+                rest = _translate_values(body[len(src):])
+                body = dst + rest
+                matched = True
                 break
+        if not matched and body.lstrip().startswith(('-', '*')):
+            body = _translate_values(body)
         out.append(indent + body)
     text = '\n'.join(out)
     text = re.sub(r'Repaired, shape changed in (\d+) area\(s\) - check',
