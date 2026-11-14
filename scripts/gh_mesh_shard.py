@@ -96,6 +96,25 @@ def strict_watertight(rec):
     return bool(holes == 0 and nm == 0)
 
 
+def numeric_log_lines(items):
+    """Numeric-only per-side trace: ``row side rc elapsed_ms``.
+
+    Row index is 1-based and maps to ``rows[]`` in the shard JSON; the model
+    name stays out of the log. Missing values are written as -1.
+    """
+    lines = []
+    for row_idx, item in enumerate(items, 1):
+        for side_idx, side_name in enumerate(('baseline', 'candidate')):
+            rec = item.get(side_name) or {}
+            rc = rec.get('rc')
+            secs = rec.get('time_s')
+            lines.append('%d %d %s %s' % (
+                row_idx, side_idx,
+                rc if rc is not None else -1,
+                int(round(float(secs) * 1000)) if secs is not None else -1))
+    return lines
+
+
 def main():
     set_name = os.environ['SET_NAME']
     shard = int(os.environ['SHARD'])
@@ -139,10 +158,13 @@ def main():
         cmd += ['--cache-dir', os.path.join(outdir, 'cache')]
     r = subprocess.run(cmd, capture_output=True, text=True)
     rows = []
+    log_lines = []
     err = None
     sp = os.path.join(outdir, 'summary.json')
     if os.path.exists(sp):
-        for item in json.load(open(sp)):
+        summary_items = json.load(open(sp))
+        log_lines = numeric_log_lines(summary_items)
+        for item in summary_items:
             sides = {side: {k: (item.get(side) or {}).get(k) for k in keys}
                      for side in ('baseline', 'candidate')}
             # Both sides capped -> the judge deliberately skipped SI; it is not
@@ -157,17 +179,22 @@ def main():
                               if rec.get(k) is None})
             verdict = item.get('verdict') or 'MISSING'
             reason = item.get('verdict_reason')
-            if missing and verdict not in ('WORSE', 'FAIL', 'ERROR', 'TIMEOUT'):
+            if missing and verdict not in ('WORSE', 'FAIL', 'ERROR', 'TIMEOUT',
+                                           'CRASHED'):
                 # A metric the judge needs never arrived; the run cannot be
-                # called a pass on the metrics that survived.  TIMEOUT is kept
-                # as itself: its metrics are None by construction and it has its
-                # own board line.
+                # called a pass on the metrics that survived.  TIMEOUT/CRASHED
+                # are kept as themselves: their metrics are None by construction
+                # and they have their own board lines.
                 verdict = 'MISSING'
                 reason = 'missing metric(s): %s' % ', '.join(missing)
             rows.append({'id': item.get('name'), 'verdict': verdict,
                          'reason': reason,
                          'baseline': sides['baseline'],
                          'candidate': sides['candidate'],
+                         'rc': {side: (item.get(side) or {}).get('rc')
+                                for side in ('baseline', 'candidate')},
+                         'seconds': {side: (item.get(side) or {}).get('time_s')
+                                     for side in ('baseline', 'candidate')},
                          'strict_watertight': {
                              'baseline': strict_watertight(sides['baseline']),
                              'candidate': strict_watertight(sides['candidate']),
@@ -183,6 +210,10 @@ def main():
                'mode': mode, 'rc': r.returncode, 'meshes': len(files),
                'rows': rows, 'error': err},
               open('shard-%s-%d.json' % (set_name, shard), 'w'), indent=1)
+    # Numeric-only trace (row side rc elapsed_ms). Names stay in the JSON.
+    with open('shard-%s-%d.log' % (set_name, shard), 'w') as f:
+        if log_lines:
+            f.write('\n'.join(log_lines) + '\n')
     sys.exit(0 if not err else 1)
 
 

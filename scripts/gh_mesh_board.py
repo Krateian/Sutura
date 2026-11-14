@@ -17,7 +17,7 @@ import json
 import sys
 
 FAILING = ('WORSE', 'FAIL', 'ERROR', 'CHANGED', 'MISSING', 'VISUAL-WORSE',
-           'TIMEOUT')
+           'TIMEOUT', 'CRASHED')
 COLS = [
     ('Holes b/c', 'reload_holes', '%s'),
     ('NM b/c', 'reload_non_manifold_edges', '%s'),
@@ -174,6 +174,23 @@ def _timeout_summary(rows):
     return '\n'.join(lines)
 
 
+def _crashed_summary(rows):
+    """One line per set: rows whose repair process died on a signal.
+
+    Kept separate from ERROR/TIMEOUT (rc<0 is a crash or an OOM kill) and never
+    a pass: the row is in FAILING above.
+    """
+    from collections import Counter
+    per_set = Counter(r.get('set') or '-' for r in rows
+                      if r.get('verdict') == 'CRASHED')
+    if not per_set:
+        return ''
+    lines = ['', 'CRASHED (repair process died on a signal, never a pass):']
+    for name in sorted(per_set):
+        lines.append('  %-12s %d row(s) crashed' % (name, per_set[name]))
+    return '\n'.join(lines)
+
+
 def _strict_summary(rows):
     """Per-set strict-watertight counts, September-comparable, never gated.
 
@@ -271,6 +288,7 @@ def main():
     print(_face_cap_summary(rows))
     print(_interior_walls_summary(rows))
     print(_timeout_summary(rows))
+    print(_crashed_summary(rows))
     print('\nRows: %d; failing: %d; TRADE-SI: %d; shard errors: %d'
           % (len(rows), len(bad), len(trades), len(errors)))
     if trades:

@@ -153,9 +153,41 @@ def test_shape_guard_commits_a_round_within_the_budget():
     assert rep['applied'] and rep['rounds'] >= 1, rep
     sg = rep['shape_guard']
     assert sg['enabled'] and sg['available'], sg
+    assert sg['built'] is True and sg['build_skipped'] is None, sg
+    assert sg['guard_build_seconds'] >= 0.0, sg
     assert sg['rejected_round'] is None and sg['reason'] is None, sg
     assert sg['final_vis_mm'] <= sg['budget_mm'], sg
     assert rep['history'][0]['post_vis_mm'] <= sg['budget_mm']
+
+
+def test_shape_guard_is_lazy_without_a_candidate():
+    """No round reaches the topology gate -> the expensive mask is never built.
+
+    The maxholesize=1 fixture rejects every round before the shape guard, so
+    `_si_excise_visible_metrics` must not be called at all (it would run the
+    O(faces) mask on a real mesh)."""
+    v, t = _sphere_with_blade(3)
+    from sutura_engine.pipeline import stage1 as s1
+    calls = []
+    saved = s1._si_excise_visible_metrics
+
+    def _boom(*_a, **_kw):
+        calls.append(1)
+        raise AssertionError('shape guard must stay unbuilt without a candidate')
+
+    s1._si_excise_visible_metrics = _boom
+    try:
+        _v, _t, rep = pipeline_mod.si_excise_recap(
+            v, t, maxholesize=1, time_budget=30.0)
+    finally:
+        s1._si_excise_visible_metrics = saved
+    assert calls == [], rep
+    assert rep['applied'] is False, rep
+    sg = rep['shape_guard']
+    assert sg['enabled'] and sg['available'], sg
+    assert sg['built'] is False, sg
+    assert sg['build_skipped'] == 'no_candidate', sg
+    assert sg['guard_build_seconds'] == 0.0, sg
 
 
 def test_shape_guard_rejects_visible_slot_and_restores_the_round():

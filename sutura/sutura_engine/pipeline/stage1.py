@@ -435,6 +435,10 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
 
     Returns ``(verts, tris, report)``.
     """
+    # Started before any work so the reported ``seconds`` covers the whole
+    # pass, including the lazily built shape-guard mask (it used to start
+    # after the mask, hiding its cost).
+    t0 = time.perf_counter()
     v = np.asarray(verts, dtype=np.float64)
     t = np.asarray(tris, dtype=np.int64)
     report = {
@@ -448,6 +452,7 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
     guard_ref_v = guard_ref_t = None
     guard_buried = guard_centroids = None
     guard_available = False
+    guard_built = False
     initial_vis = None
     last_vis = None
     init_mask = None
@@ -466,35 +471,28 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
         report['reason'] = 'budget'
         return v, t, report
 
+    # The shape-guard reference, its buried-face mask and the initial visible
+    # metric are expensive (O(faces) winding queries; 27 min on a 2M-face mesh)
+    # and are only needed when a round actually reaches the topology gate.
+    # Build them LAZILY on the first `topo_ok` candidate: with no candidate
+    # round they cost nothing. `initial_vis` must be measured against the mesh
+    # as it entered this pass (`pass_v0/pass_t0`), which is also what the old
+    # eager block used (`v, t` before the first accepted round).
+    pass_v0, pass_t0 = v, t
     if guard_on:
-        guard_ref_v = np.ascontiguousarray(
-            np.asarray(verts if ref_verts is None else ref_verts,
-                       dtype=np.float64))
-        guard_ref_t = np.ascontiguousarray(
-            np.asarray(tris if ref_tris is None else ref_tris, dtype=np.int64))
-        # REF is fixed for the whole pass, so the mask and the centroids are
-        # built once; only the candidate BVH is rebuilt per evaluation.
         try:
-            import sutura_geom
-            guard_available = hasattr(sutura_geom, 'buried_face_mask')
+            import sutura_geom as _geom
+            guard_available = hasattr(_geom, 'buried_face_mask')
         except ImportError:
             guard_available = False
-        if guard_available:
-            guard_buried, _gd = sutura_geom.buried_face_mask(
-                guard_ref_v, guard_ref_t.astype(np.int32), 0.1)
-            guard_buried = np.asarray(guard_buried, dtype=bool)
-            guard_centroids = guard_ref_v[guard_ref_t].mean(axis=1)
-            _init = _si_excise_visible_metrics(
-                guard_ref_v, guard_ref_t, v, t, buried=guard_buried,
-                centroids=guard_centroids)
-            if _init is not None:
-                initial_vis = last_vis = float(_init[0])
         report['shape_guard'] = {
             'enabled': True,
             'available': bool(guard_available),
+            'built': False,
+            'build_skipped': None,
+            'guard_build_seconds': 0.0,
             'budget_mm': float(SI_EXCISE_SHAPE_BUDGET_MM),
-            'initial_vis_mm': (round(initial_vis, 4)
-                               if initial_vis is not None else None),
+            'initial_vis_mm': None,
             'final_vis_mm': None,
             'rejected_round': None,
             'rounds_rejected': 0,
@@ -504,8 +502,45 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
         if not guard_available:
             report['shape_guard']['reason'] = 'unavailable'
 
+    def _ensure_guard():
+        """Build the guard reference/mask/initial metric on first use.
+
+        Returns immediately when the guard is off, unavailable, or already
+        built. The numbers are identical to the former eager block: the
+        reference is `ref_verts/ref_tris` (or the pass input), the initial
+        metric is measured against the mesh the pass received, and the mask
+        is computed over the whole reference.
+        """
+        nonlocal guard_ref_v, guard_ref_t, guard_buried, guard_centroids
+        nonlocal guard_built, initial_vis, last_vis
+        if guard_built or not guard_on or not guard_available:
+            return
+        import sutura_geom as _geom
+        _t_guard = time.perf_counter()
+        guard_ref_v = np.ascontiguousarray(
+            np.asarray(verts if ref_verts is None else ref_verts,
+                       dtype=np.float64))
+        guard_ref_t = np.ascontiguousarray(
+            np.asarray(tris if ref_tris is None else ref_tris, dtype=np.int64))
+        # REF is fixed for the whole pass, so the mask and the centroids are
+        # built once; only the candidate BVH is rebuilt per evaluation.
+        guard_buried, _gd = _geom.buried_face_mask(
+            guard_ref_v, guard_ref_t.astype(np.int32), 0.1)
+        guard_buried = np.asarray(guard_buried, dtype=bool)
+        guard_centroids = guard_ref_v[guard_ref_t].mean(axis=1)
+        _init = _si_excise_visible_metrics(
+            guard_ref_v, guard_ref_t, pass_v0, pass_t0, buried=guard_buried,
+            centroids=guard_centroids)
+        if _init is not None:
+            initial_vis = last_vis = float(_init[0])
+        guard_built = True
+        sg = report['shape_guard']
+        sg['built'] = True
+        sg['guard_build_seconds'] = round(time.perf_counter() - _t_guard, 3)
+        sg['initial_vis_mm'] = (round(initial_vis, 4)
+                                if initial_vis is not None else None)
+
     report['ran'] = True
-    t0 = time.perf_counter()
     current_si = report['initial_si']
     total_faces = len(t)
     for round_idx in range(max_rounds):
@@ -576,6 +611,7 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
             guard_ok = True
             post_vis = post_all = new_face_mm = None
             if topo_ok and guard_on and guard_available:
+                _ensure_guard()
                 _post = _si_excise_visible_metrics(
                     guard_ref_v, guard_ref_t, v_work, t_work,
                     buried=guard_buried, centroids=guard_centroids)
@@ -673,6 +709,8 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
             sg['final_vis_mm'] = (round(last_vis, 4)
                                   if last_vis is not None else None)
             sg['si_remaining_after'] = int(current_si)
+            if not guard_built and sg.get('reason') is None:
+                sg['build_skipped'] = 'no_candidate'
     return v, t, report
 
 

@@ -86,6 +86,25 @@ def run_cli(cmd, env, cwd, timeout):
         return 124, '', 'TIMEOUT after %ss' % timeout, time.time() - t0
 
 
+def no_output_verdict(rcs, timeout):
+    """Map per-side return codes to a verdict for a row with no output.
+
+    ``rcs`` is an iterable of ``(side_name, rc)``. A repair timeout is rc=124
+    (``run_cli``), a crash/OOM kill is rc<0; anything else is a plain error.
+    """
+    rcs = list(rcs)
+    timed_out = [k for k, rc in rcs if rc == 124]
+    if timed_out:
+        return ('TIMEOUT', 'repair exceeded %ss (%s)'
+                % (timeout, timed_out[0]))
+    crashed = [(k, rc) for k, rc in rcs if isinstance(rc, int) and rc < 0]
+    if crashed:
+        return ('CRASHED', 'crashed (signal %d, %s)'
+                % (-crashed[0][1], crashed[0][0]))
+    return ('ERROR', 'a run produced no output (%s)'
+            % ', '.join('%s rc=%s' % (k, rc) for k, rc in rcs))
+
+
 def cli_report(stdout):
     """Last JSON object on stdout, or {} when the run failed."""
     for line in reversed((stdout or '').strip().splitlines()):
@@ -719,6 +738,7 @@ def main():
                 shutil.copyfile(cached, out_stl)
                 meta['time_s'] = 0.0
                 meta['cached'] = True
+                meta.setdefault('rc', 0)
                 meta['output'] = out_stl
                 print('  %s: cached (%s)' % (side, meta.get('md5', '')[:8]), flush=True)
                 return meta
@@ -731,7 +751,9 @@ def main():
         rc, sout, serr, el = run_cli(cmd, run_env, repo_x, args.timeout)
         if not os.path.exists(out_stl):
             print('  %s: no output (rc=%d) %s' % (side, rc, serr.strip()[:160]), flush=True)
-            return None
+            # Keep rc/elapsed so the caller can separate a repair timeout
+            # (rc=124) or a crash (rc<0) from a generic no-output error.
+            return {'rc': rc, 'time_s': round(el, 2), 'no_output': True}
         report = cli_report(sout)
         with open(out_stl, 'rb') as f:
             md5 = hashlib.md5(f.read()).hexdigest()
@@ -746,9 +768,11 @@ def main():
                 print('  %s: measurement failed: %s' % (side, e), flush=True)
                 rec = measurement_error_record(e)
                 rec['time_s'] = round(el, 2)
+                rec['rc'] = rc
                 return rec
         else:
             meas = {'time_s': round(el, 2)}
+        meas['rc'] = rc
         meas.update({'md5': md5, 'ftetwild_adopted': ftetwild_adopted(report),
                      'cli_report': {'experimental_ftetwild':
                                     report.get('experimental_ftetwild')}})
@@ -773,9 +797,13 @@ def main():
                          [], True)
             c = run_side(in_path, name, 'candidate', repo, args.python, [], False)
             key_b, key_c = 'baseline', 'candidate'
-        if b is None or c is None:
+        sides = ((key_b, b), (key_c, c))
+        no_output = [k for k, s in sides if s is None or s.get('no_output')]
+        if no_output:
+            verdict, reason = no_output_verdict(
+                ((k, (s or {}).get('rc')) for k, s in sides), args.timeout)
             return {'name': name, key_b: b or {}, key_c: c or {},
-                    'verdict': 'ERROR', 'verdict_reason': 'a run produced no output',
+                    'verdict': verdict, 'verdict_reason': reason,
                     'changed': True}
         # A side that could not be measured at all (unreadable/empty mesh) is a
         # named error, never a pass on zeroed metrics.

@@ -191,7 +191,12 @@ jobs:
         run: |
           [ -f error.json ] && cat error.json >> "$GITHUB_STEP_SUMMARY" || true
       - uses: actions/upload-artifact@v4
-        with: { name: 'summary-${{ matrix.set }}-${{ matrix.mode }}-${{ matrix.shard }}', path: 'shard-*.json', retention-days: 7 }
+        with:
+          name: 'summary-${{ matrix.set }}-${{ matrix.mode }}-${{ matrix.shard }}'
+          path: |
+            shard-*.json
+            shard-*.log
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: failure()
         with: { name: 'error-${{ matrix.set }}-${{ matrix.mode }}-${{ matrix.shard }}', path: error.json, retention-days: 7, if-no-files-found: ignore }
