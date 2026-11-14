@@ -9,10 +9,8 @@ silently, matching the Phase 1-3 engine contract.
 """
 import os
 
-from sutura_engine.rust_bridge import unavailable
+from sutura_engine import rust_bridge
 
-_CORE = None
-_CORE_TRIED = False
 
 
 def tier_engine(name):
@@ -24,19 +22,7 @@ def tier_engine(name):
 
 def tier_core():
     """Return the ``sutura_core_py`` module, or ``None`` when unavailable."""
-    global _CORE, _CORE_TRIED
-    if _CORE_TRIED:
-        if _CORE is None:
-            return unavailable('sutura_core_py is unavailable')
-        return _CORE
-    _CORE_TRIED = True
-    try:
-        import sutura_core_py as mod
-        _CORE = mod
-    except Exception as exc:  # noqa: BLE001 - a missing bridge is a normal fallback
-        _CORE = None
-        return unavailable('sutura_core_py is unavailable: %s' % exc, exc)
-    return _CORE
+    return rust_bridge.load('tier', ('SUTURA_TIER_ENGINE',), 'python')
 
 
 def guard_params(tier):

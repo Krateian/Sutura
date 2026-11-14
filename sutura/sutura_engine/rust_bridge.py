@@ -9,6 +9,8 @@ what happens when the Rust engine was requested but the bridge is missing.
 import os
 
 _TRUTHY = ('1', 'true', 'yes', 'on')
+_LOADED = {}
+_TRIED = set()
 
 
 def require_rust():
@@ -24,3 +26,47 @@ def unavailable(message, exc=None):
             raise RuntimeError(text) from exc
         raise RuntimeError(text)
     return None
+
+
+def _engine(env_names, default):
+    for name in env_names:
+        if name in os.environ:
+            return os.environ[name].strip().lower()
+    return default
+
+
+def load(name, env_names, default='rust'):
+    """Load ``sutura_core_py`` for one transition engine, with caching.
+
+    ``env_names`` are checked in priority order (the first set env wins).
+    Strict mode turns a missing bridge into the same error as `unavailable`.
+    """
+    if _engine(env_names, default) != 'rust':
+        return None
+    if name in _TRIED:
+        mod = _LOADED.get(name)
+        if mod is None:
+            return unavailable('sutura_core_py is unavailable')
+        return mod
+    _TRIED.add(name)
+    try:
+        import sutura_core_py as mod
+    except Exception as exc:  # noqa: BLE001 - environment dependent
+        _LOADED[name] = None
+        return unavailable('sutura_core_py is unavailable: %s' % exc, exc)
+    _LOADED[name] = mod
+    return mod
+
+
+def reset():
+    """Clear the loader cache (tests / process reconfiguration)."""
+    _LOADED.clear()
+    _TRIED.clear()
+
+
+def json_arg(data):
+    """JSON-encode a report argument; fail clearly on unknown objects."""
+    import json
+    def encode(o):
+        return o.item() if hasattr(o, 'item') else str(o)
+    return json.dumps(data, ensure_ascii=False, default=encode)

@@ -60,18 +60,7 @@ def test_every_rust_core_honours_require_rust():
         os.environ['SUTURA_TIER_ENGINE'] = 'rust'
         os.environ['SUTURA_IO_ENGINE'] = 'rust'
 
-        report._REPORT_CORE_TRIED = False
-        report._REPORT_CORE = None
-        health._REPORT_CORE_TRIED = False
-        health._REPORT_CORE = None
-        debris._REPORT_CORE_TRIED = False
-        debris._REPORT_CORE = None
-        p_weld._PWELD_CORE_TRIED = False
-        p_weld._PWELD_CORE = None
-        stage2._STAGE_CORE_TRIED = False
-        stage2._STAGE_CORE = None
-        tier_engine._CORE_TRIED = False
-        tier_engine._CORE = None
+        rust_bridge.reset()
         mesh_io._RUST_IO_STATE = 0
         mesh_io._RUST_IO_MOD = None
 
