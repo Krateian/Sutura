@@ -48,7 +48,6 @@ pub mod predicates3d;
 pub mod profile;
 pub mod rbf;
 pub mod raycast;
-#[cfg(feature = "python")]
 pub mod resample;
 pub mod roi;
 pub mod shell;
@@ -1004,70 +1003,103 @@ fn sdf_grid<'py>(
 /// winding number instead and restores the classic winding path.  It is ON by
 /// default; when both raystab and antipodal are enabled, antipodal runs last
 /// and wins.  `SUTURA_ANTIPODAL=0` opts out in the environment.
-#[cfg(feature = "python")]
-#[pyfunction]
-#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None, hermite=None))]
-fn morph_close<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
-    r: f64,
-    voxel: Option<f64>,
-    r#box: Option<PyArrayLike2<'py, f64, AllowTypeChange>>,
-    fill_cavities: bool,
-    surface: Option<String>,
-    raystab: bool,
-    raystab_dirs: Option<usize>,
-    raystab_seed: u64,
-    raystab_parity: bool,
-    antipodal: Option<bool>,
-    hermite: Option<bool>,
-) -> PyResult<(
-    Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray2<i32>>,
-    Bound<'py, PyDict>,
-)> {
-    if !(r >= 0.0) {
-        return Err(PyValueError::new_err("r must be >= 0"));
-    }
-    let (rv, rt) = parse_mesh(&verts, &tris)?;
-    if rv.is_empty() || rt.is_empty() {
-        return Err(PyValueError::new_err("empty mesh"));
-    }
-    let mesh_box = bbox_of(&rv);
-    let (bmin, bmax) = match &r#box {
-        Some(b) => parse_box(b)?,
-        None => (mesh_box.min, mesh_box.max),
-    };
+/// Options for the pure `morph_close_core` entry point.
+#[derive(Clone, Debug)]
+pub struct MorphCloseOptions {
+    pub voxel: Option<f64>,
+    pub bbox: Option<([f64; 3], [f64; 3])>,
+    pub fill_cavities: bool,
+    pub surface: Option<String>,
+    pub raystab: bool,
+    pub raystab_dirs: Option<usize>,
+    pub raystab_seed: u64,
+    pub raystab_parity: bool,
+    pub antipodal: Option<bool>,
+    pub hermite: Option<bool>,
+}
 
-    // Resolve the voxel first so the padding (which must clear the dilation
-    // radius plus a few cells for the EDT boundary) can be expressed in cells.
+impl Default for MorphCloseOptions {
+    fn default() -> Self {
+        Self {
+            voxel: None,
+            bbox: None,
+            fill_cavities: false,
+            surface: None,
+            raystab: false,
+            raystab_dirs: None,
+            raystab_seed: 0,
+            raystab_parity: false,
+            antipodal: None,
+            hermite: None,
+        }
+    }
+}
+
+/// Pure `morph_close` report (no Python).
+#[derive(Clone, Debug)]
+pub struct MorphCloseReport {
+    pub dims: [usize; 3],
+    pub voxel: f64,
+    pub origin: [f64; 3],
+    pub voxels: usize,
+    pub caps_coarsened: bool,
+    pub max_voxels: usize,
+    pub radius: f64,
+    pub sign_field: bool,
+    pub fallback: bool,
+    pub manifold: bool,
+    pub fill_cavities: bool,
+    pub surface_tets: bool,
+    pub hermite: Option<hermite::HermiteReport>,
+    pub raystab: Option<raycast::RayStabStats>,
+    pub antipodal: Option<antipodal::AntipodalStats>,
+}
+
+/// Pure morphological close / sign-field extraction.
+pub fn morph_close_core(
+    v: &[[f64; 3]],
+    t: &[[i32; 3]],
+    r: f64,
+    opts: &MorphCloseOptions,
+) -> Result<(Vec<[f64; 3]>, Vec<[i32; 3]>, MorphCloseReport), String> {
+    if !(r >= 0.0) {
+        return Err("r must be >= 0".to_string());
+    }
+    if v.is_empty() || t.is_empty() {
+        return Err("empty mesh".to_string());
+    }
+    let rt: Vec<[usize; 3]> = t
+        .iter()
+        .map(|x| [x[0] as usize, x[1] as usize, x[2] as usize])
+        .collect();
+    let mesh_box = bbox_of(v);
+    let (bmin, bmax) = opts.bbox.unwrap_or((mesh_box.min, mesh_box.max));
     let ext = [
         (bmax[0] - bmin[0]).max(1e-12),
         (bmax[1] - bmin[1]).max(1e-12),
         (bmax[2] - bmin[2]).max(1e-12),
     ];
-    let mut v0 = voxel
+    let mut v0 = opts
+        .voxel
         .filter(|v| *v > 0.0)
         .unwrap_or(ext[0].max(ext[1]).max(ext[2]) / 96.0);
     if !v0.is_finite() || v0 <= 0.0 {
         v0 = 1.0;
     }
-    // Sign-field mode (r == 0) bypasses the closing, so no dilation radius needs
-    // to be cleared by the padding; the default 3-cell boundary suffices.
     let pad = if r > 0.0 {
         (r / v0).ceil() as usize + 3
     } else {
         3
     };
     let (origin, voxel, dims, coarsened) = plan_grid(bmin, bmax, Some(v0), 96.0, pad);
-
-    let use_antipodal = antipodal.unwrap_or_else(antipodal::antipodal_enabled_by_default);
+    let use_antipodal = opts
+        .antipodal
+        .unwrap_or_else(antipodal::antipodal_enabled_by_default);
     let (gwn, bvh_owned) = if use_antipodal {
-        let g = antipodal::AntipodalGwn::build(&rv, &rt);
+        let g = antipodal::AntipodalGwn::build(v, &rt);
         (Some(g), None)
     } else {
-        (None, Some(winding::MeshBvh::from_arrays(&rv, &rt)))
+        (None, Some(winding::MeshBvh::from_arrays(v, &rt)))
     };
     let bvh = match (&bvh_owned, &gwn) {
         (Some(b), _) => b,
@@ -1076,8 +1108,8 @@ fn morph_close<'py>(
     };
     let (w, u, mut s) = bvh.sdf_grid(origin, voxel, dims);
     let mut stab_stats = None;
-    if raystab {
-        let stabber = build_stabber(bvh, raystab_dirs, raystab_seed, raystab_parity);
+    if opts.raystab {
+        let stabber = build_stabber(bvh, opts.raystab_dirs, opts.raystab_seed, opts.raystab_parity);
         stab_stats = Some(raycast::disambiguate_sdf(
             bvh,
             &w,
@@ -1106,23 +1138,20 @@ fn morph_close<'py>(
             raycast::AMBIG_HI,
         ));
     }
-    // r == 0 selects the sign-field path: the raw signed field (GWN sign,
-    // optionally band-corrected) feeds dual contouring directly, with no
-    // dilation/erosion.  This keeps real gaps open instead of bridging them.
     let field = if r > 0.0 {
         let closed = morph::close_sdf(&s, dims, r as f32, voxel as f32);
-        if fill_cavities {
+        if opts.fill_cavities {
             morph::fill_cavities(&closed, dims, voxel as f32)
         } else {
             closed
         }
-    } else if fill_cavities {
+    } else if opts.fill_cavities {
         morph::fill_cavities(&s, dims, voxel as f32)
     } else {
         s.clone()
     };
     let use_tets = matches!(
-        surface.as_deref(),
+        opts.surface.as_deref(),
         Some("tets") | Some("tet") | Some("marching_tets")
     );
     let mut dc = if use_tets {
@@ -1131,44 +1160,114 @@ fn morph_close<'py>(
         dual_contour::dual_contour(&field, dims, origin, voxel)
     };
     let mut hermite_info: Option<hermite::HermiteReport> = None;
-    if !use_tets && hermite.unwrap_or_else(hermite::enabled_by_default) {
+    if !use_tets && opts.hermite.unwrap_or_else(hermite::enabled_by_default) {
         let (better, rep) = hermite::refine_vertices(bvh, &field, dims, origin, voxel, dc);
         dc = better;
         hermite_info = Some(rep);
     }
-
-    let out_verts: Vec<Vec<f64>> = dc.verts.iter().map(|p| p.to_vec()).collect();
-    let out_tris: Vec<Vec<i32>> = dc
+    let out_t: Vec<[i32; 3]> = dc
         .tris
         .iter()
-        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+        .map(|x| [x[0] as i32, x[1] as i32, x[2] as i32])
         .collect();
-    let verts_np = PyArray2::from_vec2(py, &out_verts)?;
-    let tris_np = PyArray2::from_vec2(py, &out_tris)?;
+    let report = MorphCloseReport {
+        dims,
+        voxel,
+        origin,
+        voxels: winding::voxel_count(dims) as usize,
+        caps_coarsened: coarsened,
+        max_voxels: MAX_VOXELS as usize,
+        radius: r,
+        sign_field: !(r > 0.0),
+        fallback: dc.fallback,
+        manifold: dc.manifold,
+        fill_cavities: opts.fill_cavities,
+        surface_tets: use_tets,
+        hermite: hermite_info,
+        raystab: stab_stats,
+        antipodal: antipodal_stats,
+    };
+    Ok((dc.verts, out_t, report))
+}
 
+/// Morphological close (GWN/unsigned field + dilation + dual contouring).
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None, hermite=None))]
+fn morph_close<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    r: f64,
+    voxel: Option<f64>,
+    r#box: Option<PyArrayLike2<'py, f64, AllowTypeChange>>,
+    fill_cavities: bool,
+    surface: Option<String>,
+    raystab: bool,
+    raystab_dirs: Option<usize>,
+    raystab_seed: u64,
+    raystab_parity: bool,
+    antipodal: Option<bool>,
+    hermite: Option<bool>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt_usize) = parse_mesh(&verts, &tris)?;
+    let rt: Vec<[i32; 3]> = rt_usize
+        .iter()
+        .map(|x| [x[0] as i32, x[1] as i32, x[2] as i32])
+        .collect();
+    let opts = MorphCloseOptions {
+        voxel,
+        bbox: match &r#box {
+            Some(b) => Some(parse_box(b)?),
+            None => None,
+        },
+        fill_cavities,
+        surface,
+        raystab,
+        raystab_dirs,
+        raystab_seed,
+        raystab_parity,
+        antipodal,
+        hermite,
+    };
+    let (ov, ot, rep) = morph_close_core(&rv, &rt, r, &opts)
+        .map_err(PyValueError::new_err)?;
+    let out_verts: Vec<Vec<f64>> = ov.iter().map(|p| p.to_vec()).collect();
+    let out_tris: Vec<Vec<i32>> = ot.iter().map(|x| x.to_vec()).collect();
     let info = PyDict::new(py);
-    info.set_item("dims", dims_to_list(py, dims)?)?;
-    info.set_item("voxel", voxel)?;
-    info.set_item("origin", PyList::new(py, origin)?)?;
-    info.set_item("voxels", winding::voxel_count(dims))?;
-    info.set_item("caps_coarsened", coarsened)?;
-    info.set_item("max_voxels", MAX_VOXELS)?;
-    info.set_item("radius", r)?;
-    info.set_item("sign_field", !(r > 0.0))?;
-    info.set_item("fallback", dc.fallback)?;
-    info.set_item("manifold", dc.manifold)?;
-    info.set_item("fill_cavities", fill_cavities)?;
-    info.set_item("surface", if use_tets { "tets" } else { "dual" })?;
-    if let Some(h) = hermite_info {
+    info.set_item("dims", dims_to_list(py, rep.dims)?)?;
+    info.set_item("voxel", rep.voxel)?;
+    info.set_item("origin", PyList::new(py, rep.origin)?)?;
+    info.set_item("voxels", rep.voxels)?;
+    info.set_item("caps_coarsened", rep.caps_coarsened)?;
+    info.set_item("max_voxels", rep.max_voxels)?;
+    info.set_item("radius", rep.radius)?;
+    info.set_item("sign_field", rep.sign_field)?;
+    info.set_item("fallback", rep.fallback)?;
+    info.set_item("manifold", rep.manifold)?;
+    info.set_item("fill_cavities", rep.fill_cavities)?;
+    info.set_item("surface", if rep.surface_tets { "tets" } else { "dual" })?;
+    if let Some(h) = rep.hermite {
         info.set_item("hermite", hermite::report_dict(py, &h)?)?;
     }
-    if let Some(st) = stab_stats {
-        info.set_item("raystab", raystab_info(py, st.dirs, raystab_seed, st.parity, &st)?)?;
+    if let Some(st) = rep.raystab {
+        info.set_item(
+            "raystab",
+            raystab_info(py, st.dirs, opts.raystab_seed, st.parity, &st)?,
+        )?;
     }
-    if let Some(st) = antipodal_stats {
+    if let Some(st) = rep.antipodal {
         info.set_item("antipodal", antipodal_info(py, &st)?)?;
     }
-    Ok((verts_np, tris_np, info))
+    Ok((
+        PyArray2::from_vec2(py, &out_verts)?,
+        PyArray2::from_vec2(py, &out_tris)?,
+        info,
+    ))
 }
 
 /// Variable-thickness coat ("Dressing", method #16).

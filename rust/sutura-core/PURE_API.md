@@ -30,7 +30,9 @@ means callable without pyo3; the Python symbol surface stays unchanged.
 | Manifold union | `manifold::union_pair_core` | **added** (P4 Coaptation) |
 | Manifold verdict | `manifold::watertight_check_core` | **added** (P4 Coaptation) |
 | Splint cut | `splint_cut_core_opts` | **made pub** (P4) |
-| Graft core | `morph_close`, `resample_uniform`, `union_pair` | pyfunction only; needs a pure surface before the Graft slice |
+| Graft/Closing core | `morph_close_core` | **added** (P4 Closing/Proxy/Mirror) |
+| Resampling | `resample::resample_uniform_core` | **added** (P4; `resample_core` was already pure) |
+| Manifold union | `manifold::union_pair_core` | **added** (P4 Coaptation) |
 
 Consequences:
 
@@ -48,7 +50,11 @@ Consequences:
   (`tier_tamponade`, `tier_flap`, `tier_flap_debris`,
   `tier_flap_final`, `tier_flap_off_preferred`, `tier_flap_si_rose`,
   `tier_tamponade_final`, `tier_tamponade_off_preferred`, `tier_coaptation`,
-  `tier_graft_decide`, `tier_cdt`, `tier_splint`).
-- `cdt3d_solid_core`, `splint_cut_core_opts`, `stage2_rebuild_core` and
-  `is_two_manifold` are pure Rust APIs; `local_remesh` remains Python and only
-  its wall-clock gate was replaced with a deterministic work budget.
+  `tier_graft_decide`, `tier_cdt`, `tier_splint`,
+  `tier_closing_decide`).
+- `cdt3d_solid_core`, `splint_cut_core_opts`, `stage2_rebuild_core`,
+  `morph_close_core`, `resample_uniform_core` and `is_two_manifold` are pure
+  Rust APIs.  The Closing/Proxy/Mirror tier owns the reload-honest gate; their
+  candidate builders remain in the Python method modules (the approved
+  `pipeline/tiers/*` scope).  `local_remesh` remains Python and only its
+  wall-clock gate was replaced with a deterministic work budget.

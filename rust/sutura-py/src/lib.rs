@@ -761,6 +761,31 @@ fn arrays_i64<'py>(py: Python<'py>, t: &[[i64; 3]]) -> PyResult<Bound<'py, PyArr
     PyArray2::from_vec2(py, &rows).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+#[pyfunction(name = "tier_closing_decide")]
+fn tier_closing_decide_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    input_verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    input_tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    cand_verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    cand_tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    rep_json: &str,
+    params_json: &str,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>, String)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let iv = verts_f64(input_verts)?;
+    let it = tris_i64(input_tris)?;
+    let cv = verts_f64(cand_verts)?;
+    let ct = tris_i64(cand_tris)?;
+    let rep = parse_params(rep_json)?;
+    let params = parse_params(params_json)?;
+    let (ov, ot, rec) =
+        sutura_core::tiers::closing::decide(&v, &t, &iv, &it, &cv, &ct, &rep, &params);
+    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
+}
+
 #[pyfunction(name = "tier_splint")]
 fn tier_splint_py<'py>(
     py: Python<'py>,
@@ -986,6 +1011,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(p_weld_enforce_verdict_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage2_should_run_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage2_split_pinched_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tier_closing_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_splint_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_cdt_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_coaptation_py, m)?)?;

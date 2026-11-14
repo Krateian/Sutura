@@ -4,6 +4,8 @@
 
 Moved verbatim from sutura/repair.py; no logic change.
 """
+import json
+
 import numpy as np
 
 import topology
@@ -13,10 +15,94 @@ from sutura_engine.pipeline.p_weld import (
     _repair_welded_topology, weld_reload_equivalent,
 )
 from sutura_engine.pipeline.utils import boundary_loop_stats
+from sutura_engine.pipeline.tiers.engine import (
+    tier_core, tier_engine,
+)
 
 
 def closing_ladder(v, t, input_v, input_t, after, stats, tmpdir,
                    closing=None, proxy_template=False):
+    """Closing/proxy/mirror tier entry point (Python by default, Rust gate when
+    opted in).  The geometry algorithms stay in the Python method modules."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v,
+                         dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
+    if not closing and not proxy_template:
+        return v, t, after
+    core = tier_core()
+    if tier_engine('closing') != 'rust' or core is None:
+        return _closing_ladder_python(
+            v, t, input_v, input_t, after, stats, tmpdir, closing,
+            proxy_template)
+    return _closing_ladder_rust(
+        v, t, input_v, input_t, after, stats, tmpdir, closing,
+        proxy_template, core)
+
+
+def _closing_ladder_rust(v, t, input_v, input_t, after, stats, tmpdir,
+                         closing, proxy_template, core):
+    """Rust-backed closing gate around the Python candidate builders."""
+    stats = stats if stats is not None else {}
+    tier = 'proxy_template' if proxy_template else closing
+    rec = {'tier': tier, 'ran': True, 'adopted': False, 'watertight': False,
+           'holes': None, 'non_manifold': None, 'faces': None,
+           'notes': [], 'reason': None}
+    stats['closing'] = rec
+    payload = None
+    rep = {}
+    cand_v = cand_t = None
+    with method_health.tier_guard('closing', 'tier') as _g:
+        in_v = input_v
+        in_t = input_t
+        if proxy_template:
+            import proxy_repair as _proxy
+            cand_v, cand_t, rep = _proxy.proxy_template_repair(in_v, in_t)
+        else:
+            import closing as _closing_mod
+            if closing == 'poisson':
+                cand_v, cand_t, rep = _closing_mod.poisson_close(
+                    in_v, in_t, tmpdir=tmpdir)
+            elif closing == 'flat_back':
+                cand_v, cand_t, rep = _closing_mod.flat_back_close(in_v, in_t)
+            elif closing == 'mirror':
+                import mirror_repair as _mirror
+                cand_v, cand_t, rep = _mirror.mirror_close(
+                    in_v, in_t, tmpdir=tmpdir)
+            else:
+                rec.update(ran=False, reason='unknown closing mode %r' % closing)
+                stats['closing'] = rec
+                return v, t, after
+        payload = core.tier_closing_decide(
+            np.ascontiguousarray(v, dtype=np.float64),
+            np.ascontiguousarray(t, dtype=np.int64),
+            np.ascontiguousarray(in_v, dtype=np.float64),
+            np.ascontiguousarray(in_t, dtype=np.int64),
+            np.ascontiguousarray(cand_v, dtype=np.float64),
+            np.ascontiguousarray(cand_t, dtype=np.int64),
+            json.dumps(rep, default=str),
+            json.dumps({'tier': tier}))
+    if _g.error is not None or payload is None:
+        rec['ran'] = False
+        rec['reason'] = 'error: %s: %s' % (
+            type(_g.error).__name__, _g.error)
+        stats['closing'] = rec
+        return v, t, after
+    out_v, out_t, rec_json = payload
+    rec = json.loads(rec_json)
+    stats['closing'] = rec
+    if not rec.get('adopted'):
+        return v, t, after
+    out_v = np.asarray(out_v, dtype=np.float64)
+    out_t = np.asarray(out_t, dtype=np.int64)
+    return (out_v, out_t,
+            topology.mesh_topology(np.asarray(out_v, dtype=np.float32),
+                                   np.asarray(out_t, dtype=np.int32)))
+
+
+def _closing_ladder_python(v, t, input_v, input_t, after, stats, tmpdir,
+                           closing=None, proxy_template=False):
     """Scan-closing / proxy-template tier for registry methods 8/9/10 (P-INT).
 
     ``closing='poisson'`` runs ``closing.poisson_close``; ``'flat_back'`` runs
