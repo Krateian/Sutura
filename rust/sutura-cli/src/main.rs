@@ -218,6 +218,10 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
+    if cli.list_methods {
+        print_list_methods();
+        return Ok(());
+    }
     if cli.list_intensities {
         let loaded = sutura_core::config::policy::load_policy(None)
             .map_err(|e| (1, Some(e.to_string())))?;
@@ -268,6 +272,102 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
                 .to_string(),
         ),
     ))
+}
+
+/// The 19 built-in repair methods, in registry order.
+const METHODS: [(u8, &str, &str, &str); 19] = [
+    (1, "quick_clean", "clean", "Quick Clean"),
+    (2, "local_mend", "topology", "Local Mend"),
+    (3, "full_mend", "topology", "Full Mend"),
+    (4, "join", "topology", "Join"),
+    (5, "autorefine", "si", "Autorefine"),
+    (6, "exact_refine", "si", "Exact Refine"),
+    (7, "ftetwild", "envelope", "fTetWild"),
+    (8, "balloon", "closing", "Balloon"),
+    (9, "backplate", "closing", "Backplate"),
+    (10, "scaffold", "template", "Scaffold"),
+    (11, "transplant", "pattern", "Transplant"),
+    (12, "transplant_plus", "pattern", "Transplant+"),
+    (13, "graft", "envelope", "Graft"),
+    (14, "mirror_complete", "closing", "Mirror Complete"),
+    (15, "wall_thicken", "envelope", "Wall Thicken"),
+    (16, "dressing", "envelope", "Dressing"),
+    (17, "tamponade", "interior", "Tamponade"),
+    (18, "splint", "solid", "Splint"),
+    (19, "coaptation", "solid", "Coaptation"),
+];
+
+/// Whether the optional fTetWild binary is installed. The Rust CLI cannot
+/// import Python's pytetwild; until the Rust tier is wired this mirrors the
+/// filesystem check used by the installer.
+fn ftetwild_available() -> bool {
+    if let Some(path) = std::env::var_os("SUTURA_FTETWILD_BIN") {
+        return !path.is_empty() && Path::new(&path).exists();
+    }
+    match std::env::var_os("HOME") {
+        Some(home) => Path::new(&home)
+            .join(".local/share/sutura/ftetwild/bin/ftetwild")
+            .exists(),
+        None => false,
+    }
+}
+
+fn print_list_methods() {
+    println!("Repair methods:");
+    println!("  num  id                    family      available  name");
+    let ftw = ftetwild_available();
+    for (num, id, family, name) in METHODS {
+        let (ok, reason) = if id == "ftetwild" && !ftw {
+            (false, "fTetWild (pytetwild) is not installed")
+        } else {
+            (true, "")
+        };
+        let suffix = if ok {
+            String::new()
+        } else {
+            format!("  ({reason})")
+        };
+        println!(
+            "  {:<4} {:<21} {:<11} {:<10} {}{}",
+            num,
+            id,
+            family,
+            if ok { "yes" } else { "no" },
+            name,
+            suffix
+        );
+    }
+    println!();
+    let loaded = match sutura_core::config::policy::load_policy(None) {
+        Ok(policy) => policy,
+        Err(e) => {
+            eprintln!("sutura: {e}");
+            return;
+        }
+    };
+    let order = loaded
+        .get("order")
+        .and_then(|o| o.get("deep_tier_order"))
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    println!("Automatic deep-tier order: {order}");
+    println!(
+        "Policy: schema {}, hash {}, {}",
+        loaded.schema_version,
+        loaded.content_hash,
+        if loaded.user_override {
+            "user override"
+        } else {
+            "packaged default"
+        }
+    );
 }
 
 fn probe(path: &Path, json_out: bool) -> Result<(), (u8, String)> {

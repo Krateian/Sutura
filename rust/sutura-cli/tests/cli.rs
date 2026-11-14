@@ -118,6 +118,25 @@ fn bare_io_is_a_file_path_not_a_subcommand() {
 }
 
 #[test]
+fn list_methods_prints_the_registry() {
+    let out = Command::new(env!("CARGO_BIN_EXE_sutura"))
+        .arg("--list-methods")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    for needle in [
+        "Repair methods:",
+        "quick_clean",
+        "coaptation",
+        "Automatic deep-tier order:",
+        "Policy: schema 1, hash abb52584b7c6eee4, packaged default",
+    ] {
+        assert!(text.contains(needle), "listing misses {needle}");
+    }
+}
+
+#[test]
 fn long_flag_prefixes_resolve_like_argparse() {
     let out = Command::new(env!("CARGO_BIN_EXE_sutura"))
         .args(["--hum", "--version"])
