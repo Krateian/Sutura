@@ -637,3 +637,87 @@ pub fn edge_face_labels(tris: &[[i64; 3]]) -> (usize, Vec<i64>) {
     let labels: Vec<i64> = roots.iter().map(|r| map[r]).collect();
     (uniq.len(), labels)
 }
+
+/// `topology.mesh_topology(...)['is_mesh_two_manifold']` without pyo3:
+/// every edge is used exactly twice and every vertex star is edge-connected.
+pub fn is_two_manifold(nv: usize, tris: &[[i64; 3]]) -> bool {
+    if tris.is_empty() {
+        return true;
+    }
+    let mut edge_counts: HashMap<(i64, i64), usize> = HashMap::new();
+    for t in tris {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let k = if a <= b { (a, b) } else { (b, a) };
+            *edge_counts.entry(k).or_insert(0) += 1;
+        }
+    }
+    if edge_counts.values().any(|c| *c != 2) {
+        return false;
+    }
+    let mut v_faces: Vec<Vec<usize>> = vec![Vec::new(); nv];
+    for (fi, t) in tris.iter().enumerate() {
+        let mut uv: Vec<usize> = Vec::with_capacity(3);
+        for &v in t {
+            if v >= 0 && (v as usize) < nv {
+                let vu = v as usize;
+                if !uv.contains(&vu) {
+                    uv.push(vu);
+                }
+            }
+        }
+        for v in uv {
+            v_faces[v].push(fi);
+        }
+    }
+    for v in 0..nv {
+        let inc = &v_faces[v];
+        if inc.len() <= 1 {
+            continue;
+        }
+        let n_inc = inc.len();
+        let mut parent: Vec<usize> = (0..n_inc).collect();
+        fn find(p: &mut [usize], mut x: usize) -> usize {
+            let mut root = x;
+            while p[root] != root {
+                root = p[root];
+            }
+            while p[x] != root {
+                let next = p[x];
+                p[x] = root;
+                x = next;
+            }
+            root
+        }
+        let mut edge_neighbors: HashMap<i64, Vec<usize>> = HashMap::new();
+        for (local_idx, &f_idx) in inc.iter().enumerate() {
+            let tri = tris[f_idx];
+            let mut other_v: Vec<i64> = Vec::with_capacity(2);
+            for &w in &tri {
+                if w != v as i64 && !other_v.contains(&w) {
+                    other_v.push(w);
+                }
+            }
+            for w in other_v {
+                edge_neighbors.entry(w).or_default().push(local_idx);
+            }
+        }
+        for flist in edge_neighbors.values() {
+            if flist.len() > 1 {
+                let r0 = find(&mut parent, flist[0]);
+                for &k in &flist[1..] {
+                    let rk = find(&mut parent, k);
+                    if rk != r0 {
+                        parent[rk] = r0;
+                    }
+                }
+            }
+        }
+        let mut roots: Vec<usize> = (0..n_inc).map(|i| find(&mut parent, i)).collect();
+        roots.sort_unstable();
+        roots.dedup();
+        if roots.len() > 1 {
+            return false;
+        }
+    }
+    true
+}

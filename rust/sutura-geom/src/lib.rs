@@ -291,6 +291,122 @@ struct Cdt3dOpts {
     proxy_res: usize,
 }
 
+/// Public options for the pure CDT solid entry point.
+#[derive(Clone, Copy, Debug)]
+pub struct Cdt3dCoreOptions {
+    pub verify_coverage: bool,
+    pub max_tets: usize,
+    pub wall_timeout_ms: u64,
+    pub label_mode: &'static str,
+    pub lambda: f64,
+    pub constraint_fraction: f64,
+    pub proxy_res: usize,
+}
+
+impl Default for Cdt3dCoreOptions {
+    fn default() -> Self {
+        Self {
+            verify_coverage: false,
+            max_tets: 250_000,
+            wall_timeout_ms: 0,
+            label_mode: "gwn_threshold",
+            lambda: 0.5,
+            constraint_fraction: 0.05,
+            proxy_res: 128,
+        }
+    }
+}
+
+/// Public, Python-free CDT report (subset used by the repair tier).
+#[derive(Clone, Debug, Default)]
+pub struct Cdt3dCoreReport {
+    pub ok: bool,
+    pub seconds: f64,
+    pub output_faces: usize,
+    pub cap_faces: usize,
+    pub cap_area: f64,
+    pub parts: usize,
+    pub holes: usize,
+    pub nonmanifold: usize,
+    pub bbox_ok: bool,
+    pub hausdorff: f64,
+    pub valid: bool,
+    pub tets: usize,
+    pub constraint_cut_faces: usize,
+    pub free_cut_faces: usize,
+    pub inside_cells: usize,
+    pub orientation_used: bool,
+    pub orientation_components: usize,
+    pub orientation_flipped: usize,
+    pub w_hist: [usize; 10],
+    pub coverage_certified: bool,
+    pub verify_coverage: bool,
+    pub max_tets: usize,
+    pub wall_timeout_ms: u64,
+    pub hash: u64,
+}
+
+/// Pure CDT solid build.  The Python `cdt3d_solid` binding is a thin wrapper
+/// over the same `run_cdt3d` path.
+pub fn cdt3d_solid_core(
+    verts: &[[f64; 3]],
+    tris: &[[i32; 3]],
+    opts: &Cdt3dCoreOptions,
+) -> Result<(Vec<[f64; 3]>, Vec<[i32; 3]>, Cdt3dCoreReport), String> {
+    let ut: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
+    let label_mode = match opts.label_mode {
+        "min_cut" => cdt3d::solid::LabelMode::MinCut,
+        _ => cdt3d::solid::LabelMode::GwnThreshold,
+    };
+    let o = Cdt3dOpts {
+        verify_coverage: opts.verify_coverage,
+        max_tets: opts.max_tets,
+        wall_timeout_ms: opts.wall_timeout_ms,
+        label_mode,
+        lambda: opts.lambda,
+        constraint_fraction: opts.constraint_fraction,
+        proxy_res: opts.proxy_res,
+    };
+    let (solid, face_report, _plc_report, seconds) = run_cdt3d(verts, &ut, &o)?;
+    let r = &solid.report;
+    let out_v: Vec<[f64; 3]> = solid.verts.clone();
+    let out_t: Vec<[i32; 3]> = solid
+        .tris
+        .iter()
+        .map(|t| [t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+    let report = Cdt3dCoreReport {
+        ok: r.valid,
+        seconds,
+        output_faces: r.output_faces,
+        cap_faces: r.cap_faces,
+        cap_area: r.cap_area,
+        parts: r.parts,
+        holes: r.holes,
+        nonmanifold: r.nonmanifold,
+        bbox_ok: r.bbox_ok,
+        hausdorff: r.hausdorff,
+        valid: r.valid,
+        tets: face_report.tets,
+        constraint_cut_faces: r.constraint_cut_faces,
+        free_cut_faces: r.free_cut_faces,
+        inside_cells: r.inside_cells,
+        orientation_used: r.orientation_used,
+        orientation_components: r.orientation_components,
+        orientation_flipped: r.orientation_flipped,
+        w_hist: r.w_hist,
+        coverage_certified: face_report.coverage_certified,
+        verify_coverage: o.verify_coverage,
+        max_tets: o.max_tets,
+        wall_timeout_ms: o.wall_timeout_ms,
+        hash: r.hash,
+    };
+    Ok((out_v, out_t, report))
+}
+
 fn run_cdt3d(
     rv: &[[f64; 3]],
     rt: &[[usize; 3]],
