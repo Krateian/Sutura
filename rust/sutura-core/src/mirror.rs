@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::{json, Value};
 use sutura_geom::manifold::outer_shell_union_core;
 
-use crate::closing::{boundary_loops, check_validity, jacobi_eigen, loop_stats, poisson_close};
+use sutura_geom::eigh3::eigh3;
+
+use crate::closing::{boundary_loops, check_validity, loop_stats, poisson_close};
 use crate::graft::helpers::{bbox, np_pairwise_sum, referenced_only};
 use crate::stage1::chain::apply_chain;
 
@@ -103,8 +105,8 @@ pub fn detect_mirror_plane(
             }
         }
     }
-    let (_eigs, vecs) = jacobi_eigen(cov);
-    let n = vecs[2];
+    let (_eigs, vecs) = eigh3(cov);
+    let n = [vecs[0][0], vecs[1][0], vecs[2][0]];
 
     let rms = (np_pairwise_sum(
         &pts
