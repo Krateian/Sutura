@@ -1758,8 +1758,7 @@ fn nearest_points<'py>(
 #[cfg(feature = "python")]
 #[pyclass(name = "KdTree")]
 struct PyKdTree {
-    inner: pointcloud::PointTree,
-    point_count: usize,
+    inner: pointcloud::KdTree,
 }
 
 #[cfg(feature = "python")]
@@ -1771,12 +1770,9 @@ impl PyKdTree {
         if pts.is_empty() {
             return Err(PyValueError::new_err("points must be non-empty"));
         }
-        let inner = pointcloud::build_tree(&pts)
+        let inner = pointcloud::KdTree::new(&pts)
             .ok_or_else(|| PyValueError::new_err("could not build the point tree"))?;
-        Ok(Self {
-            inner,
-            point_count: pts.len(),
-        })
+        Ok(Self { inner })
     }
 
     #[pyo3(signature = (queries, k = 1))]
@@ -1787,12 +1783,12 @@ impl PyKdTree {
         k: usize,
     ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         let qs = parse_point_rows(&queries)?;
-        let (dist, idx, take) = pointcloud::query_neighbours(&self.inner, self.point_count, &qs, k);
+        let (dist, idx, take) = self.inner.query(&qs, k);
         nearest_output(py, dist, idx, take, qs.len())
     }
 
     fn __len__(&self) -> usize {
-        self.point_count
+        self.inner.len()
     }
 }
 
