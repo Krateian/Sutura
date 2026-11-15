@@ -70,7 +70,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  si_mode=None, dressing_force_adopt=False,
                  splint=False, splint_adaptive=None,
                  solid_engine='ftetwild', coaptation=False,
-                 progress=None, cancel=None):
+                 progress=None, cancel=None, forced_methods=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     bad_coords = scan_bad_coordinates(src)
     if bad_coords:
@@ -129,6 +129,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 'wall_thicken': _fb(wall_thicken), 'repeat': repeat,
                 'solid_engine': solid_engine, 'si_mode': si_mode,
                 'time_budget_s': None, 'seed': 0,
+                'forced_methods': list(forced_methods or []),
             }
             def _rust_call(flap_value, tamponade_value):
                 call_opts = dict(opts)

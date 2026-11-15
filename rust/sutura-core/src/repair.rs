@@ -194,6 +194,8 @@ pub struct RepairOptions {
     pub ftetwild: Option<Value>,
     pub time_budget_s: Option<f64>,
     pub seed: u64,
+    #[serde(default)]
+    pub forced_methods: Vec<u8>,
 }
 
 impl Default for RepairOptions {
@@ -223,6 +225,7 @@ impl Default for RepairOptions {
             ftetwild: None,
             time_budget_s: None,
             seed: 0,
+            forced_methods: Vec::new(),
         }
     }
 }
@@ -2592,6 +2595,34 @@ fn repair_impl(
         stats.insert("closing".into(), rec);
     }
 
+    let mut forced_graft_done = false;
+    if opts.forced_methods.contains(&13) && opts.graft != Some(false) {
+        let mut holes = boundary_loop_stats(&cur_t).0;
+        let mut nm = after.non_two_manifold_edges;
+        if holes > 0 || nm > 0
+            || opts.forced_methods.contains(&13)
+        {
+            let g_in_v = cur_v.clone();
+            let g_in_t = cur_t.clone();
+            let (gv, gt, rec) = run_graft_tier(
+                &cur_v, &cur_t, &input_v, &input_t, holes, nm,
+                &intensity_for_tamponade, &spec, opts.time_budget_s,
+            );
+            if adopted(&rec) {
+                cur_v = gv;
+                cur_t = gt;
+                after = common::topology_summary(&cur_v, &cur_t);
+                holes = boundary_loop_stats(&cur_t).0;
+                nm = after.non_two_manifold_edges;
+            }
+            emit_tier(sink, "graft", 4, &rec);
+            trace.record("graft", "tiers.graft.graft_tier", &g_in_v, &g_in_t,
+                         &cur_v, &cur_t, rec.clone());
+            stats.insert("graft".into(), rec);
+            forced_graft_done = true;
+        }
+    }
+
     // --- Deep-repair ladder ------------------------------------------------
     let ladder_holes_before = boundary_loop_stats(&cur_t).0;
     let ladder_nm_before = after.non_two_manifold_edges;
@@ -2604,7 +2635,8 @@ fn repair_impl(
 
             // Graft (#13): shell wrap, only when Stage 1 still leaves damage.
             let mut graft_ok = false;
-            if opts.graft != Some(false)
+            if !forced_graft_done
+                && opts.graft != Some(false)
                 && (opts.graft == Some(true) || holes > 0 || nm > 0)
             {
                 let g_in_v = cur_v.clone();

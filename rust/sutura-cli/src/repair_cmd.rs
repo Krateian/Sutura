@@ -186,13 +186,11 @@ fn parse_methods(
             .parse::<u64>()
             .map_err(|_| RepairFailure::new(2, format!("unknown method: {token}")))?;
         match num {
-            1..=3 => nums.push(num),
+            1..=19 => nums.push(num),
             _ => {
                 return Err(RepairFailure::new(
                     2,
-                    format!(
-                        "method {num} is not implemented in the Rust CLI; only 1 (Quick Clean), 2 (Local Mend) and 3 (Full Mend) are available"
-                    ),
+                    format!("unknown method: {num}"),
                 ))
             }
         }
@@ -340,7 +338,7 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     };
     let splint = !cli.no_splint && cli.experimental_splint;
 
-    let opts = RepairOptions {
+    let mut opts = RepairOptions {
         mode,
         intensity,
         profile: cli.profile.clone(),
@@ -365,7 +363,16 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         ftetwild,
         time_budget_s: None,
         seed: 0,
+        forced_methods: Vec::new(),
     };
+    if methods.contains(&13) {
+        opts.graft = Some(true);
+        opts.deep_repair = DeepRepair::Off;
+    }
+    opts.forced_methods = methods
+        .iter()
+        .filter_map(|n| u8::try_from(*n).ok())
+        .collect();
     Ok((opts, methods_given, methods))
 }
 
