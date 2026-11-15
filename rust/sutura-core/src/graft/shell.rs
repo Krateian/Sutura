@@ -757,7 +757,16 @@ pub fn shell_wrap(
                 report.insert("reason".into(), json!(reason));
                 report.insert(
                     "warnings".into(),
-                    json!([{"code": "aborted_time", "message": reason}]),
+                    json!([{
+                        "code": "aborted_time",
+                        "message": reason,
+                        "message_en": reason,
+                        "message_tr": format!(
+                            "Graft süre nedeniyle durduruldu ({} bütçe, denemeler arasında denetlenir); Aşama 1 sonucu korundu",
+                            opts.time_budget
+                                .map(|x| format!("{} sn", x))
+                                .unwrap_or_else(|| "süre".into())),
+                    }]),
                 );
                 return Ok(ShellWrapOutput {
                     verts: v0,
@@ -1010,8 +1019,7 @@ pub fn shell_wrap(
     let mut input_coverage_value = None;
     if opts.guard && d > 0.0 && !best.t.is_empty() {
         let mut coverage_rng = sutura_geom::rng::Pcg64::new(12345);
-        input_coverage_value =
-            input_coverage(&v0, &t0, &best.v, &best.t, d, &mut coverage_rng);
+        input_coverage_value = input_coverage(&v0, &t0, &best.v, &best.t, d, &mut coverage_rng);
     }
     let coverage_ok = match input_coverage_value {
         None => true,
@@ -1080,20 +1088,44 @@ pub fn shell_wrap(
                 "{} grid does not fit in RAM; used Balanced grid",
                 capitalize(inten)
             );
-            warnings.push(json!({"code": "grid_fallback", "message": msg,
-                "message_en": msg}));
+            warnings.push(json!({
+                "code": "grid_fallback",
+                "message": msg,
+                "message_en": msg,
+                "message_tr": format!(
+                    "{} ızgarası RAM'e sığmıyor; Balanced ızgarası kullanıldı",
+                    capitalize(inten)),
+            }));
         }
     }
     if !coverage_ok {
+        let cov = report
+            .get("input_coverage")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
         warnings.push(json!({
             "code": "coverage",
-            "message_en": "Graft closed the mesh but its input coverage is below the threshold"
+            "message_en": format!(
+                "Graft closed the mesh but its input coverage ({}) is below {}; the result does not reproduce enough of the input surface (likely a collapsed fragment).",
+                round4(cov), GRAFT_MIN_INPUT_COVERAGE),
+            "message_tr": format!(
+                "Graft ağı kapattı ancak girdi kapsaması ({}) {} eşiğinin altında; sonuç girdi yüzeyinin yeterli kısmını yeniden üretmiyor (muhtemelen çökmüş bir parça).",
+                round4(cov), GRAFT_MIN_INPUT_COVERAGE),
         }));
     }
     if best.watertight && !best.fidelity_ok {
+        let hh = report
+            .get("hausdorff_healthy")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
         warnings.push(json!({
             "code": "fidelity",
-            "message_en": "Graft closed the mesh but the healthy-region deviation exceeds the tolerance"
+            "message_en": format!(
+                "Graft closed the mesh but the healthy-region deviation ({}) exceeds the tolerance; the result is watertight but its healthy shape may have changed.",
+                round5(hh)),
+            "message_tr": format!(
+                "Graft ağı kapattı ancak sağlıklı bölge sapması ({}) toleransı aşıyor; sonuç su geçirmez fakat sağlıklı şekli değişmiş olabilir.",
+                round5(hh)),
         }));
     }
     report.insert("warnings".into(), Value::Array(warnings));
@@ -1136,6 +1168,9 @@ fn warnings_for(r_used: f64, detail: &Detail) -> Vec<Value> {
             "code": "detail_loss",
             "message_en": format!(
                 "Graft used a {:.3} mm envelope: {:.1}% of the surface moved more than {:.3} mm (fine surface texture smoothed).",
+                r_used, pct, detail.tolerance),
+            "message_tr": format!(
+                "Graft {:.3} mm zarf kullandı: yüzeyin %{:.1}'i {:.3} mm'den fazla hareket etti (ince yüzey dokusu yumuşatıldı).",
                 r_used, pct, detail.tolerance),
         })];
     }

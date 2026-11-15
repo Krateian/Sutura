@@ -69,3 +69,27 @@ def test_shell_wrap_g2_hybrid_close():
 
 def test_shell_wrap_g3_rng_coverage():
     _case('thingi10k_100827.stl', 1.354, 2.031, guard=True)
+
+
+def test_shell_wrap_g4_engine_bridge():
+    try:
+        import sutura_core_py
+        from sutura_core_py import load_stl
+    except Exception as exc:  # noqa: BLE001
+        import pytest
+        pytest.skip('bridge unavailable: %s' % exc)
+
+    from sutura_engine.graft import shell_wrap
+
+    v, t = load_stl(os.path.join(
+        REPO, 'tests', 'real-world-samples', 'thingi10k_100045.stl'))
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    pv, pt, prep = shell_wrap(v, t, hybrid=True, intensity='balanced')
+    rv, rt, rrep = sutura_core_py.graft_shell_wrap(v, t, 'balanced', None)
+    rrep = json.loads(rrep)
+    assert np.array_equal(pv, rv)
+    assert np.array_equal(pt, rt)
+    for key in ('r_used', 'mode', 'input_coverage', 'coverage_ok',
+                'hausdorff_healthy', 'faces_after'):
+        assert prep[key] == rrep[key], (key, prep[key], rrep[key])

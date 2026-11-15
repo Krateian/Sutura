@@ -32,6 +32,10 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
     if not graft:
         return v, t, after
     core = tier_core()
+    if core is None and tier_engine('graft') == 'rust':
+        from sutura_engine import rust_bridge
+        core = rust_bridge.load(
+            'graft', ('SUTURA_GRAFT_ENGINE', 'SUTURA_TIER_ENGINE'), 'python')
     if tier_engine('graft') != 'rust' or core is None:
         return _graft_tier_python(
             v, t, input_v, input_t, after, stats, tmpdir, graft, intensity,
@@ -57,13 +61,21 @@ def _graft_tier_rust(v, t, input_v, input_t, after, stats, tmpdir, intensity,
     grec = {}
     cand_v = cand_t = None
     with method_health.tier_guard('graft', 'tier') as _g:
-        try:
-            from sutura_engine import graft as _graft
-        except Exception:  # noqa: BLE001
-            import shell_wrap as _graft
-        cand_v, cand_t, grec = _graft.shell_wrap(
-            input_v, input_t, hybrid=True, intensity=intensity,
-            time_budget=timeout)
+        engine = os.environ.get('SUTURA_GRAFT_ENGINE', '').strip().lower()
+        if engine == 'rust' and hasattr(core, 'graft_shell_wrap'):
+            cand_v, cand_t, grec_json = core.graft_shell_wrap(
+                np.ascontiguousarray(input_v, dtype=np.float64),
+                np.ascontiguousarray(input_t, dtype=np.int64),
+                intensity, (float(timeout) if timeout else None))
+            grec = json.loads(grec_json)
+        else:
+            try:
+                from sutura_engine import graft as _graft
+            except Exception:  # noqa: BLE001
+                import shell_wrap as _graft
+            cand_v, cand_t, grec = _graft.shell_wrap(
+                input_v, input_t, hybrid=True, intensity=intensity,
+                time_budget=timeout)
         params = {
             'max_faces': (int(cap) if cap is not None else None),
             'time_budget': (float(timeout) if timeout else None),

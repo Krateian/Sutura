@@ -868,6 +868,33 @@ fn graft_helpers_probe_py(
     Ok(out.to_string())
 }
 
+#[pyfunction(name = "graft_shell_wrap")]
+fn graft_shell_wrap_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    intensity: Option<String>,
+    time_budget: Option<f64>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let mut opts = sutura_core::graft::shell::ShellWrapOptions::default();
+    opts.hybrid = true;
+    opts.intensity = intensity;
+    opts.time_budget = time_budget;
+    let out = sutura_core::graft::shell::shell_wrap(&v, &t, &opts)
+        .map_err(PyValueError::new_err)?;
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
 #[pyfunction(name = "graft_shell_wrap_probe")]
 fn graft_shell_wrap_probe_py<'py>(
     py: Python<'py>,
@@ -1306,6 +1333,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(graft_remesh_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(graft_helpers_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(graft_shell_wrap_probe_py, m)?)?;
+    m.add_function(wrap_pyfunction!(graft_shell_wrap_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_si_excise_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_wall_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_repeat_decide_py, m)?)?;
