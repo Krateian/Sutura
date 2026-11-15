@@ -114,32 +114,12 @@ pub trait Rng {
     fn random_f64(&mut self) -> f64;
 }
 
-struct SplitMix64 {
-    state: u64,
-}
-
-impl SplitMix64 {
-    fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-    fn next(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^ (z >> 31)
-    }
-}
-
-impl Rng for SplitMix64 {
+impl Rng for sutura_geom::rng::Pcg64 {
     fn integers(&mut self, high: u64) -> u64 {
-        if high <= 1 {
-            return 0;
-        }
-        self.next() % high
+        sutura_geom::rng::Pcg64::integers(self, high)
     }
     fn random_f64(&mut self) -> f64 {
-        ((self.next() >> 11) as f64) * (1.0 / 9_007_199_254_740_992.0)
+        ((self.next_u64() >> 11) as f64) * (1.0 / 9_007_199_254_740_992.0)
     }
 }
 
@@ -267,18 +247,16 @@ fn sample_surface_seeded(v: &[[f64; 3]], t: &[[i64; 3]], n: usize, seed: u64) ->
         }
         out
     };
-    let mut rng = SplitMix64::new(seed);
+    let mut rng = sutura_geom::rng::Pcg64::new(seed);
     let face_idx: Vec<usize> = (0..n)
         .map(|_| {
-            let x = rng.random_f64();
-            match cdf.binary_search_by(|p| p.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Equal)) {
-                Ok(i) => i,
-                Err(i) => i.min(t.len() - 1),
-            }
+            let x = Rng::random_f64(&mut rng);
+            let i = cdf.partition_point(|p| *p <= x);
+            i.min(t.len() - 1)
         })
         .collect();
-    let r1: Vec<f64> = (0..n).map(|_| rng.random_f64().sqrt()).collect();
-    let r2: Vec<f64> = (0..n).map(|_| rng.random_f64()).collect();
+    let r1: Vec<f64> = (0..n).map(|_| Rng::random_f64(&mut rng).sqrt()).collect();
+    let r2: Vec<f64> = (0..n).map(|_| Rng::random_f64(&mut rng)).collect();
     let mut pts = Vec::with_capacity(n);
     for k in 0..n {
         let fi = face_idx[k];
@@ -722,7 +700,7 @@ pub fn shell_wrap(
         local_box = None;
     }
 
-    let mut rng = SplitMix64::new(20260928);
+    let mut rng = sutura_geom::rng::Pcg64::new(20260928);
     let per_attempt_cost = grid_cell_count(&v0, voxel);
     let work_budget = match opts.intensity.as_deref() {
         Some("quick") => GRAFT_WORK_MAX_ATTEMPTS * 1_500_000,
@@ -1031,7 +1009,9 @@ pub fn shell_wrap(
 
     let mut input_coverage_value = None;
     if opts.guard && d > 0.0 && !best.t.is_empty() {
-        input_coverage_value = input_coverage(&v0, &t0, &best.v, &best.t, d, &mut rng);
+        let mut coverage_rng = sutura_geom::rng::Pcg64::new(12345);
+        input_coverage_value =
+            input_coverage(&v0, &t0, &best.v, &best.t, d, &mut coverage_rng);
     }
     let coverage_ok = match input_coverage_value {
         None => true,

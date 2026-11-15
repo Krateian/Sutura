@@ -49,6 +49,7 @@ pub mod profile;
 pub mod rbf;
 pub mod raycast;
 pub mod resample;
+pub mod rng;
 pub mod roi;
 pub mod shell;
 pub mod splint;

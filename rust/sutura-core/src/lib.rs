@@ -14,6 +14,7 @@ pub mod stage1;
 pub mod stage2;
 pub mod graft;
 pub mod report;
+pub use sutura_geom::rng;
 pub mod tiers;
 
 pub use error::{MeshError, MeshResult};

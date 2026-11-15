@@ -43,8 +43,10 @@ def _case(name, voxel, r, **kwargs):
     keys = ['r_used', 'mode', 'holes', 'non_manifold', 'faces_after',
             'si_before', 'si_after', 'projected_fraction', 'remeshed',
             'detail_max_mm', 'detail_mean_mm', 'voxel']
-    if not params['guard']:
-        keys += ['hausdorff_healthy', 'fidelity_ok']
+    keys += ['hausdorff_healthy', 'fidelity_ok']
+    if params['guard']:
+        keys += ['hausdorff_one_sided', 'hausdorff_healthy_behind',
+                 'input_coverage', 'coverage_ok']
     for key in keys:
         assert prep[key] == rrep[key], (name, key, prep[key], rrep[key])
 
@@ -63,3 +65,7 @@ def test_shell_wrap_g2_local_stitch():
 
 def test_shell_wrap_g2_hybrid_close():
     _case('thingi10k_100045.stl', 0.5, 1.5, hybrid=True, guard=True)
+
+
+def test_shell_wrap_g3_rng_coverage():
+    _case('thingi10k_100827.stl', 1.354, 2.031, guard=True)
