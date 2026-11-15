@@ -319,56 +319,11 @@ fn quantize(verts: &[[f64; 3]]) -> Vec<[f64; 3]> {
 
 /// `boundary_loop_stats` (count, largest loop edge count) without numpy.
 fn boundary_loop_stats(tris: &[[i64; 3]]) -> (usize, usize) {
-    if tris.is_empty() {
-        return (0, 0);
-    }
-    let mut counts: HashMap<(i64, i64), usize> = HashMap::new();
-    for t in tris {
-        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-            let k = if a <= b { (a, b) } else { (b, a) };
-            *counts.entry(k).or_insert(0) += 1;
-        }
-    }
-    let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
-    for (&(a, b), &c) in &counts {
-        if c == 1 {
-            adj.entry(a).or_default().push(b);
-            adj.entry(b).or_default().push(a);
-        }
-    }
-    if adj.is_empty() {
-        return (0, 0);
-    }
-    let mut seen: HashMap<i64, bool> = HashMap::new();
-    let mut loops = Vec::new();
-    for &start in adj.keys() {
-        if seen.get(&start).copied().unwrap_or(false) {
-            continue;
-        }
-        let mut n = 0usize;
-        let mut cur = start;
-        let mut prev: Option<i64> = None;
-        loop {
-            if seen.get(&cur).copied().unwrap_or(false) {
-                break;
-            }
-            seen.insert(cur, true);
-            n += 1;
-            let next = adj
-                .get(&cur)
-                .and_then(|list| list.iter().copied().find(|x| Some(*x) != prev));
-            match next {
-                Some(x) => {
-                    prev = Some(cur);
-                    cur = x;
-                }
-                None => break,
-            }
-        }
-        loops.push(n);
-    }
-    let max = loops.iter().copied().max().unwrap_or(0);
-    (loops.len(), max)
+    let t32: Vec<[i32; 3]> = tris
+        .iter()
+        .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
+        .collect();
+    crate::validate::boundary_loop_stats(0, &t32)
 }
 
 fn read_thresholds(policy: Option<&LoadedPolicy>, section: &str, name: &str) -> Option<(i64, i64)> {
