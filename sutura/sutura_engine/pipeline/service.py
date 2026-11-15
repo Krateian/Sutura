@@ -9,6 +9,7 @@ Moved verbatim from sutura/repair.py; no logic change.
 """
 import json
 import os
+import sys
 import time
 
 import numpy as np
@@ -46,6 +47,13 @@ from sutura_engine.pipeline.tiers.flap import (
 from sutura_engine.pipeline.tiers.tamponade import (
     _tamponade_final_needs_off, _tamponade_off_preferred,
 )
+
+
+def _np_len(value):
+    try:
+        return len(value)
+    except TypeError:
+        return -1
 
 
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
@@ -131,6 +139,9 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                     'SUTURA_PIPELINE_ENGINE=rust requires '
                     'sutura_core_py.pipeline_repair')
             else:
+                if os.environ.get('SUTURA_PIPELINE_DEBUG'):
+                    print('[pipeline-rust] called verts=%d tris=%d' % (_np_len(verts), _np_len(tris)),
+                          file=sys.stderr, flush=True)
                 opts = {
                     'mode': mode, 'intensity': getattr(triage_spec, 'intensity', 'balanced'),
                     'profile': profile, 'deep_repair': deep_repair,
