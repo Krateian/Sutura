@@ -532,6 +532,25 @@ fn resolve_false_env(value: Option<bool>, key: &str) -> bool {
     }
 }
 
+fn fp_arrays(v: &[[f64; 3]], t: &[[i64; 3]]) -> u64 {
+    let mut h: u64 = 0;
+    for p in v {
+        for x in p {
+            for b in x.to_le_bytes() {
+                h = h.wrapping_mul(131).wrapping_add(b as u64);
+            }
+        }
+    }
+    for r in t {
+        for x in r {
+            for b in x.to_le_bytes() {
+                h = h.wrapping_mul(131).wrapping_add(b as u64);
+            }
+        }
+    }
+    h
+}
+
 pub fn shell_wrap(
     verts: &[[f64; 3]],
     tris: &[[i64; 3]],
@@ -543,6 +562,10 @@ pub fn shell_wrap(
         .map(|tb| t_start + std::time::Duration::from_secs_f64(tb));
     let v0 = verts.to_vec();
     let t0 = tris.to_vec();
+    if std::env::var_os("SUTURA_GRAFT_DEBUG").is_some() {
+        eprintln!("[graft-rust] input fp={} faces={} verts={}",
+                  fp_arrays(&v0, &t0), t0.len(), v0.len());
+    }
     let grid_budget_auto = opts.grid_budget.is_none();
     let mut grid_budget = opts
         .grid_budget

@@ -990,6 +990,18 @@ def _warnings_for(r_used, detail, diag):
 # --------------------------------------------------------------------------- #
 # main entry point
 # --------------------------------------------------------------------------- #
+def _fp_arrays(v, t):
+    import struct
+    h = 0
+    for arr in (v, t):
+        a = np.ascontiguousarray(arr)
+        if a.dtype.kind == 'f':
+            a = a.astype(np.float64)
+        for x in a.ravel().tobytes():
+            h = (h * 131 + x) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
 def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                remesh=True, fill_cavities=False, max_tries=MAX_TRIES,
                target_edge=None, si_check=True, guard=True,
@@ -1043,6 +1055,9 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     deadline = (t_start + float(time_budget)) if time_budget else None
     v0 = _as_f64(verts)
     t0 = _as_i64(tris)
+    if os.environ.get('SUTURA_GRAFT_DEBUG'):
+        print('[graft-py] input fp=%d faces=%d verts=%d' % (
+            _fp_arrays(v0, t0), len(t0), len(v0)), flush=True)
     grid_budget_auto = grid_budget is None
     if grid_budget_auto:
         grid_budget = resolve_grid_budget(intensity)
