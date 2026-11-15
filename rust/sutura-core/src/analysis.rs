@@ -335,3 +335,75 @@ pub fn analyze_mesh(
     }
     Ok(out)
 }
+
+/// `diagnosis.analyze_file`: analyse every object in a file.
+///
+/// Multi-object files go through `mesh_io::load_meshes`, the same reader the
+/// pyo3 bridge exposes, so `--analyze` and the pipeline see the same objects.
+pub fn analyze_file(
+    path: impl AsRef<std::path::Path>,
+    engine: &str,
+    count_self_intersections: bool,
+) -> Result<Vec<Analysis>, String> {
+    let meshes = crate::mesh_io::load_meshes(path).map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(meshes.len());
+    for (name, mesh) in meshes {
+        let mut a = analyze_mesh(&mesh, engine, count_self_intersections)?;
+        a.model = name;
+        out.push(a);
+    }
+    Ok(out)
+}
+
+/// `diagnosis.combine`: worst-case merge of several object analyses.
+///
+/// Element-wise max, except `boundary_loops`/`surface_area` which SUM (a hole in
+/// any object is a hole in the file) and `type_confidence` which takes the MIN
+/// (the file is only as trustworthy as its least confident object). The
+/// per-object `model`, `diagnosis_v2` and `possible_debris` are dropped because
+/// they no longer describe one thing.
+pub fn combine(objs: &[Analysis]) -> Analysis {
+    if objs.is_empty() {
+        return Analysis::default();
+    }
+    if objs.len() == 1 {
+        return objs[0].clone();
+    }
+    let mut c = objs[0].clone();
+    c.model = None;
+    c.diagnosis_v2 = None;
+    c.possible_debris = None;
+    c.faces = objs.iter().map(|o| o.faces).max().unwrap_or(0);
+    c.vertices = objs.iter().map(|o| o.vertices).max().unwrap_or(0);
+    c.components = objs.iter().map(|o| o.components).max().unwrap_or(0);
+    c.boundary_loops = objs.iter().map(|o| o.boundary_loops).sum();
+    c.largest_loop_len = objs.iter().map(|o| o.largest_loop_len).max().unwrap_or(0);
+    c.largest_loop_ratio = objs
+        .iter()
+        .map(|o| o.largest_loop_ratio)
+        .fold(0.0f64, f64::max);
+    c.open_area_ratio = objs.iter().map(|o| o.open_area_ratio).fold(0.0f64, f64::max);
+    c.non_manifold_edges = objs.iter().map(|o| o.non_manifold_edges).max().unwrap_or(0);
+    c.self_intersections = objs.iter().map(|o| o.self_intersections).max().unwrap_or(0);
+    // `self_intersections_estimated` is always false in this port (`to_json`
+    // pins it), so `any(...)` would be false too -- nothing to merge.
+    c.type_confidence = objs
+        .iter()
+        .map(|o| o.type_confidence)
+        .fold(f64::INFINITY, f64::min);
+    if !c.type_confidence.is_finite() {
+        c.type_confidence = 0.0;
+    }
+    c.repetition_score = objs
+        .iter()
+        .map(|o| o.repetition_score)
+        .fold(0.0f64, f64::max);
+    c.single_side_score = objs
+        .iter()
+        .map(|o| o.single_side_score)
+        .fold(0.0f64, f64::max);
+    c.relief_score = objs.iter().map(|o| o.relief_score).fold(0.0f64, f64::max);
+    c.bbox_diagonal = objs.iter().map(|o| o.bbox_diagonal).fold(0.0f64, f64::max);
+    c.surface_area = objs.iter().map(|o| o.surface_area).sum();
+    c
+}

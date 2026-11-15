@@ -7,6 +7,7 @@
 //! them may depend on pyo3 or numpy.
 
 pub mod analysis;
+pub mod analyze;
 pub mod classify;
 pub mod config;
 pub mod error;

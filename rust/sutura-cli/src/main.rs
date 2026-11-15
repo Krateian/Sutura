@@ -301,13 +301,26 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
         return run_read_only(&cli, &cli.files.clone(), ReadOnly::DryRun);
     }
     if cli.analyze {
-        return Err((
-            2,
-            Some(
-                "--analyze needs the unported repetition/closing analysis signals"
-                    .to_string(),
-            ),
-        ));
+        // Same guards Python applies before touching the files.
+        if cli.output.is_some() {
+            return Err((2, Some("-o is not valid with --analyze".to_string())));
+        }
+        if cli.dry_run {
+            return Err((2, Some("--analyze is not valid with --dry-run".to_string())));
+        }
+        if cli.methods.is_some() {
+            return Err((2, Some("--methods is not valid with --analyze".to_string())));
+        }
+        if cli.engines.is_some() {
+            return Err((2, Some("--engines is not valid with --analyze".to_string())));
+        }
+        if cli.files.is_empty() {
+            return Err((
+                2,
+                Some("--analyze requires at least one input file".to_string()),
+            ));
+        }
+        return run_read_only(&cli, &cli.files.clone(), ReadOnly::Analyze);
     }
 
     if cli.files.is_empty() {
@@ -598,6 +611,7 @@ fn material_refs(path: &Path) -> bool {
 enum ReadOnly {
     Validate,
     DryRun,
+    Analyze,
 }
 
 /// `validate` / `--dry-run`: analyse every input, write nothing.
@@ -623,6 +637,11 @@ fn run_read_only(cli: &Cli, files: &[PathBuf], kind: ReadOnly) -> Result<(), (u8
                 json!({"input": input, "error": message})
             }
         };
+        // `--analyze` reports failures inside the payload, so count them here;
+        // Python exits 1 whenever any result carries an `error`.
+        if kind == ReadOnly::Analyze && report.get("error").is_some() {
+            errors += 1;
+        }
         reports.push(report);
     }
 
@@ -632,6 +651,7 @@ fn run_read_only(cli: &Cli, files: &[PathBuf], kind: ReadOnly) -> Result<(), (u8
             println!("{}", match kind {
                 ReadOnly::Validate => human_validate(report),
                 ReadOnly::DryRun => human_dry_run(report),
+                ReadOnly::Analyze => sutura_core::analyze::format_analyze_human(report),
             });
         } else {
             println!("{}", serde_json::to_string(report).unwrap());
@@ -641,6 +661,7 @@ fn run_read_only(cli: &Cli, files: &[PathBuf], kind: ReadOnly) -> Result<(), (u8
             println!("{}", match kind {
                 ReadOnly::Validate => human_validate(report),
                 ReadOnly::DryRun => human_dry_run(report),
+                ReadOnly::Analyze => sutura_core::analyze::format_analyze_human(report),
             });
             println!();
         }
@@ -663,9 +684,32 @@ fn read_only_one(
     si_mode: &str,
     mode: &str,
 ) -> Result<Value, String> {
+    // `--analyze` handles the file itself: it walks every 3MF object through
+    // `mesh_io::load_meshes`, so it must not go through the single-mesh load
+    // below. Its failures are reported INSIDE the payload (Python's
+    // `analyze_report` catches them and sets `result['error']`), and it exits 1
+    // when any file has an error.
+    if kind == ReadOnly::Analyze {
+        let input = path.display().to_string();
+        if !path.exists() {
+            return Ok(json!({
+                "input": input,
+                "error": format!("analysis failed: file not found: {}", path.display()),
+            }));
+        }
+        return Ok(sutura_core::analyze::analyze_report(
+            &input,
+            loaded,
+            engine,
+            // `diagnosis.analyze_file` never overrides the default, so SI is
+            // always counted for `--analyze`.
+            true,
+        ));
+    }
     let prefix = match kind {
         ReadOnly::Validate => "validation failed: ",
         ReadOnly::DryRun => "dry run failed: ",
+        ReadOnly::Analyze => unreachable!("handled above"),
     };
     if !path.exists() {
         return Err(format!("{prefix}file not found: {}", path.display()));
@@ -691,6 +735,7 @@ fn read_only_one(
             !cli.no_flap,
         )
         .map_err(|e| format!("{prefix}{e}"))?,
+        ReadOnly::Analyze => unreachable!("handled before the single-mesh load"),
     };
     let mut out = serde_json::Map::new();
     out.insert("input".into(), json!(path.display().to_string()));
