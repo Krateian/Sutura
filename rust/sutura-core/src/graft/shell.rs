@@ -7,6 +7,7 @@ use std::time::Instant;
 use serde_json::{json, Map, Value};
 use sutura_geom::{morph_close_core, MorphCloseOptions};
 
+use crate::fmt::fmt_g;
 use sutura_geom::hole::close_holes_core;
 use sutura_geom::manifold::{union_pair_core, watertight_check_core};
 use sutura_geom::topology::{
@@ -750,7 +751,9 @@ pub fn shell_wrap(
             if Instant::now() >= deadline {
                 let reason = format!(
                     "Graft was stopped for time ({} budget, checked between attempts); the stage-1 result was kept",
-                    opts.time_budget.map(|x| format!("{} s", x)).unwrap_or_else(|| "time".into())
+                    opts.time_budget
+                        .map(|x| format!("{} s", fmt_g(x, 6)))
+                        .unwrap_or_else(|| "time".into())
                 );
                 report.insert("aborted".into(), json!(true));
                 report.insert("reject_reason".into(), json!("aborted_time"));
@@ -764,7 +767,7 @@ pub fn shell_wrap(
                         "message_tr": format!(
                             "Graft süre nedeniyle durduruldu ({} bütçe, denemeler arasında denetlenir); Aşama 1 sonucu korundu",
                             opts.time_budget
-                                .map(|x| format!("{} sn", x))
+                                .map(|x| format!("{} sn", fmt_g(x, 6)))
                                 .unwrap_or_else(|| "süre".into())),
                     }]),
                 );
@@ -1107,10 +1110,10 @@ pub fn shell_wrap(
             "code": "coverage",
             "message_en": format!(
                 "Graft closed the mesh but its input coverage ({}) is below {}; the result does not reproduce enough of the input surface (likely a collapsed fragment).",
-                round4(cov), GRAFT_MIN_INPUT_COVERAGE),
+                py_float_str(round4(cov)), GRAFT_MIN_INPUT_COVERAGE),
             "message_tr": format!(
                 "Graft ağı kapattı ancak girdi kapsaması ({}) {} eşiğinin altında; sonuç girdi yüzeyinin yeterli kısmını yeniden üretmiyor (muhtemelen çökmüş bir parça).",
-                round4(cov), GRAFT_MIN_INPUT_COVERAGE),
+                py_float_str(round4(cov)), GRAFT_MIN_INPUT_COVERAGE),
         }));
     }
     if best.watertight && !best.fidelity_ok {
@@ -1122,10 +1125,10 @@ pub fn shell_wrap(
             "code": "fidelity",
             "message_en": format!(
                 "Graft closed the mesh but the healthy-region deviation ({}) exceeds the tolerance; the result is watertight but its healthy shape may have changed.",
-                round5(hh)),
+                py_float_str(round5(hh))),
             "message_tr": format!(
                 "Graft ağı kapattı ancak sağlıklı bölge sapması ({}) toleransı aşıyor; sonuç su geçirmez fakat sağlıklı şekli değişmiş olabilir.",
-                round5(hh)),
+                py_float_str(round5(hh))),
         }));
     }
     report.insert("warnings".into(), Value::Array(warnings));
@@ -1182,6 +1185,14 @@ fn capitalize(text: &str) -> String {
     match chars.next() {
         Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
+    }
+}
+
+fn py_float_str(x: f64) -> String {
+    if x.is_finite() && x.fract() == 0.0 {
+        format!("{:.1}", x)
+    } else {
+        format!("{}", x)
     }
 }
 

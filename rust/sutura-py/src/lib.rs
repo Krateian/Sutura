@@ -888,6 +888,15 @@ fn graft_shell_wrap_py<'py>(
     opts.time_budget = time_budget;
     let out = sutura_core::graft::shell::shell_wrap(&v, &t, &opts)
         .map_err(PyValueError::new_err)?;
+    if std::env::var_os("SUTURA_GRAFT_DEBUG").is_some() {
+        eprintln!(
+            "[graft-rust] called verts={} tris={} r_used={} mode={}",
+            v.len(),
+            t.len(),
+            out.report.get("r_used").cloned().unwrap_or(serde_json::Value::Null),
+            out.report.get("mode").cloned().unwrap_or(serde_json::Value::Null)
+        );
+    }
     Ok((
         arrays_f64(py, &out.verts)?,
         arrays_i64(py, &out.tris)?,
