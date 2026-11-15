@@ -46,6 +46,18 @@ pub fn analyze_report(
     }
     let combined = combine(&objs);
 
+    // `rank_methods` applies a bounded Bayesian bonus from the local
+    // (template, method) history unless learning is turned off. Python reads
+    // this inside `rank_methods` itself; the Rust ranking takes it as a
+    // parameter, so load it here -- one place, same gate.
+    let learning_stats: Option<serde_json::Map<String, Value>> =
+        if crate::config::learning::learning_enabled(None) {
+            Some(crate::config::learning::triage_stats(None, None))
+        } else {
+            None
+        };
+    let learning_ref = learning_stats.as_ref();
+
     let analysis_to_value = |a: &Analysis, with_suggestions: bool| -> Value {
         let mut v = a.to_json();
         if let Some(map) = v.as_object_mut() {
@@ -59,13 +71,13 @@ pub fn analyze_report(
         v
     };
 
-    let recs = rank_methods(loaded, &to_ranking(&combined), None, None);
+    let recs = rank_methods(loaded, &to_ranking(&combined), None, learning_ref);
 
     if objs.len() == 1 {
         result.insert("analysis".into(), analysis_to_value(&objs[0], false));
         result.insert(
             "suggestions".into(),
-            suggest_methods(loaded, &to_ranking(&objs[0]), 3, None),
+            suggest_methods(loaded, &to_ranking(&objs[0]), 3, learning_ref),
         );
     } else {
         result.insert("objects".into(), json!(objs.len()));
@@ -76,7 +88,7 @@ pub fn analyze_report(
         result.insert("object_analyses".into(), Value::Array(object_analyses));
         result.insert(
             "suggestions".into(),
-            suggest_methods(loaded, &to_ranking(&combined), 3, None),
+            suggest_methods(loaded, &to_ranking(&combined), 3, learning_ref),
         );
     }
     // Key ORDER matters for byte comparison: Python builds
