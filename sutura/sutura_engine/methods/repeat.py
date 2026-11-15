@@ -617,161 +617,19 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
     # accumulator by 1 ULP. That single ULP moved the reported `mean_distance`
     # and hence the score, which is why the 226-mesh gate saw `score_diffs 7`.
     # One implementation cannot disagree with itself.
-    core = getattr(sutura_geom, 'detect_rotational_symmetry_free', None)
-    if core is not None:
-        found = core(verts, tris, int(n_samples), int(max_order))
-        if found is None:
-            return 0.0, {
-                'pattern_type': 'none',
-                'reason': 'No rotational symmetry detected',
-            }
-        return float(found['score']), dict(found)
-
     from sutura_engine import rust_bridge
     if rust_bridge.require_rust():
-        rust_bridge.unavailable(
-            'sutura_geom.detect_rotational_symmetry_free is unavailable')
-
-    n_pts = n_samples
-    dense_pts, _ = _surface_sample(verts, tris, n_pts * 2, seed=42)
-    query_pts, _ = _surface_sample(verts, tris, n_pts, seed=123)
-
-    c = np.mean(dense_pts, axis=0)
-    span = dense_pts.max(axis=0) - dense_pts.min(axis=0)
-    diag = float(np.linalg.norm(span))
-    if diag <= 1e-12:
-        return 0.0, {'pattern_type': 'none', 'reason': 'Zero bounding box diagonal'}
-
-    tol = 0.015 * diag
-    cov = _covariance_core(dense_pts, c)
-    _, eigvecs = _eigh3(cov)
-    tree = sutura_geom.KdTree(dense_pts)
-
-    candidate_orders = list(range(2, max_order + 1)) + [72, 80, 90, 100, 120]
-    best_match = None
-    best_score = 0.0
-
-    candidate_axes = [
-        np.array([1.0, 0.0, 0.0]),
-        np.array([0.0, 1.0, 0.0]),
-        np.array([0.0, 0.0, 1.0]),
-    ] + [eigvecs[:, i] for i in range(3)]
-
-    # An eigenvector is only defined up to sign, and rotating by +theta about
-    # +ax is a different point set than rotating by +theta about -ax. Rotational
-    # symmetry is a property of the unoriented axis (an n-fold axis is n-fold
-    # whichever way you traverse it), so every candidate is evaluated in BOTH
-    # directions and the better score wins. Together with the canonical signs
-    # `_eigh3` returns, this makes the score a function of the axis line: the
-    # same mesh scores identically no matter which sign the solver produced.
-    #
-    # The per-candidate surface-distance lookups dominate the runtime (a few
-    # hundred exact nearest-neighbour queries of the sampled query points). Build every
-    # candidate rotation one at a time with the original scalar expression (so
-    # the resulting coordinates and distances are bit-identical to the scalar
-    # loop) but defer the lookups into ONE batched, threaded KD-tree query. Both
-    # directions of every axis are joined into that same batch, so the extra
-    # work is more points in one call rather than another call. The scalar
-    # reductions and the best-match selection then run unchanged in the
-    # original axis-major / order-minor iteration order.
-    q0 = query_pts - c
-    candidates = []
-    for ax in candidate_axes:
-        norm_ax = np.linalg.norm(ax)
-        if norm_ax < 1e-6:
-            continue
-        ax = ax / norm_ax
-
-        if abs(ax[0]) < 0.9:
-            u = np.cross(ax, [1.0, 0.0, 0.0])
-        else:
-            u = np.cross(ax, [0.0, 1.0, 0.0])
-        u = u / (np.linalg.norm(u) + 1e-12)
-        v_vec = np.cross(ax, u)
-        v_vec = v_vec / (np.linalg.norm(v_vec) + 1e-12)
-
-        # Cannonical direction first, so ties resolve in a fixed order.
-        sign = _canonical_axis_sign(ax)
-        for direction in (sign, -sign):
-            ax_d = ax * direction
-            u_d = u * direction
-            v_d = v_vec * direction
-            for n in candidate_orders:
-                th = 2.0 * np.pi / n
-                R = _rotation_matrix(th, ax_d, point=c)[:3, :3]
-                rot = q0 @ R.T + c
-                move_d = float(np.mean(np.linalg.norm(rot - query_pts, axis=1)))
-                candidates.append((ax_d, u_d, v_d, n, th, rot, move_d))
-
-    if candidates:
-        rot_stack = np.stack([cand[5] for cand in candidates])
-        all_dists = tree.query(rot_stack.reshape(-1, 3), k=1)[0].reshape(len(candidates), -1)
-    else:
-        all_dists = np.zeros((0, len(query_pts)))
-
-    first = []
-    step_jobs = []
-    for i, (ax, u, v_vec, n, th, rot, move_d) in enumerate(candidates):
-        dists = all_dists[i]
-        frac = float((dists < tol).mean())
-        mean_d = float(dists.mean())
-        rel_dev = mean_d / (move_d + 1e-6)
-        first.append((frac, mean_d, rel_dev))
-
-        if frac >= 0.70 and (rel_dev < 0.30 or (n >= 40 and rel_dev < 0.65)):
-            steps_to_check = [2]
-            if n >= 4:
-                steps_to_check.append(n // 2)
-            step_rots = []
-            for s_k in steps_to_check:
-                R_k = _rotation_matrix(s_k * th, ax, point=c)[:3, :3]
-                step_rots.append(q0 @ R_k.T + c)
-            step_jobs.append((i, step_rots))
-
-    step_frac_by_i = {}
-    if step_jobs:
-        flat_steps = []
-        for _i, step_rots in step_jobs:
-            flat_steps.extend(step_rots)
-        step_dists = tree.query(np.stack(flat_steps).reshape(-1, 3), k=1)[0].reshape(len(flat_steps), -1)
-        k = 0
-        for _i, step_rots in step_jobs:
-            step_frac_by_i[_i] = [float((step_dists[k + j] < tol).mean()) for j in range(len(step_rots))]
-            k += len(step_rots)
-
-    for i, (ax, u, v_vec, n, th, rot, move_d) in enumerate(candidates):
-        step_fracs = step_frac_by_i.get(i)
-        if step_fracs is None:
-            continue
-        frac, mean_d, _rel_dev = first[i]
-
-        if all(sf >= 0.55 for sf in step_fracs):
-            avg_frac = (frac + sum(step_fracs)) / (1.0 + len(step_fracs))
-            score = float(np.clip(avg_frac * (1.0 - min(mean_d / tol, 1.0) * 0.4), 0.0, 1.0))
-            is_better = score > best_score
-            if best_match is not None and not is_better:
-                prev_n = best_match['order']
-                if n > prev_n and n % prev_n == 0 and (n // prev_n) <= 4 and score >= best_score * 0.90:
-                    is_better = True
-            if is_better:
-                best_score = score
-                best_match = {
-                    'pattern_type': 'rotational',
-                    'order': n,
-                    'center': c,
-                    'axis': ax,
-                    'u_axis': u,
-                    'v_axis': v_vec,
-                    'step_angle': th,
-                    'score': score,
-                    'match_fraction': frac,
-                    'mean_distance': mean_d,
-                    'method': 'segmentation_free',
-                }
-
-    if best_match is not None and best_score >= 0.60:
-        return best_score, best_match
-    return 0.0, {'pattern_type': 'none', 'reason': 'No rotational symmetry detected'}
+        if not hasattr(sutura_geom, 'detect_rotational_symmetry_free'):
+            rust_bridge.unavailable(
+                'sutura_geom.detect_rotational_symmetry_free is unavailable')
+    found = sutura_geom.detect_rotational_symmetry_free(
+        verts, tris, int(n_samples), int(max_order))
+    if found is None:
+        return 0.0, {
+            'pattern_type': 'none',
+            'reason': 'No rotational symmetry detected',
+        }
+    return float(found['score']), dict(found)
 
 
 def _detect_repetition_patches(verts, tris):
