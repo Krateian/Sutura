@@ -67,6 +67,11 @@ jobs:
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
+          # The Rust bridge (sutura_core_py) exists on the Rust-port branches;
+          # without it an ENGINE=rust request would silently run Python.
+          if [ -f rust/sutura-py/Cargo.toml ]; then
+            (cd rust/sutura-py && ../../venv/bin/maturin build --release --out ../sutura-geom/dist)
+          fi
       - uses: actions/upload-artifact@v4
         with: { name: wheel-base, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
   build-cand:
@@ -84,6 +89,11 @@ jobs:
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
+          # The Rust bridge (sutura_core_py) exists on the Rust-port branches;
+          # without it an ENGINE=rust request would silently run Python.
+          if [ -f rust/sutura-py/Cargo.toml ]; then
+            (cd rust/sutura-py && ../../venv/bin/maturin build --release --out ../sutura-geom/dist)
+          fi
       - uses: actions/upload-artifact@v4
         with: { name: wheel-cand, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
   # The harness, the shard/board scripts and the geometry kernel they import

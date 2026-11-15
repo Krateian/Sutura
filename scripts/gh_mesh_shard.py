@@ -151,6 +151,17 @@ def main():
             '--python', os.path.abspath('cand-venv/bin/python'),
             '--out-dir', outdir]
     if env_c:
+        if '_ENGINE=rust' in env_c:
+            # A Rust engine request must really run Rust: the candidate venv
+            # needs the bridge, and strict mode turns any silent Python
+            # fallback into an error instead of a false SAME.
+            probe = subprocess.run(
+                [os.path.abspath('cand-venv/bin/python'), '-c',
+                 'import sutura_core_py'], capture_output=True)
+            if probe.returncode != 0:
+                raise SystemExit('ENV_CAND asks for a Rust engine but the '
+                                 'candidate has no sutura_core_py bridge')
+            env_c += ',SUTURA_REQUIRE_RUST=1'
         cmd += ['--opt-out-env', env_c]
     # Repair CLI arguments applied to both sides (e.g. a forced method).  The
     # tokens are restricted to a plain flag/value charset so a dispatch input

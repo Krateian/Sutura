@@ -746,8 +746,10 @@ def main():
                '-o', out_stl, '--no-history'] + flags
         run_env = env.copy()
         if side in ('optout', 'candidate') and args.opt_out_env:
-            k, v = args.opt_out_env.split('=', 1)
-            run_env[k] = v
+            # One or more KEY=VALUE pairs, comma separated.
+            for pair in args.opt_out_env.split(','):
+                k, v = pair.split('=', 1)
+                run_env[k] = v
         rc, sout, serr, el = run_cli(cmd, run_env, repo_x, args.timeout)
         if not os.path.exists(out_stl):
             print('  %s: no output (rc=%d) %s' % (side, rc, serr.strip()[:160]), flush=True)
