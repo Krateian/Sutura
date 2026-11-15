@@ -1127,6 +1127,41 @@ fn tier_tamponade_off_preferred_py(on_json: &str, off_json: &str) -> PyResult<bo
     Ok(sutura_core::tiers::tamponade::off_preferred_json(&on, &off))
 }
 
+#[pyfunction(name = "dressing_coat")]
+fn dressing_coat_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    opts_json: &str,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>, String)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let params = parse_params(opts_json)?;
+    let opts = sutura_core::dressing::CoatOptions::from_value(&params);
+    let (ov, ot, rec) = sutura_core::dressing::coat(&v, &t, &opts);
+    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
+}
+
+#[pyfunction(name = "tier_dressing")]
+fn tier_dressing_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    input_verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    input_tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    intensity: &str,
+    params_json: &str,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>, String)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let iv = verts_f64(input_verts)?;
+    let it = tris_i64(input_tris)?;
+    let params = parse_params(params_json)?;
+    let (ov, ot, rec) =
+        sutura_core::dressing::run(&v, &t, &iv, &it, intensity, &params);
+    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -1546,6 +1581,8 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(health_human_line_py, m)?)?;
     m.add_function(wrap_pyfunction!(build_print_report_py, m)?)?;
     m.add_function(wrap_pyfunction!(aggregate_print_reports_py, m)?)?;
+    m.add_function(wrap_pyfunction!(dressing_coat_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tier_dressing_py, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

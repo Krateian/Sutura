@@ -42,6 +42,7 @@ use crate::stage1::chain::{
 use crate::stage1::si_excise;
 use crate::stage2::split_pinched_vertices;
 use crate::tiers::closing as closing_tier;
+use crate::dressing as dressing_tier;
 use crate::tiers::{cdt, coaptation, common, flap, graft as graft_tier, splint, tamponade};
 
 /// Repair mode, matching the Python `REPAIR_MODES` values.
@@ -181,6 +182,11 @@ pub struct RepairOptions {
     pub coaptation: Option<bool>,
     pub splint: bool,
     pub dressing: bool,
+    pub dressing_drain: Option<Value>,
+    pub dressing_defects: Option<String>,
+    pub dressing_rmax_scale: Option<f64>,
+    pub dressing_sigma_scale: Option<f64>,
+    pub dressing_force_adopt: bool,
     pub wall_thicken: bool,
     pub repeat: Option<RepeatMode>,
     pub solid_engine: SolidEngine,
@@ -205,6 +211,11 @@ impl Default for RepairOptions {
             coaptation: Some(true),
             splint: false,
             dressing: false,
+            dressing_drain: None,
+            dressing_defects: None,
+            dressing_rmax_scale: None,
+            dressing_sigma_scale: None,
+            dressing_force_adopt: false,
             wall_thicken: false,
             repeat: None,
             solid_engine: SolidEngine::Ftetwild,
@@ -1923,6 +1934,34 @@ fn run_graft_tier(
     )
 }
 
+fn run_dressing_tier(
+    cur_v: &[[f64; 3]],
+    cur_t: &[[i64; 3]],
+    input_v: &[[f64; 3]],
+    input_t: &[[i64; 3]],
+    intensity: &str,
+    opts: &RepairOptions,
+    policy: Option<&LoadedPolicy>,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
+    let params = json!({
+        "intensity": intensity,
+        "gates": {
+            "max_volume_delta": policy_number(
+                policy, "tiers.dressing.gates", "max_volume_delta", 0.10),
+            "max_parts_slack": policy_number(
+                policy, "tiers.dressing.gates", "max_parts_slack", 1.0) as i64,
+            "max_normal_angle_p95": policy_number(
+                policy, "tiers.dressing.gates", "max_normal_angle_p95", 30.0),
+        },
+        "drain": opts.dressing_drain,
+        "defects": opts.dressing_defects,
+        "r_max_scale": opts.dressing_rmax_scale,
+        "sigma_scale": opts.dressing_sigma_scale,
+        "force_adopt": opts.dressing_force_adopt,
+    });
+    dressing_tier::run(cur_v, cur_t, input_v, input_t, intensity, &params)
+}
+
 fn run_splint_tier(
     cur_v: &[[f64; 3]],
     cur_t: &[[i64; 3]],
@@ -2088,6 +2127,7 @@ fn method_health_value(stats: &Map<String, Value>, unavailable: &Value) -> (Valu
         "wall_thicken",
         "si_excise",
         "ftetwild",
+        "dressing",
     ] {
         availability.insert(tier.to_string(), json!(["ok", Value::Null]));
     }
@@ -2095,7 +2135,6 @@ fn method_health_value(stats: &Map<String, Value>, unavailable: &Value) -> (Valu
     let mut skips: Vec<Value> = Vec::new();
     if let Some(entries) = unavailable.as_object() {
         for tier in [
-            "dressing",
             "ftetwild",
             "repeat_builder",
             "wall_builder",
@@ -2149,7 +2188,6 @@ fn unavailable_tiers(ftetwild_reason: Option<&str>) -> Value {
         })
     };
     let mut tiers = json!({
-        "dressing": entry("Dressing orchestration is not in sutura-core yet; only the sutura-geom coat producer exists"),
         "repeat_builder": entry("the Repeat transplant producer stays in Python; only the Rust adoption gate exists"),
         "wall_builder": entry("the Wall-thicken producer stays in Python; only the Rust adoption gate exists"),
         "cad_likeness": entry("cad_likeness is a Python scoring helper; no sutura-core implementation yet"),
@@ -2359,6 +2397,15 @@ fn repair_impl(
             cur_v = out_v;
             cur_t = out_t;
         }
+        if std::env::var_os("SUTURA_PIPELINE_DEBUG").is_some() {
+            eprintln!(
+                "[pipeline-rust] flap faces={} verts={} work_budget={} v0={:?}",
+                cur_t.len(),
+                cur_v.len(),
+                rec.get("work_budget").cloned().unwrap_or(Value::Null),
+                cur_v.first()
+            );
+        }
         emit_tier(sink, "flap_prepass", 2, &rec);
         stats.insert("flap".into(), rec);
     }
@@ -2370,6 +2417,16 @@ fn repair_impl(
     emit_stage(sink, 3, "stage 1");
     let s1_in_v = cur_v.clone();
     let s1_in_t = cur_t.clone();
+    if std::env::var_os("SUTURA_PIPELINE_DEBUG").is_some() {
+        eprintln!(
+            "[pipeline-rust] stage1 params min={} maxhole={} faces={} verts={} v0={:?}",
+            min_component,
+            max_hole,
+            cur_t.len(),
+            cur_v.len(),
+            cur_v.first()
+        );
+    }
     let chain = Value::Array(stage1_chain(max_hole, min_component, false));
     let (v1, t1, mut applied, mut skipped, removed_small) = apply_chain(&cur_v, &cur_t, &chain);
     cur_v = v1;
@@ -2583,25 +2640,56 @@ fn repair_impl(
                 stats.insert("graft".into(), rec);
             }
 
-            // Dressing (#16): producer absent in sutura-core.
+            // Dressing (#16): variable-viscosity coat, after Graft and before
+            // Splint (the Python ladder order).
             let mut dressing_ok = false;
-            if opts.dressing {
-                let rec = tier_error(
-                    "dressing",
-                    "Dressing orchestration is not in sutura-core; the ladder result was kept",
+            if opts.dressing || opts.dressing_force_adopt {
+                let d_in_v = cur_v.clone();
+                let d_in_t = cur_t.clone();
+                // Python's ladder receives the post-prepass surface as its
+                // `input_v`, not the raw file arrays (outer-shell / Tamponade /
+                // Flap may already have replaced them).
+                let (dv, dt, rec) = run_dressing_tier(
+                    &cur_v,
+                    &cur_t,
+                    &s1_in_v,
+                    &s1_in_t,
+                    &intensity_for_tamponade,
+                    opts,
+                    policy.as_ref(),
                 );
+                if adopted(&rec) {
+                    cur_v = dv;
+                    cur_t = dt;
+                    after = common::topology_summary(&cur_v, &cur_t);
+                    holes = boundary_loop_stats(&cur_t).0;
+                    nm = after.non_two_manifold_edges;
+                    dressing_ok = true;
+                    tiers_run.push(Value::from("dressing"));
+                }
+                if std::env::var_os("SUTURA_PIPELINE_DEBUG").is_some() {
+                    eprintln!(
+                        "[pipeline-rust] dressing adopted={} voxel={:?} r_base={:?} r_max={:?} faces={:?} holes={:?} nm={:?}",
+                        dressing_ok,
+                        rec.get("voxel").cloned().unwrap_or(Value::Null),
+                        rec.get("r_base").cloned().unwrap_or(Value::Null),
+                        rec.get("r_max").cloned().unwrap_or(Value::Null),
+                        rec.get("faces").cloned().unwrap_or(Value::Null),
+                        rec.get("holes").cloned().unwrap_or(Value::Null),
+                        rec.get("non_manifold").cloned().unwrap_or(Value::Null),
+                    );
+                }
                 emit_tier(sink, "dressing", 4, &rec);
                 trace.record(
                     "dressing",
                     "tiers.dressing.dressing_tier",
-                    &cur_v,
-                    &cur_t,
+                    &d_in_v,
+                    &d_in_t,
                     &cur_v,
                     &cur_t,
                     rec.clone(),
                 );
                 stats.insert("dressing".into(), rec);
-                dressing_ok = false;
             }
 
             // Splint (#18): exact solid rebuild after Graft/Dressing.
@@ -3411,15 +3499,10 @@ mod tests {
             .get("unavailable")
             .and_then(Value::as_object)
             .expect("unavailable object");
-        for tier in ["dressing"] {
-            let entry = unavailable.get(tier).expect(tier);
-            assert_eq!(entry.get("ran").and_then(Value::as_bool), Some(false));
-            assert_eq!(
-                entry.get("unavailable").and_then(Value::as_bool),
-                Some(true)
-            );
-            assert!(entry.get("reason").and_then(Value::as_str).is_some());
-        }
+        assert!(
+            unavailable.get("dressing").is_none(),
+            "dressing is compiled into sutura-core"
+        );
         if crate::ftetwild::find_binary().is_none() {
             let entry = unavailable.get("ftetwild").expect("ftetwild");
             assert_eq!(entry.get("ran").and_then(Value::as_bool), Some(false));
@@ -3603,7 +3686,6 @@ mod tests {
             .and_then(Value::as_object)
             .expect("unavailable object");
         for tier in [
-            "dressing",
             "repeat_builder",
             "wall_builder",
             "ranking_scores",
