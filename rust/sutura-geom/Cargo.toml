@@ -24,7 +24,8 @@ cdt-check = []
 # pyo3/numpy are only pulled in when this feature (or extension-module) is on,
 # so downstream Rust crates can depend on the kernels with
 # ``default-features = false``.
-python = ["dep:pyo3", "dep:numpy"]
+decimate = []
+python = ["decimate", "dep:pyo3", "dep:numpy"]
 extension-module = ["python", "pyo3/extension-module"]
 default = ["python"]
 

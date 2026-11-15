@@ -26,7 +26,7 @@ mod budget;
 mod cancel;
 #[cfg(feature = "python")]
 pub mod cluster;
-#[cfg(feature = "python")]
+#[cfg(feature = "decimate")]
 pub mod decimate;
 pub mod diagnosis;
 pub mod dressing;
