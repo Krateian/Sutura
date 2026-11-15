@@ -199,18 +199,6 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                         report, new_v, new_t = off_report, off_v, off_t
                     else:
                         report['tamponade']['final_fallback'] = fallback
-            # Flap debris cleanup (only when Flap was adopted): drop the flat,
-            # effectively zero-volume closed shells the repair left behind, so a
-            # Flap-ON result is never worse than flap-OFF on the part count.
-            # Same helper and order as the Python path below.
-            if (report.get('flap') or {}).get('adopted'):
-                _cl_v, _cl_t, _cl_info = drop_flap_debris(verts, tris, new_v, new_t)
-                if _cl_info:
-                    _bh, _bnm = reload_strict_holes_nm(new_v, new_t)
-                    _ch, _cnm = reload_strict_holes_nm(_cl_v, _cl_t)
-                    if _ch <= _bh and _cnm <= _bnm:
-                        new_v, new_t = _cl_v, _cl_t
-                        report['flap']['debris_cleanup'] = _cl_info
             # P-HONEST: the verdict must describe the mesh actually saved, not
             # the in-memory index topology (same call as the Python path).
             enforce_reload_verdict(report, new_v, new_t,

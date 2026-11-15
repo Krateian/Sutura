@@ -1000,6 +1000,17 @@ fn flap_params(tris: &[[i64; 3]], intensity: &str, policy: Option<&LoadedPolicy>
     })
 }
 
+fn flap_debris_params(policy: Option<&LoadedPolicy>) -> Value {
+    json!({
+        "debris_volume_eps": policy_number(
+            policy, "tiers.flap.gates", "debris_volume_eps", 1e-3),
+        "debris_volume_rel": policy_number(
+            policy, "tiers.flap.gates", "debris_volume_rel", 1e-9),
+        "debris_flatness": policy_number(
+            policy, "tiers.flap.gates", "debris_flatness", 1e-4),
+    })
+}
+
 fn ensure_tamponade_defaults(rec: &mut Value) {
     if let Some(obj) = rec.as_object_mut() {
         for key in [
@@ -3206,6 +3217,26 @@ fn repair_impl(
     }
 
     cur_v = quantize(&cur_v);
+
+    // Flap debris cleanup: the Python path applies `drop_flap_debris` after
+    // P-WELD when Flap was adopted. Mirror it here so the native CLI saves the
+    // same mesh as the Python service path.
+    let flap_adopted = stats.get("flap").map(adopted).unwrap_or(false);
+    if flap_adopted {
+        let params = flap_debris_params(policy.as_ref());
+        let (cl_v, cl_t, info) = flap::debris(&input_v, &input_t, &cur_v, &cur_t, &params);
+        if let Some(info) = info {
+            let (bh, bnm) = reload_strict_holes_nm(&cur_v, &cur_t);
+            let (ch, cnm) = reload_strict_holes_nm(&cl_v, &cl_t);
+            if ch <= bh && cnm <= bnm {
+                cur_v = cl_v;
+                cur_t = cl_t;
+                if let Some(obj) = stats.get_mut("flap").and_then(Value::as_object_mut) {
+                    obj.insert("debris_cleanup".into(), info);
+                }
+            }
+        }
+    }
 
     let final_holes = boundary_loop_stats(&cur_t).0;
     let final_nm = common::topology_summary(&cur_v, &cur_t).non_two_manifold_edges;
