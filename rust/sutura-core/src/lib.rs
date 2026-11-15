@@ -6,6 +6,7 @@
 //! pipeline, policy and reporting modules are added in later slices; none of
 //! them may depend on pyo3 or numpy.
 
+pub mod analysis;
 pub mod classify;
 pub mod config;
 pub mod error;
