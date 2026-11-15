@@ -1190,7 +1190,7 @@ fn augment_report(
         }),
     );
 
-    if opts.deep_repair != DeepRepair::Local {
+    if opts.deep_repair != DeepRepair::Local && !obj.contains_key("si_escalation") {
         obj.insert(
             "si_escalation".into(),
             si_escalation(obj.get("stage1").unwrap(), opts.deep_repair),

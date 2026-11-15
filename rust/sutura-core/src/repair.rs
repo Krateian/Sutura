@@ -14,9 +14,11 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use sutura_geom::manifold::{outer_shell_union_core, stage2_rebuild_core, Stage2Report};
 use sutura_geom::shell::{shell_analyze_and_filter, ShellAnalysisResult, ShellConfig};
 
@@ -311,6 +313,12 @@ fn to_i64(t: &[[i32; 3]]) -> Vec<[i64; 3]> {
 fn to_i32(t: &[[i64; 3]]) -> Vec<[i32; 3]> {
     t.iter()
         .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
+        .collect()
+}
+
+fn to_f32(v: &[[f64; 3]]) -> Vec<[f32; 3]> {
+    v.iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
         .collect()
 }
 
@@ -1116,6 +1124,687 @@ fn method_used_value(deep: DeepRepair) -> Value {
     })
 }
 
+const SI_METHOD_ID: &str = "scaffold";
+const SI_METHOD_NAME: &str = "Scaffold";
+const DEFAULT_GRAFT_GRID_BUDGET: i64 = 120_000_000;
+
+#[derive(Clone, Debug, Default)]
+struct SiMetrics {
+    si: Option<i64>,
+    holes: Option<i64>,
+    nm: Option<i64>,
+    parts: Option<i64>,
+    dev_pct: Option<f64>,
+    vol_pct: Option<f64>,
+    si_stage1: Option<i64>,
+    volume_mm3: Option<f64>,
+    shape_max_mm: Option<f64>,
+    shape_p95_mm: Option<f64>,
+}
+
+impl SiMetrics {
+    fn to_value(&self) -> Value {
+        json!({
+            "si": self.si,
+            "holes": self.holes,
+            "nm": self.nm,
+            "parts": self.parts,
+            "dev_pct": self.dev_pct,
+            "vol_pct": self.vol_pct,
+            "si_stage1": self.si_stage1,
+            "volume_mm3": self.volume_mm3,
+            "shape_max_mm": self.shape_max_mm,
+            "shape_p95_mm": self.shape_p95_mm,
+        })
+    }
+
+    fn apply_facts(&mut self, facts: &SiFacts) {
+        self.holes = Some(facts.holes);
+        self.nm = Some(facts.nm);
+        self.parts = Some(facts.parts);
+        self.volume_mm3 = facts.volume_mm3;
+        self.shape_max_mm = Some(facts.shape_max_mm);
+        self.shape_p95_mm = Some(facts.shape_p95_mm);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SiFacts {
+    holes: i64,
+    nm: i64,
+    parts: i64,
+    volume_mm3: Option<f64>,
+    shape_max_mm: f64,
+    shape_p95_mm: f64,
+}
+
+fn round2(x: f64) -> f64 {
+    (x * 100.0).round() / 100.0
+}
+
+fn round4(x: f64) -> f64 {
+    (x * 10_000.0).round() / 10_000.0
+}
+
+fn round6(x: f64) -> f64 {
+    (x * 1_000_000.0).round() / 1_000_000.0
+}
+
+fn si_exact(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> Option<i64> {
+    if tris.is_empty() {
+        return Some(0);
+    }
+    let (_mask, count, skipped) = sutura_geom::self_intersections_core(verts, &usize_tris(tris));
+    if skipped || count < 0 {
+        None
+    } else {
+        Some(count)
+    }
+}
+
+fn percentile_linear(values: &mut [f64], pct: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = values.len();
+    if n == 1 {
+        return values[0];
+    }
+    let rank = (pct / 100.0) * (n as f64 - 1.0);
+    let lo = rank.floor() as usize;
+    let hi = rank.ceil() as usize;
+    if lo == hi {
+        values[lo]
+    } else {
+        let frac = rank - lo as f64;
+        values[lo] + frac * (values[hi] - values[lo])
+    }
+}
+
+fn two_sided_shape(
+    in_v: &[[f64; 3]],
+    in_t: &[[i64; 3]],
+    out_v: &[[f64; 3]],
+    out_t: &[[i64; 3]],
+) -> Option<(f64, f64)> {
+    if in_v.is_empty() || in_t.is_empty() || out_v.is_empty() || out_t.is_empty() {
+        return None;
+    }
+    let o2i = common::closest_points(in_v, in_t, out_v);
+    let i2o = common::closest_points(out_v, out_t, in_v);
+    if o2i.is_empty() || i2o.is_empty() {
+        return None;
+    }
+    let mut max_d = 0.0f64;
+    let mut all = Vec::with_capacity(o2i.len() + i2o.len());
+    for (_, d, _) in o2i {
+        max_d = max_d.max(d);
+        all.push(d);
+    }
+    for (_, d, _) in i2o {
+        max_d = max_d.max(d);
+        all.push(d);
+    }
+    Some((round4(max_d), round4(percentile_linear(&mut all, 95.0))))
+}
+
+fn si_facts(
+    in_v: &[[f64; 3]],
+    in_t: &[[i64; 3]],
+    out_v: &[[f64; 3]],
+    out_t: &[[i64; 3]],
+) -> Option<SiFacts> {
+    if out_v.is_empty() || out_t.is_empty() {
+        return None;
+    }
+    let shape = two_sided_shape(in_v, in_t, out_v, out_t)?;
+    let defects = detect_defects(&to_f32(out_v), &to_i32(out_t), false);
+    let topo = common::topology_summary(out_v, out_t);
+    Some(SiFacts {
+        holes: defects.holes.len() as i64,
+        nm: defects.non_manifold.len() as i64,
+        parts: topo.components as i64,
+        volume_mm3: Some(round6(common::signed_volume(out_v, out_t))),
+        shape_max_mm: shape.0,
+        shape_p95_mm: shape.1,
+    })
+}
+
+fn si_tolerance(in_v: &[[f64; 3]], policy: Option<&LoadedPolicy>) -> Option<f64> {
+    if in_v.is_empty() {
+        return None;
+    }
+    let diag = common::bbox_diagonal(in_v);
+    if !(diag > 0.0) {
+        return None;
+    }
+    let div = policy_number(policy, "si_escalation", "dist_tol_div", 10_000.0);
+    let min = policy_number(policy, "si_escalation", "dist_tol_min_mm", 0.0125);
+    let max = policy_number(policy, "si_escalation", "dist_tol_max_mm", 0.05);
+    Some((diag / div).max(min).min(max))
+}
+
+fn si_method_num(policy: Option<&LoadedPolicy>) -> i64 {
+    policy
+        .and_then(|p| p.get("si_escalation"))
+        .and_then(|t| t.get("method_num"))
+        .and_then(PolicyValue::as_i64)
+        .unwrap_or(10)
+}
+
+fn si_vol_rel_tol(policy: Option<&LoadedPolicy>) -> f64 {
+    policy_number(policy, "si_escalation", "vol_rel_tol", 0.005)
+}
+
+fn graft_grid_budget() -> Option<i64> {
+    let raw = std::env::var("SUTURA_GRAFT_GRID_BUDGET").ok();
+    let Some(raw) = raw else {
+        return Some(DEFAULT_GRAFT_GRID_BUDGET);
+    };
+    let text = raw.trim().to_ascii_lowercase();
+    if text.is_empty() {
+        return Some(DEFAULT_GRAFT_GRID_BUDGET);
+    }
+    if matches!(text.as_str(), "0" | "false" | "no" | "off") {
+        return None;
+    }
+    match text.parse::<i64>() {
+        Ok(value) if value > 0 => Some(value),
+        Ok(_) => None,
+        Err(_) => Some(DEFAULT_GRAFT_GRID_BUDGET),
+    }
+}
+
+fn input_damage_work(v: &[[f64; 3]], t: &[[i64; 3]]) -> i64 {
+    let topo = common::topology_summary(v, t);
+    let holes = boundary_loop_stats(t).0 as i64;
+    t.len() as i64
+        * (1 + topo.non_two_manifold_edges as i64 + topo.non_two_manifold_vertices as i64 + holes)
+}
+
+fn volume_change_pct(
+    in_v: &[[f64; 3]],
+    in_t: &[[i64; 3]],
+    out_v: &[[f64; 3]],
+    out_t: &[[i64; 3]],
+) -> Option<f64> {
+    let before = common::signed_volume(in_v, in_t);
+    let after = common::signed_volume(out_v, out_t);
+    if before == 0.0 || after == 0.0 {
+        return None;
+    }
+    Some(round2((after - before) / before.abs() * 100.0))
+}
+
+fn geom_change_pct(
+    in_v: &[[f64; 3]],
+    in_t: &[[i64; 3]],
+    out_v: &[[f64; 3]],
+    out_t: &[[i64; 3]],
+) -> Option<f64> {
+    let before_area = common::surface_area(in_v, in_t);
+    let after_area = common::surface_area(out_v, out_t);
+    let mut values = Vec::new();
+    if let Some(vol) = volume_change_pct(in_v, in_t, out_v, out_t) {
+        values.push(vol.abs());
+    }
+    if before_area != 0.0 && after_area != 0.0 {
+        values.push(round2((after_area - before_area) / before_area.abs() * 100.0).abs());
+    }
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.into_iter().fold(0.0f64, f64::max))
+    }
+}
+
+fn report_geometry_metrics(
+    report: &Value,
+    in_v: &[[f64; 3]],
+    in_t: &[[i64; 3]],
+    out_v: &[[f64; 3]],
+    out_t: &[[i64; 3]],
+) -> (Option<f64>, Option<f64>) {
+    let it = to_i32(in_t);
+    let ot = to_i32(out_t);
+    let Some(pr) = crate::report::build_print_report_value(
+        report,
+        Some(in_v),
+        Some(&it),
+        Some(out_v),
+        Some(&ot),
+    ) else {
+        return (None, None);
+    };
+    let geom = pr.get("geometry");
+    (
+        geom.and_then(|g| g.get("deviation_max_pct"))
+            .and_then(Value::as_f64),
+        geom.and_then(|g| g.get("volume_change_pct"))
+            .and_then(Value::as_f64),
+    )
+}
+
+fn si_metrics_from_report(report: &Value) -> SiMetrics {
+    let s1 = report.get("stage1");
+    let int = |key: &str| s1.and_then(|m| m.get(key)).and_then(Value::as_i64);
+    SiMetrics {
+        si: int("self_intersections_remaining"),
+        holes: int("holes_remaining"),
+        nm: int("non_manifold_edges_remaining"),
+        parts: int("components"),
+        si_stage1: None,
+        ..Default::default()
+    }
+}
+
+fn si_verdict(
+    base: &SiMetrics,
+    cand: &SiMetrics,
+    tolerance: Option<f64>,
+    vol_rel_tol: f64,
+) -> (bool, String) {
+    let Some(base_si) = base.si else {
+        return (false, "baseline SI unmeasurable".to_string());
+    };
+    if base_si <= 0 {
+        return (false, "baseline SI is zero".to_string());
+    }
+    let Some(cand_si) = cand.si else {
+        return (false, "candidate SI unmeasurable".to_string());
+    };
+    if cand_si >= base_si {
+        return (false, "SI not strictly lower".to_string());
+    }
+    for (key, label) in [
+        ("holes", "holes"),
+        ("nm", "non-manifold"),
+        ("parts", "parts"),
+    ] {
+        let b = match key {
+            "holes" => base.holes,
+            "nm" => base.nm,
+            _ => base.parts,
+        };
+        let c = match key {
+            "holes" => cand.holes,
+            "nm" => cand.nm,
+            _ => cand.parts,
+        };
+        let Some(b) = b else {
+            return (false, format!("baseline {label} unmeasurable"));
+        };
+        let Some(c) = c else {
+            return (false, format!("candidate {label} unmeasurable"));
+        };
+        if c > b {
+            return (false, format!("{label} worse ({b} -> {c})"));
+        }
+    }
+    let Some(tol) = tolerance else {
+        return (false, "shape tolerance unmeasurable".to_string());
+    };
+    for (key, label) in [
+        ("shape_max_mm", "two-sided max"),
+        ("shape_p95_mm", "two-sided p95"),
+    ] {
+        let b = match key {
+            "shape_max_mm" => base.shape_max_mm,
+            _ => base.shape_p95_mm,
+        };
+        let c = match key {
+            "shape_max_mm" => cand.shape_max_mm,
+            _ => cand.shape_p95_mm,
+        };
+        let Some(b) = b else {
+            return (false, format!("baseline {label} unmeasurable"));
+        };
+        let Some(c) = c else {
+            return (false, format!("candidate {label} unmeasurable"));
+        };
+        if c > b + tol {
+            return (
+                false,
+                format!("{label} worse ({b:.4} -> {c:.4} mm > {b:.4} + {tol:.4})"),
+            );
+        }
+    }
+    let (Some(bv), Some(cv)) = (base.volume_mm3, cand.volume_mm3) else {
+        return (false, "volume unmeasurable".to_string());
+    };
+    if bv.abs() <= 1e-12 {
+        return (false, "baseline volume is zero".to_string());
+    }
+    let rel = (cv - bv).abs() / bv.abs();
+    if rel > vol_rel_tol {
+        return (
+            false,
+            format!(
+                "volume change {:.3}% > {:.2}% ({:.3} -> {:.3} mm3)",
+                rel * 100.0,
+                vol_rel_tol * 100.0,
+                bv,
+                cv
+            ),
+        );
+    }
+    (
+        true,
+        format!("never-worse under the two-sided SI-escalation rule (tol {tol:.4} mm)"),
+    )
+}
+
+fn stl_sha256(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> Option<String> {
+    let mesh = Mesh::new(to_f32(verts), to_i32(tris));
+    let bytes = crate::mesh_io::write_stl_binary_bytes(&mesh).ok()?;
+    let digest = Sha256::digest(&bytes);
+    Some(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn si_escalation_allowed(opts: &RepairOptions) -> bool {
+    opts.si_mode != SiMode::Off
+        && opts.deep_repair == DeepRepair::Full
+        && !matches!(opts.ftetwild.as_ref(), Some(Value::Bool(false)))
+}
+
+fn apply_si_escalation(
+    out: &mut Map<String, Value>,
+    input_v: &[[f64; 3]],
+    input_t: &[[i64; 3]],
+    base_v: &[[f64; 3]],
+    base_t: &[[i64; 3]],
+    opts: &RepairOptions,
+    policy: Option<&LoadedPolicy>,
+    stage1_snapshot: Option<&(Vec<[f64; 3]>, Vec<[i64; 3]>)>,
+    cancel: &CancelToken,
+) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value)> {
+    let base_si = si_exact(base_v, base_t)?;
+    if base_si <= 0 {
+        return None;
+    }
+    let tolerance = si_tolerance(input_v, policy)?;
+    let base_facts = si_facts(input_v, input_t, base_v, base_t)?;
+    if base_facts.holes > 0 || base_facts.nm > 0 {
+        return None;
+    }
+
+    let baseline_entry = out
+        .get("methods_tried")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    let base_report = Value::Object(out.clone());
+    let (base_dev, base_vol) =
+        report_geometry_metrics(&base_report, input_v, input_t, base_v, base_t);
+    let mut base = si_metrics_from_report(&base_report);
+    base.si = Some(base_si);
+    base.si_stage1 = stage1_snapshot.and_then(|(v, t)| si_exact(v, t));
+    base.dev_pct = base_dev;
+    base.vol_pct = base_vol.or_else(|| volume_change_pct(input_v, input_t, base_v, base_t));
+    base.apply_facts(&base_facts);
+
+    let method_num = si_method_num(policy);
+    let work_budget = graft_grid_budget();
+    let work_units = input_damage_work(input_v, input_t);
+    let vol_rel_tol = si_vol_rel_tol(policy);
+
+    let mut field = Map::new();
+    field.insert("triggered".into(), Value::Bool(true));
+    field.insert("method".into(), Value::Null);
+    field.insert("num".into(), Value::Null);
+    field.insert("name".into(), Value::Null);
+    field.insert("candidates".into(), json!([]));
+    field.insert("si_source".into(), Value::from("exact_output"));
+    field.insert("baseline".into(), base.to_value());
+    field.insert("tolerance_mm".into(), json!(tolerance));
+    field.insert(
+        "reason".into(),
+        Value::from("final output watertight with SI > 0"),
+    );
+    field.insert(
+        "work_budget".into(),
+        work_budget.map(Value::from).unwrap_or(Value::Null),
+    );
+    field.insert("budget_scope".into(), Value::from("si_escalation_120m"));
+
+    let mut cand_field = json!({
+        "num": method_num,
+        "id": Value::Null,
+        "name": Value::Null,
+        "outcome": Value::Null,
+        "reason": Value::Null,
+    });
+
+    if method_num != 10 {
+        cand_field["reason"] = Value::from("candidate method unavailable");
+        push_candidate(&mut field, cand_field);
+        finalize_rejected(&mut field, &base);
+        out.insert("si_escalation".into(), Value::Object(field));
+        return None;
+    }
+    cand_field["id"] = Value::from(SI_METHOD_ID);
+    cand_field["name"] = Value::from(SI_METHOD_NAME);
+    cand_field["work_units"] = Value::from(work_units);
+    cand_field["work_budget"] = work_budget.map(Value::from).unwrap_or(Value::Null);
+    if let Some(budget) = work_budget {
+        if work_units > budget {
+            cand_field["outcome"] = Value::from("skipped_budget");
+            cand_field["reason"] = Value::from(format!(
+                "estimated damage work {work_units} (budget {budget}) is above the SI-escalation cap"
+            ));
+            push_candidate(&mut field, cand_field);
+            finalize_rejected(&mut field, &base);
+            out.insert("si_escalation".into(), Value::Object(field));
+            return None;
+        }
+    }
+
+    let started = Instant::now();
+    let mut cand_opts = opts.clone();
+    cand_opts.deep_repair = DeepRepair::Off;
+    cand_opts.proxy_template = true;
+    cand_opts.ftetwild = Some(Value::Bool(false));
+    let candidate = repair_impl(input_v, input_t, &cand_opts, &NoopSink, cancel, false);
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let (cand_v, cand_t, cand_report) = match candidate {
+        RepairOutcome::Ok {
+            verts,
+            tris,
+            report,
+        } => (verts, tris, report),
+        RepairOutcome::Unavailable { tier, reason } => {
+            cand_field["outcome"] = Value::from("error");
+            cand_field["reason"] = Value::from(format!("unavailable tier '{tier}': {reason}"));
+            cand_field["elapsed_ms"] = Value::from(elapsed_ms.round() as i64);
+            push_candidate(&mut field, cand_field);
+            finalize_rejected(&mut field, &base);
+            out.insert("si_escalation".into(), Value::Object(field));
+            return None;
+        }
+        RepairOutcome::Error { message } => {
+            cand_field["outcome"] = Value::from("error");
+            cand_field["reason"] = Value::from(message);
+            cand_field["elapsed_ms"] = Value::from(elapsed_ms.round() as i64);
+            push_candidate(&mut field, cand_field);
+            finalize_rejected(&mut field, &base);
+            out.insert("si_escalation".into(), Value::Object(field));
+            return None;
+        }
+    };
+
+    let cand_facts = si_facts(input_v, input_t, &cand_v, &cand_t);
+    let cand_si = si_exact(&cand_v, &cand_t);
+    let (cand_dev, cand_vol) =
+        report_geometry_metrics(&cand_report, input_v, input_t, &cand_v, &cand_t);
+    let mut cand = si_metrics_from_report(&cand_report);
+    cand.si = cand_si;
+    cand.si_stage1 = cand_si;
+    cand.dev_pct = cand_dev;
+    cand.vol_pct = cand_vol.or_else(|| volume_change_pct(input_v, input_t, &cand_v, &cand_t));
+    if let Some(facts) = cand_facts.as_ref() {
+        cand.apply_facts(facts);
+    }
+    let cand_sha = stl_sha256(&cand_v, &cand_t);
+    cand_field["candidate"] = cand.to_value();
+    cand_field["candidate_sha256"] = cand_sha.map(Value::from).unwrap_or(Value::Null);
+    cand_field["elapsed_ms"] = Value::from(elapsed_ms.round() as i64);
+
+    let watertight = cand_report
+        .get("method_reached_watertight")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let eval_holes = cand.holes.unwrap_or(0);
+    let eval_nm = cand.nm.unwrap_or(0);
+    let eval_reason = if watertight {
+        "strict-watertight".to_string()
+    } else {
+        format!("holes={eval_holes} non-manifold={eval_nm} remain")
+    };
+    let geom_change = geom_change_pct(input_v, input_t, &cand_v, &cand_t);
+    let tried_entry = json!({
+        "num": method_num,
+        "id": SI_METHOD_ID,
+        "name": SI_METHOD_NAME,
+        "outcome": if watertight { "accepted" } else { "rejected" },
+        "watertight": watertight,
+        "holes": if watertight { 0 } else { eval_holes },
+        "non_manifold": if watertight { 0 } else { eval_nm },
+        "hausdorff_rel": Value::Null,
+        "geom_change_pct": geom_change.map(Value::from).unwrap_or(Value::Null),
+        "guard_rejected": Value::Null,
+        "guard_reason": Value::Null,
+        "si_flagged": false,
+        "adopt_guard": Value::Null,
+        "reason": eval_reason,
+        "template": Value::Null,
+        "elapsed_ms": elapsed_ms.round() as i64,
+    });
+
+    if !watertight {
+        cand_field["outcome"] = Value::from("rejected");
+        cand_field["reason"] = Value::from(format!("candidate rejected: {eval_reason}"));
+        push_candidate(&mut field, cand_field);
+        append_tried(out, &tried_entry);
+        finalize_rejected(&mut field, &base);
+        out.insert("si_escalation".into(), Value::Object(field));
+        return None;
+    }
+
+    let (ok, why) = si_verdict(&base, &cand, Some(tolerance), vol_rel_tol);
+    if !ok {
+        cand_field["outcome"] = Value::from("rejected");
+        cand_field["reason"] = Value::from(why.clone());
+        push_candidate(&mut field, cand_field);
+        append_tried(out, &tried_entry);
+        finalize_rejected(&mut field, &base);
+        out.insert("si_escalation".into(), Value::Object(field));
+        return None;
+    }
+
+    cand_field["outcome"] = Value::from("adopted");
+    cand_field["reason"] = Value::from(why.clone());
+    push_candidate(&mut field, cand_field);
+    field.insert("method".into(), Value::from(SI_METHOD_ID));
+    field.insert("num".into(), Value::from(method_num));
+    field.insert("name".into(), Value::from(SI_METHOD_NAME));
+    field.insert("outcome".into(), Value::from("adopted"));
+    field.insert("reason".into(), Value::from(why.clone()));
+    let field_value = Value::Object(field);
+    out.insert("si_escalation".into(), field_value.clone());
+
+    let mut adopted = match cand_report {
+        Value::Object(m) => m,
+        _ => Map::new(),
+    };
+    adopted.insert(
+        "methods_tried".into(),
+        Value::Array(vec![baseline_entry, tried_entry]),
+    );
+    adopted.insert(
+        "method_used".into(),
+        json!({
+            "num": method_num,
+            "id": SI_METHOD_ID,
+            "name": SI_METHOD_NAME,
+            "source": "auto_si_escalated",
+            "note": "SI escalation",
+        }),
+    );
+    adopted.insert("method_reached_watertight".into(), Value::Bool(true));
+    adopted.insert("si_escalation".into(), field_value);
+    for key in [
+        "fallback_work_budget",
+        "fallback_grid_work_budget",
+        "fallback_work_input",
+        "fallback_work_estimate",
+        "fallback_skipped_budget",
+    ] {
+        if !adopted.contains_key(key) {
+            if let Some(value) = out.get(key) {
+                adopted.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    Some((cand_v, cand_t, Value::Object(adopted)))
+}
+
+fn push_candidate(field: &mut Map<String, Value>, cand: Value) {
+    if let Some(list) = field.get_mut("candidates").and_then(Value::as_array_mut) {
+        list.push(cand);
+    }
+}
+
+fn append_tried(out: &mut Map<String, Value>, entry: &Value) {
+    if let Some(list) = out.get_mut("methods_tried").and_then(Value::as_array_mut) {
+        list.push(entry.clone());
+    }
+}
+
+fn finalize_rejected(field: &mut Map<String, Value>, base: &SiMetrics) {
+    let last = field
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|list| {
+            list.iter()
+                .rev()
+                .find(|c| c.get("candidate").is_some())
+                .or_else(|| list.last())
+        })
+        .cloned();
+    if let Some(last) = last {
+        field.insert(
+            "method".into(),
+            last.get("id").cloned().unwrap_or(Value::Null),
+        );
+        field.insert(
+            "num".into(),
+            last.get("num").cloned().unwrap_or(Value::Null),
+        );
+        field.insert(
+            "name".into(),
+            last.get("name").cloned().unwrap_or(Value::Null),
+        );
+        field.insert(
+            "reason".into(),
+            last.get("reason").cloned().unwrap_or(Value::Null),
+        );
+        if let Some(candidate) = last.get("candidate") {
+            field.insert("candidate".into(), candidate.clone());
+        }
+        if let Some(sha) = last.get("candidate_sha256") {
+            field.insert("candidate_sha256".into(), sha.clone());
+        }
+        if let Some(ms) = last.get("elapsed_ms") {
+            field.insert("elapsed_ms".into(), ms.clone());
+        }
+    }
+    field.insert("outcome".into(), Value::from("rejected"));
+    field.insert("baseline".into(), base.to_value());
+}
+
 fn tier_error(tier: &str, message: impl Into<String>) -> Value {
     json!({
         "tier": tier,
@@ -1439,6 +2128,17 @@ pub fn repair(
     sink: &dyn ProgressSink,
     cancel: &CancelToken,
 ) -> RepairOutcome {
+    repair_impl(verts, tris, opts, sink, cancel, true)
+}
+
+fn repair_impl(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    opts: &RepairOptions,
+    sink: &dyn ProgressSink,
+    cancel: &CancelToken,
+    allow_si_escalation: bool,
+) -> RepairOutcome {
     if verts.is_empty() || tris.is_empty() {
         return error("input mesh is empty (no triangles)");
     }
@@ -1473,6 +2173,7 @@ pub fn repair(
     let input_t = tris.to_vec();
     let mut cur_v = verts.to_vec();
     let mut cur_t = tris.to_vec();
+    let mut stage1_snapshot: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>)> = None;
     let mut trace = TraceLog::new();
     let mut stats = Map::new();
     stats.insert("timings".into(), json!({}));
@@ -2197,6 +2898,9 @@ pub fn repair(
         stage1.insert("skipped".into(), skipped);
     }
     stats.insert("stage1".into(), Value::Object(stage1));
+    if allow_si_escalation && si_escalation_allowed(opts) {
+        stage1_snapshot = Some((cur_v.clone(), cur_t.clone()));
+    }
 
     // --- Stage 2 -----------------------------------------------------------
     if cancel.is_cancelled() {
@@ -2332,6 +3036,26 @@ pub fn repair(
     out.insert("method_used".into(), method_used_value(opts.deep_repair));
     out.insert("unavailable".into(), unavailable);
 
+    if allow_si_escalation && si_escalation_allowed(opts) {
+        if let Some((adopted_v, adopted_t, adopted_report)) = apply_si_escalation(
+            &mut out,
+            &input_v,
+            &input_t,
+            &cur_v,
+            &cur_t,
+            opts,
+            policy.as_ref(),
+            stage1_snapshot.as_ref(),
+            cancel,
+        ) {
+            return RepairOutcome::Ok {
+                verts: adopted_v,
+                tris: adopted_t,
+                report: adopted_report,
+            };
+        }
+    }
+
     RepairOutcome::Ok {
         verts: cur_v,
         tris: cur_t,
@@ -2396,6 +3120,98 @@ mod tests {
             push_box(&mut verts, &mut tris, [1.5, 1.5, 1.5], 2.0);
         }
         (verts, tris)
+    }
+
+    #[test]
+    fn si_escalation_verdict_rejects_not_strictly_lower() {
+        let base = SiMetrics {
+            si: Some(3),
+            holes: Some(0),
+            nm: Some(0),
+            parts: Some(1),
+            volume_mm3: Some(100.0),
+            shape_max_mm: Some(0.1),
+            shape_p95_mm: Some(0.0),
+            ..SiMetrics::default()
+        };
+        let cand = SiMetrics {
+            si: Some(4),
+            ..base.clone()
+        };
+        let (ok, reason) = si_verdict(&base, &cand, Some(0.0125), 0.005);
+        assert!(!ok);
+        assert_eq!(reason, "SI not strictly lower");
+    }
+
+    #[test]
+    fn si_escalation_triggers_on_small_positive_mesh() {
+        let (verts, tris) = two_shells(false);
+        assert!(si_exact(&verts, &tris).unwrap_or(0) > 0);
+        let opts = RepairOptions {
+            tamponade: Some(false),
+            flap: Some(false),
+            coaptation: Some(false),
+            graft: Some(false),
+            ..RepairOptions::default()
+        };
+        let mut out = Map::new();
+        out.insert(
+            "stage1".into(),
+            json!({
+                "holes_remaining": 0,
+                "non_manifold_edges_remaining": 0,
+                "components": 2,
+            }),
+        );
+        out.insert(
+            "methods_tried".into(),
+            json!([{
+                "num": 3,
+                "id": "full_mend",
+                "name": "Full Mend",
+                "outcome": "accepted",
+                "watertight": true,
+            }]),
+        );
+        let snapshot = (verts.clone(), tris.clone());
+        let adopted = apply_si_escalation(
+            &mut out,
+            &verts,
+            &tris,
+            &verts,
+            &tris,
+            &opts,
+            None,
+            Some(&snapshot),
+            &CancelToken::new(),
+        );
+        let field = out
+            .get("si_escalation")
+            .and_then(Value::as_object)
+            .expect("si_escalation object");
+        assert_eq!(field.get("triggered").and_then(Value::as_bool), Some(true));
+        let baseline_si = field
+            .get("baseline")
+            .and_then(|b| b.get("si"))
+            .and_then(Value::as_i64)
+            .expect("baseline SI");
+        assert!(baseline_si > 0);
+        let candidates = field
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].get("num").and_then(Value::as_i64), Some(10));
+        let tried = out
+            .get("methods_tried")
+            .and_then(Value::as_array)
+            .expect("methods_tried");
+        assert_eq!(tried.len(), 2);
+        assert_eq!(tried[1].get("num").and_then(Value::as_i64), Some(10));
+        if let Some((v, t, report)) = adopted {
+            assert!(!v.is_empty() && !t.is_empty());
+            assert!(report.get("methods_tried").is_some());
+        }
     }
 
     #[test]
