@@ -318,52 +318,12 @@ pub fn curvature_developable_fraction(verts: &[[f64; 3]], tris: &[[usize; 3]]) -
     py_round(covered.min(1.0), 4)
 }
 
-/// Smallest-eigenvalue eigenvector of a symmetric 3x3 matrix (Jacobi).
-pub fn smallest_eigenvector(mut a: [[f64; 3]; 3]) -> [f64; 3] {
-    let mut v = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    for _ in 0..32 {
-        // largest off-diagonal
-        let (mut p, mut q, mut max) = (0usize, 1usize, a[0][1].abs());
-        for (i, j) in [(0, 2), (1, 2)] {
-            if a[i][j].abs() > max {
-                max = a[i][j].abs();
-                p = i;
-                q = j;
-            }
-        }
-        if max < 1e-15 {
-            break;
-        }
-        let theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
-        let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
-        let c = 1.0 / (t * t + 1.0).sqrt();
-        let s = t * c;
-        for k in 0..3 {
-            let akp = a[k][p];
-            let akq = a[k][q];
-            a[k][p] = c * akp - s * akq;
-            a[k][q] = s * akp + c * akq;
-        }
-        for k in 0..3 {
-            let apk = a[p][k];
-            let aqk = a[q][k];
-            a[p][k] = c * apk - s * aqk;
-            a[q][k] = s * apk + c * aqk;
-        }
-        for k in 0..3 {
-            let vkp = v[k][p];
-            let vkq = v[k][q];
-            v[k][p] = c * vkp - s * vkq;
-            v[k][q] = s * vkp + c * vkq;
-        }
-    }
-    let mut best = 0usize;
-    for i in 1..3 {
-        if a[i][i] < a[best][best] {
-            best = i;
-        }
-    }
-    [v[0][best], v[1][best], v[2][best]]
+/// Smallest-eigenvalue eigenvector of a symmetric 3x3 matrix.
+///
+/// Delegates to the shared [`crate::eigh3`] kernel so the classifier and every
+/// other caller use one implementation (and one sign convention).
+pub fn smallest_eigenvector(a: [[f64; 3]; 3]) -> [f64; 3] {
+    crate::eigh3::smallest_eigenvector(a)
 }
 
 

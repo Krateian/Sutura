@@ -33,6 +33,7 @@ pub mod decimate;
 pub mod diagnosis;
 pub mod dressing;
 pub mod dual_contour;
+pub mod eigh3;
 pub mod flap;
 pub mod hermite;
 pub mod hole;
@@ -2872,6 +2873,35 @@ fn triangulate_annulus<'py>(
 }
 
 #[cfg(feature = "python")]
+/// Symmetric 3x3 eigendecomposition through the shared kernel.
+///
+/// Returns `(eigenvalues, eigenvectors)` as `np.linalg.eigh` does: eigenvalues
+/// ascending and eigenvectors as **columns**. Python's `np.linalg.eigh` is
+/// LAPACK, so `repeat.py` calls this instead of imitating it.
+#[pyfunction]
+#[pyo3(name = "eigh3")]
+fn eigh3_py<'py>(
+    py: Python<'py>,
+    a: PyArrayLike2<'py, f64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let arr = a.as_array();
+    if arr.shape() != [3, 3] {
+        return Err(PyValueError::new_err("eigh3 expects a 3x3 matrix"));
+    }
+    let mut m = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            m[i][j] = arr[[i, j]];
+        }
+    }
+    let (values, vectors) = crate::eigh3::eigh3(m);
+    let vals = numpy::PyArray1::from_vec(py, values.to_vec());
+    let rows: Vec<Vec<f64>> = vectors.iter().map(|row| row.to_vec()).collect();
+    let vecs = numpy::PyArray2::from_vec2(py, &rows)?;
+    Ok((vals.into_any(), vecs.into_any()))
+}
+
+#[cfg(feature = "python")]
 /// Signed volume through the shared kernel (see `measures::signed_volume`).
 ///
 /// Python's `np.einsum` inner dot is a BLAS path that no association order or
@@ -2931,6 +2961,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
     m.add_function(wrap_pyfunction!(signed_volume, m)?)?;
+    m.add_function(wrap_pyfunction!(eigh3_py, m)?)?;
     m.add_function(wrap_pyfunction!(si_faces_exact, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
