@@ -7,6 +7,7 @@ output. process_file (the batch driver) stays in the repair.py shim because it
 uses the VERSION literal that the release tooling parses from that file.
 Moved verbatim from sutura/repair.py; no logic change.
 """
+import json
 import os
 import time
 
@@ -105,6 +106,11 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         trace.record_stage('load', 'mesh_io.load_mesh', None, None, verts, tris,
                            gate={'status': 'ok', 'source': src})
 
+    def _pb(value):
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ('1', 'true', 'yes', 'on', 'auto', 'force')
+
     def _run(flap_value, run_tamponade=None):
         """Repair the loaded mesh with Flap on/off, through P-HONEST.
 
@@ -116,6 +122,39 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         """
         if run_tamponade is None:
             run_tamponade = tamponade
+        if os.environ.get('SUTURA_PIPELINE_ENGINE', '').strip().lower() == 'rust':
+            from sutura_engine import rust_bridge
+            core = rust_bridge.load(
+                'pipeline', ('SUTURA_PIPELINE_ENGINE',), 'python')
+            if core is None or not hasattr(core, 'pipeline_repair'):
+                rust_bridge.unavailable(
+                    'SUTURA_PIPELINE_ENGINE=rust requires '
+                    'sutura_core_py.pipeline_repair')
+            else:
+                opts = {
+                    'mode': mode, 'intensity': getattr(triage_spec, 'intensity', 'balanced'),
+                    'profile': profile, 'deep_repair': deep_repair,
+                    'closing': closing, 'proxy_template': proxy_template,
+                    'graft': _pb(graft), 'tamponade': _pb(run_tamponade),
+                    'flap': _pb(flap_value), 'coaptation': _pb(coaptation),
+                    'splint': _pb(splint), 'dressing': _pb(dressing),
+                    'wall_thicken': _pb(wall_thicken), 'repeat': repeat,
+                    'solid_engine': solid_engine, 'si_mode': si_mode,
+                    'time_budget_s': None, 'seed': 0,
+                }
+                rv, rt, rj = core.pipeline_repair(
+                    np.ascontiguousarray(verts, dtype=np.float64),
+                    np.ascontiguousarray(tris, dtype=np.int64),
+                    json.dumps(opts))
+                report = json.loads(rj)
+                new_v, new_t = np.asarray(rv), np.asarray(rt)
+                if report.get('ok') is False and report.get('error'):
+                    raise RuntimeError(report['error'])
+                report['_fp'] = history.mesh_fingerprint(verts, tris)
+                report['defects'] = detect_defects(verts, tris)
+                if ext == '.obj':
+                    report['material_discarded'] = obj_has_material_refs(src)
+                return report, new_v, new_t
         report, new_v, new_t = repair_mesh_from_arrays(
             verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
             declared_unit=declared_unit, join_components=join_components,
