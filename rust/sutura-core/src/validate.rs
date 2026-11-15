@@ -8,7 +8,7 @@
 
 use serde_json::{json, Map, Value};
 
-use sutura_geom::melt::scan_si;
+use sutura_geom::self_intersections_core;
 
 use crate::classify::classify_mesh;
 use crate::config::intensity::{triage_report_fields, IntensitySpec};
@@ -143,15 +143,15 @@ pub fn validate_mesh(
         None
     } else {
         let sv: Vec<[f64; 3]> = v.iter().map(|p| [p[0] as f64, p[1] as f64, p[2] as f64]).collect();
-        let st: Vec<[u32; 3]> = t
+        let st: Vec<[usize; 3]> = t
             .iter()
-            .map(|f| [f[0] as u32, f[1] as u32, f[2] as u32])
+            .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
             .collect();
-        let scan = scan_si(&sv, &st);
-        if scan.count < 0 {
+        let (_mask, count, skipped) = self_intersections_core(&sv, &st);
+        if skipped || count < 0 {
             None
         } else {
-            Some(scan.count)
+            Some(count)
         }
     };
 
@@ -228,31 +228,14 @@ fn usize_tris(t: &[[i32; 3]]) -> Vec<[usize; 3]> {
         .collect()
 }
 
-/// `utils.signed_volume`: sum of origin-tetrahedra volumes in f64.
-///
-/// The per-face terms are collected and reduced with NumPy's pairwise order,
-/// which is what `np.sum` does on the Python side; a plain running sum drifts
-/// in the last digits on six-figure face counts.
+/// `utils.signed_volume`, from the shared numeric kernel.
 pub fn signed_volume(verts: &[[f32; 3]], tris: &[[i32; 3]]) -> f64 {
-    if tris.is_empty() || verts.is_empty() {
-        return 0.0;
-    }
-    let mut terms: Vec<f64> = Vec::with_capacity(tris.len());
-    for f in tris {
-        let (i, j, k) = (f[0] as usize, f[1] as usize, f[2] as usize);
-        if i >= verts.len() || j >= verts.len() || k >= verts.len() {
-            terms.push(0.0);
-            continue;
-        }
-        let a = verts[i].map(f64::from);
-        let b = verts[j].map(f64::from);
-        let c = verts[k].map(f64::from);
-        terms.push(
-            a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-                + a[2] * (b[0] * c[1] - b[1] * c[0]),
-        );
-    }
-    crate::reduce::sum_f64(&terms) / 6.0
+    let v: Vec<[f64; 3]> = verts.iter().map(|p| p.map(f64::from)).collect();
+    let t: Vec<[i64; 3]> = tris
+        .iter()
+        .map(|f| [f[0] as i64, f[1] as i64, f[2] as i64])
+        .collect();
+    sutura_geom::measures::signed_volume(&v, &t)
 }
 
 /// `utils.surface_area`: total triangle area in f32, summed with NumPy's
@@ -507,15 +490,15 @@ pub fn dry_run_mesh(
             .iter()
             .map(|p| [p[0] as f64, p[1] as f64, p[2] as f64])
             .collect();
-        let st: Vec<[u32; 3]> = t
+        let st: Vec<[usize; 3]> = t
             .iter()
-            .map(|f| [f[0] as u32, f[1] as u32, f[2] as u32])
+            .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
             .collect();
-        let scan = scan_si(&sv, &st);
-        if scan.count < 0 {
+        let (_mask, count, skipped) = self_intersections_core(&sv, &st);
+        if skipped || count < 0 {
             None
         } else {
-            Some(scan.count)
+            Some(count)
         }
     };
 

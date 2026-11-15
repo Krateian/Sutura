@@ -37,6 +37,7 @@ pub mod hermite;
 pub mod hole;
 pub mod interval;
 pub mod lava;
+pub mod measures;
 pub mod melt;
 pub mod manifold;
 pub mod mincut;
@@ -2874,6 +2875,21 @@ fn triangulate_annulus<'py>(
 }
 
 #[cfg(feature = "python")]
+/// Signed volume through the shared kernel (see `measures::signed_volume`).
+///
+/// Python's `np.einsum` inner dot is a BLAS path that no association order or
+/// FMA order reproduces, so `utils.signed_volume` calls this instead.
+#[pyfunction]
+fn signed_volume(verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+                 tris: PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<f64> {
+    let v: Vec<[f64; 3]> = verts.as_array().rows().into_iter()
+        .map(|r| [r[0], r[1], r[2]]).collect();
+    let t: Vec<[i64; 3]> = tris.as_array().rows().into_iter()
+        .map(|r| [r[0], r[1], r[2]]).collect();
+    Ok(crate::measures::signed_volume(&v, &t))
+}
+
+#[cfg(feature = "python")]
 /// Numeric classifier features shared with the Python v2 engine.
 #[pyfunction]
 fn classifier_features<'py>(
@@ -2917,6 +2933,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
+    m.add_function(wrap_pyfunction!(signed_volume, m)?)?;
     m.add_function(wrap_pyfunction!(si_faces_exact, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;

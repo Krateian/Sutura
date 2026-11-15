@@ -2,84 +2,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! NumPy-compatible reductions.
 //!
-//! `np.sum` is not a plain left-to-right sum: it uses pairwise summation with
-//! eight accumulators and a 128-element block (`PW_BLOCKSIZE`). For a mesh
-//! with ~10^5 faces the difference is visible in the last digits of
-//! `signed_volume` / `surface_area`, so any port that must match Python
-//! bit-for-bit has to reproduce the same order.
-//!
-//! This module implements that recursion exactly; `numpy_sum_matches` in the
-//! tests pins it against values produced by NumPy itself.
+//! The implementation moved to `sutura_geom::measures` so the kernels live in
+//! one crate; these are the names the core (and its tests) use.
 
-/// `np.sum` over an `f64` slice (pairwise, 8 accumulators, block 128).
-pub fn sum_f64(values: &[f64]) -> f64 {
-    pairwise(values)
-}
-
-/// `np.sum` over an `f32` slice.
-pub fn sum_f32(values: &[f32]) -> f32 {
-    pairwise(values)
-}
-
-const PW_BLOCKSIZE: usize = 128;
-
-trait Accum: Copy + PartialOrd {
-    fn zero() -> Self;
-    fn add(self, other: Self) -> Self;
-}
-
-impl Accum for f64 {
-    fn zero() -> Self {
-        0.0
-    }
-    fn add(self, other: Self) -> Self {
-        self + other
-    }
-}
-
-impl Accum for f32 {
-    fn zero() -> Self {
-        0.0
-    }
-    fn add(self, other: Self) -> Self {
-        self + other
-    }
-}
-
-fn pairwise<T: Accum>(values: &[T]) -> T {
-    let n = values.len();
-    if n < 8 {
-        let mut total = T::zero();
-        for v in values {
-            total = total.add(*v);
-        }
-        return total;
-    }
-    if n <= PW_BLOCKSIZE {
-        let mut acc = [values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]];
-        let mut i = 8;
-        while i + 8 <= n {
-            for (k, slot) in acc.iter_mut().enumerate() {
-                *slot = slot.add(values[i + k]);
-            }
-            i += 8;
-        }
-        // np.sum reduces the eight accumulators left-to-right in pairs.
-        let mut total = acc[0]
-            .add(acc[1])
-            .add(acc[2].add(acc[3]))
-            .add(acc[4].add(acc[5]).add(acc[6].add(acc[7])));
-        while i < n {
-            total = total.add(values[i]);
-            i += 1;
-        }
-        return total;
-    }
-    // Split in half on an 8-element boundary so both halves stay aligned.
-    let mut n2 = n / 2;
-    n2 -= n2 % 8;
-    pairwise(&values[..n2]).add(pairwise(&values[n2..]))
-}
+pub use sutura_geom::measures::{sum_f32, sum_f64};
 
 #[cfg(test)]
 mod tests {
