@@ -56,6 +56,7 @@ pub mod raycast;
 pub mod rng;
 pub mod resample;
 pub mod roi;
+pub mod sample;
 pub mod shell;
 pub mod splint;
 pub mod tamponade;
@@ -2989,6 +2990,42 @@ fn closing_relief_py(
 }
 
 #[cfg(feature = "python")]
+/// `wall.sample_surface` through the shared kernel.
+///
+/// Returns `(points, normals)` as float64 arrays. Bit-identical to the NumPy
+/// original, including the RNG stream: `choice(p=...)` then two `random()`
+/// batches, all from one generator.
+#[pyfunction]
+#[pyo3(name = "sample_surface")]
+#[pyo3(signature = (verts, tris, n_samples=5000, seed=0))]
+fn sample_surface_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    n_samples: usize,
+    seed: u64,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let (pts, normals) = crate::sample::sample_surface(&v, &t, n_samples, seed);
+    let pv: Vec<Vec<f64>> = pts.iter().map(|p| p.to_vec()).collect();
+    let nv: Vec<Vec<f64>> = normals.iter().map(|n| n.to_vec()).collect();
+    let parr = numpy::PyArray2::from_vec2(py, &pv)?;
+    let narr = numpy::PyArray2::from_vec2(py, &nv)?;
+    Ok((parr.into_any(), narr.into_any()))
+}
+
+#[cfg(feature = "python")]
 /// Signed volume through the shared kernel (see `measures::signed_volume`).
 ///
 /// Python's `np.einsum` inner dot is a BLAS path that no association order or
@@ -3047,6 +3084,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
+    m.add_function(wrap_pyfunction!(sample_surface_py, m)?)?;
     m.add_function(wrap_pyfunction!(signed_volume, m)?)?;
     m.add_function(wrap_pyfunction!(eigh3_py, m)?)?;
     m.add_function(wrap_pyfunction!(closing_single_side_py, m)?)?;
