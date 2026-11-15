@@ -2902,6 +2902,7 @@ fn eigh3_py<'py>(
     Ok((vals.into_any(), vecs.into_any()))
 }
 
+#[cfg(feature = "python")]
 /// Parse the `verts`, `tris` and `loops` arguments shared by the closing scores.
 fn parse_closing_args(
     verts: PyArrayLike2<'_, f64, AllowTypeChange>,
