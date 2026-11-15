@@ -211,7 +211,12 @@ pub fn analyze_mesh(
     }
     let d = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
     let diag = f64::from((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt());
-    out.bbox_diagonal = diag;
+    // `diagnosis.analyze_mesh` stores `round(diag, 6)` and `to_dict` then
+    // reports `round(bbox_diagonal, 4)`. Rounding the raw value straight to 4
+    // decimals is not the same thing: double rounding lands on the other
+    // neighbour whenever the 5th-7th decimals straddle a .5 boundary
+    // (93.1711502 -> Python 93.1711, direct 93.1712). Keep both steps.
+    out.bbox_diagonal = py_round(py_round(diag, 6), 4);
     out.surface_area = surface_area_f64(v, t);
     out.non_manifold_edges = non_manifold_edge_count(t);
     out.components = connected_components(t);
