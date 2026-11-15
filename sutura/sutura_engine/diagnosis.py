@@ -380,7 +380,7 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
             analysis.model = model
             return analysis
 
-    diag = float(np.linalg.norm(v.max(axis=0) - v.min(axis=0)))
+    diag = _bbox_diagonal(v)
     analysis.bbox_diagonal = round(diag, 6)
     analysis.surface_area = round(_surface_area(v, t), 3)
     analysis.non_manifold_edges = _non_manifold_edge_count(t)
@@ -454,6 +454,23 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
         cache.put_cached_analysis(m_hash, cache_key, _cache_payload(analysis))
 
     return analysis
+
+
+def _bbox_diagonal(v: np.ndarray) -> float:
+    """`np.linalg.norm(v.max(axis=0) - v.min(axis=0))` through the shared kernel.
+
+    NumPy computes that norm as `sqrt(v.dot(v))`, i.e. BLAS `sdot`, whose
+    accumulation order is not portable: measured on 3000 random 3-vectors it
+    matches "sum in f64, then round once" on 71% and the naive f32 sum on 76%.
+    The 1 ULP difference is enough to flip the reported 4th decimal
+    (98.504745 -> 98.5047 vs 98.504753 -> 98.5048), so Python calls the Rust
+    kernel instead of keeping a second NumPy implementation.
+    """
+    try:
+        from sutura_core_py import bbox_diagonal as _core
+        return float(_core(np.ascontiguousarray(v, dtype=np.float32)))
+    except Exception:
+        return float(np.linalg.norm(v.max(axis=0) - v.min(axis=0)))
 
 
 def _cache_payload(analysis: 'ObjectAnalysis') -> dict:

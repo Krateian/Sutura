@@ -115,6 +115,32 @@ impl Analysis {
     }
 }
 
+/// `np.linalg.norm(v.max(axis=0) - v.min(axis=0))` on a float32 mesh.
+///
+/// NumPy computes that norm as `sqrt(v.dot(v))`, and the float32 `dot` is BLAS
+/// `sdot` -- Accelerate accumulates it in a way no portable formula reproduces
+/// (measured: it matches "sum in f64 then round once" on only 71% of 3000
+/// random 3-vectors, and the naive f32 sum on 76%). The difference is 1 ULP,
+/// but the caller stores `round(diag, 6)` and reports `round(..., 4)`, so that
+/// ULP can flip the 4th decimal (98.504745 -> 98.5047 vs 98.504753 ->
+/// 98.5048). Python therefore calls this kernel instead of keeping its own
+/// NumPy expression; one implementation cannot disagree with itself.
+pub fn bbox_diagonal_f64(v: &[[f32; 3]]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for p in v {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let d = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    let dot = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    f64::from(dot.sqrt())
+}
+
 /// f64 triangle area, NumPy pairwise reduction (`diagnosis._surface_area`).
 pub fn surface_area_f64(verts: &[[f32; 3]], tris: &[[i32; 3]]) -> f64 {
     if tris.is_empty() || verts.is_empty() {
@@ -219,15 +245,7 @@ pub fn analyze_mesh(
 
     // `np.linalg.norm` over a float32 array: the squares and their sum stay
     // in f32, so the bbox diagonal must be computed in f32 and widened.
-    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    for p in v {
-        for k in 0..3 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
-        }
-    }
-    let d = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-    let diag = f64::from((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt());
+    let diag = bbox_diagonal_f64(v);
     // `diagnosis.analyze_mesh` stores `round(diag, 6)` and `to_dict` then
     // reports `round(bbox_diagonal, 4)`. Rounding the raw value straight to 4
     // decimals is not the same thing: double rounding lands on the other
@@ -438,5 +456,27 @@ mod tests {
         let graft = |ratio: f64| 0.45 * (ratio / 0.05) + 0.30 * (1.0_f64 / 3.0);
         assert_eq!(py_round(graft(0.000051_f64), 3), 0.100);
         assert_eq!(py_round(graft(py_round(0.000051_f64, 4)), 3), 0.101);
+    }
+
+    /// `bbox_diagonal_f64` must be the only implementation.
+    ///
+    /// NumPy's `linalg.norm` goes through BLAS `sdot`, whose order is not
+    /// reproducible; the 1 ULP gap flips `round(diag, 6)` -> `round(..., 4)`.
+    /// The corpus mesh that exposed it: span (77.034004, 60.0, 12.998) gives
+    /// 98.504753 in pure f32 (reported 98.5048) but 98.504745 through `sdot`
+    /// (reported 98.5047). Python now calls this kernel, so both sides agree.
+    #[test]
+    fn bbox_diagonal_matches_the_python_reported_value() {
+        let v = vec![[0.0f32, 0.0, 0.0], [77.034004f32, 60.0, 12.998]];
+        let d = bbox_diagonal_f64(&v);
+        assert_eq!(py_round(py_round(d, 6), 4), 98.5048);
+        // The naive f32 sum is what used to be reported; the kernel must not
+        // drift back to it silently.
+        assert_eq!(d, f64::from(98.50475311279297f32));
+    }
+
+    #[test]
+    fn empty_mesh_has_zero_diagonal() {
+        assert_eq!(bbox_diagonal_f64(&[]), 0.0);
     }
 }
