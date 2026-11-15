@@ -2266,6 +2266,9 @@ fn repair_impl(
     let nm_before = before.non_two_manifold_edges;
     let before_verts = cur_v.len();
 
+    let stage1_volume_before_v = cur_v.clone();
+    let stage1_volume_before_t = cur_t.clone();
+
     // --- Tamponade pre-pass ------------------------------------------------
     if cancel.is_cancelled() {
         return cancelled();
@@ -2888,6 +2891,31 @@ fn repair_impl(
     );
     stage1.insert("vertices_before".into(), Value::from(before_verts));
     stage1.insert("vertices_after".into(), Value::from(cur_v.len()));
+    let geom_volume = |v: &[[f64; 3]], t: &[[i64; 3]]| -> f64 {
+        let v32: Vec<[f32; 3]> = v
+            .iter()
+            .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+            .collect();
+        sutura_geom::topology::mesh_geometric_measures_core(&v32, t)
+            .0
+            .unwrap_or(0.0)
+    };
+    stage1.insert(
+        "volume_before".into(),
+        Value::from(geom_volume(&stage1_volume_before_v, &stage1_volume_before_t)),
+    );
+    stage1.insert("volume_after".into(), Value::from(geom_volume(&cur_v, &cur_t)));
+    {
+        let vb = geom_volume(&stage1_volume_before_v, &stage1_volume_before_t);
+        let va = geom_volume(&cur_v, &cur_t);
+        if vb != 0.0 {
+            let pct = (va - vb) / vb.abs() * 100.0;
+            stage1.insert(
+                "volume_change_percent".into(),
+                Value::from((pct * 100.0).round() / 100.0),
+            );
+        }
+    }
     stage1.insert("components_before".into(), Value::from(before.components));
     stage1.insert("applied_filters".into(), Value::from(applied));
     stage1.insert(

@@ -168,7 +168,10 @@ fn risk(report: &Value, cfg: &Value) -> (Option<i64>, Map<String, Value>) {
             );
         }
         if is_num(s1.get("volume_change_percent")) {
-            let vol = num(s1.get("volume_change_percent")).unwrap_or(0.0);
+            let mut vol = num(s1.get("volume_change_percent")).unwrap_or(0.0);
+            if vol == 0.0 {
+                vol = 0.0;
+            }
             add(
                 "volume_delta",
                 vol.abs() / scale,

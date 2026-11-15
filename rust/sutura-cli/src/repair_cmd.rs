@@ -931,16 +931,22 @@ fn augment_report(
     if let Some(unit) = check_units(input, None) {
         obj.insert("unit_warning".into(), Value::Bool(true));
         obj.insert("unit_hint".into(), Value::from(unit.unit_hint));
-    } else {
-        obj.insert("unit_warning".into(), Value::Bool(false));
-        obj.insert("unit_hint".into(), Value::Null);
     }
 
     // Volume / surface-area fields and the exact SI count are Python stage-1
     // report fields; the Rust core keeps the topology half, the CLI adds the
     // measures from the same final arrays.
-    let before_volume = sutura_core::validate::signed_volume(&input.verts, &input.tris);
-    let after_volume = sutura_core::validate::signed_volume(&out_mesh.verts, &out_mesh.tris);
+    let in_t64: Vec<[i64; 3]> = input
+        .tris
+        .iter()
+        .map(|f| [f[0] as i64, f[1] as i64, f[2] as i64])
+        .collect();
+    let (before_volume, _) =
+        sutura_geom::topology::mesh_geometric_measures_core(&input.verts, &in_t64);
+    let before_volume = before_volume.unwrap_or(0.0);
+    let (after_volume, _) =
+        sutura_geom::topology::mesh_geometric_measures_core(&out_mesh.verts, &out_t);
+    let after_volume = after_volume.unwrap_or(0.0);
     let before_area = sutura_core::validate::surface_area(&input.verts, &input.tris);
     let after_area = sutura_core::validate::surface_area(&out_mesh.verts, &out_mesh.tris);
     let volume_change = if before_volume != 0.0 {
@@ -981,14 +987,20 @@ fn augment_report(
             .or_insert_with(|| json!({}))
             .as_object_mut()
             .expect("stage1 object");
-        s1.insert("volume_before".into(), Value::from(before_volume));
-        s1.insert("volume_after".into(), Value::from(after_volume));
+        if s1.get("volume_before").is_none() {
+            s1.insert("volume_before".into(), Value::from(before_volume));
+        }
+        if s1.get("volume_after").is_none() {
+            s1.insert("volume_after".into(), Value::from(after_volume));
+        }
         s1.insert("surface_area_before".into(), Value::from((before_area * 1000.0).round() / 1000.0));
         s1.insert("surface_area_after".into(), Value::from((after_area * 1000.0).round() / 1000.0));
-        s1.insert(
-            "volume_change_percent".into(),
-            volume_change.map(|v| Value::from(round2(v))).unwrap_or(Value::Null),
-        );
+        if s1.get("volume_change_percent").is_none() {
+            s1.insert(
+                "volume_change_percent".into(),
+                volume_change.map(|v| Value::from(round2(v))).unwrap_or(Value::Null),
+            );
+        }
         s1.insert(
             "surface_area_change_percent".into(),
             surface_change.map(|v| Value::from(round2(v))).unwrap_or(Value::Null),
