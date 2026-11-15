@@ -352,9 +352,9 @@ mod tests {
 
     #[test]
     fn py_round_matches_python() {
-        /// Golden values from Python: `round(v, 4)`, `float(format(v, '.4f'))`
-        /// and `np.round(v, 4)` all agree on these, including the exact .5
-        /// boundary where binary representation decides the direction.
+        // Golden values from Python: `round(v, 4)`, `float(format(v, '.4f'))`
+        // and `np.round(v, 4)` all agree on these, including the exact .5
+        // boundary where the binary representation decides the direction.
         assert_eq!(py_round(0.123456, 4), 0.1235);
         assert_eq!(py_round(-0.123456, 4), -0.1235);
         assert_eq!(py_round(1.00005, 4), 1.0001);

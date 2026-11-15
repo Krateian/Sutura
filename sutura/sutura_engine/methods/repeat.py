@@ -916,6 +916,43 @@ def _detect_repetition_patches(verts, tris):
     }
 
 
+def _detect_repetition_kernel(verts, tris):
+    """`(score, info)` from the shared kernel, or ``None`` without the binding.
+
+    Both routes (segmentation-free and patch) live in `sutura_geom`, so Python
+    only formats the result. The member patch indices come back as plain ints,
+    which is what `repair_repeat_auto` indexes with.
+    """
+    core = getattr(sutura_geom, 'detect_repetition', None)
+    if core is None:
+        from sutura_engine import rust_bridge
+        if rust_bridge.require_rust():
+            rust_bridge.unavailable('sutura_geom.detect_repetition is unavailable')
+        return None
+    score, _route, info = core(verts, tris.astype(np.int64), 3000, 64)
+    out = {}
+    for key, value in info.items():
+        if key in ('k_indices', 'p_indices', 'q_indices', 'r_indices'):
+            out[key] = np.asarray(value, dtype=np.int64)
+        elif key in ('center', 'axis', 'u_axis', 'v_axis', 'origin',
+                     'axis_u', 'axis_v', 'axis_w'):
+            out[key] = np.asarray(value, dtype=np.float64)
+        elif key == 'members':
+            # Patch dicts, not indices: repair_repeat_auto reads m['area'],
+            # m['centroid'], m['verts_idx'] and m['diag'] off each member.
+            out[key] = [
+                {k: (np.asarray(v, dtype=np.int64)
+                     if k in ('faces', 'verts_idx')
+                     else np.asarray(v, dtype=np.float64)
+                     if k == 'centroid' else v)
+                 for k, v in m.items()}
+                for m in (value or [])
+            ]
+        else:
+            out[key] = value
+    return float(score), out
+
+
 def detect_repetition(verts, tris):
     """Analyze mesh for repeated congruent elements and identify pattern parameters.
 
@@ -932,6 +969,13 @@ def detect_repetition(verts, tris):
 
     if len(verts) < 4 or len(tris) < 4:
         return 0.0, {'pattern_type': 'none', 'reason': 'Too few vertices or triangles'}
+
+    # Both routes live in the shared kernel; Python only formats the result.
+    # `_detect_repetition_kernel` returns None when the binding is absent.
+    kernel = _detect_repetition_kernel(verts, tris)
+    if kernel is not None:
+        score, info = kernel
+        return float(score), info
 
     # 1. Fast segmentation-free rotational symmetry check
     free_score, free_info = detect_rotational_symmetry_free(verts, tris)

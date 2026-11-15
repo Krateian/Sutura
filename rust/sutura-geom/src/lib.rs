@@ -57,6 +57,7 @@ pub mod raycast;
 pub mod rng;
 pub mod resample;
 pub mod repeat_free;
+pub mod repeat_patch;
 pub mod repeat_segment;
 pub mod roi;
 pub mod sample;
@@ -3044,6 +3045,169 @@ fn lstsq3_py(
 }
 
 #[cfg(feature = "python")]
+/// `repeat.detect_repetition` through the shared kernel.
+///
+/// Returns `(score, route, info)` where `route` is `"free"`, `"patch"` or
+/// `"none"` and `info` is the dict for the winning side.
+///
+/// `members` holds the winning cluster's PATCH DICTS, not indices:
+/// `repair_repeat_auto` reads `m['area']`, `m['centroid']`, `m['verts_idx']`
+/// and `m['diag']` off them (line 1146 onwards), so emitting indices would
+/// break the transplant with "invalid index to scalar variable".
+#[pyfunction]
+#[pyo3(name = "detect_repetition")]
+#[pyo3(signature = (verts, tris, n_samples=3000, max_order=64))]
+fn detect_repetition_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    n_samples: usize,
+    max_order: usize,
+) -> PyResult<(f64, String, Bound<'py, PyDict>)> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let _ = (n_samples, max_order); // the route uses Python's defaults
+    let (score, route, free, patch) = crate::repeat_patch::detect_repetition(&v, &t);
+    let info = PyDict::new(py);
+
+    // The patch route's `members` are indices into the full patch list; rebuild
+    // the dicts so downstream repair code keeps its contract.
+    let patch_dicts = if let Some(p) = &patch {
+        let all = crate::repeat_segment::segment_elements(
+            &v, &t, crate::repeat_segment::DEFAULT_FEATURE_ANGLE_DEG);
+        let list = PyList::empty(py);
+        for &idx in &p.members {
+            if let Some(patch) = all.get(idx) {
+                let d = PyDict::new(py);
+                d.set_item("faces", patch.faces.clone())?;
+                d.set_item("verts_idx", patch.verts_idx.clone())?;
+                d.set_item("centroid", patch.centroid.to_vec())?;
+                d.set_item("area", patch.area)?;
+                d.set_item("diag", patch.diag)?;
+                list.append(d)?;
+            }
+        }
+        Some(list)
+    } else {
+        None
+    };
+
+    if route == "free" {
+        if let Some(m) = free {
+            info.set_item("pattern_type", "rotational")?;
+            info.set_item("order", m.order)?;
+            info.set_item("center", m.center.to_vec())?;
+            info.set_item("axis", m.axis.to_vec())?;
+            info.set_item("u_axis", m.u_axis.to_vec())?;
+            info.set_item("v_axis", m.v_axis.to_vec())?;
+            info.set_item("step_angle", m.step_angle)?;
+            info.set_item("score", m.score)?;
+            info.set_item("match_fraction", m.match_fraction)?;
+            info.set_item("mean_distance", m.mean_distance)?;
+            info.set_item("method", "segmentation_free")?;
+        }
+    } else if let Some(p) = patch {
+        if let Some(reason) = &p.reason {
+            info.set_item("reason", reason.clone())?;
+        }
+        if !p.pattern_type.is_empty() {
+            info.set_item("pattern_type", p.pattern_type.clone())?;
+        }
+        if let Some(list) = patch_dicts {
+            info.set_item("members", list)?;
+        }
+        info.set_item("group_size", p.members.len())?;
+        if let Some(o) = p.order {
+            info.set_item("order", o)?;
+        }
+        if let Some(c) = p.center {
+            info.set_item("center", c.to_vec())?;
+        }
+        if let Some(a) = p.axis {
+            info.set_item("axis", a.to_vec())?;
+        }
+        if let Some(r) = p.radius {
+            info.set_item("radius", r)?;
+        }
+        if let Some(s) = p.step_angle {
+            info.set_item("step_angle", s)?;
+        }
+        if let Some(sh) = p.step_h {
+            info.set_item("step_h", sh)?;
+        }
+        if let Some(k) = &p.k_indices {
+            info.set_item("k_indices", k.clone())?;
+        }
+        if let Some(k) = p.k_min {
+            info.set_item("k_min", k)?;
+        }
+        if let Some(k) = p.k_max {
+            info.set_item("k_max", k)?;
+        }
+        if let Some(o) = p.origin {
+            info.set_item("origin", o.to_vec())?;
+        }
+        // Translational patterns use `axis_u`/`axis_v`/`axis_w` (Python's names);
+        // rotational and helical use `u_axis`/`v_axis`. Repair reads both, so
+        // each family emits its own spelling from the same `u_axis` field.
+        if p.pattern_type == "translational" {
+            if let Some(u) = p.u_axis {
+                info.set_item("axis_u", u.to_vec())?;
+            }
+            if let Some(vv) = p.v_axis {
+                info.set_item("axis_v", vv.to_vec())?;
+            }
+            if let Some(w) = p.w_axis {
+                info.set_item("axis_w", w.to_vec())?;
+            }
+        } else if p.pattern_type == "helical" {
+            if let Some(u) = p.u_axis {
+                info.set_item("u_axis", u.to_vec())?;
+            }
+            if let Some(vv) = p.v_axis {
+                info.set_item("v_axis", vv.to_vec())?;
+            }
+        } else {
+            if let Some(u) = p.u_axis {
+                info.set_item("u_axis", u.to_vec())?;
+            }
+            if let Some(vv) = p.v_axis {
+                info.set_item("v_axis", vv.to_vec())?;
+            }
+        }
+        if let Some(s) = p.step_u {
+            info.set_item("step_u", s)?;
+        }
+        if let Some(s) = p.step_v {
+            info.set_item("step_v", s)?;
+        }
+        if let Some(s) = p.step_w {
+            info.set_item("step_w", s)?;
+        }
+        if let Some(i) = &p.p_indices {
+            info.set_item("p_indices", i.clone())?;
+        }
+        if let Some(i) = &p.q_indices {
+            info.set_item("q_indices", i.clone())?;
+        }
+        if let Some(i) = &p.r_indices {
+            info.set_item("r_indices", i.clone())?;
+        }
+    }
+    Ok((score, route.to_string(), info))
+}
+
+#[cfg(feature = "python")]
 /// `repeat.detect_rotational_symmetry_free` through the shared kernel.
 ///
 /// Returns `None` when no symmetry clears the threshold, otherwise a dict with
@@ -3227,6 +3391,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_repetition_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_rotational_symmetry_free_py, m)?)?;
     m.add_function(wrap_pyfunction!(segment_elements_py, m)?)?;
     m.add_function(wrap_pyfunction!(sample_surface_py, m)?)?;
