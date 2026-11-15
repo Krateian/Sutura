@@ -32,6 +32,10 @@ pub struct Analysis {
     pub self_intersections: usize,
     pub mesh_type: String,
     pub type_confidence: f64,
+    /// `closing.single_side_score`, from the shared `closing_scores` kernel.
+    pub single_side_score: f64,
+    /// `closing.relief_score`, from the shared `closing_scores` kernel.
+    pub relief_score: f64,
     pub bbox_diagonal: f64,
     pub surface_area: f64,
     pub model: Option<String>,
@@ -43,11 +47,7 @@ pub struct Analysis {
 impl Analysis {
     /// Fields this port does not produce yet.
     pub fn missing_fields(&self) -> &'static [&'static str] {
-        &[
-            "repetition_score",
-            "single_side_score",
-            "relief_score",
-        ]
+        &["repetition_score"]
     }
 
     /// The implemented part of `to_dict(analysis)`.
@@ -76,6 +76,16 @@ impl Analysis {
         out.insert(
             "type_confidence".into(),
             json!(py_round(self.type_confidence, 3)),
+        );
+        // Python rounds these to 4 decimals (`diagnosis.to_dict`); the kernel
+        // already returns 4-decimal values, so this second round is idempotent.
+        out.insert(
+            "single_side_score".into(),
+            json!(py_round(self.single_side_score, 4)),
+        );
+        out.insert(
+            "relief_score".into(),
+            json!(py_round(self.relief_score, 4)),
         );
         out.insert("bbox_diagonal".into(), json!(py_round(self.bbox_diagonal, 4)));
         out.insert("surface_area".into(), json!(py_round(self.surface_area, 3)));
@@ -254,6 +264,32 @@ pub fn analyze_mesh(
         .iter()
         .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
         .collect();
+
+    // The two Closing detectors, through the shared kernel. The loop list comes
+    // from `closing::boundary_loops` -- the DIRECTED half-edge walk that
+    // `closing.boundary_loops` performs -- and NOT from `defects::detect_holes`,
+    // whose undirected walk disagrees with it on 40 of 226 corpus meshes in loop
+    // count or length. Both scores are dominated by the largest loop, so the
+    // wrong walk would silently produce different numbers.
+    //
+    // `diagnosis.analyze_mesh` only computes these when the mesh is under
+    // `CLOSING_SIGNAL_MAX_FACES` (200000); above that they stay 0.0.
+    const CLOSING_SIGNAL_MAX_FACES: usize = 200_000;
+    if t.len() <= CLOSING_SIGNAL_MAX_FACES {
+        let tri_i64: Vec<[i64; 3]> = t
+            .iter()
+            .map(|f| [f[0] as i64, f[1] as i64, f[2] as i64])
+            .collect();
+        let loops_i64 = crate::closing::boundary_loops(&tri_i64);
+        let loops: Vec<Vec<usize>> = loops_i64
+            .iter()
+            .map(|lp| lp.iter().map(|&i| i as usize).collect())
+            .collect();
+        out.single_side_score =
+            sutura_geom::closing_scores::single_side_score(&fv, &ft, &loops);
+        out.relief_score = sutura_geom::closing_scores::relief_score(&fv, &ft, &loops);
+    }
+
     out.diagnosis_v2 = Some(sutura_geom::diagnosis::report_json::report_to_value(
         &sutura_geom::diagnosis::diagnose_core(&fv, &ft, "fast"),
         "fast",
