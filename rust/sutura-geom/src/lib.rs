@@ -56,6 +56,7 @@ pub mod rbf;
 pub mod raycast;
 pub mod rng;
 pub mod resample;
+pub mod repeat_free;
 pub mod repeat_segment;
 pub mod roi;
 pub mod sample;
@@ -3043,6 +3044,55 @@ fn lstsq3_py(
 }
 
 #[cfg(feature = "python")]
+/// `repeat.detect_rotational_symmetry_free` through the shared kernel.
+///
+/// Returns `None` when no symmetry clears the threshold, otherwise a dict with
+/// the keys the Python info dict carries.
+#[pyfunction]
+#[pyo3(name = "detect_rotational_symmetry_free")]
+#[pyo3(signature = (verts, tris, n_samples=3000, max_order=64))]
+fn detect_rotational_symmetry_free_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    n_samples: usize,
+    max_order: usize,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let found = crate::repeat_free::detect_rotational_symmetry_free(
+        &v, &t, n_samples, max_order);
+    match found {
+        None => Ok(None),
+        Some(m) => {
+            let d = PyDict::new(py);
+            d.set_item("pattern_type", "rotational")?;
+            d.set_item("order", m.order)?;
+            d.set_item("center", m.center.to_vec())?;
+            d.set_item("axis", m.axis.to_vec())?;
+            d.set_item("u_axis", m.u_axis.to_vec())?;
+            d.set_item("v_axis", m.v_axis.to_vec())?;
+            d.set_item("step_angle", m.step_angle)?;
+            d.set_item("score", m.score)?;
+            d.set_item("match_fraction", m.match_fraction)?;
+            d.set_item("mean_distance", m.mean_distance)?;
+            d.set_item("method", "segmentation_free")?;
+            Ok(Some(d))
+        }
+    }
+}
+
+#[cfg(feature = "python")]
 /// `repeat.segment_elements` through the shared kernel.
 ///
 /// Returns a list of dicts, one per candidate patch, with the keys the Python
@@ -3177,6 +3227,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_rotational_symmetry_free_py, m)?)?;
     m.add_function(wrap_pyfunction!(segment_elements_py, m)?)?;
     m.add_function(wrap_pyfunction!(sample_surface_py, m)?)?;
     m.add_function(wrap_pyfunction!(svd3_py, m)?)?;
