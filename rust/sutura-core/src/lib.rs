@@ -4,12 +4,14 @@
 //! pipeline, policy and reporting modules are added in later slices; none of
 //! them may depend on pyo3 or numpy.
 
+pub mod closing;
 pub mod config;
 pub mod error;
 pub mod fmt;
 pub mod mesh;
 pub mod mesh_io;
 pub mod p_weld;
+pub mod proxy;
 pub mod stage1;
 pub mod stage2;
 pub mod graft;

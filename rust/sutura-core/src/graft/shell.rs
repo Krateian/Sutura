@@ -221,7 +221,7 @@ fn sample_surface<R: Rng>(v: &[[f64; 3]], t: &[[i64; 3]], n: usize, rng: &mut R)
     sample_surface_seeded(v, t, n, seed)
 }
 
-fn sample_surface_seeded(v: &[[f64; 3]], t: &[[i64; 3]], n: usize, seed: u64) -> Vec<[f64; 3]> {
+pub fn sample_surface_seeded(v: &[[f64; 3]], t: &[[i64; 3]], n: usize, seed: u64) -> Vec<[f64; 3]> {
     let n = n.min(4_000_000).max(1);
     let mut areas = Vec::with_capacity(t.len());
     let mut total = 0.0;

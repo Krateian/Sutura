@@ -1081,6 +1081,95 @@ fn tier_repeat_decide_py<'py>(
     Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
 }
 
+#[pyfunction(name = "closing_poisson")]
+fn closing_poisson_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    depth: Option<i32>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let out = sutura_core::closing::poisson_close(&v, &t, depth);
+    if std::env::var_os("SUTURA_CLOSING_DEBUG").is_some() {
+        eprintln!(
+            "[closing-rust] poisson verts={} tris={} watertight={}",
+            v.len(),
+            t.len(),
+            out.report.get("watertight").cloned().unwrap_or(serde_json::Value::Null)
+        );
+    }
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
+#[pyfunction(name = "closing_flat_back")]
+fn closing_flat_back_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    thickness: Option<f64>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let out = sutura_core::closing::flat_back_close(&v, &t, thickness);
+    if std::env::var_os("SUTURA_CLOSING_DEBUG").is_some() {
+        eprintln!(
+            "[closing-rust] flat_back verts={} tris={} watertight={}",
+            v.len(),
+            t.len(),
+            out.report.get("watertight").cloned().unwrap_or(serde_json::Value::Null)
+        );
+    }
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
+#[pyfunction(name = "proxy_template_repair")]
+#[pyo3(signature = (verts, tris, voxel=None, max_iters=3))]
+fn proxy_template_repair_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    voxel: Option<f64>,
+    max_iters: i32,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let out = sutura_core::proxy::proxy_template_repair(&v, &t, voxel, max_iters);
+    if std::env::var_os("SUTURA_PROXY_DEBUG").is_some() {
+        eprintln!(
+            "[proxy-rust] verts={} tris={} watertight={}",
+            out.verts.len(),
+            out.tris.len(),
+            out.report.get("watertight").cloned().unwrap_or(serde_json::Value::Null)
+        );
+    }
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
 #[pyfunction(name = "tier_closing_decide")]
 fn tier_closing_decide_py<'py>(
     py: Python<'py>,
@@ -1347,6 +1436,9 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tier_wall_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_repeat_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_closing_decide_py, m)?)?;
+    m.add_function(wrap_pyfunction!(closing_poisson_py, m)?)?;
+    m.add_function(wrap_pyfunction!(closing_flat_back_py, m)?)?;
+    m.add_function(wrap_pyfunction!(proxy_template_repair_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_splint_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_cdt_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_coaptation_py, m)?)?;
