@@ -6,8 +6,6 @@
 //! bonus. Method availability and `needs_user_input` are static here; the
 //! Python registry can be extended at runtime, so this is the built-in set.
 
-use std::collections::BTreeMap;
-
 use serde_json::{json, Value};
 
 use crate::config::learning::{learning_bonus, LearningKnobs};
@@ -101,7 +99,7 @@ struct Knobs {
     top_n: usize,
     max_bonus: f64,
     prior: f64,
-    templates: BTreeMap<String, Value>,
+    templates: Vec<(String, Value)>,
 }
 
 fn knob_f64(loaded: &LoadedPolicy, section: &str, key: &str, default: f64) -> f64 {
@@ -117,9 +115,9 @@ fn knob_f64(loaded: &LoadedPolicy, section: &str, key: &str, default: f64) -> f6
 }
 
 fn knobs(loaded: &LoadedPolicy) -> Knobs {
-    let mut templates = BTreeMap::new();
+    let mut templates: Vec<(String, Value)> = Vec::new();
     let mut insert = |id: &str, value: Value| {
-        templates.insert(id.to_string(), value);
+        templates.push((id.to_string(), value));
     };
     let numeric = |key: &str, default: f64| {
         loaded
@@ -155,12 +153,21 @@ fn knobs(loaded: &LoadedPolicy) -> Knobs {
         "si_moderate": numeric("si_moderate", 20.0),
         "si_heavy": numeric("si_heavy", 200.0),
     });
-    insert("mechanical", json!({"id": "mechanical", "preferred": preferred("mechanical"), "cfg": tpl}));
-    insert("organic", json!({"id": "organic", "preferred": preferred("organic"), "cfg": tpl}));
-    insert("single_side_scan", json!({"id": "single_side_scan", "preferred": preferred("single_side_scan"), "cfg": tpl}));
-    insert("relief", json!({"id": "relief", "preferred": preferred("relief"), "cfg": tpl}));
-    insert("repeated_pattern", json!({"id": "repeated_pattern", "preferred": preferred("repeated_pattern"), "cfg": tpl}));
-    insert("dense_scan_heavy_si", json!({"id": "dense_scan_heavy_si", "preferred": preferred("dense_scan_heavy_si"), "cfg": tpl}));
+    // The order matches `diagnosis.all_templates()`: on a combined-score tie
+    // the first template seen wins (Python keeps the first `combined`).
+    for id in [
+        "mechanical",
+        "organic",
+        "single_side_scan",
+        "relief",
+        "repeated_pattern",
+        "dense_scan_heavy_si",
+    ] {
+        insert(
+            id,
+            json!({"id": id, "preferred": preferred(id), "cfg": tpl}),
+        );
+    }
     Knobs {
         preference_boost: knob_f64(loaded, "ranking", "preference_boost", 1.25),
         top_n: knob_f64(loaded, "ranking", "top_n", 6.0) as usize,
