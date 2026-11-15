@@ -13,7 +13,8 @@ import os
 import re
 import sys
 
-TIME_KEYS = {'seconds', 'timings', 'elapsed_ms', 'time_ms', 'duration_ms'}
+TIME_KEYS = {'seconds', 'timings', 'elapsed_ms', 'time_ms', 'duration_ms',
+             'input', 'output'}
 TIME_SUFFIXES = ('_s', '_ms', '_seconds', '_ns', '_us')
 ABS_RE = re.compile(r'^(?:/|[A-Za-z]:[\\/]).*')
 
