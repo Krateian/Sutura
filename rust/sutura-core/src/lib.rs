@@ -12,6 +12,8 @@ pub mod mesh;
 pub mod mesh_io;
 pub mod p_weld;
 pub mod ranking;
+pub mod reduce;
+pub mod validate;
 pub mod stage1;
 pub mod stage2;
 pub mod report;
