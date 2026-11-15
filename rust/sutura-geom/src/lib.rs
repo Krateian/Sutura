@@ -24,6 +24,7 @@ pub mod cdt2d;
 pub mod cdt3d;
 pub mod choice;
 pub mod classify;
+pub mod closing_scores;
 mod budget;
 mod cancel;
 #[cfg(feature = "python")]
@@ -2901,6 +2902,91 @@ fn eigh3_py<'py>(
     Ok((vals.into_any(), vecs.into_any()))
 }
 
+/// Parse the `verts`, `tris` and `loops` arguments shared by the closing scores.
+fn parse_closing_args(
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+    loops: &Bound<'_, PyAny>,
+) -> PyResult<(Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<Vec<usize>>)> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let mut boundary: Vec<Vec<usize>> = Vec::new();
+    for item in loops.try_iter()? {
+        boundary.push(item?.extract()?);
+    }
+    Ok((v, t, boundary))
+}
+
+#[cfg(feature = "python")]
+/// `closing.single_side_score` through the shared kernel.
+///
+/// Returns `(score, n_loops, dominant_loop_len, dominant_ratio,
+/// spanned_area_ratio, dominant_loop, reason)`; `reason` is empty on success.
+#[pyfunction]
+#[pyo3(name = "closing_single_side")]
+fn closing_single_side_py(
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+    loops: &Bound<'_, PyAny>,
+) -> PyResult<(f64, usize, usize, f64, f64, Vec<usize>, String)> {
+    let (v, t, boundary) = parse_closing_args(verts, tris, loops)?;
+    let r = crate::closing_scores::single_side(&v, &t, &boundary);
+    Ok((
+        r.score,
+        r.n_loops,
+        r.dominant_loop_len,
+        r.dominant_ratio,
+        r.spanned_area_ratio,
+        r.dominant_loop,
+        r.reason.to_string(),
+    ))
+}
+
+#[cfg(feature = "python")]
+/// `closing.relief_score` through the shared kernel.
+///
+/// Returns `(score, plane_normal, plane_center, rms_rel, one_sided_ratio,
+/// normal_align_ratio, dominant_loop, reason)`.
+#[pyfunction]
+#[pyo3(name = "closing_relief")]
+fn closing_relief_py(
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+    loops: &Bound<'_, PyAny>,
+) -> PyResult<(
+    f64,
+    [f64; 3],
+    [f64; 3],
+    f64,
+    f64,
+    f64,
+    Vec<usize>,
+    String,
+)> {
+    let (v, t, boundary) = parse_closing_args(verts, tris, loops)?;
+    let r = crate::closing_scores::relief(&v, &t, &boundary);
+    Ok((
+        r.score,
+        r.plane_normal,
+        r.plane_center,
+        r.rms_rel,
+        r.one_sided_ratio,
+        r.normal_align_ratio,
+        r.dominant_loop,
+        r.reason.to_string(),
+    ))
+}
+
 #[cfg(feature = "python")]
 /// Signed volume through the shared kernel (see `measures::signed_volume`).
 ///
@@ -2962,6 +3048,8 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
     m.add_function(wrap_pyfunction!(signed_volume, m)?)?;
     m.add_function(wrap_pyfunction!(eigh3_py, m)?)?;
+    m.add_function(wrap_pyfunction!(closing_single_side_py, m)?)?;
+    m.add_function(wrap_pyfunction!(closing_relief_py, m)?)?;
     m.add_function(wrap_pyfunction!(si_faces_exact, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;

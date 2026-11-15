@@ -15,6 +15,8 @@ Provides:
 from collections import defaultdict
 import numpy as np
 
+import sutura_geom
+
 # Threshold constants
 SINGLE_SIDE_DOMINANT_RATIO = 0.70  # Min fraction of boundary perimeter in dominant loop
 SINGLE_SIDE_MIN_SPANNED_RATIO = 0.05  # Min ratio of loop vector area to mesh surface area
@@ -128,6 +130,19 @@ def _surface_area(verts, tris):
     return float(np.sum(0.5 * np.linalg.norm(cross, axis=1)))
 
 
+def _kernel_score(name):
+    """One closing-score kernel from `sutura_geom`, or ``None`` without it.
+
+    `single_side_score`/`relief_score` are pure geometry, so the Rust kernel is
+    the single source of truth and Python only formats its result. That matters
+    at the boundary: on a loop whose plane fit is exactly flat the SVD normal
+    carries a ~1e-17 component where the eigh-based kernel returns an exact
+    zero, so `np.dot(unit_normal, n) > 0.0` flipped on 9 of 8929 faces of one
+    corpus mesh -- enough to move `normal_align_ratio` and the final score.
+    """
+    return getattr(sutura_geom, name, None)
+
+
 def single_side_score(verts, tris):
     """Score in [0..1] and info dict. High when there is one dominant open boundary
     loop whose spanned area is a significant fraction of the mesh surface area.
@@ -136,6 +151,28 @@ def single_side_score(verts, tris):
     tris = np.asarray(tris, dtype=np.int64)
 
     loops = boundary_loops(verts, tris)
+    kernel = _kernel_score('closing_single_side')
+    if kernel is not None:
+        (score, n_loops, dom_len, dom_ratio, span_ratio,
+         dom_loop, reason) = kernel(verts, tris.astype(np.int32), loops)
+        if reason == 'closed':
+            return 0.0, {
+                'n_loops': 0,
+                'dominant_loop_len': 0,
+                'dominant_ratio': 0.0,
+                'spanned_area_ratio': 0.0,
+                'reason': 'closed',
+            }
+        if reason:
+            return 0.0, {'n_loops': int(n_loops), 'reason': reason}
+        return float(score), {
+            'n_loops': int(n_loops),
+            'dominant_loop_len': int(dom_len),
+            'dominant_ratio': float(dom_ratio),
+            'spanned_area_ratio': float(span_ratio),
+            'dominant_loop': list(dom_loop),
+        }
+
     if not loops:
         return 0.0, {
             'n_loops': 0,
@@ -184,6 +221,72 @@ def single_side_score(verts, tris):
     return score, info
 
 
+def _fallback_single(verts, tris):
+    """The pre-kernel NumPy computation, for the parity report only."""
+    verts = np.asarray(verts, dtype=np.float64)
+    tris = np.asarray(tris, dtype=np.int64)
+    loops = boundary_loops(verts, tris)
+    total_s = _surface_area(verts, tris)
+    if not loops or total_s <= 1e-12:
+        return 0.0
+    perims, spanned_areas = [], []
+    for l in loops:
+        p, a, _, _ = _loop_stats(verts, l)
+        perims.append(p)
+        spanned_areas.append(a)
+    total_perim = sum(perims)
+    if total_perim <= 1e-12:
+        return 0.0
+    i = int(np.argmax(perims))
+    dom_ratio = perims[i] / total_perim
+    spanned_ratio = spanned_areas[i] / total_s
+    s_dom = float(np.clip((dom_ratio - 0.40) / 0.45, 0.0, 1.0))
+    s_span = float(np.clip((spanned_ratio - 0.02) / 0.23, 0.0, 1.0))
+    return round(s_dom * s_span, 4)
+
+
+def _fallback_relief(verts, tris):
+    """The pre-kernel NumPy relief computation (SVD plane fit), parity only."""
+    verts = np.asarray(verts, dtype=np.float64)
+    tris = np.asarray(tris, dtype=np.int64)
+    loops = boundary_loops(verts, tris)
+    if not loops:
+        return 0.0
+    perims = [_loop_stats(verts, l)[0] for l in loops]
+    dom_loop = loops[int(np.argmax(perims))]
+    pts = verts[dom_loop]
+    diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
+    if diag <= 1e-12:
+        return 0.0
+    c = np.mean(pts, axis=0)
+    centered = pts - c
+    _, _, vh = np.linalg.svd(centered)
+    n = vh[2]
+    rms = float(np.sqrt(np.mean(np.dot(centered, n) ** 2)))
+    rms_rel = rms / diag
+    v0, v1, v2 = verts[tris[:, 0]], verts[tris[:, 1]], verts[tris[:, 2]]
+    face_normals = np.cross(v1 - v0, v2 - v0)
+    if np.dot(np.sum(face_normals, axis=0), n) < 0:
+        n = -n
+    all_proj = np.dot(verts - c, n)
+    one_sided = float(np.mean(all_proj >= -0.02 * diag))
+    fn_norm = np.linalg.norm(face_normals, axis=1, keepdims=True)
+    valid = fn_norm[:, 0] > 1e-12
+    align = float(np.mean(np.dot(face_normals[valid] / fn_norm[valid], n) > 0.0)) if np.any(valid) else 0.0
+    s_planar = float(np.clip((0.06 - rms_rel) / 0.05, 0.0, 1.0))
+    s_one = float(np.clip((one_sided - 0.75) / 0.20, 0.0, 1.0))
+    s_norm = float(np.clip((align - 0.60) / 0.25, 0.0, 1.0))
+    return round(s_planar * s_one * s_norm, 4)
+
+
+def _single_side_score_numpy(verts, tris):
+    return _fallback_single(verts, tris)
+
+
+def _relief_score_numpy(verts, tris):
+    return _fallback_relief(verts, tris)
+
+
 def relief_score(verts, tris):
     """Score in [0..1] and info dict. High when dominant loop is roughly planar
     (plane-fit RMS small relative to bbox diag) and surface is mostly on one side
@@ -193,6 +296,22 @@ def relief_score(verts, tris):
     tris = np.asarray(tris, dtype=np.int64)
 
     loops = boundary_loops(verts, tris)
+    kernel = _kernel_score('closing_relief')
+    if kernel is not None:
+        (score, plane_normal, plane_center, k_rms_rel, one_sided_ratio,
+         normal_align_ratio, dom_loop, reason) = kernel(
+             verts, tris.astype(np.int32), loops)
+        if reason:
+            return 0.0, {'reason': reason}
+        return float(score), {
+            'plane_normal': list(plane_normal),
+            'plane_center': list(plane_center),
+            'rms_rel': float(k_rms_rel),
+            'one_sided_ratio': float(one_sided_ratio),
+            'normal_align_ratio': float(normal_align_ratio),
+            'dominant_loop': list(dom_loop),
+        }
+
     if not loops:
         return 0.0, {'reason': 'closed'}
 
