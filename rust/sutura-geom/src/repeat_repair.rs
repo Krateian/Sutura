@@ -456,16 +456,21 @@ fn member_plan(verts: &[[f64; 3]], tris: &[[usize; 3]], info: &PatchDetection) -
                 let delta_k = k - template_k;
                 let rot_angle = delta_k as f64 * th_step;
                 // Python builds T_k from the rotation about the circle centre,
-                // then REPLACES the translation with `R + delta_k*h_step*axis`
-                // (note: `R`'s first ROW, not `R @ c`).
+                // then REPLACES its translation with `R_k[..3, 3] + delta_k*h_step*axis`
+                // -- that is the rotation-about-point translation COLUMN, which
+                // already includes `c_circle - R @ c_circle`. Using the first row
+                // of the rotation instead put every predicted position in the
+                // wrong place, which is why all six deviations came out at
+                // 0.33-0.51 and every position looked damaged.
                 let rk_full = rotation_about(rot_angle, axis, c_circle);
                 let rk = rk_full.rotation();
+                let base_t = rk_full.translation();
                 let t_k = Transform4::from_rt(
                     &rk,
                     [
-                        rk[0][0] + delta_k as f64 * h_step * axis[0],
-                        rk[0][1] + delta_k as f64 * h_step * axis[1],
-                        rk[0][2] + delta_k as f64 * h_step * axis[2],
+                        base_t[0] + delta_k as f64 * h_step * axis[0],
+                        base_t[1] + delta_k as f64 * h_step * axis[1],
+                        base_t[2] + delta_k as f64 * h_step * axis[2],
                     ],
                 );
                 let pred = apply(&t_k, &template_pts);
@@ -912,5 +917,35 @@ mod tests {
         for k in 0..3 {
             assert!((out[0][k] - p[k]).abs() < 1e-12, "{:?}", out[0]);
         }
+    }
+
+    /// The helical branch builds `T_k` from the rotation about the circle
+    /// centre and then REPLACES its translation with
+    /// `R_k[:3, 3] + delta_k * h_step * axis`. `R_k[:3, 3]` is the
+    /// rotation-about-point translation column (`point - R @ point`), not a row
+    /// of the rotation; using the rotation's first row scattered every
+    /// predicted position, which made all six threads look damaged (deviations
+    /// 0.33-0.51 instead of 0.0006-0.147) and repaired 6 positions instead of 1.
+    #[test]
+    fn helical_step_uses_the_rotation_translation_column() {
+        let c = [0.5, -1.25, 2.0];
+        let axis = [0.0, 0.0, 1.0];
+        let angle = 0.4_f64;
+        let t = rotation_about(angle, axis, c);
+        let r = t.rotation();
+        let base = t.translation();
+
+        // `point - R @ point` really is what the transform carries, so stepping
+        // by `h * axis` shifts the element along the helix.
+        let expect = [
+            c[0] - (r[0][0] * c[0] + r[0][1] * c[1] + r[0][2] * c[2]),
+            c[1] - (r[1][0] * c[0] + r[1][1] * c[1] + r[1][2] * c[2]),
+            c[2] - (r[2][0] * c[0] + r[2][1] * c[1] + r[2][2] * c[2]),
+        ];
+        for k in 0..3 {
+            assert!((base[k] - expect[k]).abs() < 1e-12, "{:?}", base);
+        }
+        // A row of the rotation is not this vector.
+        assert!((base[0] - r[0][0]).abs() > 1e-6);
     }
 }

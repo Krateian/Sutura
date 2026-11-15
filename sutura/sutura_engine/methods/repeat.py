@@ -1220,6 +1220,48 @@ def repair_repeat_manual(verts, tris, source_point, target_point, margin=OBB_EXP
         }
 
 
+def _finish_repeat_plan(verts, tris, orig_v, orig_t, payload, margin=OBB_EXPANSION_MARGIN,
+                        force_bridge=None):
+    """Run the CSG transplant for a plan the kernel produced.
+
+    The kernel decides *what* to transplant; `boolean_transplant` is the only
+    part that needs Manifold, so it stays here.
+    """
+    transforms = [np.asarray(T, dtype=np.float64) for T in payload['transforms']]
+    template_pts = np.asarray(payload['template_pts'], dtype=np.float64)
+    pattern_type = payload.get('pattern_type', 'none')
+    per_pos_devs = list(payload.get('per_position_deviation', []))
+
+    if transforms:
+        rep_v, rep_t, vol_change, dst_boxes, is_watertight = _execute_boolean_transplant(
+            verts, tris, template_pts, transforms, margin=margin,
+            force_bridge=force_bridge)
+        positions_repaired = len(transforms)
+        h_outside = (_compute_hausdorff_outside(orig_v, orig_t, rep_v, rep_t, dst_boxes)
+                     if dst_boxes else 0.0)
+        notes = [f"{positions_repaired} repeated elements were replaced by healthy copies"]
+    else:
+        rep_v, rep_t = verts, tris
+        vol_change = 0.0
+        h_outside = 0.0
+        is_watertight = True
+        positions_repaired = 0
+        notes = ["All detected pattern positions are healthy"]
+
+    return rep_v, rep_t, {
+        'watertight': bool(is_watertight),
+        'repaired': bool(positions_repaired > 0),
+        'pattern_type': pattern_type,
+        'group_size': int(payload.get('group_size', 0) or 0),
+        'positions_checked': int(payload.get('positions_checked', 0) or 0),
+        'positions_repaired': positions_repaired,
+        'per_position_deviation': per_pos_devs,
+        'volume_change': round(float(vol_change), 6),
+        'hausdorff_outside': round(float(h_outside), 6),
+        'notes': notes,
+    }
+
+
 def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=None):
     """Automated repeated-element repair (Method #11).
 
@@ -1258,6 +1300,23 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
             'error': err_msg,
             'notes': [],
         }
+
+    # Planning (detection, template choice, per-position deviation, transform
+    # list) lives in the shared kernel; the CSG transplant stays here because
+    # `boolean_transplant` needs the manifold feature.
+    #
+    # `plan` is `("early", report)` when there is nothing to transplant, or
+    # `("transplant", payload)` when the caller still has to run the CSG.
+    _planner = getattr(sutura_geom, 'plan_repeat_auto', None)
+    if _planner is not None:
+        kind, payload = _planner(
+            np.ascontiguousarray(verts, dtype=np.float64),
+            np.ascontiguousarray(tris, dtype=np.int64))
+        if kind == 'early':
+            return verts, tris, dict(payload)
+        return _finish_repeat_plan(
+            verts, tris, orig_v, orig_t, payload, margin=margin,
+            force_bridge=force_bridge)
 
     try:
         score, info = detect_repetition(verts, tris)
