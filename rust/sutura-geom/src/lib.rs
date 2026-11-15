@@ -60,6 +60,7 @@ pub mod repeat_align;
 pub mod repeat_free;
 pub mod repeat_obb;
 pub mod repeat_patch;
+pub mod repeat_repair;
 pub mod repeat_segment;
 pub mod roi;
 pub mod sample;
@@ -3656,6 +3657,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hausdorff_outside_py, m)?)?;
     m.add_function(wrap_pyfunction!(decimate_faces_py, m)?)?;
     m.add_function(wrap_pyfunction!(align_py, m)?)?;
+    m.add_function(wrap_pyfunction!(repeat_repair::py::plan_repeat_auto_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_repetition_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_rotational_symmetry_free_py, m)?)?;
     m.add_function(wrap_pyfunction!(segment_elements_py, m)?)?;

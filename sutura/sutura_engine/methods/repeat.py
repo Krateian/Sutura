@@ -609,6 +609,29 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
     if len(verts) < 4 or len(tris) < 4:
         return 0.0, {'pattern_type': 'none', 'reason': 'Too few vertices or triangles'}
 
+    # The whole route lives in the shared kernel; Python only formats the result.
+    #
+    # Delegating rather than reimplementing is not cosmetic: the candidate score
+    # is `frac(mean of dists < tol)`, and on the 89999-face corpus nut `dists`
+    # has 3000 entries whose `np.mean` differs from the kernel's pairwise
+    # accumulator by 1 ULP. That single ULP moved the reported `mean_distance`
+    # and hence the score, which is why the 226-mesh gate saw `score_diffs 7`.
+    # One implementation cannot disagree with itself.
+    core = getattr(sutura_geom, 'detect_rotational_symmetry_free', None)
+    if core is not None:
+        found = core(verts, tris, int(n_samples), int(max_order))
+        if found is None:
+            return 0.0, {
+                'pattern_type': 'none',
+                'reason': 'No rotational symmetry detected',
+            }
+        return float(found['score']), dict(found)
+
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable(
+            'sutura_geom.detect_rotational_symmetry_free is unavailable')
+
     n_pts = n_samples
     dense_pts, _ = _surface_sample(verts, tris, n_pts * 2, seed=42)
     query_pts, _ = _surface_sample(verts, tris, n_pts, seed=123)
@@ -620,7 +643,7 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
         return 0.0, {'pattern_type': 'none', 'reason': 'Zero bounding box diagonal'}
 
     tol = 0.015 * diag
-    cov = (dense_pts - c).T @ (dense_pts - c) / max(len(dense_pts), 1)
+    cov = _covariance_core(dense_pts, c)
     _, eigvecs = _eigh3(cov)
     tree = sutura_geom.KdTree(dense_pts)
 
