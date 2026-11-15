@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Read-only per-object analysis (`--analyze`).
 //!
-//! Port of `sutura_engine.diagnosis.analyze_mesh` / `to_dict`. The three
-//! behavioural scores that `ranking.rs` consumes (`repetition_score`,
-//! `single_side_score`, `relief_score`) and the `diagnosis_v2` block are not
-//! ported yet; [`Analysis::missing_fields`] names them so a caller cannot
-//! mistake a partial report for a complete one.
+//! Port of `sutura_engine.diagnosis.analyze_mesh` / `to_dict`, including the
+//! three behavioural scores `ranking.rs` consumes (`repetition_score`,
+//! `single_side_score`, `relief_score`). Each comes from a shared kernel so the
+//! two languages cannot disagree: the Closing pair from `closing_scores` and
+//! `repetition_score` from `repeat_patch::detect_repetition`.
 
 use serde_json::{json, Map, Value};
 
@@ -32,6 +32,8 @@ pub struct Analysis {
     pub self_intersections: usize,
     pub mesh_type: String,
     pub type_confidence: f64,
+    /// `repeat.detect_repetition`, from the shared `repeat_patch` kernel.
+    pub repetition_score: f64,
     /// `closing.single_side_score`, from the shared `closing_scores` kernel.
     pub single_side_score: f64,
     /// `closing.relief_score`, from the shared `closing_scores` kernel.
@@ -45,9 +47,9 @@ pub struct Analysis {
 }
 
 impl Analysis {
-    /// Fields this port does not produce yet.
+    /// Fields this port does not produce yet. Empty: `--analyze` is complete.
     pub fn missing_fields(&self) -> &'static [&'static str] {
-        &["repetition_score"]
+        &[]
     }
 
     /// The implemented part of `to_dict(analysis)`.
@@ -77,8 +79,13 @@ impl Analysis {
             "type_confidence".into(),
             json!(py_round(self.type_confidence, 3)),
         );
-        // Python rounds these to 4 decimals (`diagnosis.to_dict`); the kernel
-        // already returns 4-decimal values, so this second round is idempotent.
+        // Python rounds these in `diagnosis.to_dict`: repetition to 3 decimals,
+        // the Closing pair to 4. The kernels already return those precisions,
+        // so the second round is idempotent.
+        out.insert(
+            "repetition_score".into(),
+            json!(py_round(self.repetition_score, 3)),
+        );
         out.insert(
             "single_side_score".into(),
             json!(py_round(self.single_side_score, 4)),
@@ -288,6 +295,15 @@ pub fn analyze_mesh(
         out.single_side_score =
             sutura_geom::closing_scores::single_side_score(&fv, &ft, &loops);
         out.relief_score = sutura_geom::closing_scores::relief_score(&fv, &ft, &loops);
+    }
+
+    // `diagnosis.analyze_mesh` computes repetition only under
+    // REPETITION_MAX_FACES (500000); above that it stays 0.0.
+    const REPETITION_MAX_FACES: usize = 500_000;
+    if t.len() <= REPETITION_MAX_FACES {
+        let (rep_score, _route, _free, _patch) =
+            sutura_geom::repeat_patch::detect_repetition(&fv, &ft);
+        out.repetition_score = rep_score;
     }
 
     out.diagnosis_v2 = Some(sutura_geom::diagnosis::report_json::report_to_value(
