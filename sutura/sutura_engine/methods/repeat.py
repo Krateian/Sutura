@@ -86,6 +86,43 @@ def _lstsq3_core(a, b):
     return sol
 
 
+def _covariance_core(pts, center):
+    """`(pts - center).T @ (pts - center) / n` from the shared kernel.
+
+    NumPy's `A.T @ A` is BLAS `dgemm`, whose internal blocking no portable
+    accumulation order reproduces (measured: it differs from a sequential sum,
+    from `np.dot` per element and from `np.sum(d_i*d_j)`). Falls back to NumPy
+    only without the binding.
+    """
+    a = np.ascontiguousarray(pts, dtype=np.float64)
+    c = np.ascontiguousarray(center, dtype=np.float64)
+    core = getattr(sutura_geom, 'covariance', None)
+    if core is not None:
+        return np.asarray(core(a, c))
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.covariance is unavailable')
+    return (a - c).T @ (a - c) / max(len(a), 1)
+
+
+def _cross_covariance_core(a, a_center, b, b_center):
+    """`(a - a_center).T @ (b - b_center)` from the shared kernel.
+
+    The Kabsch cross-covariance; same BLAS reasoning as `_covariance_core`.
+    """
+    av = np.ascontiguousarray(a, dtype=np.float64)
+    bv = np.ascontiguousarray(b, dtype=np.float64)
+    ac = np.ascontiguousarray(a_center, dtype=np.float64)
+    bc = np.ascontiguousarray(b_center, dtype=np.float64)
+    core = getattr(sutura_geom, 'cross_covariance', None)
+    if core is not None:
+        return np.asarray(core(av, ac, bv, bc))
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.cross_covariance is unavailable')
+    return (av - ac).T @ (bv - bc)
+
+
 def _canonical_axis_sign(ax):
     """+1 when the largest-magnitude component is positive, else -1.
 
@@ -338,6 +375,26 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
     if len(src_pts) == 0 or len(dst_pts) == 0:
         return np.eye(4), float('inf')
 
+    # The whole routine lives in the shared kernel. The frame search picks the
+    # best of four sign combinations by mean SQUARED distance, and on a
+    # degenerate PCA (two equal eigenvalues) those four values differ by ~1 ULP
+    # -- so reimplementing the loop here would tie-break differently from Rust
+    # and send the resulting transform down a different ICP branch. One
+    # implementation removes the possibility.
+    core = getattr(sutura_geom, 'align', None)
+    if core is not None:
+        T, rel_rms = core(
+            np.ascontiguousarray(src_pts),
+            np.ascontiguousarray(dst_pts),
+            bool(allow_reflection),
+            bool(allow_scale),
+            int(max_iters),
+        )
+        return np.asarray(T, dtype=np.float64), float(rel_rms)
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.align is unavailable')
+
     c_src = np.mean(src_pts, axis=0)
     c_dst = np.mean(dst_pts, axis=0)
 
@@ -352,9 +409,11 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
 
     src_scaled = (src_pts - c_src) * scale_factor + c_src
 
-    # PCA frames
-    cov_src = (src_scaled - c_src).T @ (src_scaled - c_src) / max(len(src_scaled), 1)
-    cov_dst = (dst_pts - c_dst).T @ (dst_pts - c_dst) / max(len(dst_pts), 1)
+    # PCA frames. NumPy's `A.T @ A` is a BLAS dgemm whose accumulation order no
+    # portable loop reproduces, so the covariance comes from the shared kernel --
+    # a 1e-16 difference here changed which sign combination ICP started from.
+    cov_src = _covariance_core(src_scaled, c_src)
+    cov_dst = _covariance_core(dst_pts, c_dst)
 
     _, v_src = _eigh3(cov_src)
     _, v_dst = _eigh3(cov_dst)
@@ -410,7 +469,7 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
         p_bar = np.mean(current_pts, axis=0)
         q_bar = np.mean(target_pts, axis=0)
 
-        H = (current_pts - p_bar).T @ (target_pts - q_bar)
+        H = _cross_covariance_core(current_pts, p_bar, target_pts, q_bar)
         U, _s, Vt = _svd3_core(H)
         U = np.asarray(U, dtype=np.float64)
         Vt = np.asarray(Vt, dtype=np.float64).copy()

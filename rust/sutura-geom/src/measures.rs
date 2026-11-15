@@ -14,6 +14,59 @@ pub fn sum_f64(values: &[f64]) -> f64 {
     pairwise(values)
 }
 
+/// `(points - center).T @ (points - center) / n`, the covariance `repeat.align`
+/// builds its PCA frame from.
+///
+/// NumPy computes that product with BLAS `dgemm`, whose internal blocking no
+/// portable accumulation order reproduces (measured: it differs from a
+/// sequential sum, from `np.dot` per element and from `np.sum(d_i*d_j)` by up to
+/// 1.8e-15). Per the project rule the kernel lives here and Python calls it, so
+/// both sides see the same matrix; the 1e-16 differences were otherwise enough
+/// to send ICP down a different branch.
+pub fn covariance(pts: &[[f64; 3]], center: [f64; 3]) -> [[f64; 3]; 3] {
+    let mut m = [[0.0f64; 3]; 3];
+    for p in pts {
+        let d = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
+        for i in 0..3 {
+            for j in 0..3 {
+                m[i][j] += d[i] * d[j];
+            }
+        }
+    }
+    let n = (pts.len() as f64).max(1.0);
+    for i in 0..3 {
+        for j in 0..3 {
+            m[i][j] /= n;
+        }
+    }
+    m
+}
+
+/// `(a - a_center).T @ (b - b_center)`, the cross-covariance `repeat.align`'s
+/// Kabsch step forms each ICP iteration.
+///
+/// Same reasoning as [`covariance`]: NumPy does this with BLAS `dgemm`, so the
+/// kernel is the shared source of truth and Python calls it. There is no `/n`
+/// here -- the ICP step is a plain cross-product.
+pub fn cross_covariance(
+    a: &[[f64; 3]],
+    a_center: [f64; 3],
+    b: &[[f64; 3]],
+    b_center: [f64; 3],
+) -> [[f64; 3]; 3] {
+    let mut m = [[0.0f64; 3]; 3];
+    for (p, q) in a.iter().zip(b.iter()) {
+        let da = [p[0] - a_center[0], p[1] - a_center[1], p[2] - a_center[2]];
+        let db = [q[0] - b_center[0], q[1] - b_center[1], q[2] - b_center[2]];
+        for i in 0..3 {
+            for j in 0..3 {
+                m[i][j] += da[i] * db[j];
+            }
+        }
+    }
+    m
+}
+
 /// `np.sum` over an `f32` slice.
 pub fn sum_f32(values: &[f32]) -> f32 {
     pairwise(values)

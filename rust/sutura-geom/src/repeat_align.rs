@@ -16,15 +16,19 @@
 //! * The Kabsch step uses `svd3` and flips `Vt`'s LAST row when `det(R) < 0`,
 //!   which is the minimal reflection fix (see the `svd3` module).
 //!
-//! ## Where this can legitimately differ from Python
+//! ## Why Python calls this instead of reimplementing it
 //!
-//! ICP has local optima, and on very small point sets the nearest-neighbour
-//! pairing is genuinely ambiguous. Measured on 339 real patch pairs from the
-//! corpus: 325 transforms are identical to 1e-6, and the remaining 14 are
-//! 6-12-point sets whose fits differ in the 6th-9th decimal or are exactly
-//! equal through a symmetry (both transforms are equally good). That is the
-//! algorithm, not the port -- the same fixtures also move under a different
-//! iteration order. On 600 synthetic rigid cases the transforms agree to 7e-13.
+//! The frame search picks the best of four sign combinations by mean SQUARED
+//! distance. When the PCA is degenerate (two equal eigenvalues) those four
+//! values can differ by a single ULP, so a reimplementation that sums in a
+//! different order picks a different sign -- which then sends ICP down a
+//! different branch and yields a visibly different transform (measured: 20 of
+//! 339 corpus patch pairs differed, up to 89 units of action). With Python
+//! delegating here, all 339 are bit-identical.
+//!
+//! The covariance and the Kabsch cross-covariance also come from
+//! `measures::{covariance, cross_covariance}` for the same reason: NumPy builds
+//! them with BLAS `dgemm`.
 
 use crate::eigh3::eigh3;
 use crate::measures::sum_f64;
@@ -172,26 +176,13 @@ pub fn align(
         })
         .collect();
 
-    let cov = |pts: &[[f64; 3]], c: [f64; 3]| -> [[f64; 3]; 3] {
-        let mut m = [[0.0f64; 3]; 3];
-        for p in pts {
-            let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
-            for i in 0..3 {
-                for j in 0..3 {
-                    m[i][j] += d[i] * d[j];
-                }
-            }
-        }
-        let n = (pts.len() as f64).max(1.0);
-        for i in 0..3 {
-            for j in 0..3 {
-                m[i][j] /= n;
-            }
-        }
-        m
-    };
-    let cov_src = cov(&src_scaled, c_src);
-    let cov_dst = cov(dst_pts, c_dst);
+    // PCA frames. The covariance goes through `measures::covariance` so both
+    // languages build the identical matrix: NumPy's `A.T @ A` is a BLAS dgemm
+    // whose accumulation order no portable loop reproduces, and a 1e-16
+    // difference here was enough to change which sign combination ICP started
+    // from.
+    let cov_src = crate::measures::covariance(&src_scaled, c_src);
+    let cov_dst = crate::measures::covariance(dst_pts, c_dst);
 
     let (_, v_src) = eigh3(cov_src);
     let (_, v_dst) = eigh3(cov_dst);
@@ -281,17 +272,9 @@ pub fn align(
         let p_bar = mean_points(&current);
         let q_bar = mean_points(&target);
 
-        // H = (current - p_bar).T @ (target - q_bar)
-        let mut h = [[0.0f64; 3]; 3];
-        for (p, q) in current.iter().zip(target.iter()) {
-            let a = [p[0] - p_bar[0], p[1] - p_bar[1], p[2] - p_bar[2]];
-            let b = [q[0] - q_bar[0], q[1] - q_bar[1], q[2] - q_bar[2]];
-            for i in 0..3 {
-                for j in 0..3 {
-                    h[i][j] += a[i] * b[j];
-                }
-            }
-        }
+        // H = (current - p_bar).T @ (target - q_bar) through the shared kernel,
+        // for the same BLAS reason as the PCA covariance above.
+        let h = crate::measures::cross_covariance(&current, p_bar, &target, q_bar);
         let s = svd3(&h);
         let mut vt = s.vt;
         let u_t = transpose3(&s.u);

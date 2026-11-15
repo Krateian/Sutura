@@ -3046,6 +3046,74 @@ fn lstsq3_py(
 }
 
 #[cfg(feature = "python")]
+/// `(points - center).T @ (points - center) / n` through the shared kernel.
+///
+/// NumPy uses BLAS `dgemm` for that product and no portable accumulation
+/// order reproduces it; `repeat.align` calls this so both languages build the
+/// identical PCA covariance.
+#[pyfunction]
+#[pyo3(name = "covariance")]
+fn covariance_py<'py>(
+    py: Python<'py>,
+    points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    center: PyArrayLike1<'py, f64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let pts: Vec<[f64; 3]> = points
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let c = center.as_array();
+    if c.len() != 3 {
+        return Err(PyValueError::new_err("center must have 3 elements"));
+    }
+    let m = crate::measures::covariance(&pts, [c[0], c[1], c[2]]);
+    let rows: Vec<Vec<f64>> = m.iter().map(|r| r.to_vec()).collect();
+    Ok(numpy::PyArray2::from_vec2(py, &rows)?.into_any())
+}
+
+#[cfg(feature = "python")]
+/// `(a - a_center).T @ (b - b_center)` through the shared kernel.
+///
+/// The Kabsch cross-covariance; same BLAS reasoning as `covariance`.
+#[pyfunction]
+#[pyo3(name = "cross_covariance")]
+fn cross_covariance_py<'py>(
+    py: Python<'py>,
+    a: PyArrayLike2<'py, f64, AllowTypeChange>,
+    a_center: PyArrayLike1<'py, f64, AllowTypeChange>,
+    b: PyArrayLike2<'py, f64, AllowTypeChange>,
+    b_center: PyArrayLike1<'py, f64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let av: Vec<[f64; 3]> = a
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let bv: Vec<[f64; 3]> = b
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let ac = a_center.as_array();
+    let bc = b_center.as_array();
+    if ac.len() != 3 || bc.len() != 3 {
+        return Err(PyValueError::new_err("centers must have 3 elements"));
+    }
+    let m = crate::measures::cross_covariance(
+        &av,
+        [ac[0], ac[1], ac[2]],
+        &bv,
+        [bc[0], bc[1], bc[2]],
+    );
+    let rows: Vec<Vec<f64>> = m.iter().map(|r| r.to_vec()).collect();
+    Ok(numpy::PyArray2::from_vec2(py, &rows)?.into_any())
+}
+
+#[cfg(feature = "python")]
 /// `repeat.align` through the shared kernel.
 ///
 /// Returns `(T, rel_rms)` where `T` is a 4x4 matrix.
@@ -3426,6 +3494,8 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
+    m.add_function(wrap_pyfunction!(covariance_py, m)?)?;
+    m.add_function(wrap_pyfunction!(cross_covariance_py, m)?)?;
     m.add_function(wrap_pyfunction!(align_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_repetition_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_rotational_symmetry_free_py, m)?)?;
