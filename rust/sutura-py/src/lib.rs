@@ -1489,8 +1489,72 @@ fn bbox_diagonal_py<'py>(
     Ok(sutura_core::analysis::bbox_diagonal_f64(&v))
 }
 
+/// Multi-object 3MF repair: every object separately, one archive rewrite.
+///
+/// Returns `{objects, objects_watertight, objects_stage2_ok, object_reports}`;
+/// each report is that object's repair dict. `out_path` always receives a 3MF
+/// container, whatever its extension (measured: Python does the same).
+#[pyfunction]
+#[pyo3(name = "repair_3mf")]
+#[pyo3(signature = (src, out_path, opts_json=None))]
+fn repair_3mf_py<'py>(
+    py: Python<'py>,
+    src: &str,
+    out_path: &str,
+    opts_json: Option<&str>,
+) -> PyResult<Bound<'py, PyDict>> {
+    use sutura_core::pipeline_objects::{aggregate_flags, repair_3mf_file};
+    use sutura_core::repair::{CancelToken, NoopSink, RepairOptions};
+
+    let opts: RepairOptions = match opts_json {
+        Some(text) => serde_json::from_str(text)
+            .map_err(|e| PyValueError::new_err(format!("invalid repair options: {e}")))?,
+        None => RepairOptions::default(),
+    };
+    let sink = NoopSink;
+    let cancel = CancelToken::new();
+    let repairs = repair_3mf_file(src, out_path, &opts, &sink, &cancel)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let (objects, watertight, stage2_ok) = aggregate_flags(&repairs);
+
+    let reports = pyo3::types::PyList::empty(py);
+    for r in &repairs {
+        let mut rep = r.report.clone();
+        if let Some(obj) = rep.as_object_mut() {
+            if let Some(unit) = sutura_core::mesh_io::three_mf::check_units(
+                &r.mesh,
+                Some(&r.declared_unit),
+            ) {
+                obj.insert("unit_warning".into(), serde_json::Value::Bool(true));
+                obj.insert("unit_hint".into(), unit.unit_hint.into());
+            }
+            let ta = r.triangle_attrs.clone().unwrap_or_default();
+            obj.insert(
+                "triangle_attributes".into(),
+                serde_json::json!({
+                    "model": r.model_name,
+                    "block": r.block_index,
+                    "original_attributed": ta.original_attributed,
+                    "kept": ta.kept,
+                    "dropped": ta.dropped,
+                    "output_triangles": ta.output_triangles,
+                }),
+            );
+        }
+        reports.append(rep.to_string())?;
+    }
+
+    let out = PyDict::new(py);
+    out.set_item("objects", objects)?;
+    out.set_item("objects_watertight", watertight)?;
+    out.set_item("objects_stage2_ok", stage2_ok)?;
+    out.set_item("object_reports", reports)?;
+    Ok(out)
+}
+
 #[pymodule]
 fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(repair_3mf_py, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_diagonal_py, m)?)?;
     m.add_function(wrap_pyfunction!(load_mesh, m)?)?;
     m.add_function(wrap_pyfunction!(load_meshes, m)?)?;
