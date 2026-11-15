@@ -207,17 +207,15 @@ fn parse_methods(
             .parse::<u64>()
             .map_err(|_| RepairFailure::new(2, format!("unknown method: {token}")))?;
         match num {
-            1..=3 => nums.push(num),
-            // Method 12 (Repeat manual) runs through the Repeat tier when
-            // `--repeat-source`/`--repeat-target` are given; it does not change
-            // the baseline deep-repair mode.
-            12 => nums.push(num),
+            // Every method the Rust ladder can actually run: `forced_methods`
+            // carries them into `repair()` (p10/core). Method 12 additionally
+            // needs the two points and does not change the baseline deep-repair
+            // mode, so it maps through `_ => deep` below.
+            1..=19 => nums.push(num),
             _ => {
                 return Err(RepairFailure::new(
                     2,
-                    format!(
-                        "method {num} is not implemented in the Rust CLI; only 1 (Quick Clean), 2 (Local Mend) and 3 (Full Mend) are available"
-                    ),
+                    format!("unknown method: {num}"),
                 ))
             }
         }
@@ -381,7 +379,7 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     };
     let splint = !cli.no_splint && cli.experimental_splint;
 
-    let opts = RepairOptions {
+    let mut opts = RepairOptions {
         mode,
         intensity,
         profile: cli.profile.clone(),
@@ -394,6 +392,11 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         coaptation,
         splint,
         dressing: false,
+        dressing_drain: None,
+        dressing_defects: None,
+        dressing_rmax_scale: None,
+        dressing_sigma_scale: None,
+        dressing_force_adopt: false,
         wall_thicken: false,
         repeat,
         repeat_source,
@@ -403,7 +406,16 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         ftetwild,
         time_budget_s: None,
         seed: 0,
+        forced_methods: Vec::new(),
     };
+    if methods.contains(&13) {
+        opts.graft = Some(true);
+        opts.deep_repair = DeepRepair::Off;
+    }
+    opts.forced_methods = methods
+        .iter()
+        .filter_map(|n| u8::try_from(*n).ok())
+        .collect();
     Ok((opts, methods_given, methods))
 }
 

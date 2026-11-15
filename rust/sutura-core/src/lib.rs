@@ -20,6 +20,7 @@ pub mod ranking;
 pub mod reduce;
 pub mod validate;
 pub mod closing;
+pub mod dressing;
 pub mod graft;
 pub mod local_remesh;
 pub mod mirror;

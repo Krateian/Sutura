@@ -30,6 +30,17 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
     input_v = np.asarray(input_v if input_v is not None else v,
                          dtype=np.float64)
     input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
+    if os.environ.get('SUTURA_GRAFT_DEBUG'):
+        h = 0
+        for arr in (v, t):
+            for x in np.ascontiguousarray(arr).ravel().tobytes():
+                h = (h * 131 + x) & 0xFFFFFFFFFFFFFFFF
+        line = ('[graft-tier] engine_env=%r tier_engine=%r graft=%r '
+                'fp=%d faces=%d verts=%d\n' % (
+                    os.environ.get('SUTURA_GRAFT_ENGINE'),
+                    tier_engine('graft'), graft, h, len(t), len(v)))
+        with open('/tmp/graft-debug.log', 'a') as fh:
+            fh.write(line)
     if not graft:
         return v, t, after
     engine = os.environ.get('SUTURA_GRAFT_ENGINE', '').strip().lower()
@@ -67,6 +78,15 @@ def _graft_tier_rust(v, t, input_v, input_t, after, stats, tmpdir, intensity,
     grec = {}
     cand_v = cand_t = None
     with method_health.tier_guard('graft', 'tier') as _g:
+        if os.environ.get('SUTURA_GRAFT_DEBUG'):
+            import sys, numpy as _np
+            _h = 0
+            for _arr in (input_v, input_t):
+                _a = _np.ascontiguousarray(_arr)
+                for _x in _a.ravel().tobytes():
+                    _h = (_h * 131 + _x) & 0xFFFFFFFFFFFFFFFF
+            print('[graft-tier-py] input fp=%d faces=%d verts=%d' % (
+                _h, len(input_t), len(input_v)), file=sys.stderr, flush=True)
         engine = os.environ.get('SUTURA_GRAFT_ENGINE', '').strip().lower()
         if engine == 'rust' and hasattr(core, 'graft_shell_wrap'):
             cand_v, cand_t, grec_json = core.graft_shell_wrap(
@@ -144,6 +164,17 @@ def _graft_tier_python(v, t, input_v, input_t, after, stats, tmpdir, graft=False
     t = np.asarray(t, dtype=np.int64)
     input_v = np.asarray(input_v if input_v is not None else v, dtype=np.float64)
     input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
+    if os.environ.get('SUTURA_GRAFT_DEBUG'):
+        h = 0
+        for arr in (v, t):
+            for x in np.ascontiguousarray(arr).ravel().tobytes():
+                h = (h * 131 + x) & 0xFFFFFFFFFFFFFFFF
+        line = ('[graft-tier] engine_env=%r tier_engine=%r graft=%r '
+                'fp=%d faces=%d verts=%d\n' % (
+                    os.environ.get('SUTURA_GRAFT_ENGINE'),
+                    tier_engine('graft'), graft, h, len(t), len(v)))
+        with open('/tmp/graft-debug.log', 'a') as fh:
+            fh.write(line)
     if not graft:
         return v, t, after
     cap = getattr(spec, 'graft_max_faces', GRAFT_MAX_FACES) if spec is not None \
