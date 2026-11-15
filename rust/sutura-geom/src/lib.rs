@@ -25,6 +25,7 @@ pub mod cdt3d;
 pub mod choice;
 pub mod classify;
 pub mod closing_scores;
+pub mod components;
 mod budget;
 mod cancel;
 #[cfg(feature = "python")]
