@@ -93,6 +93,9 @@ def classify_with_engine(verts, tris, engine='experimental', extra_features=Fals
     ``extra_features`` enables the opt-in edge-tiebreak head (v2 only;
     ignored by classic).
     """
+    from sutura_engine import classifier_rust
+    if classifier_rust.available(extra_features=extra_features):
+        return classifier_rust.classify_mesh(verts, tris, engine, extra_features)
     if engine != 'experimental':
         return classify_mesh(verts, tris), 'classic'
     try:
