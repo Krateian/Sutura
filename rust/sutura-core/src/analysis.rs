@@ -234,7 +234,10 @@ pub fn analyze_mesh(
     // neighbour whenever the 5th-7th decimals straddle a .5 boundary
     // (93.1711502 -> Python 93.1711, direct 93.1712). Keep both steps.
     out.bbox_diagonal = py_round(py_round(diag, 6), 4);
-    out.surface_area = surface_area_f64(v, t);
+    // `analyze_mesh` stores `round(area, 3)` and `open_area_ratio` then divides
+    // by that stored value, so the rounding has to happen here too rather than
+    // only at JSON time.
+    out.surface_area = py_round(surface_area_f64(v, t), 3);
     out.non_manifold_edges = non_manifold_edge_count(t);
     out.components = connected_components(t);
 
@@ -253,7 +256,12 @@ pub fn analyze_mesh(
             .map(|h| h.diameter)
             .fold(0.0f64, f64::max);
         if diag > 0.0 {
-            out.largest_loop_ratio = max_diam / diag;
+            // `diagnosis.analyze_mesh` rounds at STORE time, and the method
+            // ranking reads the stored field -- not the JSON. A raw value here
+            // left `open_area_ratio` at 0.00031... where Python keeps 0.0003,
+            // and the graft score multiplies it by 9 (`0.45 / 0.05`), so the
+            // rounded recommendation read 0.103 vs 0.102.
+            out.largest_loop_ratio = py_round(max_diam / diag, 4);
         }
         let spanned: f64 = defects
             .holes
@@ -261,7 +269,7 @@ pub fn analyze_mesh(
             .map(|h| loop_spanned_area(v, h.verts_idx.as_deref().unwrap_or(&[])))
             .sum();
         if out.surface_area > 0.0 {
-            out.open_area_ratio = spanned / out.surface_area;
+            out.open_area_ratio = py_round(spanned / out.surface_area, 4);
         }
     }
 
@@ -292,9 +300,13 @@ pub fn analyze_mesh(
             .iter()
             .map(|lp| lp.iter().map(|&i| i as usize).collect())
             .collect();
-        out.single_side_score =
-            sutura_geom::closing_scores::single_side_score(&fv, &ft, &loops);
-        out.relief_score = sutura_geom::closing_scores::relief_score(&fv, &ft, &loops);
+        // `analyze_mesh` stores these rounded to 4 decimals and the ranking
+        // reads the stored field (the damage class tests `repetition_score >=
+        // 0.5`), so round here rather than only at JSON time.
+        out.single_side_score = py_round(
+            sutura_geom::closing_scores::single_side_score(&fv, &ft, &loops), 4);
+        out.relief_score = py_round(
+            sutura_geom::closing_scores::relief_score(&fv, &ft, &loops), 4);
     }
 
     // `diagnosis.analyze_mesh` computes repetition only under
@@ -303,7 +315,7 @@ pub fn analyze_mesh(
     if t.len() <= REPETITION_MAX_FACES {
         let (rep_score, _route, _free, _patch) =
             sutura_geom::repeat_patch::detect_repetition(&fv, &ft);
-        out.repetition_score = rep_score;
+        out.repetition_score = py_round(rep_score, 4);
     }
 
     out.diagnosis_v2 = Some(sutura_geom::diagnosis::report_json::report_to_value(
@@ -406,4 +418,25 @@ pub fn combine(objs: &[Analysis]) -> Analysis {
     c.bbox_diagonal = objs.iter().map(|o| o.bbox_diagonal).fold(0.0f64, f64::max);
     c.surface_area = objs.iter().map(|o| o.surface_area).sum();
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `analyze_mesh` rounds these at STORE time and the ranking consumes the
+    /// stored field, so a raw value silently changes a recommendation.
+    ///
+    /// The graft score multiplies `open_area_ratio` by 9 (`0.45 / 0.05`), so a
+    /// stray 5th decimal moves the reported 3-decimal score: for a raw
+    /// 0.000051 the score reads 0.100, while the stored 0.0001 reads 0.101.
+    #[test]
+    fn store_time_rounding_matches_python() {
+        assert_eq!(py_round(0.000051_f64, 4), 0.0001);
+        assert_eq!(py_round(26898.114_f64, 3), 26898.114);
+
+        let graft = |ratio: f64| 0.45 * (ratio / 0.05) + 0.30 * (1.0_f64 / 3.0);
+        assert_eq!(py_round(graft(0.000051_f64), 3), 0.100);
+        assert_eq!(py_round(graft(py_round(0.000051_f64, 4)), 3), 0.101);
+    }
 }
