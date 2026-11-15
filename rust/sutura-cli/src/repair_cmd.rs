@@ -1346,6 +1346,14 @@ fn augment_report(
     Value::Object(obj.clone())
 }
 
+/// True when the path names an OBJ file (case-insensitive, like Python).
+fn is_obj(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("obj"))
+        .unwrap_or(false)
+}
+
 /// True when the path names a 3MF container (case-insensitive, like Python).
 fn is_3mf(path: &Path) -> bool {
     path.extension()
@@ -1658,6 +1666,18 @@ fn process_one(
     let elapsed = started.elapsed().as_secs_f64();
     let mut report =
         augment_report(&input, &out_v, &out_t, core_report, opts, methods, elapsed);
+    // OBJ can carry `usemtl`/`mtllib` references, and the repaired OBJ is
+    // written without them, so the report says whether anything was dropped.
+    // Python sets this for `.obj` inputs only, unconditionally
+    // (`service.py`: `if ext == '.obj': report['material_discarded'] = ...`).
+    if is_obj(path) {
+        if let Some(obj) = report.as_object_mut() {
+            obj.insert(
+                "material_discarded".into(),
+                Value::Bool(sutura_core::obj_has_material_refs(path)),
+            );
+        }
+    }
     if let Some(obj) = report.as_object_mut() {
         obj.insert("input".into(), Value::from(input_display));
         obj.insert("output".into(), Value::from(output.display().to_string()));
