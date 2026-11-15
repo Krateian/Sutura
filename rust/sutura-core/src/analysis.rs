@@ -37,6 +37,7 @@ pub struct Analysis {
     pub model: Option<String>,
     pub classifier_engine: String,
     pub possible_debris: Option<Value>,
+    pub diagnosis_v2: Option<Value>,
 }
 
 impl Analysis {
@@ -46,7 +47,6 @@ impl Analysis {
             "repetition_score",
             "single_side_score",
             "relief_score",
-            "diagnosis_v2",
         ]
     }
 
@@ -88,6 +88,9 @@ impl Analysis {
         );
         out.insert("classifier_engine".into(), json!(self.classifier_engine));
         out.insert("classifier_version".into(), json!(CLASSIFIER_VERSION));
+        if let Some(diag) = &self.diagnosis_v2 {
+            out.insert("diagnosis_v2".into(), diag.clone());
+        }
         if let Some(debris) = &self.possible_debris {
             out.insert("possible_debris".into(), debris.clone());
         }
@@ -240,13 +243,20 @@ pub fn analyze_mesh(
         }
     }
 
+    // `diagnosis.analyze_mesh` attaches the JSON report (detail fast, masks).
+    let fv: Vec<[f64; 3]> = v.iter().map(|p| p.map(f64::from)).collect();
+    let ft: Vec<[usize; 3]> = t
+        .iter()
+        .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+        .collect();
+    out.diagnosis_v2 = Some(sutura_geom::diagnosis::report_json::report_to_value(
+        &sutura_geom::diagnosis::diagnose_core(&fv, &ft, "fast"),
+        "fast",
+        true,
+        0.0,
+    ));
+
     if count_self_intersections {
-        let (fv, ft) = (
-            v.iter().map(|p| p.map(f64::from)).collect::<Vec<_>>(),
-            t.iter()
-                .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
-                .collect::<Vec<_>>(),
-        );
         let (_mask, count, skipped) = sutura_geom::self_intersections_core(&fv, &ft);
         out.self_intersections = if skipped || count < 0 { 0 } else { count as usize };
     }
