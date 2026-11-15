@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Sutura Authors
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """Graft G1 parity: whole-mesh Python `shell_wrap` vs the Rust loop.
 
 Public samples only. The guard is disabled so the NumPy-RNG coverage terms

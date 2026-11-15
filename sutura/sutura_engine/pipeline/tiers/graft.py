@@ -9,6 +9,7 @@ import numpy as np
 import topology
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
+from sutura_engine import rust_bridge
 from sutura_engine.pipeline.p_weld import (
     _repair_welded_topology, weld_reload_equivalent,
 )
@@ -32,18 +33,16 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
     if not graft:
         return v, t, after
     engine = os.environ.get('SUTURA_GRAFT_ENGINE', '').strip().lower()
-    require_rust = os.environ.get('SUTURA_REQUIRE_RUST', '').strip().lower() in (
-        '1', 'true', 'yes', 'on')
     core = tier_core()
     if core is None and tier_engine('graft') == 'rust':
-        from sutura_engine import rust_bridge
         core = rust_bridge.load(
             'graft', ('SUTURA_GRAFT_ENGINE', 'SUTURA_TIER_ENGINE'), 'python')
-    if engine == 'rust' and require_rust and (
+    if engine == 'rust' and (
             core is None or not hasattr(core, 'graft_shell_wrap')):
-        raise RuntimeError(
-            'SUTURA_GRAFT_ENGINE=rust requires '
-            'sutura_core_py.graft_shell_wrap')
+        if rust_bridge.require_rust():
+            rust_bridge.unavailable(
+                'SUTURA_GRAFT_ENGINE=rust requires '
+                'sutura_core_py.graft_shell_wrap')
     if tier_engine('graft') != 'rust' or core is None:
         return _graft_tier_python(
             v, t, input_v, input_t, after, stats, tmpdir, graft, intensity,

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Bit-exactness against NumPy 2.5.4 `default_rng` for the classifier RANSAC.
 //!
 //! The fixture was produced with:

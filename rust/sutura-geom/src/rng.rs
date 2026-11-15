@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Bit-exact port of NumPy's `default_rng` primitives used by the classifier.
 //!
 //! The v2 classifier's RANSAC draws must match `numpy.random.default_rng(0)`

@@ -68,6 +68,72 @@ pub fn fmt_g(value: f64, sig: usize) -> String {
     }
 }
 
+/// Python `repr(float)` (shortest round-trip digits, Python's fixed/exponent
+/// rule: exponent form when `exp < -4` or `exp >= 16`).
+pub fn py_repr_f64(value: f64) -> String {
+    if value.is_nan() {
+        return "nan".to_string();
+    }
+    if value.is_infinite() {
+        return if value.is_sign_negative() {
+            "-inf"
+        } else {
+            "inf"
+        }
+        .to_string();
+    }
+    if value == 0.0 {
+        return if value.is_sign_negative() {
+            "-0.0"
+        } else {
+            "0.0"
+        }
+        .to_string();
+    }
+    let neg = value.is_sign_negative();
+    let x = value.abs();
+    let exp_form = format!("{:e}", x);
+    let (mantissa, exp_text) = exp_form.split_once('e').expect("exponent form");
+    let exp: i32 = exp_text.parse().expect("exponent");
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    let mantissa_len = mantissa.split('.').next().map(|m| m.len()).unwrap_or(1);
+
+    let body = if exp < -4 || exp >= 16 {
+        let mut out = String::new();
+        out.push_str(&digits[..1]);
+        if digits.len() > 1 {
+            out.push('.');
+            out.push_str(&digits[1..]);
+        }
+        out.push('e');
+        out.push(if exp < 0 { '-' } else { '+' });
+        let ea = exp.unsigned_abs();
+        if ea < 10 {
+            out.push('0');
+        }
+        out.push_str(&ea.to_string());
+        out
+    } else if exp >= 0 {
+        let cut = (exp as usize) + 1;
+        if digits.len() > cut {
+            format!("{}.{}", &digits[..cut], &digits[cut..])
+        } else {
+            let mut out = digits;
+            out.push_str(&"0".repeat(cut - out.len()));
+            out.push_str(".0");
+            out
+        }
+    } else {
+        let zeros = (-exp - 1) as usize;
+        format!("0.{}{}", "0".repeat(zeros), digits)
+    };
+    if neg {
+        format!("-{body}")
+    } else {
+        body
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::fmt_g;
@@ -108,6 +174,23 @@ mod tests {
         check(f64::from(1e9f32), "1e+09");
         check(f64::from(-0.0f32), "-0");
         check(f64::from(123.456f32), "123.456001");
+    }
+
+    fn check_repr(v: f64, want: &str) {
+        assert_eq!(super::py_repr_f64(v), want, "value {v:?}");
+    }
+
+    #[test]
+    fn py_repr_matches_python() {
+        check_repr(0.0, "0.0");
+        check_repr(-0.0, "-0.0");
+        check_repr(1.0, "1.0");
+        check_repr(0.1, "0.1");
+        check_repr(1e-5, "1e-05");
+        check_repr(0.0001, "0.0001");
+        check_repr(1e16, "1e+16");
+        check_repr(123456789012345.0, "123456789012345.0");
+        check_repr(2.5e-7, "2.5e-07");
     }
 
     #[test]

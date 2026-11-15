@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 //! Whole-mesh `shell_wrap` main loop (Graft G1), matching
 //! `sutura_engine/graft.py`.
 
@@ -7,7 +10,7 @@ use std::time::Instant;
 use serde_json::{json, Map, Value};
 use sutura_geom::{morph_close_core, MorphCloseOptions};
 
-use crate::fmt::fmt_g;
+use crate::fmt::{fmt_g, py_repr_f64};
 use sutura_geom::hole::close_holes_core;
 use sutura_geom::manifold::{union_pair_core, watertight_check_core};
 use sutura_geom::topology::{
@@ -1110,10 +1113,10 @@ pub fn shell_wrap(
             "code": "coverage",
             "message_en": format!(
                 "Graft closed the mesh but its input coverage ({}) is below {}; the result does not reproduce enough of the input surface (likely a collapsed fragment).",
-                py_float_str(round4(cov)), GRAFT_MIN_INPUT_COVERAGE),
+                py_repr_f64(round4(cov)), GRAFT_MIN_INPUT_COVERAGE),
             "message_tr": format!(
                 "Graft ağı kapattı ancak girdi kapsaması ({}) {} eşiğinin altında; sonuç girdi yüzeyinin yeterli kısmını yeniden üretmiyor (muhtemelen çökmüş bir parça).",
-                py_float_str(round4(cov)), GRAFT_MIN_INPUT_COVERAGE),
+                py_repr_f64(round4(cov)), GRAFT_MIN_INPUT_COVERAGE),
         }));
     }
     if best.watertight && !best.fidelity_ok {
@@ -1125,10 +1128,10 @@ pub fn shell_wrap(
             "code": "fidelity",
             "message_en": format!(
                 "Graft closed the mesh but the healthy-region deviation ({}) exceeds the tolerance; the result is watertight but its healthy shape may have changed.",
-                py_float_str(round5(hh))),
+                py_repr_f64(round5(hh))),
             "message_tr": format!(
                 "Graft ağı kapattı ancak sağlıklı bölge sapması ({}) toleransı aşıyor; sonuç su geçirmez fakat sağlıklı şekli değişmiş olabilir.",
-                py_float_str(round5(hh))),
+                py_repr_f64(round5(hh))),
         }));
     }
     report.insert("warnings".into(), Value::Array(warnings));
@@ -1185,14 +1188,6 @@ fn capitalize(text: &str) -> String {
     match chars.next() {
         Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
-    }
-}
-
-fn py_float_str(x: f64) -> String {
-    if x.is_finite() && x.fract() == 0.0 {
-        format!("{:.1}", x)
-    } else {
-        format!("{}", x)
     }
 }
 
