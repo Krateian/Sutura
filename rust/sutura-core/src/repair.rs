@@ -2276,7 +2276,7 @@ fn repair_impl(
     emit_stage(sink, 2, "prepass");
     let mut tamponade_prepass_adopted = false;
     let mut tamponade_gate_skipped = false;
-    if opts.tamponade == Some(true) {
+    if opts.tamponade != Some(false) {
         let hygiene = Value::Array(cleanup_chain(true));
         let (clean_v, clean_t, _, _, _) = apply_chain(&cur_v, &cur_t, &hygiene);
         let params = tamponade_params(
@@ -2917,6 +2917,25 @@ fn repair_impl(
         }
     }
     stage1.insert("components_before".into(), Value::from(before.components));
+    {
+        let ut: Vec<[usize; 3]> = cur_t
+            .iter()
+            .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+            .collect();
+        let (_m, si, skipped) = sutura_geom::self_intersections_core(&cur_v, &ut);
+        stage1.insert(
+            "self_intersections_remaining".into(),
+            if skipped || si < 0 {
+                Value::Null
+            } else {
+                Value::from(si)
+            },
+        );
+        let si_work =
+            cur_t.len() as i64 * (1 + nm_after as i64 + after.non_two_manifold_vertices as i64 + holes_after as i64);
+        stage1.insert("si_work_units".into(), Value::from(si_work));
+        stage1.insert("si_work_budget".into(), Value::from(15_000_000i64));
+    }
     stage1.insert("applied_filters".into(), Value::from(applied));
     stage1.insert(
         "removed_small_parts".into(),

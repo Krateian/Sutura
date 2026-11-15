@@ -172,12 +172,14 @@ fn risk(report: &Value, cfg: &Value) -> (Option<i64>, Map<String, Value>) {
             if vol == 0.0 {
                 vol = 0.0;
             }
-            add(
-                "volume_delta",
-                vol.abs() / scale,
-                format!("{vol:.1}%"),
-                &mut factors,
-            );
+            let detail = if vol == 0.0 {
+                let vb = num(s1.get("volume_before")).unwrap_or(0.0);
+                let va = num(s1.get("volume_after")).unwrap_or(0.0);
+                if va < vb { "-0.0%".to_string() } else { "0.0%".to_string() }
+            } else {
+                format!("{vol:.1}%")
+            };
+            add("volume_delta", vol.abs() / scale, detail, &mut factors);
         }
         if factors.is_empty() {
             return (None, Map::new());
