@@ -307,17 +307,34 @@ pub fn boundary_loop_stats(verts_len: usize, tris: &[[i32; 3]]) -> (usize, usize
             *counts.entry(key).or_insert(0) += 1;
         }
     }
-    let mut adj: std::collections::BTreeMap<i32, Vec<i32>> = std::collections::BTreeMap::new();
-    for (&(a, b), &count) in &counts {
-        if count == 1 {
-            adj.entry(a).or_default().push(b);
-            adj.entry(b).or_default().push(a);
+    let mut adj: std::collections::HashMap<i32, Vec<i32>> = std::collections::HashMap::new();
+    let mut order: Vec<i32> = Vec::new();
+    let mut boundary: Vec<(i32, i32)> = counts
+        .iter()
+        .filter(|(_, &count)| count == 1)
+        .map(|(&key, _)| key)
+        .collect();
+    // `utils.boundary_loop_stats` iterates `np.unique` output, so the
+    // adjacency lists are filled in ascending edge-key order and the loops are
+    // then entered in first-appearance order.  Iterating `counts` (a HashMap)
+    // here used to randomise both, and on a boundary vertex with degree > 2
+    // the greedy walk below picks a different branch per process: the same
+    // mesh produced max_loop_len 150 / 154 / 157 across runs, which moved
+    // `would_apply.maxholesize`.  Sort the edges and record the insertion
+    // order explicitly so the walk is deterministic and matches Python.
+    boundary.sort_unstable();
+    for (a, b) in boundary {
+        for v in [a, b] {
+            if !adj.contains_key(&v) {
+                order.push(v);
+            }
+            adj.entry(v).or_default().push(if v == a { b } else { a });
         }
     }
     let _ = verts_len;
     let mut seen: std::collections::HashSet<i32> = std::collections::HashSet::new();
     let mut loops: Vec<usize> = Vec::new();
-    for (&start, _) in adj.iter() {
+    for &start in &order {
         if seen.contains(&start) {
             continue;
         }
@@ -585,4 +602,38 @@ pub fn dry_run_mesh(
     }
     let _ = &mut mincomp;
     Ok(Value::Object(result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A boundary vertex shared by four boundary edges makes the greedy loop
+    /// walk pick a branch.  When the adjacency lists were filled by iterating a
+    /// `HashMap` the branch changed per process, so the same mesh reported
+    /// max_loop_len 150 / 154 / 157 and `would_apply.maxholesize` moved with it.
+    /// The walk must follow `utils.boundary_loop_stats`: edges visited in
+    /// ascending key order, loops entered in that same order.
+    #[test]
+    fn boundary_loop_stats_is_deterministic_across_figures() {
+        // Two triangles sharing only vertex 1 leave that vertex with four
+        // boundary edges (the branch point), plus a second separate strip.
+        let tris: [[i32; 3]; 4] = [[0, 1, 2], [1, 3, 4], [5, 6, 7], [7, 8, 9]];
+        let first = boundary_loop_stats(10, &tris);
+        for _ in 0..64 {
+            assert_eq!(boundary_loop_stats(10, &tris), first);
+        }
+        // Golden values from utils.boundary_loop_stats on the same triangles.
+        assert_eq!(first, (6, 3));
+    }
+
+    /// `maxholesize` is `max(policy, 2 * max_loop_len)`; a loop walk that
+    /// returns too short a loop silently lands the plan below the policy floor.
+    #[test]
+    fn maxholesize_uses_the_doubled_longest_loop() {
+        let tris: [[i32; 3]; 2] = [[0, 1, 2], [2, 1, 3]];
+        let (loops, max_loop) = boundary_loop_stats(4, &tris);
+        assert_eq!((loops, max_loop), (1, 4));
+        assert_eq!((2 * max_loop) as i64, 8);
+    }
 }
