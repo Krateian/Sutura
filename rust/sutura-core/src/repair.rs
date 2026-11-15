@@ -950,6 +950,19 @@ fn tamponade_params(
     let gate = |key: &str, default: f64| -> f64 {
         policy_number(policy, "tiers.tamponade.gates", key, default)
     };
+    let guard = json!({
+        "face_ratio": policy_number(policy, "gates.adoption", "face_ratio", 4.0),
+        "vertex_ratio": policy_number(policy, "gates.adoption", "vertex_ratio", 4.0),
+        "min_slack": policy_number(policy, "gates.adoption", "min_slack", 256.0) as i64,
+        "loop_face_slack": policy_number(policy, "gates.adoption", "loop_face_slack", 16.0) as i64,
+        "loop_vertex_slack": policy_number(policy, "gates.adoption", "loop_vertex_slack", 16.0) as i64,
+        "si_policy": "flag",
+        "si_rel_tol": 0.0,
+        "si_abs_tol": 0,
+        "face_abs_floor": 0,
+        "vertex_abs_floor": 0,
+        "allow_growth_if_improved": false,
+    });
     json!({
         "prepass": prepass,
         "tamponade_force": false,
@@ -964,8 +977,16 @@ fn tamponade_params(
         "shape_open_area": gate("shape_open_area", 0.10),
         "shape_thin": gate("shape_thin", 0.30),
         "shape_thickness": gate("shape_effective_thickness", 0.004),
+        "shape_depth_cells": gate("shape_depth_cells", 32768.0) as i64,
         "shape_perimeter_ratio": gate("shape_perimeter_ratio", 1.0),
         "shape_solid_area": gate("shape_solid_area", 0.10),
+        "shape_winding": gate("shape_winding", 0.90),
+        "shape_side_samples": gate("shape_side_samples", 20000.0) as i64,
+        "shape_side_eps": gate("shape_side_eps", 1e-4),
+        "leak_max_faces": policy_number(policy, "tiers.tamponade", "leak_max_faces", 150000.0) as i64,
+        "collapse_bbox_frac": gate("collapse_bbox_frac", 0.5),
+        "leak_trigger_frac": gate("leak_trigger_frac", 0.01),
+        "guard": guard,
         "genus": genus,
         "input_faces": tris.len(),
     })
@@ -2605,7 +2626,7 @@ fn repair_impl(
             let g_in_v = cur_v.clone();
             let g_in_t = cur_t.clone();
             let (gv, gt, rec) = run_graft_tier(
-                &cur_v, &cur_t, &input_v, &input_t, holes, nm,
+                &cur_v, &cur_t, &s1_in_v, &s1_in_t, holes, nm,
                 &intensity_for_tamponade, &spec, opts.time_budget_s,
             );
             if adopted(&rec) {
@@ -2644,8 +2665,8 @@ fn repair_impl(
                 let (gv, gt, rec) = run_graft_tier(
                     &cur_v,
                     &cur_t,
-                    &input_v,
-                    &input_t,
+                    &s1_in_v,
+                    &s1_in_t,
                     holes,
                     nm,
                     &intensity_for_tamponade,
