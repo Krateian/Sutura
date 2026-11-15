@@ -2604,7 +2604,9 @@ fn repair_impl(
 
             // Graft (#13): shell wrap, only when Stage 1 still leaves damage.
             let mut graft_ok = false;
-            if opts.graft != Some(false) && (holes > 0 || nm > 0) {
+            if opts.graft != Some(false)
+                && (opts.graft == Some(true) || holes > 0 || nm > 0)
+            {
                 let g_in_v = cur_v.clone();
                 let g_in_t = cur_t.clone();
                 let (gv, gt, rec) = run_graft_tier(
