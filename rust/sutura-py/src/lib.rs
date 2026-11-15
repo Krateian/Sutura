@@ -873,6 +873,8 @@ fn graft_shell_wrap_probe_py<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
     tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    r: Option<f64>,
+    voxel: Option<f64>,
     params_json: &str,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
@@ -896,8 +898,8 @@ fn graft_shell_wrap_probe_py<'py>(
         Some((read(&rows[0])?, read(&rows[1])?))
     });
     let mut opts = sutura_core::graft::shell::ShellWrapOptions::default();
-    opts.r = params.get("r").and_then(|x| x.as_f64());
-    opts.voxel = params.get("voxel").and_then(|x| x.as_f64());
+    opts.r = r.or_else(|| params.get("r").and_then(|x| x.as_f64()));
+    opts.voxel = voxel.or_else(|| params.get("voxel").and_then(|x| x.as_f64()));
     opts.box_ = box_;
     opts.local = params.get("local").and_then(|x| x.as_bool());
     if let Some(x) = params.get("remesh").and_then(|x| x.as_bool()) {

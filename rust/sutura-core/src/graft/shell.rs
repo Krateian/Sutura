@@ -1,12 +1,22 @@
 //! Whole-mesh `shell_wrap` main loop (Graft G1), matching
 //! `sutura_engine/graft.py`.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 use sutura_geom::{morph_close_core, MorphCloseOptions};
 
-use crate::p_weld::{p_weld_final, reload_strict_holes_nm};
+use sutura_geom::hole::close_holes_core;
+use sutura_geom::manifold::{union_pair_core, watertight_check_core};
+use sutura_geom::topology::{
+    remove_duplicate_faces_core, remove_unreferenced_vertices_core, repair_non_manifold_edges_core,
+    repair_non_manifold_vertices_core, weld_vertices_core,
+};
+
+use crate::p_weld::{
+    p_weld_final, reload_strict_holes_nm, separate_weld_collisions, weld_reload_equivalent,
+};
 use crate::tiers::common;
 
 use super::helpers::{
@@ -1179,19 +1189,242 @@ fn round4(x: f64) -> f64 {
     py_round(x, 4)
 }
 
+fn to_f32(v: &[[f64; 3]]) -> Vec<[f32; 3]> {
+    v.iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect()
+}
+
+fn from_f32(v: &[[f32; 3]]) -> Vec<[f64; 3]> {
+    v.iter()
+        .map(|p| [p[0] as f64, p[1] as f64, p[2] as f64])
+        .collect()
+}
+
 fn stitch_local(
     patch_v: &[[f64; 3]],
     patch_t: &[[i64; 3]],
-    _orig_v: &[[f64; 3]],
-    _orig_t: &[[i64; 3]],
+    orig_v: &[[f64; 3]],
+    orig_t: &[[i64; 3]],
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, bool) {
-    (patch_v.to_vec(), patch_t.to_vec(), false)
+    let patch_v = patch_v.to_vec();
+    let patch_t = patch_t.to_vec();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let v32 = to_f32(&patch_v);
+        let (welded, inverse) = match weld_vertices_core(&v32) {
+            Ok(x) => x,
+            Err(_) => return (patch_v.clone(), patch_t.clone(), false),
+        };
+        let pv = from_f32(&welded);
+        let pt: Vec<[i64; 3]> = patch_t
+            .iter()
+            .map(|r| {
+                [
+                    inverse[r[0] as usize],
+                    inverse[r[1] as usize],
+                    inverse[r[2] as usize],
+                ]
+            })
+            .collect();
+        let pt32: Vec<[i32; 3]> = pt
+            .iter()
+            .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
+            .collect();
+        if !watertight_check_core(&pv, &pt32) {
+            return (pv, pt, false);
+        }
+        let at: Vec<[usize; 3]> = pt
+            .iter()
+            .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+            .collect();
+        let bt: Vec<[usize; 3]> = orig_t
+            .iter()
+            .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+            .collect();
+        match union_pair_core(&pv, &at, orig_v, &bt) {
+            Ok((ov, ot)) if !ot.is_empty() => (
+                ov,
+                ot.iter()
+                    .map(|r| [r[0] as i64, r[1] as i64, r[2] as i64])
+                    .collect(),
+                true,
+            ),
+            _ => (pv, pt, false),
+        }
+    }));
+    match result {
+        Ok(x) => x,
+        Err(_) => (patch_v, patch_t, false),
+    }
 }
 
 fn hybrid_close(
-    _v0: &[[f64; 3]],
-    _t0: &[[i64; 3]],
-    _region_mask: &[bool],
+    v0: &[[f64; 3]],
+    t0: &[[i64; 3]],
+    region_mask: &[bool],
 ) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>)> {
-    None
+    if region_mask.is_empty() || !region_mask.iter().any(|x| !*x) {
+        return None;
+    }
+    let sub: Vec<[i64; 3]> = t0
+        .iter()
+        .zip(region_mask.iter())
+        .filter(|(_, bad)| !**bad)
+        .map(|(r, _)| *r)
+        .collect();
+    let (bv, bt) = referenced_only(v0, &sub);
+    if bt.is_empty() {
+        return None;
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut ov = bv.clone();
+        let mut ot = bt.clone();
+        for _ in 0..2 {
+            let v32 = to_f32(&ov);
+            ot = repair_non_manifold_edges_core(&v32, &ot);
+            let v32 = to_f32(&ov);
+            let (nv, nt) = repair_non_manifold_vertices_core(&v32, &ot);
+            ov = from_f32(&nv);
+            ot = nt;
+            ot = remove_duplicate_faces_core(&ot);
+            if let Ok(report) = close_holes_core(&ov, &ot, HYBRID_MAX_HOLE, true) {
+                ov = report.verts;
+                ot = report.tris;
+            }
+            let v32 = to_f32(&ov);
+            let (nv, nt) = remove_unreferenced_vertices_core(&v32, &ot);
+            ov = from_f32(&nv);
+            ot = nt;
+        }
+        let capped = cap_boundary_loops(&ov, &ot);
+        ov = capped.0;
+        ot = capped.1;
+        let (ov, ot, _) = p_weld(&ov, &ot);
+        let (mut h, mut nm) = reload_strict_holes_nm(&ov, &ot);
+        let mut ov = ov;
+        let mut ot = ot;
+        if h != 0 {
+            let (sv, st) = separate_weld_collisions(&ov, &ot);
+            if let Ok((wv, wt)) = weld_reload_equivalent(&from_f32(&sv), &st) {
+                let (wv, wt) = cap_boundary_loops(&from_f32(&wv), &wt);
+                let (wh, wnm) = reload_strict_holes_nm(&wv, &wt);
+                if wh == 0 && wnm == 0 {
+                    ov = wv;
+                    ot = wt;
+                    h = 0;
+                    nm = 0;
+                }
+            }
+        }
+        if h == 0 && nm == 0 {
+            Some((ov, ot))
+        } else {
+            None
+        }
+    }));
+    result.ok().flatten()
+}
+
+fn cap_boundary_loops(v: &[[f64; 3]], t: &[[i64; 3]]) -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
+    if t.is_empty() {
+        return (v.to_vec(), t.to_vec());
+    }
+    let mut half_edges: Vec<(i64, i64)> = Vec::with_capacity(3 * t.len());
+    for r in t {
+        half_edges.push((r[0], r[1]));
+    }
+    for r in t {
+        half_edges.push((r[1], r[2]));
+    }
+    for r in t {
+        half_edges.push((r[2], r[0]));
+    }
+    let eset: std::collections::HashSet<(i64, i64)> = half_edges.iter().copied().collect();
+    let bnd: Vec<(i64, i64)> = half_edges
+        .iter()
+        .copied()
+        .filter(|&(a, b)| !eset.contains(&(b, a)))
+        .collect();
+    if bnd.is_empty() {
+        return (v.to_vec(), t.to_vec());
+    }
+    let mut parent: HashMap<i64, i64> = HashMap::new();
+    fn find(parent: &mut HashMap<i64, i64>, x: i64) -> i64 {
+        let entry = *parent.entry(x).or_insert(x);
+        if entry != x {
+            let root = find(parent, entry);
+            parent.insert(x, root);
+            root
+        } else {
+            x
+        }
+    }
+    for &(a, b) in &bnd {
+        let ra = find(&mut parent, a);
+        let rb = find(&mut parent, b);
+        if ra != rb {
+            parent.insert(ra, rb);
+        }
+    }
+    let mut order: Vec<i64> = Vec::new();
+    let mut comps: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
+    for &(a, b) in &bnd {
+        let root = find(&mut parent, a);
+        if !comps.contains_key(&root) {
+            order.push(root);
+        }
+        comps.entry(root).or_default().push((a, b));
+    }
+    let mut addv: Vec<[f64; 3]> = Vec::new();
+    let mut addt: Vec<[i64; 3]> = Vec::new();
+    for root in order {
+        let edges = &comps[&root];
+        let mut cvts: Vec<i64> = edges.iter().flat_map(|&(a, b)| [a, b]).collect();
+        cvts.sort_unstable();
+        cvts.dedup();
+        let mut xs = Vec::with_capacity(cvts.len());
+        let mut ys = Vec::with_capacity(cvts.len());
+        let mut zs = Vec::with_capacity(cvts.len());
+        for &i in &cvts {
+            let p = v[i as usize];
+            xs.push(p[0]);
+            ys.push(p[1]);
+            zs.push(p[2]);
+        }
+        let n = cvts.len() as f64;
+        addv.push([
+            np_pairwise_sum(&xs) / n,
+            np_pairwise_sum(&ys) / n,
+            np_pairwise_sum(&zs) / n,
+        ]);
+        let cidx = (v.len() + addv.len() - 1) as i64;
+        for &(a, b) in edges {
+            addt.push([b, a, cidx]);
+        }
+    }
+    let mut nv = v.to_vec();
+    nv.extend(addv);
+    let mut nt = t.to_vec();
+    nt.extend(addt);
+    nt.retain(|r| r[0] != r[1] && r[1] != r[2] && r[0] != r[2]);
+    let mut seen: std::collections::HashSet<[i64; 3]> = std::collections::HashSet::new();
+    nt.retain(|r| {
+        let mut k = *r;
+        k.sort_unstable();
+        seen.insert(k)
+    });
+    let mut used: Vec<i64> = nt.iter().flat_map(|r| r.iter().copied()).collect();
+    used.sort_unstable();
+    used.dedup();
+    let remap: HashMap<i64, i64> = used
+        .iter()
+        .enumerate()
+        .map(|(i, &u)| (u, i as i64))
+        .collect();
+    let ov: Vec<[f64; 3]> = used.iter().map(|&u| nv[u as usize]).collect();
+    let ot: Vec<[i64; 3]> = nt
+        .iter()
+        .map(|r| [remap[&r[0]], remap[&r[1]], remap[&r[2]]])
+        .collect();
+    (ov, ot)
 }
