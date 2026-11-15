@@ -1,14 +1,22 @@
 // Copyright (C) 2026 Sutura Authors
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-//! Runtime configuration: repair policy, intensity presets and learning.
+//! Runtime configuration: repair policy, intensity presets, learning and the
+//! external-engine registry.
 //!
 //! Mirrors the stdlib-only Python modules `sutura_engine.policy`,
-//! `sutura_engine.triage` (preset/profile part) and `sutura_engine.learning`.
-//! None of them may depend on pyo3, numpy or a geometry crate.
+//! `sutura_engine.triage` (preset/profile part), `sutura_engine.learning` and
+//! the loader half of `sutura_engine.adapters.external_adapter`. None of them
+//! may depend on pyo3, numpy or a geometry crate.
 
+pub mod external_engines;
 pub mod intensity;
 pub mod learning;
 pub mod policy;
+
+pub use external_engines::{
+    engine_json, engines_dir, external_engines as external_engines_json, is_engine_available,
+    load_all_engines, load_engine_file, resolve_executable, EngineConfig,
+};
 
 pub use intensity::{
     build_spec, effective_spec, format_intensities, list_intensities, load_profiles,
