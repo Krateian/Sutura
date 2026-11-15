@@ -2658,7 +2658,7 @@ fn repair_impl(
             let mut graft_ok = false;
             if !forced_graft_done
                 && opts.graft != Some(false)
-                && (opts.graft == Some(true) || holes > 0 || nm > 0)
+                && (holes > 0 || nm > 0)
             {
                 let g_in_v = cur_v.clone();
                 let g_in_t = cur_t.clone();
