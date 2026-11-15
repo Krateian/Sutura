@@ -14,21 +14,20 @@ const RANSAC_MAX_PLANES: usize = 24;
 const RANSAC_ANGLE_COS: f64 = 0.990;
 const RANSAC_DIST_FRAC: f64 = 0.02;
 
-/// Python's round-half-even at `decimals`.
+/// Python's `round(value, decimals)`.
+///
+/// Python rounds the *exact binary value* half-to-even; `format!("{:.*}")`
+/// applies the same correct rounding, so formatting and parsing back matches
+/// it (the previous epsilon snap treated 0.8075 and 0.8075000000000001 alike).
 pub fn py_round(value: f64, decimals: i32) -> f64 {
     if !value.is_finite() {
         return value;
     }
-    let factor = 10f64.powi(decimals);
-    let scaled = value * factor;
-    let floor = scaled.floor();
-    let frac = scaled - floor;
-    let rounded = if (frac - 0.5).abs() < 1e-9 {
-        if (floor as i64) % 2 == 0 { floor } else { floor + 1.0 }
-    } else {
-        scaled.round()
-    };
-    rounded / factor
+    if decimals < 0 {
+        return value;
+    }
+    let text = format!("{:.*}", decimals as usize, value);
+    text.parse::<f64>().unwrap_or(value)
 }
 
 #[derive(Clone, Copy, Debug, Default)]

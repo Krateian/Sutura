@@ -34,26 +34,7 @@ const V2_WEIGHTS: [f64; 7] = [2.3823, 2.9866, -0.9694, -0.5230, 0.5083, 2.2289, 
 const V2_MEAN: [f64; 6] = [20.9532, 30.5532, 35.5085, 4.9296, 0.2917, 0.5122];
 const V2_STD: [f64; 6] = [24.1622, 17.6785, 30.5004, 6.4313, 0.3129, 0.2819];
 
-/// Python's `round(value, decimals)` (round-half-even on the decimal digits).
-pub fn py_round(value: f64, decimals: i32) -> f64 {
-    if !value.is_finite() {
-        return value;
-    }
-    let factor = 10f64.powi(decimals);
-    let scaled = value * factor;
-    let floor = scaled.floor();
-    let frac = scaled - floor;
-    let rounded = if (frac - 0.5).abs() < 1e-9 {
-        if (floor as i64) % 2 == 0 {
-            floor
-        } else {
-            floor + 1.0
-        }
-    } else {
-        scaled.round()
-    };
-    rounded / factor
-}
+pub use sutura_geom::classify::py_round;
 
 fn sigmoid(x: f64) -> f64 {
     let x = x.clamp(-50.0, 50.0);
