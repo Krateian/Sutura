@@ -54,6 +54,38 @@ def _eigh3(cov):
     return np.linalg.eigh(a)
 
 
+def _svd3_core(h):
+    """3x3 SVD from the shared numeric core, or LAPACK when it is absent.
+
+    ``np.linalg.svd`` is LAPACK, so the Rust kernel is the single source of
+    truth and both languages see the same singular values and the same
+    reflection handling. Falls back to LAPACK only without the binding;
+    ``SUTURA_REQUIRE_RUST=1`` turns that into an error.
+    """
+    a = np.asarray(h, dtype=np.float64)
+    core = getattr(sutura_geom, 'svd3', None)
+    if core is not None:
+        return core(a)
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.svd3 is unavailable')
+    return np.linalg.svd(a)
+
+
+def _lstsq3_core(a, b):
+    """`np.linalg.lstsq(A, b, rcond=None)` for a tall `(n, 3)` A, shared core."""
+    A = np.ascontiguousarray(a, dtype=np.float64)
+    rhs = np.ascontiguousarray(b, dtype=np.float64)
+    core = getattr(sutura_geom, 'lstsq3', None)
+    if core is not None:
+        return core(A, rhs)
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.lstsq3 is unavailable')
+    sol, _, _, _ = np.linalg.lstsq(A, rhs, rcond=None)
+    return sol
+
+
 def _canonical_axis_sign(ax):
     """+1 when the largest-magnitude component is positive, else -1.
 
@@ -388,10 +420,14 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
         q_bar = np.mean(target_pts, axis=0)
 
         H = (current_pts - p_bar).T @ (target_pts - q_bar)
-        U, _, Vt = np.linalg.svd(H)
+        U, _s, Vt = _svd3_core(H)
+        U = np.asarray(U, dtype=np.float64)
+        Vt = np.asarray(Vt, dtype=np.float64).copy()
         R_step = Vt.T @ U.T
 
         if not allow_reflection and np.linalg.det(R_step) < 0:
+            # Kabsch reflection fix: negate the LAST row of Vt (the smallest
+            # singular value) and recompute. Minimal change; lands on V, not U.
             Vt[-1, :] = -Vt[-1, :]
             R_step = Vt.T @ U.T
 
@@ -704,7 +740,7 @@ def _detect_repetition_patches(verts, tris):
         try:
             A = np.column_stack([2.0 * x_2d, 2.0 * y_2d, np.ones(len(x_2d))])
             b = x_2d ** 2 + y_2d ** 2
-            sol, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+            sol = _lstsq3_core(A, b)
             cx, cy = float(sol[0]), float(sol[1])
             r_sq = sol[2] + cx ** 2 + cy ** 2
             if r_sq > 0:
