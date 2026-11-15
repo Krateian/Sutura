@@ -99,6 +99,45 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         verts = np.asarray(verts, dtype=np.float32)
         tris = np.asarray(tris, dtype=np.int32)
 
+    if os.environ.get('SUTURA_PIPELINE_ENGINE', '').strip().lower() == 'rust':
+        from sutura_engine import rust_bridge
+        core = rust_bridge.load('pipeline', ('SUTURA_PIPELINE_ENGINE',), 'python')
+        if core is None or not hasattr(core, 'pipeline_repair'):
+            rust_bridge.unavailable(
+                'SUTURA_PIPELINE_ENGINE=rust requires '
+                'sutura_core_py.pipeline_repair')
+        else:
+            def _fb(value):
+                if isinstance(value, bool):
+                    return value
+                return str(value).strip().lower() in (
+                    '1', 'true', 'yes', 'on', 'auto', 'force')
+            opts = {
+                'mode': mode,
+                'intensity': getattr(triage_spec, 'intensity', 'balanced'),
+                'profile': profile, 'deep_repair': deep_repair,
+                'closing': closing, 'proxy_template': _fb(proxy_template),
+                'graft': _fb(graft), 'tamponade': _fb(tamponade),
+                'ftetwild': ('always' if _fb(ftetwild) else None),
+                'flap': _fb(flap), 'coaptation': _fb(coaptation),
+                'splint': _fb(splint), 'dressing': _fb(dressing),
+                'wall_thicken': _fb(wall_thicken), 'repeat': repeat,
+                'solid_engine': solid_engine, 'si_mode': si_mode,
+                'time_budget_s': None, 'seed': 0,
+            }
+            rv, rt, rj = core.pipeline_repair(
+                np.ascontiguousarray(verts, dtype=np.float64),
+                np.ascontiguousarray(tris, dtype=np.int64),
+                json.dumps(opts))
+            report = json.loads(rj)
+            if report.get('ok') is False and report.get('error'):
+                raise RuntimeError(report['error'])
+            new_v, new_t = np.asarray(rv), np.asarray(rt)
+            save_mesh(out, new_v, new_t)
+            report['_fp'] = history.mesh_fingerprint(verts, tris)
+            report['defects'] = detect_defects(verts, tris)
+            return report
+
     _owns_trace = False
     if not trace.is_active() and os.environ.get('SUTURA_TRACE'):
         trace.begin_trace(trace_path=None, input_file=src,
