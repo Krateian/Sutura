@@ -27,6 +27,7 @@ pub mod mirror;
 pub mod pipeline_objects;
 pub mod proxy;
 pub mod repair;
+pub mod repair_settings;
 pub mod stage1;
 pub mod stage2;
 pub mod report;

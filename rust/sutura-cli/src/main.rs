@@ -18,6 +18,9 @@ use sutura_core::{
     check_units, load_mesh, parse_3mf_mesh_blocks, read_3mf_units, save_mesh, scan_bad_coordinates,
     Mesh, SourceFormat,
 };
+// The method registry lives in the shared settings module: the GUI needs it too
+// and must not depend on this binary crate.
+use sutura_core::repair_settings::METHODS;
 
 mod human;
 mod repair_cmd;
@@ -338,29 +341,6 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
 
     repair_cmd::run(&cli)
 }
-
-/// The 19 built-in repair methods, in registry order.
-const METHODS: [(u8, &str, &str, &str); 19] = [
-    (1, "quick_clean", "clean", "Quick Clean"),
-    (2, "local_mend", "topology", "Local Mend"),
-    (3, "full_mend", "topology", "Full Mend"),
-    (4, "join", "topology", "Join"),
-    (5, "autorefine", "si", "Autorefine"),
-    (6, "exact_refine", "si", "Exact Refine"),
-    (7, "ftetwild", "envelope", "fTetWild"),
-    (8, "balloon", "closing", "Balloon"),
-    (9, "backplate", "closing", "Backplate"),
-    (10, "scaffold", "template", "Scaffold"),
-    (11, "transplant", "pattern", "Transplant"),
-    (12, "transplant_plus", "pattern", "Transplant+"),
-    (13, "graft", "envelope", "Graft"),
-    (14, "mirror_complete", "closing", "Mirror Complete"),
-    (15, "wall_thicken", "envelope", "Wall Thicken"),
-    (16, "dressing", "envelope", "Dressing"),
-    (17, "tamponade", "interior", "Tamponade"),
-    (18, "splint", "solid", "Splint"),
-    (19, "coaptation", "solid", "Coaptation"),
-];
 
 /// Whether the optional fTetWild binary is installed. The Rust CLI cannot
 /// import Python's pytetwild; until the Rust tier is wired this mirrors the

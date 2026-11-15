@@ -45,7 +45,18 @@ impl RepairFailure {
             message: Some(message.into()),
         }
     }
+}
 
+/// The CLI reports failures with an `Option<String>` message (a `None` means
+/// "print nothing"), while the shared settings module uses a plain `String`.
+/// Keeping the CLI shape avoids churn at every call site, so convert here.
+impl From<sutura_core::repair_settings::RepairFailure> for RepairFailure {
+    fn from(other: sutura_core::repair_settings::RepairFailure) -> Self {
+        Self {
+            code: other.code,
+            message: Some(other.message),
+        }
+    }
 }
 
 /// Progress event writer matching `sutura_engine.progress.JsonProgress`.
@@ -114,59 +125,6 @@ impl ProgressSink for CoreSink {
     fn emit(&self, _event: Value) {}
 }
 
-fn parse_mode(value: Option<&str>) -> Result<RepairMode, RepairFailure> {
-    match value.unwrap_or("auto") {
-        "auto" => Ok(RepairMode::Auto),
-        "low" => Ok(RepairMode::Low),
-        "medium" => Ok(RepairMode::Medium),
-        "aggressive" => Ok(RepairMode::Aggressive),
-        "extreme" => Ok(RepairMode::Extreme),
-        other => Err(RepairFailure::new(
-            2,
-            format!("invalid --mode value: {other}"),
-        )),
-    }
-}
-
-fn parse_deep(value: Option<&str>, intensity: &str) -> Result<DeepRepair, RepairFailure> {
-    match value {
-        Some("off") => Ok(DeepRepair::Off),
-        Some("local") => Ok(DeepRepair::Local),
-        Some("full") => Ok(DeepRepair::Full),
-        Some(other) => Err(RepairFailure::new(
-            2,
-            format!("invalid --deep-repair value: {other}"),
-        )),
-        None => Ok(match intensity {
-            "quick" => DeepRepair::Off,
-            _ => DeepRepair::Full,
-        }),
-    }
-}
-
-fn parse_si(value: Option<&str>) -> Result<SiMode, RepairFailure> {
-    match value.unwrap_or("report") {
-        "repair" | "on" | "auto" => Ok(SiMode::Repair),
-        "report" => Ok(SiMode::Report),
-        "off" => Ok(SiMode::Off),
-        other => Err(RepairFailure::new(
-            2,
-            format!("invalid --si-mode value: {other}"),
-        )),
-    }
-}
-
-fn parse_solid(value: Option<&str>) -> Result<SolidEngine, RepairFailure> {
-    match value.unwrap_or("ftetwild") {
-        "ftetwild" => Ok(SolidEngine::Ftetwild),
-        "cdt" => Ok(SolidEngine::Cdt),
-        other => Err(RepairFailure::new(
-            2,
-            format!("invalid --solid-engine value: {other}"),
-        )),
-    }
-}
-
 /// Parse `--repeat-source` / `--repeat-target`: `"X,Y,Z"` of numbers.
 ///
 /// Matches the Python CLI's `_parse_point`: exactly three comma-separated
@@ -174,61 +132,26 @@ fn parse_solid(value: Option<&str>) -> Result<SolidEngine, RepairFailure> {
 fn parse_point(raw: &str, flag: &str) -> Result<[f64; 3], RepairFailure> {
     let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
     if parts.len() != 3 {
-        return Err(RepairFailure::new(2, format!("argument {flag}: expected X,Y,Z")));
+        return Err(RepairFailure::new(
+            2,
+            format!("argument {flag}: expected X,Y,Z"),
+        ));
     }
     let mut out = [0.0f64; 3];
     for (i, part) in parts.iter().enumerate() {
         out[i] = part.parse::<f64>().map_err(|_| {
-            RepairFailure::new(
-                2,
-                format!("argument {flag}: coordinates must be numbers"),
-            )
+            RepairFailure::new(2, format!("argument {flag}: coordinates must be numbers"))
         })?;
     }
     Ok(out)
 }
 
-/// Parse `--methods` into the baseline deep-repair mode. Only the three ported
-/// baseline methods (1 Quick Clean, 2 Local Mend, 3 Full Mend) are accepted.
-fn parse_methods(
-    value: Option<&str>,
-    deep: DeepRepair,
-) -> Result<(DeepRepair, bool, Vec<u64>), RepairFailure> {
-    let Some(raw) = value else {
-        return Ok((deep, false, Vec::new()));
-    };
-    let mut nums = Vec::new();
-    for token in raw.split(',') {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
-        }
-        let num = token
-            .parse::<u64>()
-            .map_err(|_| RepairFailure::new(2, format!("unknown method: {token}")))?;
-        match num {
-            // Every method the Rust ladder can actually run: `forced_methods`
-            // carries them into `repair()` (p10/core). Method 12 additionally
-            // needs the two points and does not change the baseline deep-repair
-            // mode, so it maps through `_ => deep` below.
-            1..=19 => nums.push(num),
-            _ => {
-                return Err(RepairFailure::new(
-                    2,
-                    format!("unknown method: {num}"),
-                ))
-            }
-        }
-    }
-    let mapped = match nums.last().copied() {
-        Some(1) => DeepRepair::Off,
-        Some(2) => DeepRepair::Local,
-        Some(3) => DeepRepair::Full,
-        _ => deep,
-    };
-    Ok((mapped, true, nums))
-}
-
+/// Build the repair options from the parsed CLI.
+///
+/// The flag *validation* (which flags this CLI does not implement) lives here;
+/// the settings -> [`RepairOptions`] conversion does NOT. It lives in
+/// `sutura_core::repair_settings::options_from`, which the GUI also calls, so
+/// the two front ends cannot drift apart.
 pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>), RepairFailure> {
     if cli.engines.is_some() {
         return Err(RepairFailure::new(
@@ -236,16 +159,6 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             "--engines is not implemented in the Rust CLI",
         ));
     }
-    // `--repeat-source` / `--repeat-target`: the two 3D points method 12
-    // transplants between. Validated below, once `--methods` is known.
-    let repeat_source = match cli.repeat_source.as_deref() {
-        Some(raw) => Some(parse_point(raw, "--repeat-source")?),
-        None => None,
-    };
-    let repeat_target = match cli.repeat_target.as_deref() {
-        Some(raw) => Some(parse_point(raw, "--repeat-target")?),
-        None => None,
-    };
     if cli.wall_min_thickness.is_some() {
         return Err(RepairFailure::new(
             2,
@@ -325,98 +238,49 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         ));
     }
 
-    let intensity = cli.intensity.clone().unwrap_or_else(|| "balanced".into());
-    let mode = parse_mode(cli.mode.as_deref())?;
-    let mut deep_repair = parse_deep(cli.deep_repair.as_deref(), &intensity)?;
-    if cli.deep_repair.is_none() {
-        if cli.no_fallback_ftetwild {
-            deep_repair = DeepRepair::Off;
-        } else if cli.experimental_fallback_ftetwild {
-            deep_repair = DeepRepair::Full;
-        }
-    }
-    let ftetwild = if cli.no_fallback_ftetwild {
-        Some(Value::Bool(false))
-    } else if cli.experimental_fallback_ftetwild {
-        Some(Value::Bool(true))
-    } else {
-        None
+    // The two points are CLI-shaped text here; everything else is a plain
+    // copy, and the single shared conversion does the rest.
+    let repeat_source = match cli.repeat_source.as_deref() {
+        Some(raw) => Some(parse_point(raw, "--repeat-source")?),
+        None => None,
     };
-    let (deep_repair, methods_given, methods) =
-        parse_methods(cli.methods.as_deref(), deep_repair)?;
-    // Method 12 needs both points, exactly as the Python CLI requires.
-    if methods.contains(&12) && (repeat_source.is_none() || repeat_target.is_none()) {
-        return Err(RepairFailure::new(
-            2,
-            "--methods 12 requires --repeat-source X,Y,Z and --repeat-target X,Y,Z",
-        ));
-    }
-    let repeat = if repeat_source.is_some() || repeat_target.is_some() {
-        Some(RepeatMode::Manual)
-    } else {
-        None
+    let repeat_target = match cli.repeat_target.as_deref() {
+        Some(raw) => Some(parse_point(raw, "--repeat-target")?),
+        None => None,
     };
-    let si_mode = parse_si(cli.si_mode.as_deref())?;
-    let solid_engine = parse_solid(cli.solid_engine.as_deref())?;
 
-    let graft = if cli.no_graft {
-        Some(false)
-    } else if cli.experimental_graft {
-        Some(true)
-    } else {
-        Some(true)
-    };
-    let tamponade = if cli.no_tamponade {
-        Some(false)
-    } else {
-        Some(true)
-    };
-    let flap = if cli.no_flap { Some(false) } else { Some(true) };
-    let coaptation = if cli.no_coaptation {
-        Some(false)
-    } else {
-        Some(true)
-    };
-    let splint = !cli.no_splint && cli.experimental_splint;
-
-    let mut opts = RepairOptions {
-        mode,
-        intensity,
+    let settings = sutura_core::repair_settings::RepairSettings {
+        mode: cli.mode.clone(),
+        intensity: cli.intensity.clone(),
         profile: cli.profile.clone(),
-        deep_repair,
-        closing: None,
-        proxy_template: false,
-        graft,
-        tamponade,
-        flap,
-        coaptation,
-        splint,
-        dressing: false,
-        dressing_drain: None,
-        dressing_defects: None,
-        dressing_rmax_scale: None,
-        dressing_sigma_scale: None,
-        dressing_force_adopt: false,
-        wall_thicken: false,
-        repeat,
+        deep_repair: cli.deep_repair.clone(),
+        si_mode: cli.si_mode.clone(),
+        solid_engine: cli.solid_engine.clone(),
+        classifier_engine: cli.classifier_engine.clone(),
+        methods: cli.methods.clone(),
+        max_geometry_change: cli.max_geometry_change,
+        max_risk: cli.max_risk,
+        force: cli.force,
+        no_graft: cli.no_graft,
+        experimental_graft: cli.experimental_graft,
+        no_tamponade: cli.no_tamponade,
+        // The CLI has no `--experimental-*` switch for these tiers: they are on
+        // unless `--no-<tier>` turns them off, which is exactly what
+        // `options_from`'s tri-state does with both inputs false.
+        experimental_tamponade: false,
+        no_flap: cli.no_flap,
+        experimental_flap: false,
+        no_coaptation: cli.no_coaptation,
+        experimental_coaptation: false,
+        experimental_splint: cli.experimental_splint,
+        no_splint: cli.no_splint,
+        no_fallback_ftetwild: cli.no_fallback_ftetwild,
+        experimental_fallback_ftetwild: cli.experimental_fallback_ftetwild,
         repeat_source,
         repeat_target,
-        solid_engine,
-        si_mode,
-        ftetwild,
         time_budget_s: None,
-        seed: 0,
-        forced_methods: Vec::new(),
     };
-    if methods.contains(&13) {
-        opts.graft = Some(true);
-        opts.deep_repair = DeepRepair::Off;
-    }
-    opts.forced_methods = methods
-        .iter()
-        .filter_map(|n| u8::try_from(*n).ok())
-        .collect();
-    Ok((opts, methods_given, methods))
+    sutura_core::repair_settings::options_from(&settings).map_err(RepairFailure::from)
 }
 
 fn unique_output(src: &Path) -> PathBuf {
