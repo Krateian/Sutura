@@ -10,7 +10,7 @@ fn main() {
     let loaded = load_policy(None).expect("policy");
     let kind = std::env::var("PROBE_KIND").unwrap_or_else(|_| "validate".into());
     let result = if kind == "dry-run" {
-        dry_run_mesh(&mesh, &loaded, "auto", None, &engine, None, None, &si_mode, true)
+        dry_run_mesh(&mesh, &loaded, "auto", None, &engine, None, None, &si_mode, false)
     } else {
         validate_mesh(&mesh, &loaded, &engine, None, &si_mode)
     };

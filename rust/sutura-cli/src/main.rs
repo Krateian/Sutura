@@ -249,6 +249,65 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
         };
     }
 
+    // `validate` as the first positional switches to read-only validation;
+    // the Python CLI has no such subcommand, it is picked out of the file
+    // list before anything else runs.
+    // A single `-o` with several inputs is rejected before anything else
+    // (the Python CLI checks this ahead of the validate/--dry-run dispatch).
+    if cli.files.len() > 1 && cli.output.is_some() {
+        return Err((
+            2,
+            Some("-o cannot be used with multiple input files".to_string()),
+        ));
+    }
+
+    if matches!(cli.files.first().and_then(|f| f.to_str()), Some("validate")) {
+        if cli.output.is_some() {
+            return Err((2, Some("-o is not valid with validate".to_string())));
+        }
+        if cli.dry_run {
+            return Err((2, Some("--dry-run is not valid with validate".to_string())));
+        }
+        if cli.methods.is_some() {
+            return Err((2, Some("--methods is not valid with validate".to_string())));
+        }
+        if cli.engines.is_some() {
+            return Err((2, Some("--engines is not valid with validate".to_string())));
+        }
+        let targets = cli.files[1..].to_vec();
+        if targets.is_empty() {
+            return Err((
+                2,
+                Some("validate requires at least one input file".to_string()),
+            ));
+        }
+        return run_read_only(&cli, &targets, ReadOnly::Validate);
+    }
+    if cli.dry_run {
+        if cli.output.is_some() {
+            return Err((2, Some("-o is not valid with --dry-run".to_string())));
+        }
+        if cli.methods.is_some() {
+            return Err((2, Some("--methods is not valid with --dry-run".to_string())));
+        }
+        if cli.engines.is_some() {
+            return Err((2, Some("--engines is not valid with --dry-run".to_string())));
+        }
+        if cli.files.is_empty() {
+            return Err((2, Some("no input files".to_string())));
+        }
+        return run_read_only(&cli, &cli.files.clone(), ReadOnly::DryRun);
+    }
+    if cli.analyze {
+        return Err((
+            2,
+            Some(
+                "--analyze needs the unported repetition/closing analysis signals"
+                    .to_string(),
+            ),
+        ));
+    }
+
     if cli.files.is_empty() {
         // No positional input: keep the Python CLI's usage error shape.
         return Err((2, Some("no input files".to_string())));
@@ -531,4 +590,316 @@ fn format_name(f: SourceFormat) -> &'static str {
 
 fn material_refs(path: &Path) -> bool {
     sutura_core::obj_has_material_refs(path)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ReadOnly {
+    Validate,
+    DryRun,
+}
+
+/// `validate` / `--dry-run`: analyse every input, write nothing.
+///
+/// Output rules match the Python CLI: one file prints the bare report, several
+/// print `{"files": [...]}`; `--human` switches to the text renderers; the
+/// exit code is 1 when any file reported an error.
+fn run_read_only(cli: &Cli, files: &[PathBuf], kind: ReadOnly) -> Result<(), (u8, Option<String>)> {
+    let human = cli.human && !cli.json;
+    let loaded = sutura_core::config::policy::load_policy(None).map_err(|e| (1, Some(e.to_string())))?;
+    let engine = cli.classifier_engine.as_deref().unwrap_or("experimental");
+    let si_mode = cli.si_mode.as_deref().unwrap_or("auto");
+    let mode = cli.mode.as_deref().unwrap_or("auto");
+
+    let mut reports: Vec<Value> = Vec::with_capacity(files.len());
+    let mut errors = 0usize;
+    for path in files {
+        let input = path.display().to_string();
+        let report = match read_only_one(cli, path, kind, &loaded, engine, si_mode, mode) {
+            Ok(value) => value,
+            Err(message) => {
+                errors += 1;
+                json!({"input": input, "error": message})
+            }
+        };
+        reports.push(report);
+    }
+
+    if reports.len() == 1 {
+        let report = &reports[0];
+        if human {
+            println!("{}", match kind {
+                ReadOnly::Validate => human_validate(report),
+                ReadOnly::DryRun => human_dry_run(report),
+            });
+        } else {
+            println!("{}", serde_json::to_string(report).unwrap());
+        }
+    } else if human {
+        for report in &reports {
+            println!("{}", match kind {
+                ReadOnly::Validate => human_validate(report),
+                ReadOnly::DryRun => human_dry_run(report),
+            });
+            println!();
+        }
+    } else {
+        println!("{}", serde_json::to_string(&json!({"files": reports})).unwrap());
+    }
+    if errors > 0 {
+        return Err((1, None));
+    }
+    Ok(())
+}
+
+/// One read-only report, or the Python `error` string for hard failures.
+fn read_only_one(
+    cli: &Cli,
+    path: &Path,
+    kind: ReadOnly,
+    loaded: &sutura_core::config::policy::LoadedPolicy,
+    engine: &str,
+    si_mode: &str,
+    mode: &str,
+) -> Result<Value, String> {
+    let prefix = match kind {
+        ReadOnly::Validate => "validation failed: ",
+        ReadOnly::DryRun => "dry run failed: ",
+    };
+    if !path.exists() {
+        return Err(format!("{prefix}file not found: {}", path.display()));
+    }
+    if let Ok(Some(bad)) = sutura_core::scan_bad_coordinates(path) {
+        return Err(format!("{prefix}input mesh contains {bad}"));
+    }
+    let mesh = sutura_core::load_mesh(path).map_err(|e| format!("{prefix}{e}"))?;
+    let mut value = match kind {
+        ReadOnly::Validate => {
+            sutura_core::validate::validate_mesh(&mesh, loaded, engine, None, si_mode)
+                .map_err(|e| format!("{prefix}{e}"))?
+        }
+        ReadOnly::DryRun => sutura_core::validate::dry_run_mesh(
+            &mesh,
+            loaded,
+            mode,
+            cli.profile.as_deref(),
+            engine,
+            None,
+            None,
+            si_mode,
+            !cli.no_flap,
+        )
+        .map_err(|e| format!("{prefix}{e}"))?,
+    };
+    let mut out = serde_json::Map::new();
+    out.insert("input".into(), json!(path.display().to_string()));
+    if let Value::Object(body) = value.take() {
+        for (k, v) in body {
+            out.insert(k, v);
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+/// `report.human_validate`.
+fn human_validate(report: &Value) -> String {
+    if let Some(err) = report.get("error").and_then(Value::as_str) {
+        if report.get("validation").is_none() {
+            return format!("ERROR: {err}");
+        }
+    }
+    let v = report.get("validation").cloned().unwrap_or(Value::Null);
+    let mut lines = vec![format!(
+        "Input : {}",
+        report.get("input").and_then(Value::as_str).unwrap_or("")
+    )];
+    if v.get("unit_warning").and_then(Value::as_bool).unwrap_or(false) {
+        lines.push(format!(
+            "WARNING: {}",
+            v.get("unit_hint").and_then(Value::as_str).unwrap_or("")
+        ));
+    }
+    lines.push(format!(
+        "Type  : {} (confidence {:.2})",
+        report.get("detected_type").and_then(Value::as_str).unwrap_or("?"),
+        report
+            .get("detected_confidence")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+    ));
+    if let Some(engine) = report.get("classifier_engine").and_then(Value::as_str) {
+        lines.push(format!("Classifier: {engine}"));
+    }
+    if let Some(ec) = report.get("estimated_confidence").and_then(Value::as_i64) {
+        let label = report
+            .get("estimated_confidence_label")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        lines.push(format!(
+            "Estimated confidence: {ec}/100 ({}) — actual result may differ after repair",
+            title_case(label)
+        ));
+    }
+    lines.push(String::new());
+    lines.push("Validation:".to_string());
+    let count = |key: &str| {
+        v.get(key)
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0)
+    };
+    lines.push(format!(
+        "  Vertices            : {}",
+        v.get("vertices").and_then(Value::as_i64).unwrap_or(0)
+    ));
+    lines.push(format!(
+        "  Faces               : {}",
+        v.get("faces").and_then(Value::as_i64).unwrap_or(0)
+    ));
+    lines.push(format!("  Holes               : {}", count("holes")));
+    lines.push(format!(
+        "  Non-manifold regions: {}",
+        count("non_manifold")
+    ));
+    lines.push(format!(
+        "  Self-intersections  : {}",
+        v.get("self_intersections")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    ));
+    lines.push(format!(
+        "  Connected components: {}",
+        v.get("connected_components")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    ));
+    lines.push(format!(
+        "  Watertight          : {}",
+        if v.get("watertight").and_then(Value::as_bool).unwrap_or(false) {
+            "YES"
+        } else {
+            "NO"
+        }
+    ));
+    lines.push(format!(
+        "  Signed volume       : {:.6}",
+        v.get("signed_volume").and_then(Value::as_f64).unwrap_or(0.0)
+    ));
+    lines.push(format!(
+        "  Surface area        : {:.3}",
+        v.get("surface_area").and_then(Value::as_f64).unwrap_or(0.0)
+    ));
+    lines.push(format!(
+        "  Orientation         : {}",
+        v.get("orientation").and_then(Value::as_str).unwrap_or("?")
+    ));
+    lines.join("\n")
+}
+
+/// `report.human_dry_run`.
+fn human_dry_run(report: &Value) -> String {
+    if let Some(err) = report.get("error").and_then(Value::as_str) {
+        return format!("ERROR: {err}");
+    }
+    let mut lines = vec![
+        format!(
+            "Input : {}",
+            report.get("input").and_then(Value::as_str).unwrap_or("")
+        ),
+        "Dry-run: no output file will be written".to_string(),
+        format!(
+            "Mode  : {}",
+            report.get("repair_mode").and_then(Value::as_str).unwrap_or("?")
+        ),
+    ];
+    if report
+        .get("unit_warning")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        lines.push(format!(
+            "WARNING: {}",
+            report.get("unit_hint").and_then(Value::as_str).unwrap_or("")
+        ));
+    }
+    lines.push(format!(
+        "Type  : {} (confidence {:.2})",
+        report.get("detected_type").and_then(Value::as_str).unwrap_or("?"),
+        report
+            .get("detected_confidence")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+    ));
+    lines.push(format!(
+        "Classifier: {}",
+        report
+            .get("classifier_engine")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+    ));
+    lines.push(format!(
+        "Tuning: {}",
+        if report
+            .get("tuning_applied")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            "tuned thresholds"
+        } else {
+            "default thresholds"
+        }
+    ));
+    if let Some(ec) = report.get("estimated_confidence").and_then(Value::as_i64) {
+        let label = report
+            .get("estimated_confidence_label")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        lines.push(format!(
+            "Estimated confidence: {ec}/100 ({}) — actual result may differ after repair",
+            title_case(label)
+        ));
+    }
+    let wa = report.get("would_apply").cloned().unwrap_or(Value::Null);
+    lines.push(format!(
+        "Would apply: mincomponentsize={}, maxholesize={}",
+        wa.get("mincomponentsize").and_then(Value::as_i64).unwrap_or(0),
+        wa.get("maxholesize").and_then(Value::as_i64).unwrap_or(0)
+    ));
+    lines.push(format!(
+        "Found  : {} hole(s) (largest {:.3}), {} non-manifold region(s), {} self-intersection(s), {} debris face(s) (< mincomponentsize)",
+        report.get("holes_found").and_then(Value::as_i64).unwrap_or(0),
+        report
+            .get("largest_hole_diameter")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        report
+            .get("non_manifold_regions")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        report.get("self_intersections").and_then(Value::as_i64).unwrap_or(0),
+        report
+            .get("debris_faces_removable")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    ));
+    lines.push(if report
+        .get("stage2_bridge_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "Stage 2: would run if stage 1 closes the mesh (bridge available)".to_string()
+    } else {
+        "Stage 2: would be skipped (bridge unavailable)".to_string()
+    });
+    if report.get("flap_step").and_then(Value::as_bool).unwrap_or(false) {
+        lines.push("Flap  : would run first (pre-pass on the input)".to_string());
+    }
+    lines.join("\n")
+}
+
+fn title_case(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
