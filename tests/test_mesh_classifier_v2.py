@@ -71,7 +71,11 @@ def test_head_disabled_equals_classic():
 def test_return_shape_and_metrics():
     for m in iter_meshes():
         r = v2.classify_mesh(m['verts'], m['tris'])
-        assert set(r) == {'type', 'confidence', 'metrics'}, r
+        # ``feature_engine`` records which numeric core produced the features
+        # (rust kernel vs NumPy fallback); it is not part of the metrics.
+        assert set(r) == {'type', 'confidence', 'metrics',
+                          'feature_engine'}, r
+        assert r['feature_engine'] in ('rust', 'numpy'), r
         assert r['type'] in ('mechanical', 'organic', 'unknown'), r
         assert 0.0 <= r['confidence'] <= 1.0, r
         for k in ('near90', 'flat', 'gentle', 'plane_count', 'plane_area',
