@@ -94,3 +94,24 @@ def test_low_score_poisson_fallback_report_equal():
     assert np.array_equal(np.asarray(rv), np.asarray(rv2))
     assert np.array_equal(np.asarray(rt), np.asarray(rt2))
     assert rj == rj2
+
+
+import pytest
+
+
+@pytest.mark.xfail(
+    reason='open: mirror plane normal waits for the shared 3x3 eigh core '
+           '(cmd p10/cli (c)); no second SVD/Jacobi is allowed')
+def test_mirror_100173_shared_eigh():
+    _core()
+    from sutura_engine.methods import closing as cl
+    from sutura_engine import mirror as mir
+
+    v, t = _load('thingi10k_100173.stl')
+    pv, pt, prep = mir.mirror_close(v, t)
+    rv, rt, rj = _core().mirror_close(v, t, None)
+    rrep = json.loads(rj)
+    assert prep['watertight'] == rrep['watertight']
+    assert prep['mode'] == rrep['mode']
+    assert np.array_equal(pv, np.asarray(rv))
+    assert np.array_equal(pt, np.asarray(rt))

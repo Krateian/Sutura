@@ -63,6 +63,12 @@ Consequences:
 
 ## Open work
 
+- **Mirror plane normal waits for the shared eigh.** `mirror::detect_mirror_plane`
+  still uses a local Jacobi solver, so a mirror mesh can differ from NumPy
+  LAPACK SVD in the normal's last bits/sign (`thingi10k_100173`, xfail).  No
+  second SVD/Jacobi may be added: bind to the shared 3x3 `eigh` core that cmd
+  is landing in `sutura-geom` (p10/cli, step (c)).
+
 - **f64 OBJ writer.** `mesh_io.write_obj` keeps float64 input on the Python
   `%.9g` writer (R1). When the Python runtime is removed, the Rust writer needs
   an f64 path that emits the same `%.9g` text; the current Rust writer is
