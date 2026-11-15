@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! NumPy-compatible reductions.
 //!
 //! `np.sum` is not a plain left-to-right sum: it uses pairwise summation with

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Method ranking and suggestions for the read-only `--analyze` path.
 //!
 //! Port of `sutura_engine/methods/__init__.py` (`rank_methods`,

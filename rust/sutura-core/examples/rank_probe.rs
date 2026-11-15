@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 use sutura_core::config::policy::default_policy;
 use sutura_core::ranking::{rank_methods, recommendations_json, Analysis};
 

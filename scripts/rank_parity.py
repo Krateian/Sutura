@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Sutura Authors
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Ranking parity: Rust `rank_probe` vs Python `rank_methods`.
 
 For each mesh the analysis fields are computed by the Python analyzer, then

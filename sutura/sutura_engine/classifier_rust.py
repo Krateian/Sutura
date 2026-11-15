@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Rust classifier backend (`SUTURA_CLASSIFIER_BACKEND=rust`).
 
 Runs the whole classifier (classic or v2 head, RANSAC features and metrics) in

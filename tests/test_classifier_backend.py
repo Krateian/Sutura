@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Sutura Authors
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Tests for the Rust classifier backend (`SUTURA_CLASSIFIER_BACKEND`).
 
 The backend must be a drop-in for `diagnose.classify_with_engine`:

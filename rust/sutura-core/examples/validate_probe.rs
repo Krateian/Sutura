@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 use sutura_core::config::policy::load_policy;
 use sutura_core::validate::{dry_run_mesh, validate_mesh};
 

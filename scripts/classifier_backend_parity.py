@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Sutura Authors
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Backend parity: `SUTURA_CLASSIFIER_BACKEND=python` vs `rust`.
 
 Same 226-mesh corpus as the classifier gate. For both engines (classic and

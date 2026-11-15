@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Read-only mesh validation (`sutura validate`, `--dry-run`).
 //!
 //! Port of `sutura_engine/pipeline/validate.py`. Nothing here writes a file;
