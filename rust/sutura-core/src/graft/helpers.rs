@@ -228,7 +228,7 @@ pub fn grid_cell_count(v: &[[f64; 3]], voxel: f64) -> i64 {
     (dims[0] as i128 * dims[1] as i128 * dims[2] as i128) as i64
 }
 
-fn damaged_region(t: &[[i64; 3]]) -> (Vec<bool>, usize) {
+pub(crate) fn damaged_region(t: &[[i64; 3]]) -> (Vec<bool>, usize) {
     let mut counts: HashMap<(i64, i64), usize> = HashMap::new();
     for r in t {
         for (a, b) in [(r[0], r[1]), (r[1], r[2]), (r[2], r[0])] {

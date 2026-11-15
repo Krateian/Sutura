@@ -19,6 +19,7 @@ pub mod reduce;
 pub mod validate;
 pub mod closing;
 pub mod graft;
+pub mod local_remesh;
 pub mod mirror;
 pub mod proxy;
 pub mod repair;

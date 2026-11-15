@@ -25,6 +25,7 @@ use crate::closing::{flat_back_close, poisson_close};
 use crate::config::intensity::{resolve_intensity, IntensitySpec};
 use crate::config::policy::{load_policy, LoadedPolicy, PolicyValue};
 use crate::graft::shell::{shell_wrap, ShellWrapOptions};
+use crate::local_remesh;
 use crate::mesh::Mesh;
 use crate::mirror::mirror_close;
 use crate::p_weld::{enforce_reload_verdict, p_weld_final};
@@ -318,7 +319,7 @@ fn quantize(verts: &[[f64; 3]]) -> Vec<[f64; 3]> {
 }
 
 /// `boundary_loop_stats` (count, largest loop edge count) without numpy.
-fn boundary_loop_stats(tris: &[[i64; 3]]) -> (usize, usize) {
+pub(crate) fn boundary_loop_stats(tris: &[[i64; 3]]) -> (usize, usize) {
     let t32: Vec<[i32; 3]> = tris
         .iter()
         .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
@@ -968,10 +969,10 @@ fn method_health_value(stats: &Map<String, Value>, unavailable: &Value) -> (Valu
     ] {
         availability.insert(tier.to_string(), json!(["ok", Value::Null]));
     }
+    availability.insert("local_remesh".to_string(), json!(["ok", Value::Null]));
     let mut skips: Vec<Value> = Vec::new();
     if let Some(entries) = unavailable.as_object() {
         for tier in [
-            "local_remesh",
             "dressing",
             "ftetwild",
             "repeat_builder",
@@ -1018,7 +1019,6 @@ fn unavailable_tiers() -> Value {
         })
     };
     json!({
-        "local_remesh": entry("local_remesh is a Python deep-repair tier; no sutura-core implementation yet"),
         "dressing": entry("Dressing orchestration is not in sutura-core yet; only the sutura-geom coat producer exists"),
         "ftetwild": entry("fTetWild is an external Python tier; no Rust implementation exists"),
         "repeat_builder": entry("the Repeat transplant producer stays in Python; only the Rust adoption gate exists"),
@@ -1552,6 +1552,29 @@ pub fn repair(
                 stats.insert("experimental_ftetwild".into(), rec);
             }
         }
+
+        // Local re-mesh (#P1a): Python runs this tier only in `local` mode.
+        if opts.deep_repair == DeepRepair::Local
+            && (ladder_holes_before > 0 || ladder_nm_before > 0)
+        {
+            let l_in_v = quantize(&cur_v);
+            let l_in_t = cur_t.clone();
+            let (lv, lt, _l_after, rec) = local_remesh::local_remesh(&l_in_v, &cur_t, &after);
+            cur_v = lv;
+            cur_t = lt;
+            emit_tier(sink, "local_remesh", 4, &rec);
+            trace.record(
+                "local_remesh",
+                "tiers.local_remesh.local_remesh_tier",
+                &l_in_v,
+                &l_in_t,
+                &cur_v,
+                &cur_t,
+                rec.clone(),
+            );
+            stats.insert("local_remesh".into(), rec);
+            tiers_run.push(Value::from("local"));
+        }
     }
 
     // --- Repeated-element transplant and wall thicken (producers absent) --
@@ -1924,7 +1947,7 @@ mod tests {
             .get("unavailable")
             .and_then(Value::as_object)
             .expect("unavailable object");
-        for tier in ["local_remesh", "dressing", "ftetwild"] {
+        for tier in ["dressing", "ftetwild"] {
             let entry = unavailable.get(tier).expect(tier);
             assert_eq!(entry.get("ran").and_then(Value::as_bool), Some(false));
             assert_eq!(
@@ -1933,6 +1956,10 @@ mod tests {
             );
             assert!(entry.get("reason").and_then(Value::as_str).is_some());
         }
+        assert!(
+            unavailable.get("local_remesh").is_none(),
+            "local_remesh is compiled into sutura-core"
+        );
         assert_eq!(
             report
                 .get("stage1")
@@ -2098,7 +2125,6 @@ mod tests {
             .and_then(Value::as_object)
             .expect("unavailable object");
         for tier in [
-            "local_remesh",
             "dressing",
             "ftetwild",
             "repeat_builder",

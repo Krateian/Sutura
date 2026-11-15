@@ -58,8 +58,9 @@ Consequences:
   `morph_close_core`, `resample_uniform_core` and `is_two_manifold` are pure
   Rust APIs.  The Closing/Proxy/Mirror tier owns the reload-honest gate; their
   candidate builders remain in the Python method modules (the approved
-  `pipeline/tiers/*` scope).  `local_remesh` remains Python and only its
-  wall-clock gate was replaced with a deterministic work budget.
+  `pipeline/tiers/*` scope).  `local_remesh` is a pure `sutura-core` tier
+  (`local_remesh::local_remesh`); its wall-clock gate is a deterministic work
+  budget.
 
 ## Open work
 
