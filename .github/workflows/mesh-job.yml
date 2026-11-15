@@ -9,6 +9,7 @@ on:
       env_base:      { description: 'Side A env (unsupported by the harness; candidate side only)', required: false, default: '' }
       env_candidate: { description: 'Side B env, e.g. SUTURA_SI_EXCISE=0', required: false, default: '' }
       shards:        { description: 'Shard count override (per set)', required: false, default: '' }
+      extra_args:    { description: 'Repair CLI args for both sides, space separated, e.g. --methods 14 or --deep-repair full', required: false, default: '' }
 permissions:
   contents: read
 jobs:
@@ -121,12 +122,14 @@ jobs:
           echo "MODE=$MODE" >> "$GITHUB_ENV"; echo "SET_NAME=$SET_NAME" >> "$GITHUB_ENV"
           echo "SHARD=$SHARD" >> "$GITHUB_ENV"; echo "SHARDS=$SHARDS" >> "$GITHUB_ENV"
           echo "ENV_CAND=$ENV_CAND" >> "$GITHUB_ENV"; echo "ENV_BASE=$ENV_BASE" >> "$GITHUB_ENV"
+          echo "EXTRA_ARGS=$EXTRA_ARGS" >> "$GITHUB_ENV"
         env:
           MODE: '${{ matrix.mode }}'
           SET_NAME: '${{ matrix.set }}'
           SHARD: '${{ matrix.shard }}'
           SHARDS: '${{ matrix.shards }}'
           ENV_CAND: '${{ inputs.env_candidate }}'
+          EXTRA_ARGS: '${{ inputs.extra_args }}'
           ENV_BASE: '${{ inputs.env_base }}'
       - uses: actions/setup-python@v7
         with: { python-version: '3.11' }

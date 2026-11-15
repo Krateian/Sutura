@@ -12,6 +12,7 @@ back to the component count, so Orca is reported but never required.
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -151,6 +152,13 @@ def main():
             '--out-dir', outdir]
     if env_c:
         cmd += ['--opt-out-env', env_c]
+    # Repair CLI arguments applied to both sides (e.g. a forced method).  The
+    # tokens are restricted to a plain flag/value charset so a dispatch input
+    # cannot smuggle shell or path syntax into the harness command line.
+    for tok in os.environ.get('EXTRA_ARGS', '').split():
+        if not re.fullmatch(r'[A-Za-z0-9_.,=-]+', tok):
+            raise SystemExit('bad EXTRA_ARGS token')
+        cmd.append('--extra-arg=' + tok)
     if mode == 'determinism':
         # The baseline half is cached by input SHA + flags + repo head, so a
         # warmed cache would compare a run against itself.  A fresh cache keeps
