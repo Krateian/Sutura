@@ -59,6 +59,7 @@ pub mod roi;
 pub mod sample;
 pub mod shell;
 pub mod splint;
+pub mod svd3;
 pub mod tamponade;
 pub mod topology;
 pub mod triangle_intersection;
@@ -2990,6 +2991,56 @@ fn closing_relief_py(
 }
 
 #[cfg(feature = "python")]
+/// 3x3 SVD through the shared kernel (see `svd3`).
+///
+/// Returns `(u, sigma, vt)` with `sigma` descending, matching
+/// `np.linalg.svd`'s shapes: `u` and `vt` are 3x3, `sigma` is length 3.
+#[pyfunction]
+#[pyo3(name = "svd3")]
+fn svd3_py<'py>(
+    py: Python<'py>,
+    a: PyArrayLike2<'py, f64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let arr = a.as_array();
+    if arr.shape() != [3, 3] {
+        return Err(PyValueError::new_err("svd3 expects a 3x3 matrix"));
+    }
+    let mut m = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            m[i][j] = arr[[i, j]];
+        }
+    }
+    let s = crate::svd3::svd3(&m);
+    let rows = |a: &[[f64; 3]; 3]| -> Vec<Vec<f64>> { a.iter().map(|r| r.to_vec()).collect() };
+    let u = numpy::PyArray2::from_vec2(py, &rows(&s.u))?;
+    let sig = numpy::PyArray1::from_vec(py, s.sigma.to_vec());
+    let vt = numpy::PyArray2::from_vec2(py, &rows(&s.vt))?;
+    Ok((u.into_any(), sig.into_any(), vt.into_any()))
+}
+
+#[cfg(feature = "python")]
+/// `np.linalg.lstsq(A, b, rcond=None)` for a tall `(n, 3)` `A` (see `svd3`).
+#[pyfunction]
+#[pyo3(name = "lstsq3")]
+fn lstsq3_py(
+    a: PyArrayLike2<'_, f64, AllowTypeChange>,
+    b: PyArrayLike1<'_, f64, AllowTypeChange>,
+) -> PyResult<[f64; 3]> {
+    let rows: Vec<[f64; 3]> = a
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let rhs: Vec<f64> = b.as_array().iter().copied().collect();
+    if rows.len() != rhs.len() {
+        return Err(PyValueError::new_err("lstsq3: A and b row counts differ"));
+    }
+    Ok(crate::svd3::lstsq3(&rows, &rhs))
+}
+
+#[cfg(feature = "python")]
 /// `wall.sample_surface` through the shared kernel.
 ///
 /// Returns `(points, normals)` as float64 arrays. Bit-identical to the NumPy
@@ -3085,6 +3136,8 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
     m.add_function(wrap_pyfunction!(sample_surface_py, m)?)?;
+    m.add_function(wrap_pyfunction!(svd3_py, m)?)?;
+    m.add_function(wrap_pyfunction!(lstsq3_py, m)?)?;
     m.add_function(wrap_pyfunction!(signed_volume, m)?)?;
     m.add_function(wrap_pyfunction!(eigh3_py, m)?)?;
     m.add_function(wrap_pyfunction!(closing_single_side_py, m)?)?;
