@@ -1613,10 +1613,12 @@ name = "sutura-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
  "sutura-core",
+ "sutura-geom",
 ]
 
 [[package]]

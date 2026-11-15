@@ -13,7 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 sutura-core = { path = "../sutura-core" }
+sutura-geom = { path = "../sutura-geom", default-features = false, features = ["decimate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.11"
 clap = { version = "4", features = ["derive"] }
+libc = "0.2"
