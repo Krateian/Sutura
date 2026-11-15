@@ -130,6 +130,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 np.ascontiguousarray(tris, dtype=np.int64),
                 json.dumps(opts))
             report = json.loads(rj)
+            for debug_key in ('analysis', 'recommendations', 'trace', 'unavailable'):
+                report.pop(debug_key, None)
             if report.get('ok') is False and report.get('error'):
                 raise RuntimeError(report['error'])
             new_v, new_t = np.asarray(rv), np.asarray(rt)
