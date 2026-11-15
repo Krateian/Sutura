@@ -565,7 +565,7 @@ const FLAP_ORDER: [&str; 33] = [
     "guard_rejected", "guard_reason",
 ];
 
-const TAMPONADE_ORDER: [&str; 61] = [
+const TAMPONADE_ORDER: [&str; 69] = [
     "tier", "ran", "adopted", "placement", "watertight", "reload_watertight",
     "reason", "reject_reason", "intensity", "work_budget", "work_units", "h_min",
     "input_faces", "output_faces", "seconds", "input_holes", "input_non_manifold",
@@ -581,7 +581,9 @@ const TAMPONADE_ORDER: [&str; 61] = [
     "si_method", "input_internal_walls", "candidate_internal_walls",
     "prepass_seconds", "guard_rejected", "guard_reason",
     "baseline_self_intersections", "si_policy", "si_checked", "si_flagged",
-    "gate", "shape", "reason_key",
+    "gate", "shape", "reason_key", "patch_vertices", "trimmed_vertices",
+    "reference_used", "reference_fallback", "stent_used", "stent_subplugs",
+    "stent_rejected", "plug_metrics",
 ];
 
 const COAPTATION_ORDER: [&str; 27] = [
@@ -728,7 +730,7 @@ fn cad_likeness(verts: &[[f64; 3]], tris: &[[i32; 3]]) -> Value {
         pairs += 1;
         let n1 = normals[faces[0]];
         let n2 = normals[faces[1]];
-        let dot = (n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])
+        let dot = sutura_core::graft::helpers::np_dot3(n1, n2)
             .abs()
             .clamp(0.0, 1.0);
         let angle = dot.acos().to_degrees();

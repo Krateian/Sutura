@@ -917,8 +917,25 @@ fn tamponade_params(
     intensity: &str,
     si_mode: SiMode,
     prepass: bool,
+    policy: Option<&LoadedPolicy>,
 ) -> Value {
     let work = tamponade_work(intensity);
+    let mut used: Vec<i64> = tris.iter().flat_map(|r| r.iter().copied()).collect();
+    used.sort_unstable();
+    used.dedup();
+    let mut edges: Vec<(i64, i64)> = Vec::new();
+    for r in tris {
+        for (a, b) in [(r[0], r[1]), (r[1], r[2]), (r[2], r[0])] {
+            edges.push(if a <= b { (a, b) } else { (b, a) });
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    let chi = used.len() as i64 - edges.len() as i64 + tris.len() as i64;
+    let genus = ((2 - chi) as f64 / 2.0).round() as i64;
+    let gate = |key: &str, default: f64| -> f64 {
+        policy_number(policy, "tiers.tamponade.gates", key, default)
+    };
     json!({
         "prepass": prepass,
         "tamponade_force": false,
@@ -929,7 +946,13 @@ fn tamponade_params(
         "prepass_budget": if prepass { Value::from(work) } else { Value::Null },
         "si_mode": si_mode.as_str(),
         "shape_gate_enabled": true,
-        "genus": Value::Null,
+        "shape_compactness": gate("shape_compactness", 0.10),
+        "shape_open_area": gate("shape_open_area", 0.10),
+        "shape_thin": gate("shape_thin", 0.30),
+        "shape_thickness": gate("shape_effective_thickness", 0.004),
+        "shape_perimeter_ratio": gate("shape_perimeter_ratio", 1.0),
+        "shape_solid_area": gate("shape_solid_area", 0.10),
+        "genus": genus,
         "input_faces": tris.len(),
     })
 }
@@ -940,6 +963,28 @@ fn flap_params(tris: &[[i64; 3]], intensity: &str, policy: Option<&LoadedPolicy>
         "intensity": intensity,
         "input_faces": tris.len(),
     })
+}
+
+fn ensure_tamponade_defaults(rec: &mut Value) {
+    if let Some(obj) = rec.as_object_mut() {
+        for key in [
+            "patch_vertices",
+            "trimmed_vertices",
+            "reference_used",
+            "reference_fallback",
+            "stent_used",
+            "stent_subplugs",
+            "stent_rejected",
+        ] {
+            obj.entry(key).or_insert_with(|| json!(0));
+        }
+        let melt = obj
+            .get("melt_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        obj.insert("si_checked".into(), json!(melt));
+        obj.entry("plug_metrics").or_insert(Value::Null);
+    }
 }
 
 fn adopted(report: &Value) -> bool {
@@ -2285,8 +2330,10 @@ fn repair_impl(
             &intensity_for_tamponade,
             opts.si_mode,
             true,
+            policy.as_ref(),
         );
-        let (out_v, out_t, rec) = tamponade::run(&clean_v, &clean_t, &params);
+        let (out_v, out_t, mut rec) = tamponade::run(&clean_v, &clean_t, &params);
+        ensure_tamponade_defaults(&mut rec);
         tamponade_prepass_adopted = adopted(&rec);
         tamponade_gate_skipped = rec
             .get("gate")
@@ -2441,8 +2488,10 @@ fn repair_impl(
             &intensity_for_tamponade,
             opts.si_mode,
             false,
+            policy.as_ref(),
         );
-        let (out_v, out_t, rec) = tamponade::run(&cur_v, &cur_t, &params);
+        let (out_v, out_t, mut rec) = tamponade::run(&cur_v, &cur_t, &params);
+        ensure_tamponade_defaults(&mut rec);
         if adopted(&rec) {
             cur_v = out_v;
             cur_t = out_t;
