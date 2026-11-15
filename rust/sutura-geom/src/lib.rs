@@ -56,6 +56,7 @@ pub mod rbf;
 pub mod raycast;
 pub mod rng;
 pub mod resample;
+pub mod repeat_segment;
 pub mod roi;
 pub mod sample;
 pub mod shell;
@@ -3042,6 +3043,50 @@ fn lstsq3_py(
 }
 
 #[cfg(feature = "python")]
+/// `repeat.segment_elements` through the shared kernel.
+///
+/// Returns a list of dicts, one per candidate patch, with the same keys the
+/// Python function builds (`faces`, `verts_idx`, `centroid`, `area`,
+/// `eigvals`, `frame`, `diag`).
+#[pyfunction]
+#[pyo3(name = "segment_elements")]
+#[pyo3(signature = (verts, tris, angle_deg=30.0))]
+fn segment_elements_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    angle_deg: f64,
+) -> PyResult<Bound<'py, PyList>> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let patches = crate::repeat_segment::segment_elements(&v, &t, angle_deg);
+    let out = PyList::empty(py);
+    for p in patches {
+        let d = PyDict::new(py);
+        d.set_item("faces", p.faces)?;
+        d.set_item("verts_idx", p.verts_idx)?;
+        d.set_item("centroid", p.centroid.to_vec())?;
+        d.set_item("area", p.area)?;
+        d.set_item("eigvals", p.eigvals.to_vec())?;
+        let rows: Vec<Vec<f64>> = p.frame.iter().map(|r| r.to_vec()).collect();
+        d.set_item("frame", numpy::PyArray2::from_vec2(py, &rows)?)?;
+        d.set_item("diag", p.diag)?;
+        out.append(d)?;
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "python")]
 /// `wall.sample_surface` through the shared kernel.
 ///
 /// Returns `(points, normals)` as float64 arrays. Bit-identical to the NumPy
@@ -3136,6 +3181,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
+    m.add_function(wrap_pyfunction!(segment_elements_py, m)?)?;
     m.add_function(wrap_pyfunction!(sample_surface_py, m)?)?;
     m.add_function(wrap_pyfunction!(svd3_py, m)?)?;
     m.add_function(wrap_pyfunction!(lstsq3_py, m)?)?;
