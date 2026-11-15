@@ -1346,6 +1346,134 @@ fn augment_report(
     Value::Object(obj.clone())
 }
 
+/// True when the path names a 3MF container (case-insensitive, like Python).
+fn is_3mf(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("3mf"))
+        .unwrap_or(false)
+}
+
+/// Repair a multi-object 3MF the way Python does: every object separately, then
+/// one archive rewrite.
+///
+/// Two behaviours are deliberately copied rather than invented:
+///
+/// * The output is always a rewritten 3MF container, **whatever the requested
+///   extension**. Measured on a 3-object container: `-o out.stl` and
+///   `-o out.3mf` produced byte-identical ZIP files, because Python's
+///   `repair_3mf_objects` rewrites the archive and never consults the output
+///   suffix.
+/// * The report carries `objects`, `object_reports` (one per object, in archive
+///   order), `objects_watertight` and `objects_stage2_ok`. (Measured; the key is
+///   `object_reports`, not `object_analyses` -- the latter belongs to
+///   `--analyze`.)
+fn process_3mf(
+    cli: &crate::Cli,
+    path: &Path,
+    out_override: Option<&Path>,
+    opts: &RepairOptions,
+    methods: &[u64],
+    progress: Option<&JsonProgress>,
+) -> (Value, bool) {
+    let input_display = path.display().to_string();
+    let output = match out_override {
+        Some(out) => out.to_path_buf(),
+        None => unique_output(path),
+    };
+
+    let token = Arc::new(CancelToken::new());
+    let stop = Arc::new(AtomicBool::new(false));
+    let monitor_token = Arc::clone(&token);
+    let monitor_stop = Arc::clone(&stop);
+    let monitor = std::thread::spawn(move || {
+        while !monitor_stop.load(Ordering::SeqCst) {
+            if INTERRUPTED.load(Ordering::SeqCst) {
+                monitor_token.cancel();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    });
+
+    let started = Instant::now();
+    let repairs = sutura_core::pipeline_objects::repair_3mf_file(
+        path, &output, opts, &CoreSink, &token,
+    );
+    stop.store(true, Ordering::SeqCst);
+    let _ = monitor.join();
+
+    let repairs = match repairs {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(progress) = progress {
+                progress.end();
+            }
+            return (
+                json!({"input": input_display, "error": e.to_string()}),
+                true,
+            );
+        }
+    };
+
+    if let Some(progress) = progress {
+        progress.stage(8, "save");
+        progress.end();
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    let (objects, watertight_count, stage2_ok_count) =
+        sutura_core::pipeline_objects::aggregate_flags(&repairs);
+
+    // Each object's report is the single-mesh report for that object, so the
+    // per-object shape matches Python's `object_reports` entries.
+    let mut object_reports: Vec<Value> = Vec::with_capacity(repairs.len());
+    for r in &repairs {
+        let mut rep = r.report.clone();
+        if let Some(obj) = rep.as_object_mut() {
+            obj.insert("model".into(), Value::from(r.model_name.clone()));
+            obj.insert("declared_unit".into(), Value::from(r.declared_unit.clone()));
+            obj.insert("block_index".into(), Value::from(r.block_index));
+            obj.insert("output".into(), Value::from(output.display().to_string()));
+            contract_order(obj);
+        }
+        object_reports.push(rep);
+    }
+
+    let failed = object_reports
+        .iter()
+        .any(|r| r.get("error").is_some() || r.get("category").and_then(Value::as_str) == Some("error"));
+
+    let mut report = json!({
+        "input": input_display,
+        "output": output.display().to_string(),
+        "objects": objects,
+        "objects_watertight": watertight_count,
+        "objects_stage2_ok": stage2_ok_count,
+        "object_reports": object_reports,
+        "repair_mode": opts.mode.as_str(),
+        "si_mode": opts.si_mode.as_str(),
+        "triage_intensity": opts.intensity,
+        "timings": {"file_total": elapsed},
+        "method_used": methods_used_value(methods),
+    });
+    if let Some(obj) = report.as_object_mut() {
+        contract_order(obj);
+    }
+    let _ = cli;
+    (report, failed)
+}
+
+/// The `method_used` block for a container, matching the single-file shape.
+fn methods_used_value(methods: &[u64]) -> Value {
+    if methods.is_empty() {
+        return Value::Null;
+    }
+    json!({
+        "num": methods.last().copied(),
+        "source": "tagged",
+    })
+}
+
 fn process_one(
     cli: &crate::Cli,
     path: &Path,
@@ -1363,6 +1491,12 @@ fn process_one(
     }
     if let Some(progress) = progress {
         progress.stage(1, "load");
+    }
+    // A 3MF container holds one mesh per object; Python repairs each object
+    // separately and rewrites the archive once (`service.repair_3mf_objects`).
+    // `load_mesh` refuses 3MF for exactly this reason, so branch before it.
+    if is_3mf(path) {
+        return process_3mf(cli, path, out_override, opts, methods, progress);
     }
     let input = match load_mesh(path) {
         Ok(mesh) => mesh,

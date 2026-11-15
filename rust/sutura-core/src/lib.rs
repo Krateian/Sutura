@@ -23,6 +23,7 @@ pub mod closing;
 pub mod graft;
 pub mod local_remesh;
 pub mod mirror;
+pub mod pipeline_objects;
 pub mod proxy;
 pub mod repair;
 pub mod stage1;
