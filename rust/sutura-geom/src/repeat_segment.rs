@@ -28,20 +28,15 @@
 //! does not. The centroid loop below is therefore sequential on purpose;
 //! "fixing" it to `sum_f64` moved 7 of 226 patch-route scores by up to 8.8e-6.
 //!
-//! ## The `frame` field is not bit-reproducible on degenerate patches
+//! ## The patch carries only what a caller reads
 //!
-//! Measured over 226 meshes / 6289 patches: patch count, `faces`, `verts_idx`,
-//! `area`, `diag` and `centroid` are all bit-identical to Python, while `frame`
-//! differs on 5 patches. Those are patches with two equal eigenvalues (where the
-//! eigenvector basis in that plane is arbitrary) or where `eigh3`'s canonical
-//! column signs give `det(frame) = -1` instead of `+1`, so the det-correction
-//! flips the opposite column. Both frames are orthonormal with det +1 and
-//! describe the same axes. This is inert: `frame` is written into the patch dict
-//! and never read by any caller (`eigvals` likewise), so the patch-route score is
-//! unaffected -- verified 0 of 226 changed.
+//! `eigvals` and `frame` used to be computed alongside each patch and were
+//! never read by anyone: the patch route clusters on `area` and `diag` and
+//! locates patches by `centroid` and `faces`. They were removed from both
+//! languages rather than left as write-only outputs that can differ between
+//! implementations without affecting anything.
 
 use crate::components::connected_components;
-use crate::eigh3::eigh3;
 use crate::measures::sum_f64;
 
 /// `DEFAULT_FEATURE_ANGLE_DEG`.
@@ -52,6 +47,12 @@ pub const MIN_ELEMENT_FACES: usize = 4;
 pub const BASE_AREA_THRESHOLD_FRACTION: f64 = 0.05;
 
 /// One candidate element patch.
+///
+/// Only the fields a caller actually reads are carried. `eigvals` and `frame`
+/// used to be computed here and in Python but were never read by anyone -- the
+/// patch route clusters on `area` and `diag` and locates patches by `centroid`
+/// and `faces` -- so they were removed rather than left as write-only outputs
+/// that can differ between implementations without affecting anything.
 #[derive(Debug, Clone)]
 pub struct Patch {
     /// Face indices belonging to the patch, ascending.
@@ -60,11 +61,6 @@ pub struct Patch {
     pub verts_idx: Vec<usize>,
     pub centroid: [f64; 3],
     pub area: f64,
-    /// Eigenvalues in `np.linalg.eigh`'s descending-reversed order, i.e.
-    /// `eigvals[[2, 1, 0]]`.
-    pub eigvals: [f64; 3],
-    /// PCA frame `eigvecs[:, [2, 1, 0]]`, det-corrected.
-    pub frame: [[f64; 3]; 3],
     pub diag: f64,
 }
 
@@ -274,44 +270,6 @@ pub fn segment_elements(verts: &[[f64; 3]], tris: &[[usize; 3]], angle_deg: f64)
         verts_idx.sort_unstable();
         verts_idx.dedup();
 
-        // PCA over the patch's vertices.
-        let n = verts_idx.len() as f64;
-        let mut cov = [[0.0f64; 3]; 3];
-        for &vi in &verts_idx {
-            let d = [
-                verts[vi][0] - centroid[0],
-                verts[vi][1] - centroid[1],
-                verts[vi][2] - centroid[2],
-            ];
-            for i in 0..3 {
-                for j in 0..3 {
-                    cov[i][j] += d[i] * d[j];
-                }
-            }
-        }
-        for i in 0..3 {
-            for j in 0..3 {
-                cov[i][j] /= n.max(1.0);
-            }
-        }
-        let (eigvals_asc, eigvecs) = eigh3(cov);
-
-        // frame = eigvecs[:, [2, 1, 0]], then det-correct column 2.
-        let mut frame = [[0.0f64; 3]; 3];
-        for row in 0..3 {
-            frame[row][0] = eigvecs[row][2];
-            frame[row][1] = eigvecs[row][1];
-            frame[row][2] = eigvecs[row][0];
-        }
-        let det = frame[0][0] * (frame[1][1] * frame[2][2] - frame[1][2] * frame[2][1])
-            - frame[0][1] * (frame[1][0] * frame[2][2] - frame[1][2] * frame[2][0])
-            + frame[0][2] * (frame[1][0] * frame[2][1] - frame[1][1] * frame[2][0]);
-        if det < 0.0 {
-            for row in 0..3 {
-                frame[row][2] = -frame[row][2];
-            }
-        }
-
         // diag = |span| over the patch vertices.
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
@@ -329,8 +287,6 @@ pub fn segment_elements(verts: &[[f64; 3]], tris: &[[usize; 3]], angle_deg: f64)
             verts_idx,
             centroid,
             area: patch_area,
-            eigvals: [eigvals_asc[2], eigvals_asc[1], eigvals_asc[0]],
-            frame,
             diag,
         });
     }

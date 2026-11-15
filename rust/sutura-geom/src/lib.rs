@@ -3045,9 +3045,8 @@ fn lstsq3_py(
 #[cfg(feature = "python")]
 /// `repeat.segment_elements` through the shared kernel.
 ///
-/// Returns a list of dicts, one per candidate patch, with the same keys the
-/// Python function builds (`faces`, `verts_idx`, `centroid`, `area`,
-/// `eigvals`, `frame`, `diag`).
+/// Returns a list of dicts, one per candidate patch, with the keys the Python
+/// function builds: `faces`, `verts_idx`, `centroid`, `area`, `diag`.
 #[pyfunction]
 #[pyo3(name = "segment_elements")]
 #[pyo3(signature = (verts, tris, angle_deg=30.0))]
@@ -3077,9 +3076,6 @@ fn segment_elements_py<'py>(
         d.set_item("verts_idx", p.verts_idx)?;
         d.set_item("centroid", p.centroid.to_vec())?;
         d.set_item("area", p.area)?;
-        d.set_item("eigvals", p.eigvals.to_vec())?;
-        let rows: Vec<Vec<f64>> = p.frame.iter().map(|r| r.to_vec()).collect();
-        d.set_item("frame", numpy::PyArray2::from_vec2(py, &rows)?)?;
         d.set_item("diag", p.diag)?;
         out.append(d)?;
     }

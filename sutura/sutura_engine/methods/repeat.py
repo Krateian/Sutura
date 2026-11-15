@@ -305,13 +305,6 @@ def segment_elements(verts, tris, angle_deg=DEFAULT_FEATURE_ANGLE_DEG):
         face_centroids = (v0[f_in_e] + v1[f_in_e] + v2[f_in_e]) / 3.0
         centroid = np.sum(face_centroids * areas[f_in_e, None], axis=0) / patch_area
 
-        # PCA frame and eigenvalues
-        cov = (pts - centroid).T @ (pts - centroid) / max(len(pts), 1)
-        eigvals, eigvecs = _eigh3(cov)
-        frame = eigvecs[:, [2, 1, 0]]
-        if np.linalg.det(frame) < 0:
-            frame[:, 2] = -frame[:, 2]
-
         span = pts.max(axis=0) - pts.min(axis=0)
         diag = float(np.linalg.norm(span))
 
@@ -320,8 +313,6 @@ def segment_elements(verts, tris, angle_deg=DEFAULT_FEATURE_ANGLE_DEG):
             'verts_idx': patch_vidx,
             'centroid': centroid,
             'area': patch_area,
-            'eigvals': eigvals[[2, 1, 0]],
-            'frame': frame,
             'diag': diag,
         })
 

@@ -145,7 +145,7 @@ def test_segment_elements():
     for p in patches:
         assert p['area'] > 0.0
         assert 'centroid' in p
-        assert 'frame' in p
+        assert 'diag' in p
     print(f"  ✓ test_segment_elements passed ({len(patches)} patches segmented)")
 
 
