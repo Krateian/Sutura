@@ -67,6 +67,15 @@ def _graft_tier_rust(v, t, input_v, input_t, after, stats, tmpdir, intensity,
     grec = {}
     cand_v = cand_t = None
     with method_health.tier_guard('graft', 'tier') as _g:
+        if os.environ.get('SUTURA_GRAFT_DEBUG'):
+            import sys, numpy as _np
+            _h = 0
+            for _arr in (input_v, input_t):
+                _a = _np.ascontiguousarray(_arr)
+                for _x in _a.ravel().tobytes():
+                    _h = (_h * 131 + _x) & 0xFFFFFFFFFFFFFFFF
+            print('[graft-tier-py] input fp=%d faces=%d verts=%d' % (
+                _h, len(input_t), len(input_v)), file=sys.stderr, flush=True)
         engine = os.environ.get('SUTURA_GRAFT_ENGINE', '').strip().lower()
         if engine == 'rust' and hasattr(core, 'graft_shell_wrap'):
             cand_v, cand_t, grec_json = core.graft_shell_wrap(

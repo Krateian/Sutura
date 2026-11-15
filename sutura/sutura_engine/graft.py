@@ -1056,8 +1056,9 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     v0 = _as_f64(verts)
     t0 = _as_i64(tris)
     if os.environ.get('SUTURA_GRAFT_DEBUG'):
+        import sys
         print('[graft-py] input fp=%d faces=%d verts=%d' % (
-            _fp_arrays(v0, t0), len(t0), len(v0)), flush=True)
+            _fp_arrays(v0, t0), len(t0), len(v0)), file=sys.stderr, flush=True)
     grid_budget_auto = grid_budget is None
     if grid_budget_auto:
         grid_budget = resolve_grid_budget(intensity)
