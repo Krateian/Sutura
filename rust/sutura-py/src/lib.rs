@@ -981,6 +981,24 @@ fn tier_coaptation_py<'py>(
     Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
 }
 
+/// Local re-mesh deep-repair tier on plain arrays.
+///
+/// Mirrors `_local_remesh_tier`: the Rust core computes the input topology
+/// summary, runs the tier and returns the adopted-or-unchanged arrays with the
+/// same report keys as the Python tier.
+#[pyfunction(name = "local_remesh_tier")]
+fn local_remesh_tier_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>, String)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let before = sutura_core::tiers::common::topology_summary(&v, &t);
+    let (ov, ot, _after, rep) = sutura_core::local_remesh::local_remesh(&v, &t, &before);
+    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rep.to_string()))
+}
+
 #[pyfunction(name = "tier_graft_decide")]
 fn tier_graft_decide_py<'py>(
     py: Python<'py>,
@@ -1469,6 +1487,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tier_splint_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_cdt_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_coaptation_py, m)?)?;
+    m.add_function(wrap_pyfunction!(local_remesh_tier_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_graft_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_tamponade_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_flap_py, m)?)?;
