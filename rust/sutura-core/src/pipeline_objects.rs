@@ -38,6 +38,9 @@ pub struct ObjectRepair {
     pub report: Value,
     /// The repaired geometry, ready for `rewrite_3mf_meshes`.
     pub mesh: crate::mesh::Mesh,
+    /// Triangle-material statistics from the archive rewrite. Filled in by
+    /// `repair_3mf_file`; zeroed when the caller repairs without rewriting.
+    pub triangle_attrs: Option<crate::mesh_io::three_mf::TriangleAttrStats>,
 }
 
 impl ObjectRepair {
@@ -170,6 +173,7 @@ pub fn repair_objects(
             declared_unit,
             report,
             mesh,
+            triangle_attrs: None,
         });
     }
 
@@ -197,10 +201,16 @@ pub fn repair_3mf_file(
         ));
     }
     let units = read_3mf_units(src);
-    let repairs = repair_objects(&blocks, &units, opts, sink, cancel);
+    let mut repairs = repair_objects(&blocks, &units, opts, sink, cancel);
 
     let updates: Vec<crate::mesh::Mesh> = repairs.iter().map(|r| r.mesh.clone()).collect();
-    crate::mesh_io::three_mf::rewrite_3mf_meshes(src, out_path, &updates, None)?;
+    let stats = crate::mesh_io::three_mf::rewrite_3mf_meshes(src, out_path, &updates, None)?;
+    // Python attaches the rewrite's per-block triangle-attribute statistics to
+    // the matching report (`for rep, st in zip(reports, stats)`), so the report
+    // can say how many material attributes survived.
+    for (rep, st) in repairs.iter_mut().zip(stats) {
+        rep.triangle_attrs = Some(st);
+    }
     Ok(repairs)
 }
 
@@ -332,6 +342,7 @@ mod tests {
             declared_unit: "millimeter".into(),
             report,
             mesh: crate::mesh::Mesh::default(),
+            triangle_attrs: None,
         };
 
         // Python returns counts: 3 objects, 3 watertight, 3 stage-2 ok.

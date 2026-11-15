@@ -1424,16 +1424,75 @@ fn process_3mf(
     let (objects, watertight_count, stage2_ok_count) =
         sutura_core::pipeline_objects::aggregate_flags(&repairs);
 
-    // Each object's report is the single-mesh report for that object, so the
-    // per-object shape matches Python's `object_reports` entries.
+    // Python's `object_reports[i]` is the RAW per-object repair dict plus the
+    // derived measurement blocks -- it deliberately does NOT carry the
+    // file-level augmentation (`policy`, `method_control`, `category`,
+    // `issues`, `method_health`, `methods_tried`, `si_escalation`), because
+    // those describe the file, not the object. Measured against Python; a
+    // hand-built dict was missing `print_report`, `repair_confidence`,
+    // `repair_fidelity`, `defects` and the rest of the derived set.
     let mut object_reports: Vec<Value> = Vec::with_capacity(repairs.len());
-    for r in &repairs {
-        let mut rep = r.report.clone();
+    let blocks = sutura_core::mesh_io::three_mf::parse_3mf_mesh_blocks(path)
+        .unwrap_or_default();
+    let file_level: [&str; 8] = [
+        "policy",
+        "method_control",
+        "method_health",
+        "methods_tried",
+        "method_reached_watertight",
+        "category",
+        "issues",
+        "si_escalation",
+    ];
+    for (i, r) in repairs.iter().enumerate() {
+        let in_mesh = blocks.get(i).map(|b| b.mesh.clone()).unwrap_or_default();
+        let out_v: Vec<[f64; 3]> = r
+            .mesh
+            .verts
+            .iter()
+            .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+            .collect();
+        let out_t: Vec<[i64; 3]> = r
+            .mesh
+            .tris
+            .iter()
+            .map(|f| [i64::from(f[0]), i64::from(f[1]), i64::from(f[2])])
+            .collect();
+        let mut rep =
+            augment_report(&in_mesh, &out_v, &out_t, r.report.clone(), opts, methods, elapsed);
         if let Some(obj) = rep.as_object_mut() {
-            obj.insert("model".into(), Value::from(r.model_name.clone()));
-            obj.insert("declared_unit".into(), Value::from(r.declared_unit.clone()));
-            obj.insert("block_index".into(), Value::from(r.block_index));
-            obj.insert("output".into(), Value::from(output.display().to_string()));
+            for key in file_level {
+                obj.remove(key);
+            }
+            // The unit verdict comes from THIS object's declared unit, not from
+            // the size heuristic `augment_report` applies to a bare mesh:
+            // Python passes `declared_unit` into the per-object repair, so a
+            // millimetre container reports no warning even when its dimensions
+            // would look like inches. Measured: an inch container warns on
+            // every object, a millimetre one on none.
+            obj.remove("unit_warning");
+            obj.remove("unit_hint");
+            if let Some(unit) =
+                sutura_core::mesh_io::three_mf::check_units(&in_mesh, Some(&r.declared_unit))
+            {
+                obj.insert("unit_warning".into(), Value::Bool(true));
+                obj.insert("unit_hint".into(), Value::from(unit.unit_hint));
+            }
+            // Python does not tag the report with the model path; the archive
+            // order is the contract, and `triangle_attributes.model` already
+            // names the entry.
+            let ta = r.triangle_attrs.clone().unwrap_or_default();
+            obj.insert(
+                "triangle_attributes".into(),
+                json!({
+                    "model": r.model_name,
+                    "block": r.block_index,
+                    "original_attributed": ta.original_attributed,
+                    "kept": ta.kept,
+                    "dropped": ta.dropped,
+                    "output_triangles": ta.output_triangles,
+                }),
+            );
             contract_order(obj);
         }
         object_reports.push(rep);
