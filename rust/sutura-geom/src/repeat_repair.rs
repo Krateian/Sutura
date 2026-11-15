@@ -770,6 +770,69 @@ pub fn template_obb(template_pts: &[[f64; 3]], margin: f64) -> Obb {
     compute_obb(template_pts, margin, crate::repeat_obb::OBB_MIN_EPSILON)
 }
 
+/// `repair_repeat_auto` end to end, with no Python in the loop.
+///
+/// The plan comes from `plan_repeat_auto` and the CSG from
+/// `manifold::boolean_transplant_core` -- the same Manifold kernel the Python
+/// binding wraps, so both languages produce the same mesh. `sutura-core` calls
+/// this from the Repeat tier, which is why it must not need the `python`
+/// feature.
+pub fn repair_repeat_auto_core(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    margin: f64,
+) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, AutoReport) {
+    let orig_v = verts;
+    let orig_t = tris;
+    let plan = plan_repeat_auto(verts, tris);
+    let outcome = match &plan {
+        AutoPlan::Early(_) => None,
+        AutoPlan::Transplants {
+            template_pts,
+            transforms,
+            ..
+        } => {
+            if transforms.is_empty() {
+                None
+            } else {
+                let obb = template_obb(template_pts, margin);
+                let mats: Vec<([[f64; 3]; 3], [f64; 3])> = transforms
+                    .iter()
+                    .map(|t| {
+                        let r = t.rotation();
+                        (r, t.translation())
+                    })
+                    .collect();
+                match crate::manifold::boolean_transplant_core(
+                    verts, tris, obb.center, obb.extents, obb.frame, &mats,
+                ) {
+                    Ok((v, t, rep)) => Some(TransplantOutcome {
+                        verts: v,
+                        tris: t,
+                        volume_change: rep.vol_change,
+                        boxes: rep
+                            .boxes
+                            .iter()
+                            .map(|(c, e, f)| Obb {
+                                center: *c,
+                                extents: *e,
+                                frame: *f,
+                            })
+                            .collect(),
+                        watertight: rep.watertight,
+                    }),
+                    Err(e) => {
+                        let mut out = finish_report(plan, None, orig_v, orig_t);
+                        out.2.error = Some(e);
+                        return out;
+                    }
+                }
+            }
+        }
+    };
+    finish_report(plan, outcome, orig_v, orig_t)
+}
+
 #[cfg(feature = "python")]
 pub mod py {
     use super::*;
@@ -778,15 +841,70 @@ pub mod py {
     use pyo3::prelude::*;
     use pyo3::types::PyDict;
 
-    /// `repeat.repair_repeat_auto` up to the CSG transplant.
+    /// `repair_repeat_auto` end to end: plan + Manifold CSG, with no Python.
+    ///
+    /// Exposed so the parity gate can assert that the pure-Rust path and the
+    /// Python facade produce the same mesh.
+    #[pyfunction]
+    #[pyo3(name = "repair_repeat_auto")]
+    #[pyo3(signature = (verts, tris, margin=0.10))]
+    pub fn repair_repeat_auto_core_py<'py>(
+        py: Python<'py>,
+        verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+        tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+        margin: f64,
+    ) -> PyResult<(
+        Bound<'py, numpy::PyArray2<f64>>,
+        Bound<'py, numpy::PyArray2<i64>>,
+        Bound<'py, PyDict>,
+    )> {
+        let v: Vec<[f64; 3]> = verts
+            .as_array()
+            .rows()
+            .into_iter()
+            .map(|r| [r[0], r[1], r[2]])
+            .collect();
+        let t: Vec<[usize; 3]> = tris
+            .as_array()
+            .rows()
+            .into_iter()
+            .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+            .collect();
+        let (ov, ot, rep) = repair_repeat_auto_core(&v, &t, margin);
+        let ovv: Vec<Vec<f64>> = ov.iter().map(|p| p.to_vec()).collect();
+        let ott: Vec<Vec<i64>> = ot
+            .iter()
+            .map(|f| vec![f[0] as i64, f[1] as i64, f[2] as i64])
+            .collect();
+        let d = PyDict::new(py);
+        d.set_item("watertight", rep.watertight)?;
+        d.set_item("repaired", rep.repaired)?;
+        d.set_item("pattern_type", rep.pattern_type)?;
+        d.set_item("group_size", rep.group_size)?;
+        d.set_item("positions_checked", rep.positions_checked)?;
+        d.set_item("positions_repaired", rep.positions_repaired)?;
+        d.set_item("volume_change", rep.volume_change)?;
+        d.set_item("hausdorff_outside", rep.hausdorff_outside)?;
+        d.set_item("notes", rep.notes)?;
+        d.set_item("error", rep.error)?;
+        let devs: Vec<(i64, f64)> = rep
+            .per_position_deviation
+            .iter()
+            .map(|p| (p.index, p.deviation))
+            .collect();
+        d.set_item("per_position_deviation", devs)?;
+        Ok((
+            numpy::PyArray2::from_vec2(py, &ovv)?,
+            numpy::PyArray2::from_vec2(py, &ott)?,
+            d,
+        ))
+    }
+
+    /// `plan_repeat_auto`: the decision half only, no CSG.
     ///
     /// Returns `(kind, payload)`:
     ///   `kind == "early"`  -> payload is the report dict, nothing to transplant
-    ///   `kind == "transplant"` -> payload carries `template_pts`, `transforms`,
-    ///      the transform count and the report fields the caller needs.
-    ///
-    /// The CSG itself stays in Python because `boolean_transplant` needs the
-    /// manifold feature.
+    ///   `kind == "transplant"` -> payload carries `template_pts` and `transforms`
     #[pyfunction]
     #[pyo3(name = "plan_repeat_auto")]
     pub fn plan_repeat_auto_py<'py>(
@@ -947,5 +1065,67 @@ mod tests {
         }
         // A row of the rotation is not this vector.
         assert!((base[0] - r[0][0]).abs() > 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod auto_core_tests {
+    use super::*;
+
+    /// A 12-position knurl ring with one damaged bump, built without any
+    /// Python: a cylinder plus 12 boxes, one of them oversized.
+    fn knurl() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        // Cylinder wall samples around the ring (16 per position) so
+        // `segment_elements` sees 12 discrete patches.
+        let mut v: Vec<[f64; 3]> = Vec::new();
+        let mut t: Vec<[usize; 3]> = Vec::new();
+        let n = 12usize;
+        let r = 5.0f64;
+        let h = 2.0f64;
+        let seg = 16usize;
+        for i in 0..n {
+            let a = 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+            let (ca, sa) = (a.cos(), a.sin());
+            let base = v.len();
+            // two stacked rings of `seg` points, offset outward
+            for k in 0..seg {
+                let b = 2.0 * std::f64::consts::PI * k as f64 / seg as f64;
+                let (cb, sb) = (b.cos(), b.sin());
+                let out = r + 0.6;
+                let x = ca * out - sa * (0.4 * cb);
+                let y = sa * out + ca * (0.4 * cb);
+                v.push([x, y, -h / 2.0 + 0.1 * sb]);
+            }
+            for k in 0..seg {
+                let b = 2.0 * std::f64::consts::PI * k as f64 / seg as f64;
+                let (cb, sb) = (b.cos(), b.sin());
+                let out = r + 0.6;
+                let x = ca * out - sa * (0.4 * cb);
+                let y = sa * out + ca * (0.4 * cb);
+                let z = h / 2.0 + 0.1 * sb;
+                // the damaged position is pushed out
+                let scale = if i == 3 { 1.6 } else { 1.0 };
+                v.push([x * scale, y * scale, z]);
+            }
+            for k in 0..seg {
+                let k2 = (k + 1) % seg;
+                t.push([base + k, base + k2, base + seg + k]);
+                t.push([base + k2, base + seg + k2, base + seg + k]);
+            }
+        }
+        (v, t)
+    }
+
+    #[test]
+    fn auto_core_runs_without_python_and_is_deterministic() {
+        let (v, t) = knurl();
+        assert!(t.len() > 100, "fixture too small: {}", t.len());
+        let (v1, t1, r1) = repair_repeat_auto_core(&v, &t, 0.02);
+        let (v2, t2, r2) = repair_repeat_auto_core(&v, &t, 0.02);
+        // Same input twice must give byte-identical output.
+        assert_eq!(v1, v2, "vertex output is not deterministic");
+        assert_eq!(t1, t2, "triangle output is not deterministic");
+        assert_eq!(r1.positions_repaired, r2.positions_repaired);
+        assert_eq!(r1.hausdorff_outside.to_bits(), r2.hausdorff_outside.to_bits());
     }
 }

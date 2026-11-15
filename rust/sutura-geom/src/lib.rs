@@ -3658,6 +3658,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(decimate_faces_py, m)?)?;
     m.add_function(wrap_pyfunction!(align_py, m)?)?;
     m.add_function(wrap_pyfunction!(repeat_repair::py::plan_repeat_auto_py, m)?)?;
+    m.add_function(wrap_pyfunction!(repeat_repair::py::repair_repeat_auto_core_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_repetition_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_rotational_symmetry_free_py, m)?)?;
     m.add_function(wrap_pyfunction!(segment_elements_py, m)?)?;
