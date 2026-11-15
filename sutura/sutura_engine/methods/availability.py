@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Availability checks for repair method tiers."""
 import importlib.util
 from typing import Optional, Tuple

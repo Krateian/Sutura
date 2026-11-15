@@ -1,5 +1,5 @@
 // Copyright (C) 2026 Sutura Authors
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! Exact B5 certificate: every PLC triangle is covered by recovered tet faces.
 //!

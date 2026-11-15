@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Adapter for the Manifold kernel (Apache-2.0).
 
 Manifold now lives in the Rust core (`sutura_geom.stage2_rebuild` /

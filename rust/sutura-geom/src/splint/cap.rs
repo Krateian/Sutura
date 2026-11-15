@@ -1,5 +1,5 @@
 // Copyright (C) 2026 Sutura Authors
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 //! H7b: a deterministic TEMPORARY cap for the boundary loops of the input.
 //!

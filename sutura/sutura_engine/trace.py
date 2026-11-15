@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Sutura pipeline trace: structured debug recording of pipeline stage boundaries.
 
 When enabled via ``--trace out.json`` on the CLI or ``SUTURA_TRACE=<path>`` in

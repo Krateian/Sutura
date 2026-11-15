@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Dressing (#16, variable-viscosity volumetric skinning).
 
 A surgical sibling of Graft (#13): the input is dipped in a spatially varying

@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Test suite for Sutura --self-check and health verification."""
 import os
 import sys

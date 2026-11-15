@@ -25,8 +25,8 @@ The `sutura_geom` extension vendors the standalone **Geogram Delaunay PSM**
   source; pin the upstream tag/commit here before promoting the Splint core out
   of the test-hook stage.
 
-The Geogram notice is separate from the crate's `MIT OR Apache-2.0` license and
-from Sutura's PolyForm Noncommercial application license.
+The Geogram notice is separate from Sutura's PolyForm Noncommercial license,
+which covers this crate and the application.
 
 ## meshopt / meshoptimizer
 

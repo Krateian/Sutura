@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Repair policy: declarative, versioned decision rules (step 1: the order).
 
 The data-like repair rules live in ``default_policy.toml`` next to this module

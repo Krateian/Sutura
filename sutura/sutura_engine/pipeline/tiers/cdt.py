@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """CDT (#last-resort solid engine): exact constrained tetrahedralization.
 
 Runs the Rust ``sutura_geom.cdt3d_solid`` core on the original input arrays.

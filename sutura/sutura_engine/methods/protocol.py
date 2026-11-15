@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Protocol and data structures for Sutura repair methods.
 
 Enables an extensible plugin architecture where repair methods are independent

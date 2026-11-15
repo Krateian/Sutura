@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Method 14: Mirror Complete."""
 from sutura_engine.methods.availability import mirror_available
 from sutura_engine.methods.protocol import RepairMethod

@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Stage 2 (Manifold solid rebuild) and pinch splitting (P1a split).
 
 Runs the Manifold kernel in the Rust core (`sutura_geom.stage2_rebuild`) on

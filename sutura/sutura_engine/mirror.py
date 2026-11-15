@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """sutura_engine.mirror - Mirror-plane completion for single-sided scans.
 
 Legacy import path: ``sutura/mirror_repair.py`` re-exports this module.

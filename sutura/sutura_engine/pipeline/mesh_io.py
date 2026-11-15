@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Mesh and file I/O for the Sutura repair pipeline (P1a split).
 
 STL/OBJ/3MF reading and writing, unit handling, 3MF object parsing and the

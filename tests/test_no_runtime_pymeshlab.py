@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """CI guard: prevent new PyMeshLab runtime imports in sutura/.
 
 Scans all Python modules under sutura/ (excluding tests/ and scripts/) to

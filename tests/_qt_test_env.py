@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Shared Qt test-environment helper (test-side only).
 
 On a macOS conda install a second Qt (qt-main / Qt5, pulled in by the

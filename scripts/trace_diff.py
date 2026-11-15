@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """trace_diff.py - Compares two Sutura pipeline execution traces.
 
 Finds and reports the FIRST stage where two runs diverge in:

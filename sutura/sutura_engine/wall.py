@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """sutura_engine.wall - Thin-wall analysis and thicken-to-min.
 
 Legacy import path: ``sutura/wall_thickness.py`` re-exports this module.

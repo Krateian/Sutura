@@ -1,5 +1,5 @@
 // Copyright (C) 2026 Sutura Authors
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // Compile the vendored Geogram Delaunay PSM as a static C++20 library and link
 // it into sutura_geom. The PSM is the sequential `GEO::Delaunay3d` backend

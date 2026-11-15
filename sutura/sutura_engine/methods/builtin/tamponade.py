@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Method 17: Tamponade (interior hole plugging and SI melting).
 
 Runs the Tamponade tier (``sutura_engine.tamponade``, Rust

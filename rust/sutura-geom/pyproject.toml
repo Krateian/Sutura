@@ -7,7 +7,7 @@ name = "sutura-geom"
 version = "0.1.0"
 description = "Foundation crate for Sutura's future indirect-predicates geometry core"
 requires-python = ">=3.11"
-license = { text = "MIT OR Apache-2.0" }
+license = { text = "PolyForm-Noncommercial-1.0.0" }
 
 [tool.maturin]
 module-name = "sutura_geom"

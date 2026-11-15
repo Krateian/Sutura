@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """sutura/closing.py - Watertight closing for single-side 3D scans and reliefs.
 
 Standalone module operating on numpy arrays (verts float64 Nx3, tris int Mx3).

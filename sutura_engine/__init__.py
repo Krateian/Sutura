@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Repository-root bootstrap for ``import sutura_engine`` (source checkout only).
 
 The engine package lives at ``sutura/sutura_engine``. Installed and AppImage

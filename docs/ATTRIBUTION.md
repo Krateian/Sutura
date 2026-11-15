@@ -26,8 +26,8 @@ The Rust extension vendors the standalone **Geogram Delaunay PSM**
 for deterministic tetrahedralization. It is **BSD 3-Clause**, Copyright (c)
 2000-2022 Inria, upstream <https://github.com/BrunoLevy/geogram>. The full
 license is in that directory and is shipped in the wheel together with
-`rust/sutura-geom/THIRD_PARTY.md`; it is separate from the crate's
-MIT/Apache-2.0 license and from Sutura's PolyForm Noncommercial license.
+`rust/sutura-geom/THIRD_PARTY.md`; it is separate from Sutura's PolyForm Noncommercial
+license, which also covers the crate itself.
 
 The extension also builds the **meshoptimizer** C++ core through the `meshopt`
 crate (`meshopt = "0.7"`, MIT OR Apache-2.0; vendored meshoptimizer 1.3, MIT,

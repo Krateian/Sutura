@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Sutura repair pipeline package (P1a mechanical split of sutura/repair.py).
 
 This package is the canonical implementation; ``sutura/repair.py`` is a thin

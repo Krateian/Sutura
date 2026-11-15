@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Splint tier (method #18): last-resort exact solid rebuild.
 
 Splint runs the Rust ``sutura_geom.splint_cut`` core (proxy surface + Delaunay

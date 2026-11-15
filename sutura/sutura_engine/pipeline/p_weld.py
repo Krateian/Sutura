@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """P-WELD reload-safe seam healing and P-HONEST verdict.
 
 The single implementation of the float32-collision split, the welded-topology

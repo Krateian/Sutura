@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """sutura_engine.paths - runtime user-data location and one-time migration.
 
 User data written at runtime (the anonymous usage history and the learning-

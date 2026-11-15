@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Test that sutura_engine imports cleanly without pymeshlab.
 
 Also covers the repository-root bootstrap package (`sutura_engine/__init__.py`),

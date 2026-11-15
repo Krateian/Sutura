@@ -1,5 +1,5 @@
 # Copyright (C) 2026 Sutura Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Deep-repair TIER ORDER — a thin reader of the repair policy (step 1).
 
 The data-like values (tier order, method numbers, final-tier precedence) now
