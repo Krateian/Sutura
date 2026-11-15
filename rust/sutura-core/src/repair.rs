@@ -183,6 +183,11 @@ pub struct RepairOptions {
     pub dressing: bool,
     pub wall_thicken: bool,
     pub repeat: Option<RepeatMode>,
+    /// Method 12 (`RepeatMode::Manual`): the two 3D points the transplant
+    /// moves between. `--repeat-source` / `--repeat-target`; required together
+    /// when method 12 is selected, as in the Python CLI.
+    pub repeat_source: Option<[f64; 3]>,
+    pub repeat_target: Option<[f64; 3]>,
     pub solid_engine: SolidEngine,
     pub si_mode: SiMode,
     pub ftetwild: Option<Value>,
@@ -207,6 +212,8 @@ impl Default for RepairOptions {
             dressing: false,
             wall_thicken: false,
             repeat: None,
+            repeat_source: None,
+            repeat_target: None,
             solid_engine: SolidEngine::Ftetwild,
             si_mode: SiMode::Report,
             ftetwild: None,
@@ -2803,19 +2810,61 @@ fn repair_impl(
     // repair_auto_report`), so this no longer defers to Python.
     if let Some(mode) = opts.repeat {
         let margin = policy_number(policy.as_ref(), "tiers.repeat", "obb_margin", 0.10);
-        let (rv, rt, report) = crate::tiers::repeat::repair_auto_report(
-            &cur_v,
-            &cur_t,
-            margin,
+        let (rv, rt, report) = match (mode, opts.repeat_source, opts.repeat_target) {
+            // Method 12: the caller named the two points to transplant between.
+            (RepeatMode::Manual, Some(src), Some(dst)) => {
+                let tu: Vec<[usize; 3]> = cur_t
+                    .iter()
+                    .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+                    .collect();
+                let (mv, mt, rep) = sutura_geom::repeat_repair::repair_repeat_manual_core(
+                    &cur_v, &tu, src, dst, margin,
+                );
+                let mt_i: Vec<[i64; 3]> = mt
+                    .iter()
+                    .map(|f| [f[0] as i64, f[1] as i64, f[2] as i64])
+                    .collect();
+                (mv, mt_i, rep)
+            }
+            // Manual without both points is a caller error; report it rather
+            // than silently falling back to the auto route.
+            (RepeatMode::Manual, _, _) => (
+                cur_v.to_vec(),
+                cur_t.to_vec(),
+                crate::tiers::repeat::error_report(
+                    "manual repeat needs both --repeat-source and --repeat-target",
+                ),
+            ),
+            (RepeatMode::Auto, _, _) => crate::tiers::repeat::repair_auto_raw(
+                &cur_v,
+                &cur_t,
+                margin,
+            ),
+        };
+        // `decide` owns the adoption gate (defect counts, reload-honest
+        // watertight, Hausdorff outside, reason), so route through it rather
+        // than re-deriving the verdict here -- that is what the Python tier
+        // does, and it keeps one report shape.
+        let params = json!({
+            "gates": {
+                "max_hausdorff_outside": policy_number(
+                    policy.as_ref(), "tiers.repeat.gates",
+                    "max_hausdorff_outside", 0.02),
+            },
+        });
+        let (rv, rt, rec) = crate::tiers::repeat::decide(
+            &cur_v, &cur_t, &rv, &rt, &crate::tiers::repeat::report_to_value(report),
+            &params,
         );
-        let mut rec = report;
+        let mut rec = rec;
         rec["mode"] = Value::from(match mode {
             RepeatMode::Manual => "manual",
             RepeatMode::Auto => "auto",
         });
-        let ran = rec.get("positions_repaired").and_then(Value::as_u64).unwrap_or(0) > 0;
+        // `decide` sets `adopted`; the mesh it returns is already the one to
+        // keep when it did.
+        let ran = rec.get("adopted").and_then(Value::as_bool).unwrap_or(false);
         rec["ran"] = Value::from(ran);
-        rec["adopted"] = Value::from(ran);
         let in_v = cur_v.clone();
         let in_t = cur_t.clone();
         if ran {

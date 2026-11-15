@@ -833,6 +833,129 @@ pub fn repair_repeat_auto_core(
     finish_report(plan, outcome, orig_v, orig_t)
 }
 
+/// `repair_repeat_manual` (#12) end to end, with no Python in the loop.
+///
+/// The caller names two 3D points; the transplant moves the element nearest
+/// `source_point` onto the element nearest `target_point`. That is
+/// `segment_elements` -> nearest patches -> `align` -> the same
+/// `manifold::boolean_transplant_core` the auto path uses.
+pub fn repair_repeat_manual_core(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    source_point: [f64; 3],
+    target_point: [f64; 3],
+    margin: f64,
+) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, AutoReport) {
+    let orig_v = verts;
+    let orig_t = tris;
+    let mut early = |err: Option<&str>| -> (Vec<[f64; 3]>, Vec<[usize; 3]>, AutoReport) {
+        (
+            orig_v.to_vec(),
+            orig_t.to_vec(),
+            AutoReport {
+                watertight: err.is_none(),
+                repaired: false,
+                pattern_type: "none".to_string(),
+                group_size: 0,
+                positions_checked: 0,
+                positions_repaired: 0,
+                per_position_deviation: Vec::new(),
+                volume_change: 0.0,
+                hausdorff_outside: 0.0,
+                notes: Vec::new(),
+                error: err.map(|e| e.to_string()),
+            },
+        )
+    };
+    if verts.len() < 4 || tris.len() < 4 {
+        return early(Some("Mesh has too few vertices or triangles"));
+    }
+    let (is_valid, err_msg) = check_mesh_validity(verts, tris);
+    if !is_valid {
+        return early(Some(err_msg));
+    }
+
+    let patches = crate::repeat_segment::segment_elements(
+        verts,
+        tris,
+        crate::repeat_segment::DEFAULT_FEATURE_ANGLE_DEG,
+    );
+    if patches.len() < 2 {
+        return early(Some("Fewer than 2 candidate element patches found"));
+    }
+
+    let nearest = |p: [f64; 3]| -> usize {
+        let mut best = 0usize;
+        let mut best_d = f64::INFINITY;
+        for (i, patch) in patches.iter().enumerate() {
+            let c = patch.centroid;
+            let d = norm([c[0] - p[0], c[1] - p[1], c[2] - p[2]]);
+            if d < best_d {
+                best_d = d;
+                best = i;
+            }
+        }
+        best
+    };
+    let src = &patches[nearest(source_point)];
+    let dst = &patches[nearest(target_point)];
+    let src_pts: Vec<[f64; 3]> = src.verts_idx.iter().map(|&i| verts[i]).collect();
+    let dst_pts: Vec<[f64; 3]> = dst.verts_idx.iter().map(|&i| verts[i]).collect();
+
+    let (t, _rms) = crate::repeat_align::align(&src_pts, &dst_pts, false, false, 20);
+    let obb = template_obb(&src_pts, margin);
+    let mats: Vec<([[f64; 3]; 3], [f64; 3])> = vec![(t.rotation(), t.translation())];
+    match crate::manifold::boolean_transplant_core(
+        verts,
+        tris,
+        obb.center,
+        obb.extents,
+        obb.frame,
+        &mats,
+    ) {
+        Ok((ov, ot, rep)) => {
+            let boxes: Vec<Obb> = rep
+                .boxes
+                .iter()
+                .map(|(c, e, f)| Obb {
+                    center: *c,
+                    extents: *e,
+                    frame: *f,
+                })
+                .collect();
+            let h = if boxes.is_empty() {
+                0.0
+            } else {
+                compute_hausdorff_outside(orig_v, orig_t, &ov, &ot, &boxes, 5000)
+            };
+            (
+                ov,
+                ot,
+                AutoReport {
+                    watertight: rep.watertight,
+                    repaired: true,
+                    // The manual route reports no pattern: `repair_repeat_manual`
+                    // in Python leaves these unset, and the tier's `decide`
+                    // prints them through unchanged. Setting a pattern here
+                    // made the report differ from Python's for the same mesh.
+                    pattern_type: String::new(),
+                    group_size: 0,
+                    positions_checked: 0,
+                    positions_repaired: 0,
+                    per_position_deviation: Vec::new(),
+                    volume_change: round6(rep.vol_change),
+                    hausdorff_outside: round6(h),
+                    notes: vec![
+                        "1 repeated element manually replaced by healthy copy".to_string(),
+                    ],
+                    error: None,
+                },
+            )
+        }
+        Err(e) => early(Some(&e)),
+    }
+}
+
 #[cfg(feature = "python")]
 pub mod py {
     use super::*;

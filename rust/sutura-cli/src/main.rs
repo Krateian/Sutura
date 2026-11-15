@@ -78,9 +78,13 @@ struct Cli {
     methods: Option<String>,
     #[arg(long, value_name = "LIST", global = true)]
     engines: Option<String>,
-    #[arg(long = "repeat-source", value_name = "X,Y,Z", global = true)]
+    // `allow_hyphen_values`: the value is "X,Y,Z" and negative coordinates are
+    // legal, so `--repeat-source -3.5,0,0` must not be read as a flag.
+    #[arg(long = "repeat-source", value_name = "X,Y,Z", global = true,
+          allow_hyphen_values = true)]
     repeat_source: Option<String>,
-    #[arg(long = "repeat-target", value_name = "X,Y,Z", global = true)]
+    #[arg(long = "repeat-target", value_name = "X,Y,Z", global = true,
+          allow_hyphen_values = true)]
     repeat_target: Option<String>,
     #[arg(long = "wall-min-thickness", value_name = "T", global = true)]
     wall_min_thickness: Option<f64>,

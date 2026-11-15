@@ -138,6 +138,23 @@ pub fn decide(
     (cur_v.to_vec(), cur_t.to_vec(), Value::Object(rec))
 }
 
+/// A report for a caller error, in the shape the tier consumes.
+pub fn error_report(message: &str) -> sutura_geom::repeat_repair::AutoReport {
+    sutura_geom::repeat_repair::AutoReport {
+        watertight: false,
+        repaired: false,
+        pattern_type: "none".to_string(),
+        group_size: 0,
+        positions_checked: 0,
+        positions_repaired: 0,
+        per_position_deviation: Vec::new(),
+        volume_change: 0.0,
+        hausdorff_outside: 0.0,
+        notes: Vec::new(),
+        error: Some(message.to_string()),
+    }
+}
+
 /// Repair `cur_v`/`cur_t` through the shared kernel, with no Python involved.
 ///
 /// This is the entry point the Rust CLI uses. `decide` above takes the repair
@@ -145,14 +162,17 @@ pub fn decide(
 /// produces it, so the whole Repeat path -- plan, Manifold transplant and the
 /// Hausdorff guard -- is Rust.
 ///
-/// Returns the repaired mesh and the report `decide` consumes, in the shape the
-/// Python module emits (`repaired`, `pattern_type`, `positions_repaired`,
-/// `hausdorff_outside`, `notes`, ...).
-pub fn repair_auto_report(
+/// Auto repair, returning the kernel's own `AutoReport` so callers can treat
+/// the auto and manual routes uniformly.
+pub fn repair_auto_raw(
     verts: &[[f64; 3]],
     tris: &[[i64; 3]],
     margin: f64,
-) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
+) -> (
+    Vec<[f64; 3]>,
+    Vec<[i64; 3]>,
+    sutura_geom::repeat_repair::AutoReport,
+) {
     let v: Vec<[f64; 3]> = verts.to_vec();
     let t: Vec<[usize; 3]> = tris
         .iter()
@@ -163,26 +183,47 @@ pub fn repair_auto_report(
         .iter()
         .map(|f| [f[0] as i64, f[1] as i64, f[2] as i64])
         .collect();
+    (ov, ot_i, rep)
+}
+
+/// Render a kernel `AutoReport` as the JSON the tier report carries.
+pub fn report_to_value(rep: sutura_geom::repeat_repair::AutoReport) -> Value {
     let mut out = Map::new();
     out.insert("watertight".into(), json!(rep.watertight));
     out.insert("repaired".into(), json!(rep.repaired));
-    out.insert("pattern_type".into(), json!(rep.pattern_type));
-    out.insert("group_size".into(), json!(rep.group_size));
-    out.insert("positions_checked".into(), json!(rep.positions_checked));
-    out.insert("positions_repaired".into(), json!(rep.positions_repaired));
+    // An empty `pattern_type` means the route reports no pattern at all -- the
+    // manual route (#12). Python's `repair_repeat_manual` returns exactly
+    // watertight/repaired/volume_change/hausdorff_outside/notes in that case,
+    // so emit only those; filling in zeros made the report differ for the same
+    // mesh.
+    if !rep.pattern_type.is_empty() {
+        out.insert("pattern_type".into(), json!(rep.pattern_type));
+        out.insert("group_size".into(), json!(rep.group_size));
+        out.insert("positions_checked".into(), json!(rep.positions_checked));
+        out.insert("positions_repaired".into(), json!(rep.positions_repaired));
+        let devs: Vec<Value> = rep
+            .per_position_deviation
+            .iter()
+            .map(|p| json!({"index": p.index, "deviation": p.deviation}))
+            .collect();
+        out.insert("per_position_deviation".into(), json!(devs));
+    }
     out.insert("volume_change".into(), json!(rep.volume_change));
     out.insert("hausdorff_outside".into(), json!(rep.hausdorff_outside));
     out.insert("notes".into(), json!(rep.notes));
     if let Some(e) = rep.error {
         out.insert("error".into(), json!(e));
     }
-    let devs: Vec<Value> = rep
-        .per_position_deviation
-        .iter()
-        .map(|p| json!({"index": p.index, "deviation": p.deviation}))
-        .collect();
-    out.insert("per_position_deviation".into(), json!(devs));
-    (ov, ot_i, Value::Object(out))
+    Value::Object(out)
+}
+
+pub fn repair_auto_report(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    margin: f64,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
+    let (ov, ot_i, rep) = repair_auto_raw(verts, tris, margin);
+    (ov, ot_i, report_to_value(rep))
 }
 
 #[cfg(test)]

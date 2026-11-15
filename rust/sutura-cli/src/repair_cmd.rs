@@ -14,7 +14,7 @@ use std::time::Instant;
 use serde_json::{json, Map, Value};
 use sutura_core::repair::{
     repair, CancelToken, DeepRepair, ProgressSink, RepairMode, RepairOptions, RepairOutcome,
-    SiMode, SolidEngine,
+    RepeatMode, SiMode, SolidEngine,
 };
 use sutura_core::{check_units, load_mesh, save_mesh, Mesh};
 
@@ -167,6 +167,27 @@ fn parse_solid(value: Option<&str>) -> Result<SolidEngine, RepairFailure> {
     }
 }
 
+/// Parse `--repeat-source` / `--repeat-target`: `"X,Y,Z"` of numbers.
+///
+/// Matches the Python CLI's `_parse_point`: exactly three comma-separated
+/// components, each a float.
+fn parse_point(raw: &str, flag: &str) -> Result<[f64; 3], RepairFailure> {
+    let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
+    if parts.len() != 3 {
+        return Err(RepairFailure::new(2, format!("argument {flag}: expected X,Y,Z")));
+    }
+    let mut out = [0.0f64; 3];
+    for (i, part) in parts.iter().enumerate() {
+        out[i] = part.parse::<f64>().map_err(|_| {
+            RepairFailure::new(
+                2,
+                format!("argument {flag}: coordinates must be numbers"),
+            )
+        })?;
+    }
+    Ok(out)
+}
+
 /// Parse `--methods` into the baseline deep-repair mode. Only the three ported
 /// baseline methods (1 Quick Clean, 2 Local Mend, 3 Full Mend) are accepted.
 fn parse_methods(
@@ -187,6 +208,10 @@ fn parse_methods(
             .map_err(|_| RepairFailure::new(2, format!("unknown method: {token}")))?;
         match num {
             1..=3 => nums.push(num),
+            // Method 12 (Repeat manual) runs through the Repeat tier when
+            // `--repeat-source`/`--repeat-target` are given; it does not change
+            // the baseline deep-repair mode.
+            12 => nums.push(num),
             _ => {
                 return Err(RepairFailure::new(
                     2,
@@ -213,12 +238,16 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             "--engines is not implemented in the Rust CLI",
         ));
     }
-    if cli.repeat_source.is_some() || cli.repeat_target.is_some() {
-        return Err(RepairFailure::new(
-            2,
-            "--repeat-source/--repeat-target are not implemented in the Rust CLI",
-        ));
-    }
+    // `--repeat-source` / `--repeat-target`: the two 3D points method 12
+    // transplants between. Validated below, once `--methods` is known.
+    let repeat_source = match cli.repeat_source.as_deref() {
+        Some(raw) => Some(parse_point(raw, "--repeat-source")?),
+        None => None,
+    };
+    let repeat_target = match cli.repeat_target.as_deref() {
+        Some(raw) => Some(parse_point(raw, "--repeat-target")?),
+        None => None,
+    };
     if cli.wall_min_thickness.is_some() {
         return Err(RepairFailure::new(
             2,
@@ -317,6 +346,18 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     };
     let (deep_repair, methods_given, methods) =
         parse_methods(cli.methods.as_deref(), deep_repair)?;
+    // Method 12 needs both points, exactly as the Python CLI requires.
+    if methods.contains(&12) && (repeat_source.is_none() || repeat_target.is_none()) {
+        return Err(RepairFailure::new(
+            2,
+            "--methods 12 requires --repeat-source X,Y,Z and --repeat-target X,Y,Z",
+        ));
+    }
+    let repeat = if repeat_source.is_some() || repeat_target.is_some() {
+        Some(RepeatMode::Manual)
+    } else {
+        None
+    };
     let si_mode = parse_si(cli.si_mode.as_deref())?;
     let solid_engine = parse_solid(cli.solid_engine.as_deref())?;
 
@@ -354,7 +395,9 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         splint,
         dressing: false,
         wall_thicken: false,
-        repeat: None,
+        repeat,
+        repeat_source,
+        repeat_target,
         solid_engine,
         si_mode,
         ftetwild,
