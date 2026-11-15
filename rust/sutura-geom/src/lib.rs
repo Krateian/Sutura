@@ -22,6 +22,7 @@ pub mod antipodal;
 pub mod arrangement;
 pub mod cdt2d;
 pub mod cdt3d;
+pub mod choice;
 pub mod classify;
 mod budget;
 mod cancel;
