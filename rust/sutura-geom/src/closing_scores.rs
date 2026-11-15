@@ -17,6 +17,19 @@
 //! the face-normal sum below.
 //!
 //! Per the project rule the numeric core lives here, once, and Python calls it.
+//!
+//! ## The loop list is an input, not something this module computes
+//!
+//! Both scores are dominated by the *dominant* boundary loop, so which loops
+//! exist is part of the contract. `closing.boundary_loops` walks **directed**
+//! half-edges (triangle winding fixes the loop orientation), while
+//! `report::defects::detect_holes` in `sutura-core` walks the boundary graph
+//! **undirected**. Those two are not interchangeable: measured over the 226-mesh
+//! corpus they differ on 55 meshes, 40 of them in loop count or length and not
+//! merely in order. A Rust caller therefore must not feed `detect_holes` loops
+//! into these functions and assume Python parity -- it has to use the directed
+//! walk. That is also why the loops arrive as an argument here rather than being
+//! recomputed: one walk, in one place, so the two sides cannot drift apart.
 
 use crate::eigh3::eigh3;
 use crate::measures::sum_f64;
