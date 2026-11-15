@@ -135,7 +135,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                     'mode': mode, 'intensity': getattr(triage_spec, 'intensity', 'balanced'),
                     'profile': profile, 'deep_repair': deep_repair,
                     'closing': closing, 'proxy_template': proxy_template,
-                    'graft': _pb(graft), 'tamponade': _pb(run_tamponade),
+                    'graft': _pb(graft), 'tamponade': _pb(run_tamponade), 'ftetwild': ('always' if _pb(ftetwild) else None),
                     'flap': _pb(flap_value), 'coaptation': _pb(coaptation),
                     'splint': _pb(splint), 'dressing': _pb(dressing),
                     'wall_thicken': _pb(wall_thicken), 'repeat': repeat,

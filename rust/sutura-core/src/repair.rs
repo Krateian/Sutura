@@ -181,6 +181,7 @@ pub struct RepairOptions {
     pub repeat: Option<RepeatMode>,
     pub solid_engine: SolidEngine,
     pub si_mode: SiMode,
+    pub ftetwild: Option<Value>,
     pub time_budget_s: Option<f64>,
     pub seed: u64,
 }
@@ -204,6 +205,7 @@ impl Default for RepairOptions {
             repeat: None,
             solid_engine: SolidEngine::Ftetwild,
             si_mode: SiMode::Report,
+            ftetwild: None,
             time_budget_s: None,
             seed: 0,
         }
@@ -383,6 +385,26 @@ fn tuning_applied_for(mesh_type: &str, confidence: f64, policy: Option<&LoadedPo
         "mechanical" => confidence >= policy_number(policy, "stage1_tuning", "mech_gate", 0.75),
         "organic" => confidence >= policy_number(policy, "stage1_tuning", "org_gate", 0.70),
         _ => false,
+    }
+}
+
+/// `adopt_guard.policy_for('ftetwild')`: the shared adoption policy plus the
+/// fTetWild absolute floor and the improved-topology growth allowance.
+fn ftetwild_guard_policy(policy: Option<&LoadedPolicy>) -> common::GuardPolicy {
+    let floor = policy_number(policy, "gates.adoption", "ftetwild_abs_floor", 50_000.0) as i64;
+    common::GuardPolicy {
+        face_ratio: policy_number(policy, "gates.adoption", "face_ratio", 4.0),
+        vertex_ratio: policy_number(policy, "gates.adoption", "vertex_ratio", 4.0),
+        min_slack: policy_number(policy, "gates.adoption", "min_slack", 256.0) as i64,
+        loop_face_slack: policy_number(policy, "gates.adoption", "loop_face_slack", 16.0) as i64,
+        loop_vertex_slack: policy_number(policy, "gates.adoption", "loop_vertex_slack", 16.0)
+            as i64,
+        si_policy: "improved_flag".to_string(),
+        si_rel_tol: 0.0,
+        si_abs_tol: 0,
+        face_abs_floor: floor,
+        vertex_abs_floor: floor,
+        allow_growth_if_improved: true,
     }
 }
 
@@ -1519,6 +1541,7 @@ pub fn repair(
             }
 
             // CDT last-resort solid engine.
+            let mut cdt_ok = false;
             if opts.solid_engine == SolidEngine::Cdt
                 && !dressing_ok
                 && !splint_ok
@@ -1533,8 +1556,7 @@ pub fn repair(
                     cur_v = cv;
                     cur_t = ct;
                     after = common::topology_summary(&cur_v, &cur_t);
-                    holes = boundary_loop_stats(&cur_t).0;
-                    nm = after.non_two_manifold_edges;
+                    cdt_ok = true;
                     tiers_run.push(Value::from("cdt"));
                 }
                 emit_tier(sink, "cdt", 4, &rec);
@@ -1551,53 +1573,66 @@ pub fn repair(
             }
 
             // fTetWild (#7): standalone deterministic binary when installed.
-            if (holes > 0 || nm > 0) && ftetwild_bin.is_some() {
+            let ft_trigger =
+                crate::ftetwild::resolve_trigger(opts.ftetwild.as_ref(), spec.ftetwild_enabled);
+            if ft_trigger != crate::ftetwild::Trigger::Disabled
+                && !graft_ok
+                && !splint_ok
+                && !coaptation_ok
+                && !cdt_ok
+                && ftetwild_bin.is_some()
+            {
                 let ft_in_v = cur_v.clone();
                 let ft_in_t = cur_t.clone();
                 let bin = ftetwild_bin.as_deref().expect("checked above");
-                let params = crate::ftetwild::params_from_env();
-                let rec = match crate::ftetwild::run_binary(&cur_v, &cur_t, bin, &params) {
-                    Ok((fv, ft, mut report)) => {
-                        let cand_after = common::topology_summary(&fv, &ft);
-                        let cand_holes = boundary_loop_stats(&ft).0;
-                        let cand_nm = cand_after.non_two_manifold_edges;
-                        let candidate_ok = !fv.is_empty()
-                            && !ft.is_empty()
-                            && cand_holes <= holes
-                            && cand_nm <= nm;
-                        report["ran"] = Value::Bool(true);
-                        report["adopted"] = Value::Bool(candidate_ok);
-                        report["input_holes"] = Value::from(holes);
-                        report["input_non_manifold"] = Value::from(nm);
-                        report["output_holes"] = Value::from(cand_holes);
-                        report["output_non_manifold"] = Value::from(cand_nm);
-                        if let Some(err) = report.get("error").and_then(Value::as_str) {
-                            report["reason"] = Value::from(err.to_string());
-                        } else if !candidate_ok {
-                            report["reason"] = Value::from("not_watertight");
-                        }
-                        if candidate_ok {
-                            cur_v = fv;
-                            cur_t = ft;
-                            after = cand_after;
-                            tiers_run.push(Value::from("ftetwild"));
-                        }
-                        report
-                    }
-                    Err(err) => tier_error("ftetwild", err),
+                let tuning = crate::ftetwild::TierTuning {
+                    max_hausdorff_rel: policy_number(
+                        policy.as_ref(),
+                        "gates.tuning",
+                        "ftetwild_max_hausdorff_rel",
+                        0.01,
+                    ),
+                    decimate_hd_margin: policy_number(
+                        policy.as_ref(),
+                        "gates.tuning",
+                        "decimate_hd_margin",
+                        0.005,
+                    ),
+                    guard: ftetwild_guard_policy(policy.as_ref()),
                 };
-                emit_tier(sink, "ftetwild", 4, &rec);
-                trace.record(
-                    "ftetwild",
-                    "pipeline._ftetwild_tier",
-                    &ft_in_v,
-                    &ft_in_t,
+                if let Some(result) = crate::ftetwild::run_tier(
                     &cur_v,
                     &cur_t,
-                    rec.clone(),
-                );
-                stats.insert("experimental_ftetwild".into(), rec.clone());
-                stats.insert("ftetwild".into(), rec);
+                    &input_v,
+                    &input_t,
+                    &after,
+                    bin,
+                    &spec,
+                    &tuning,
+                    ft_trigger == crate::ftetwild::Trigger::Always,
+                ) {
+                    if result.adopted {
+                        cur_v = result.verts;
+                        cur_t = result.tris;
+                        after = result.after;
+                        tiers_run.push(Value::from("ftetwild"));
+                    }
+                    if result.shape_changed {
+                        stats.insert("shape_changed".into(), Value::Bool(true));
+                    }
+                    emit_tier(sink, "ftetwild", 4, &result.report);
+                    trace.record(
+                        "ftetwild",
+                        "pipeline._ftetwild_tier",
+                        &ft_in_v,
+                        &ft_in_t,
+                        &cur_v,
+                        &cur_t,
+                        result.report.clone(),
+                    );
+                    stats.insert("experimental_ftetwild".into(), result.report.clone());
+                    stats.insert("ftetwild".into(), result.report);
+                }
             }
         }
 
