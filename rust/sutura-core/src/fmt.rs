@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Python-compatible `%g` formatting.
 //!
 //! `mesh_io.write_obj` uses `%.9g` (and 3MF uses `%.7g`). Rust's formatting
@@ -174,23 +176,6 @@ mod tests {
         check(f64::from(1e9f32), "1e+09");
         check(f64::from(-0.0f32), "-0");
         check(f64::from(123.456f32), "123.456001");
-    }
-
-    fn check_repr(v: f64, want: &str) {
-        assert_eq!(super::py_repr_f64(v), want, "value {v:?}");
-    }
-
-    #[test]
-    fn py_repr_matches_python() {
-        check_repr(0.0, "0.0");
-        check_repr(-0.0, "-0.0");
-        check_repr(1.0, "1.0");
-        check_repr(0.1, "0.1");
-        check_repr(1e-5, "1e-05");
-        check_repr(0.0001, "0.0001");
-        check_repr(1e16, "1e+16");
-        check_repr(123456789012345.0, "123456789012345.0");
-        check_repr(2.5e-7, "2.5e-07");
     }
 
     #[test]

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Runtime configuration: repair policy, intensity presets and learning.
 //!
 //! Mirrors the stdlib-only Python modules `sutura_engine.policy`,

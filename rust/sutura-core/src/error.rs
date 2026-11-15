@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 use std::fmt;
 
 /// Errors raised by the Python-free core.

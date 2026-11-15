@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! STL reading and writing with the same float32/int32 contract as the
 //! Python mesh_io implementation.
 

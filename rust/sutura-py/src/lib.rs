@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Thin PyO3 bridge over `sutura-core`.
 //!
 //! No repair logic lives here: the module only converts numpy arrays and
@@ -23,9 +25,6 @@ use sutura_core::{
     rewrite_3mf_meshes, save_mesh as core_save_mesh, scan_bad_coordinates as core_scan,
     summary_args_json, summary_text_json, write_obj, write_ply, write_stl_binary, Mesh,
     MeshError,
-};
-use sutura_core::repair::{
-    repair as pipeline_repair, CancelToken, NoopSink, RepairOptions, RepairOutcome,
 };
 
 fn io_error(e: std::io::Error) -> PyErr {
@@ -546,6 +545,25 @@ fn classify_py(data_json: &str) -> PyResult<(String, Vec<String>, String)> {
     classify_json(data_json).map_err(PyValueError::new_err)
 }
 
+#[pyfunction(name = "classify_mesh")]
+fn classify_mesh_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    engine: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let tris: Vec<[usize; 3]> = t
+        .iter()
+        .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+        .collect();
+    let value = sutura_core::classify::classify_mesh(&v, &tris, engine);
+    let text = value.to_string();
+    let json = py.import("json")?;
+    json.call_method1("loads", (text,))
+}
+
 #[pyfunction(name = "repair_confidence")]
 fn repair_confidence_py<'py>(py: Python<'py>, data_json: &str) -> PyResult<Bound<'py, PyDict>> {
     let c = repair_confidence_json(data_json).map_err(PyValueError::new_err)?;
@@ -760,50 +778,6 @@ fn stage2_split_pinched_py<'py>(
 }
 
 
-#[pyfunction(name = "pipeline_repair")]
-fn pipeline_repair_py<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-    opts_json: &str,
-) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>, String)> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let opts: RepairOptions = serde_json::from_str(opts_json)
-        .map_err(|e| PyValueError::new_err(format!("invalid repair options: {e}")))?;
-    let sink = NoopSink;
-    let cancel = CancelToken::new();
-    match pipeline_repair(&v, &t, &opts, &sink, &cancel) {
-        RepairOutcome::Ok {
-            verts,
-            tris,
-            report,
-        } => {
-            let mut av = numpy::ndarray::Array2::<f32>::zeros((verts.len(), 3));
-            for (i, p) in verts.iter().enumerate() {
-                av[[i, 0]] = p[0] as f32;
-                av[[i, 1]] = p[1] as f32;
-                av[[i, 2]] = p[2] as f32;
-            }
-            let mut at = numpy::ndarray::Array2::<i32>::zeros((tris.len(), 3));
-            for (i, r) in tris.iter().enumerate() {
-                at[[i, 0]] = r[0] as i32;
-                at[[i, 1]] = r[1] as i32;
-                at[[i, 2]] = r[2] as i32;
-            }
-            Ok((
-                PyArray2::from_owned_array(py, av),
-                PyArray2::from_owned_array(py, at),
-                report.to_string(),
-            ))
-        }
-        RepairOutcome::Unavailable { tier, reason } => Err(PyValueError::new_err(format!(
-            "unavailable tier '{tier}': {reason}"
-        ))),
-        RepairOutcome::Error { message } => Err(PyValueError::new_err(message)),
-    }
-}
-
 fn parse_params(json: &str) -> PyResult<serde_json::Value> {
     serde_json::from_str(json).map_err(|e| PyValueError::new_err(e.to_string()))
 }
@@ -849,207 +823,6 @@ fn stage1_apply_chain_py<'py>(
         skipped.to_string(),
         small.map(|x| x.to_string()),
     ))
-}
-
-#[pyfunction(name = "graft_vn_probe")]
-fn graft_vn_probe_py<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let vn = sutura_core::graft::helpers::vertex_normals(&v, &t);
-    arrays_f64(py, &vn)
-}
-
-#[pyfunction(name = "graft_remesh_probe")]
-fn graft_remesh_probe_py<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-    target: f64,
-    step: &str,
-) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>)> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let (ov, ot) = match step {
-        "split" => sutura_core::graft::helpers::split_long_edges(&v, &t, target),
-        "collapse" => sutura_core::graft::helpers::collapse_short_edges(&v, &t, target),
-        "smooth" => (
-            sutura_core::graft::helpers::smooth_tangential(&v, &t, 2),
-            t.clone(),
-        ),
-        "smooth1" => (
-            sutura_core::graft::helpers::smooth_tangential(&v, &t, 1),
-            t.clone(),
-        ),
-        "isotropic" => sutura_core::graft::helpers::isotropic_remesh(&v, &t, target),
-        other => return Err(PyValueError::new_err(format!("unknown step: {}", other))),
-    };
-    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?))
-}
-
-#[pyfunction(name = "graft_helpers_probe")]
-fn graft_helpers_probe_py(
-    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'_, i64, AllowTypeChange>,
-    grid_budget: Option<i64>,
-) -> PyResult<String> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let diag = sutura_core::graft::helpers::diag(&v);
-    let voxel = sutura_core::graft::helpers::auto_voxel(&v, &t, grid_budget);
-    let cells = sutura_core::graft::helpers::grid_cell_count(&v, voxel);
-    let (gap, info, _mask) = sutura_core::graft::helpers::gap_estimate(&v, &t);
-    let ladder = sutura_core::graft::helpers::r_ladder(gap, voxel, diag, 12);
-    let out = serde_json::json!({
-        "diag": diag,
-        "median_edge": sutura_core::graft::helpers::median_edge_length(&v, &t),
-        "voxel": voxel,
-        "cells": cells,
-        "gap": gap,
-        "info": info,
-        "ladder": ladder,
-    });
-    Ok(out.to_string())
-}
-
-#[pyfunction(name = "graft_shell_wrap")]
-fn graft_shell_wrap_py<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-    intensity: Option<String>,
-    time_budget: Option<f64>,
-) -> PyResult<(
-    Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray2<i64>>,
-    String,
-)> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let mut opts = sutura_core::graft::shell::ShellWrapOptions::default();
-    opts.hybrid = true;
-    opts.intensity = intensity;
-    opts.time_budget = time_budget;
-    let out = sutura_core::graft::shell::shell_wrap(&v, &t, &opts)
-        .map_err(PyValueError::new_err)?;
-    if std::env::var_os("SUTURA_GRAFT_DEBUG").is_some() {
-        eprintln!(
-            "[graft-rust] called verts={} tris={} r_used={} mode={}",
-            v.len(),
-            t.len(),
-            out.report.get("r_used").cloned().unwrap_or(serde_json::Value::Null),
-            out.report.get("mode").cloned().unwrap_or(serde_json::Value::Null)
-        );
-    }
-    Ok((
-        arrays_f64(py, &out.verts)?,
-        arrays_i64(py, &out.tris)?,
-        out.report.to_string(),
-    ))
-}
-
-#[pyfunction(name = "graft_shell_wrap_probe")]
-fn graft_shell_wrap_probe_py<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-    r: Option<f64>,
-    voxel: Option<f64>,
-    params_json: &str,
-) -> PyResult<(
-    Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray2<i64>>,
-    String,
-)> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let params = parse_params(params_json)?;
-    let box_ = params.get("box").and_then(|b| b.as_array()).and_then(|rows| {
-        if rows.len() != 2 {
-            return None;
-        }
-        let read = |row: &serde_json::Value| -> Option<[f64; 3]> {
-            let a = row.as_array()?;
-            if a.len() != 3 {
-                return None;
-            }
-            Some([a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?])
-        };
-        Some((read(&rows[0])?, read(&rows[1])?))
-    });
-    let mut opts = sutura_core::graft::shell::ShellWrapOptions::default();
-    opts.r = r.or_else(|| params.get("r").and_then(|x| x.as_f64()));
-    opts.voxel = voxel.or_else(|| params.get("voxel").and_then(|x| x.as_f64()));
-    opts.box_ = box_;
-    opts.local = params.get("local").and_then(|x| x.as_bool());
-    if let Some(x) = params.get("remesh").and_then(|x| x.as_bool()) {
-        opts.remesh = x;
-    }
-    if let Some(x) = params.get("fill_cavities").and_then(|x| x.as_bool()) {
-        opts.fill_cavities = x;
-    }
-    if let Some(x) = params.get("max_tries").and_then(|x| x.as_i64()) {
-        opts.max_tries = x;
-    }
-    opts.target_edge = params.get("target_edge").and_then(|x| x.as_f64());
-    if let Some(x) = params.get("si_check").and_then(|x| x.as_bool()) {
-        opts.si_check = x;
-    }
-    if let Some(x) = params.get("guard").and_then(|x| x.as_bool()) {
-        opts.guard = x;
-    }
-    opts.grid_budget = params.get("grid_budget").and_then(|x| x.as_i64());
-    opts.detail_tol = params.get("detail_tol").and_then(|x| x.as_f64());
-    opts.intensity = params
-        .get("intensity")
-        .and_then(|x| x.as_str())
-        .map(|x| x.to_string());
-    opts.time_budget = params.get("time_budget").and_then(|x| x.as_f64());
-    opts.sign_field = params.get("sign_field").and_then(|x| x.as_bool());
-    if let Some(x) = params.get("hybrid").and_then(|x| x.as_bool()) {
-        opts.hybrid = x;
-    }
-    opts.raystab = params.get("raystab").and_then(|x| x.as_bool());
-    opts.raystab_dirs = params
-        .get("raystab_dirs")
-        .and_then(|x| x.as_u64())
-        .map(|x| x as usize);
-    if let Some(x) = params.get("raystab_seed").and_then(|x| x.as_u64()) {
-        opts.raystab_seed = x;
-    }
-    if let Some(x) = params.get("raystab_parity").and_then(|x| x.as_bool()) {
-        opts.raystab_parity = x;
-    }
-    opts.antipodal = params.get("antipodal").and_then(|x| x.as_bool());
-    let out = sutura_core::graft::shell::shell_wrap(&v, &t, &opts)
-        .map_err(PyValueError::new_err)?;
-    Ok((
-        arrays_f64(py, &out.verts)?,
-        arrays_i64(py, &out.tris)?,
-        out.report.to_string(),
-    ))
-}
-
-#[pyfunction(name = "stage1_si_excise")]
-fn stage1_si_excise_py<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-    ref_verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    ref_tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-    params_json: &str,
-) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>, String)> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let rv = verts_f64(ref_verts)?;
-    let rt = tris_i64(ref_tris)?;
-    let params = parse_params(params_json)?;
-    let (ov, ot, report) =
-        sutura_core::stage1::si_excise::run(&v, &t, &rv, &rt, &params);
-    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, report.to_string()))
 }
 
 #[pyfunction(name = "stage1_extreme_passes")]
@@ -1126,132 +899,6 @@ fn tier_repeat_decide_py<'py>(
     let params = parse_params(params_json)?;
     let (ov, ot, rec) = sutura_core::tiers::repeat::decide(&cv, &ct, &v, &t, &rep, &params);
     Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
-}
-
-#[pyfunction(name = "closing_poisson")]
-fn closing_poisson_py<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-    depth: Option<i32>,
-) -> PyResult<(
-    Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray2<i64>>,
-    String,
-)> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let out = sutura_core::closing::poisson_close(&v, &t, depth);
-    if std::env::var_os("SUTURA_CLOSING_DEBUG").is_some() {
-        eprintln!(
-            "[closing-rust] poisson verts={} tris={} watertight={}",
-            v.len(),
-            t.len(),
-            out.report.get("watertight").cloned().unwrap_or(serde_json::Value::Null)
-        );
-    }
-    Ok((
-        arrays_f64(py, &out.verts)?,
-        arrays_i64(py, &out.tris)?,
-        out.report.to_string(),
-    ))
-}
-
-#[pyfunction(name = "closing_flat_back")]
-fn closing_flat_back_py<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-    thickness: Option<f64>,
-) -> PyResult<(
-    Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray2<i64>>,
-    String,
-)> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let out = sutura_core::closing::flat_back_close(&v, &t, thickness);
-    if std::env::var_os("SUTURA_CLOSING_DEBUG").is_some() {
-        eprintln!(
-            "[closing-rust] flat_back verts={} tris={} watertight={}",
-            v.len(),
-            t.len(),
-            out.report.get("watertight").cloned().unwrap_or(serde_json::Value::Null)
-        );
-    }
-    Ok((
-        arrays_f64(py, &out.verts)?,
-        arrays_i64(py, &out.tris)?,
-        out.report.to_string(),
-    ))
-}
-
-#[pyfunction(name = "mirror_close")]
-#[pyo3(signature = (verts, tris, min_score=None))]
-fn mirror_close_py<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-    min_score: Option<f64>,
-) -> PyResult<(
-    Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray2<i64>>,
-    String,
-)> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let out = sutura_core::mirror::mirror_close(
-        &v,
-        &t,
-        min_score.unwrap_or(sutura_core::mirror::MIRROR_MIN_SCORE),
-    );
-    if std::env::var_os("SUTURA_MIRROR_DEBUG").is_some() {
-        eprintln!(
-            "[mirror-rust] verts={} tris={} mode={}",
-            out.verts.len(),
-            out.tris.len(),
-            out.report
-                .get("mode")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null)
-        );
-    }
-    Ok((
-        arrays_f64(py, &out.verts)?,
-        arrays_i64(py, &out.tris)?,
-        out.report.to_string(),
-    ))
-}
-
-#[pyfunction(name = "proxy_template_repair")]
-#[pyo3(signature = (verts, tris, voxel=None, max_iters=3))]
-fn proxy_template_repair_py<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-    voxel: Option<f64>,
-    max_iters: i32,
-) -> PyResult<(
-    Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray2<i64>>,
-    String,
-)> {
-    let v = verts_f64(verts)?;
-    let t = tris_i64(tris)?;
-    let out = sutura_core::proxy::proxy_template_repair(&v, &t, voxel, max_iters);
-    if std::env::var_os("SUTURA_PROXY_DEBUG").is_some() {
-        eprintln!(
-            "[proxy-rust] verts={} tris={} watertight={}",
-            out.verts.len(),
-            out.tris.len(),
-            out.report.get("watertight").cloned().unwrap_or(serde_json::Value::Null)
-        );
-    }
-    Ok((
-        arrays_f64(py, &out.verts)?,
-        arrays_i64(py, &out.tris)?,
-        out.report.to_string(),
-    ))
 }
 
 #[pyfunction(name = "tier_closing_decide")]
@@ -1467,6 +1114,303 @@ fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+#[pyfunction(name = "graft_shell_wrap")]
+fn graft_shell_wrap_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    intensity: Option<String>,
+    time_budget: Option<f64>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let mut opts = sutura_core::graft::shell::ShellWrapOptions::default();
+    opts.hybrid = true;
+    opts.intensity = intensity;
+    opts.time_budget = time_budget;
+    let out = sutura_core::graft::shell::shell_wrap(&v, &t, &opts)
+        .map_err(PyValueError::new_err)?;
+    if std::env::var_os("SUTURA_GRAFT_DEBUG").is_some() {
+        eprintln!(
+            "[graft-rust] called verts={} tris={} r_used={} mode={}",
+            v.len(),
+            t.len(),
+            out.report.get("r_used").cloned().unwrap_or(serde_json::Value::Null),
+            out.report.get("mode").cloned().unwrap_or(serde_json::Value::Null)
+        );
+    }
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
+
+#[pyfunction(name = "graft_shell_wrap_probe")]
+fn graft_shell_wrap_probe_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    r: Option<f64>,
+    voxel: Option<f64>,
+    params_json: &str,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let params = parse_params(params_json)?;
+    let box_ = params.get("box").and_then(|b| b.as_array()).and_then(|rows| {
+        if rows.len() != 2 {
+            return None;
+        }
+        let read = |row: &serde_json::Value| -> Option<[f64; 3]> {
+            let a = row.as_array()?;
+            if a.len() != 3 {
+                return None;
+            }
+            Some([a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?])
+        };
+        Some((read(&rows[0])?, read(&rows[1])?))
+    });
+    let mut opts = sutura_core::graft::shell::ShellWrapOptions::default();
+    opts.r = r.or_else(|| params.get("r").and_then(|x| x.as_f64()));
+    opts.voxel = voxel.or_else(|| params.get("voxel").and_then(|x| x.as_f64()));
+    opts.box_ = box_;
+    opts.local = params.get("local").and_then(|x| x.as_bool());
+    if let Some(x) = params.get("remesh").and_then(|x| x.as_bool()) {
+        opts.remesh = x;
+    }
+    if let Some(x) = params.get("fill_cavities").and_then(|x| x.as_bool()) {
+        opts.fill_cavities = x;
+    }
+    if let Some(x) = params.get("max_tries").and_then(|x| x.as_i64()) {
+        opts.max_tries = x;
+    }
+    opts.target_edge = params.get("target_edge").and_then(|x| x.as_f64());
+    if let Some(x) = params.get("si_check").and_then(|x| x.as_bool()) {
+        opts.si_check = x;
+    }
+    if let Some(x) = params.get("guard").and_then(|x| x.as_bool()) {
+        opts.guard = x;
+    }
+    opts.grid_budget = params.get("grid_budget").and_then(|x| x.as_i64());
+    opts.detail_tol = params.get("detail_tol").and_then(|x| x.as_f64());
+    opts.intensity = params
+        .get("intensity")
+        .and_then(|x| x.as_str())
+        .map(|x| x.to_string());
+    opts.time_budget = params.get("time_budget").and_then(|x| x.as_f64());
+    opts.sign_field = params.get("sign_field").and_then(|x| x.as_bool());
+    if let Some(x) = params.get("hybrid").and_then(|x| x.as_bool()) {
+        opts.hybrid = x;
+    }
+    opts.raystab = params.get("raystab").and_then(|x| x.as_bool());
+    opts.raystab_dirs = params
+        .get("raystab_dirs")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as usize);
+    if let Some(x) = params.get("raystab_seed").and_then(|x| x.as_u64()) {
+        opts.raystab_seed = x;
+    }
+    if let Some(x) = params.get("raystab_parity").and_then(|x| x.as_bool()) {
+        opts.raystab_parity = x;
+    }
+    opts.antipodal = params.get("antipodal").and_then(|x| x.as_bool());
+    let out = sutura_core::graft::shell::shell_wrap(&v, &t, &opts)
+        .map_err(PyValueError::new_err)?;
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
+
+#[pyfunction(name = "closing_poisson")]
+fn closing_poisson_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    depth: Option<i32>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let out = sutura_core::closing::poisson_close(&v, &t, depth);
+    if std::env::var_os("SUTURA_CLOSING_DEBUG").is_some() {
+        eprintln!(
+            "[closing-rust] poisson verts={} tris={} watertight={}",
+            v.len(),
+            t.len(),
+            out.report.get("watertight").cloned().unwrap_or(serde_json::Value::Null)
+        );
+    }
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
+
+#[pyfunction(name = "closing_flat_back")]
+fn closing_flat_back_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    thickness: Option<f64>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let out = sutura_core::closing::flat_back_close(&v, &t, thickness);
+    if std::env::var_os("SUTURA_CLOSING_DEBUG").is_some() {
+        eprintln!(
+            "[closing-rust] flat_back verts={} tris={} watertight={}",
+            v.len(),
+            t.len(),
+            out.report.get("watertight").cloned().unwrap_or(serde_json::Value::Null)
+        );
+    }
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
+
+#[pyfunction(name = "proxy_template_repair")]
+#[pyo3(signature = (verts, tris, voxel=None, max_iters=3))]
+fn proxy_template_repair_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    voxel: Option<f64>,
+    max_iters: i32,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let out = sutura_core::proxy::proxy_template_repair(&v, &t, voxel, max_iters);
+    if std::env::var_os("SUTURA_PROXY_DEBUG").is_some() {
+        eprintln!(
+            "[proxy-rust] verts={} tris={} watertight={}",
+            out.verts.len(),
+            out.tris.len(),
+            out.report.get("watertight").cloned().unwrap_or(serde_json::Value::Null)
+        );
+    }
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
+
+#[pyfunction(name = "mirror_close")]
+#[pyo3(signature = (verts, tris, min_score=None))]
+fn mirror_close_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    min_score: Option<f64>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let out = sutura_core::mirror::mirror_close(
+        &v,
+        &t,
+        min_score.unwrap_or(sutura_core::mirror::MIRROR_MIN_SCORE),
+    );
+    if std::env::var_os("SUTURA_MIRROR_DEBUG").is_some() {
+        eprintln!(
+            "[mirror-rust] verts={} tris={} mode={}",
+            out.verts.len(),
+            out.tris.len(),
+            out.report
+                .get("mode")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        );
+    }
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
+
+#[pyfunction(name = "pipeline_repair")]
+fn pipeline_repair_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    opts_json: &str,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>, String)> {
+    use sutura_core::repair::{
+        repair as pipeline_repair, CancelToken, NoopSink, RepairOptions, RepairOutcome,
+    };
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let opts: RepairOptions = serde_json::from_str(opts_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid repair options: {e}")))?;
+    let sink = NoopSink;
+    let cancel = CancelToken::new();
+    match pipeline_repair(&v, &t, &opts, &sink, &cancel) {
+        RepairOutcome::Ok {
+            verts,
+            tris,
+            report,
+        } => {
+            let mut av = numpy::ndarray::Array2::<f32>::zeros((verts.len(), 3));
+            for (i, p) in verts.iter().enumerate() {
+                av[[i, 0]] = p[0] as f32;
+                av[[i, 1]] = p[1] as f32;
+                av[[i, 2]] = p[2] as f32;
+            }
+            let mut at = numpy::ndarray::Array2::<i32>::zeros((tris.len(), 3));
+            for (i, r) in tris.iter().enumerate() {
+                at[[i, 0]] = r[0] as i32;
+                at[[i, 1]] = r[1] as i32;
+                at[[i, 2]] = r[2] as i32;
+            }
+            Ok((
+                PyArray2::from_owned_array(py, av),
+                PyArray2::from_owned_array(py, at),
+                report.to_string(),
+            ))
+        }
+        RepairOutcome::Unavailable { tier, reason } => Err(PyValueError::new_err(format!(
+            "unavailable tier '{tier}': {reason}"
+        ))),
+        RepairOutcome::Error { message } => Err(PyValueError::new_err(message)),
+    }
+}
+
 #[pymodule]
 fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_mesh, m)?)?;
@@ -1497,6 +1441,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debris_removed_small_parts_py, m)?)?;
     m.add_function(wrap_pyfunction!(debris_possible_debris_py, m)?)?;
     m.add_function(wrap_pyfunction!(classify_py, m)?)?;
+    m.add_function(wrap_pyfunction!(classify_mesh_py, m)?)?;
     m.add_function(wrap_pyfunction!(repair_confidence_py, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_confidence_py, m)?)?;
     m.add_function(wrap_pyfunction!(summary_args_py, m)?)?;
@@ -1511,16 +1456,12 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage2_split_pinched_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_apply_chain_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_extreme_passes_py, m)?)?;
-    m.add_function(wrap_pyfunction!(pipeline_repair_py, m)?)?;
-    m.add_function(wrap_pyfunction!(graft_vn_probe_py, m)?)?;
-    m.add_function(wrap_pyfunction!(graft_remesh_probe_py, m)?)?;
-    m.add_function(wrap_pyfunction!(graft_helpers_probe_py, m)?)?;
-    m.add_function(wrap_pyfunction!(graft_shell_wrap_probe_py, m)?)?;
-    m.add_function(wrap_pyfunction!(graft_shell_wrap_py, m)?)?;
-    m.add_function(wrap_pyfunction!(stage1_si_excise_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_wall_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_repeat_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_closing_decide_py, m)?)?;
+    m.add_function(wrap_pyfunction!(pipeline_repair_py, m)?)?;
+    m.add_function(wrap_pyfunction!(graft_shell_wrap_probe_py, m)?)?;
+    m.add_function(wrap_pyfunction!(graft_shell_wrap_py, m)?)?;
     m.add_function(wrap_pyfunction!(closing_poisson_py, m)?)?;
     m.add_function(wrap_pyfunction!(closing_flat_back_py, m)?)?;
     m.add_function(wrap_pyfunction!(mirror_close_py, m)?)?;

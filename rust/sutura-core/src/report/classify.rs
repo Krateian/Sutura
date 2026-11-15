@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Result classification and confidence scoring, matching
 //! `sutura/classification.py` and `sutura/confidence.py`.
 

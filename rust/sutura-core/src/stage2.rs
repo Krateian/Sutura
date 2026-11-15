@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Stage 2 gate and pinch splitting, matching `pipeline/stage2.py`.
 //! The Manifold rebuild itself is the existing Rust `stage2_rebuild` kernel.
 

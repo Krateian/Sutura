@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Method-health report assembly, matching `health.build_report`/`human_line`.
 //! The runtime collector and guards stay Python; only the JSON assembly moves.
 

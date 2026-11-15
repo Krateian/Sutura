@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Stage-1 filter-chain builders and the pure `apply_chain` runner.
 //!
 //! Every filter is a pure `sutura-geom` kernel; the Python module keeps the

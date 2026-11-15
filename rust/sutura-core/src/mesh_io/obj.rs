@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! OBJ reading and writing with the Python mesh_io contract.
 
 use std::fs::File;

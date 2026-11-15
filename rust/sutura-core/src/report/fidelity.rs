@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Shape-fidelity measurement, matching `sutura/fidelity.py`.
 //!
 //! Reporting only: this module never changes a repair decision.

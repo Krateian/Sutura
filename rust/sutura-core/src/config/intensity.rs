@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Intensity presets and user profiles.
 //!
 //! Mirrors the preset/profile half of `sutura_engine/triage.py`:

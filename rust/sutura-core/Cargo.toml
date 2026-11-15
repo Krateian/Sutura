@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.89"
 description = "Python-free Sutura repair core (mesh types, I/O, pipeline)"
-license = "MIT OR Apache-2.0"
+license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/Krateian/Sutura"
 
 [lib]
@@ -13,8 +13,8 @@ path = "src/lib.rs"
 
 [dependencies]
 sutura-geom = { path = "../sutura-geom", default-features = false, features = ["decimate"] }
-serde = { version = "1", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 toml = "0.8"
 sha2 = "0.11"

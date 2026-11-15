@@ -103,3 +103,50 @@ def rust_config():
             'config_learning_bonus', 'config_intensity_format')):
         return unavailable('sutura_core_py has no config bindings')
     return mod
+
+
+def classifier_features(verts, tris):
+    """Rust classifier feature kernel, or ``(None, 'numpy')``.
+
+    The kernel lives in ``sutura_geom`` (the geometry extension), not in the
+    ``sutura_core_py`` bridge. It is the default for BOTH Python classifier
+    engines -- ``SUTURA_CLASSIFIER_BACKEND`` selects the classifier
+    implementation (see ``sutura_engine.classifier_rust``), not the features,
+    so the Python engine and the Rust CLI share one numeric core.
+
+    A missing extension falls back to NumPy; ``SUTURA_REQUIRE_RUST=1`` turns
+    that fallback into an error, and an exception raised by a present kernel
+    is propagated, never swallowed.
+    """
+    try:
+        import sutura_geom as mod
+    except Exception as exc:  # noqa: BLE001 - environment dependent
+        unavailable('sutura_geom is unavailable: %s' % exc, exc)
+        return None, 'numpy'
+    if not hasattr(mod, 'classifier_features'):
+        unavailable('sutura_geom has no classifier_features binding')
+        return None, 'numpy'
+    return mod.classifier_features(verts, tris), 'rust'
+
+
+def signed_volume(verts, tris):
+    """Signed volume through the shared kernel, or ``None`` for the NumPy path.
+
+    ``utils.signed_volume`` used ``np.einsum``, whose inner dot is a BLAS path
+    that cannot be reproduced portably; the kernel lives in ``sutura_geom`` so
+    the Python pipeline and the Rust CLI agree by construction. A missing
+    extension falls back to NumPy, and ``SUTURA_REQUIRE_RUST=1`` makes that an
+    error. An exception from a present kernel is propagated.
+    """
+    import numpy as np
+    try:
+        import sutura_geom as mod
+    except Exception as exc:  # noqa: BLE001 - environment dependent
+        unavailable('sutura_geom is unavailable: %s' % exc, exc)
+        return None
+    if not hasattr(mod, 'signed_volume'):
+        unavailable('sutura_geom has no signed_volume binding')
+        return None
+    v = np.ascontiguousarray(np.asarray(verts, dtype=np.float64))
+    t = np.ascontiguousarray(np.asarray(tris, dtype=np.int64))
+    return mod.signed_volume(v, t)

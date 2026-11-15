@@ -22,6 +22,8 @@ pub mod antipodal;
 pub mod arrangement;
 pub mod cdt2d;
 pub mod cdt3d;
+pub mod choice;
+pub mod classify;
 mod budget;
 mod cancel;
 #[cfg(feature = "python")]
@@ -36,6 +38,7 @@ pub mod hermite;
 pub mod hole;
 pub mod interval;
 pub mod lava;
+pub mod measures;
 pub mod melt;
 pub mod manifold;
 pub mod mincut;
@@ -48,8 +51,8 @@ pub mod predicates3d;
 pub mod profile;
 pub mod rbf;
 pub mod raycast;
-pub mod resample;
 pub mod rng;
+pub mod resample;
 pub mod roi;
 pub mod shell;
 pub mod splint;
@@ -1755,8 +1758,7 @@ fn nearest_points<'py>(
 #[cfg(feature = "python")]
 #[pyclass(name = "KdTree")]
 struct PyKdTree {
-    inner: pointcloud::PointTree,
-    point_count: usize,
+    inner: pointcloud::KdTree,
 }
 
 #[cfg(feature = "python")]
@@ -1768,12 +1770,9 @@ impl PyKdTree {
         if pts.is_empty() {
             return Err(PyValueError::new_err("points must be non-empty"));
         }
-        let inner = pointcloud::build_tree(&pts)
+        let inner = pointcloud::KdTree::new(&pts)
             .ok_or_else(|| PyValueError::new_err("could not build the point tree"))?;
-        Ok(Self {
-            inner,
-            point_count: pts.len(),
-        })
+        Ok(Self { inner })
     }
 
     #[pyo3(signature = (queries, k = 1))]
@@ -1784,12 +1783,12 @@ impl PyKdTree {
         k: usize,
     ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         let qs = parse_point_rows(&queries)?;
-        let (dist, idx, take) = pointcloud::query_neighbours(&self.inner, self.point_count, &qs, k);
+        let (dist, idx, take) = self.inner.query(&qs, k);
         nearest_output(py, dist, idx, take, qs.len())
     }
 
     fn __len__(&self) -> usize {
-        self.point_count
+        self.inner.len()
     }
 }
 
@@ -2873,6 +2872,41 @@ fn triangulate_annulus<'py>(
 }
 
 #[cfg(feature = "python")]
+/// Signed volume through the shared kernel (see `measures::signed_volume`).
+///
+/// Python's `np.einsum` inner dot is a BLAS path that no association order or
+/// FMA order reproduces, so `utils.signed_volume` calls this instead.
+#[pyfunction]
+fn signed_volume(verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+                 tris: PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<f64> {
+    let v: Vec<[f64; 3]> = verts.as_array().rows().into_iter()
+        .map(|r| [r[0], r[1], r[2]]).collect();
+    let t: Vec<[i64; 3]> = tris.as_array().rows().into_iter()
+        .map(|r| [r[0], r[1], r[2]]).collect();
+    Ok(crate::measures::signed_volume(&v, &t))
+}
+
+#[cfg(feature = "python")]
+/// Numeric classifier features shared with the Python v2 engine.
+#[pyfunction]
+fn classifier_features<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let f = crate::classify::features(&rv, &rt);
+    let d = PyDict::new(py);
+    d.set_item("near90", f.near90)?;
+    d.set_item("flat", f.flat)?;
+    d.set_item("gentle", f.gentle)?;
+    d.set_item("plane_count", f.plane_count)?;
+    d.set_item("plane_area", f.plane_area)?;
+    d.set_item("developable_fraction", f.developable_fraction)?;
+    Ok(d)
+}
+
+#[cfg(feature = "python")]
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
@@ -2895,6 +2929,8 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(closest_points, m)?)?;
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
+    m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
+    m.add_function(wrap_pyfunction!(signed_volume, m)?)?;
     m.add_function(wrap_pyfunction!(si_faces_exact, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;

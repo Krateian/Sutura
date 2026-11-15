@@ -34,44 +34,18 @@ def closing_ladder(v, t, input_v, input_t, after, stats, tmpdir,
     if not closing and not proxy_template:
         return v, t, after
     engine = os.environ.get('SUTURA_CLOSING_ENGINE', '').strip().lower()
-    proxy_engine = os.environ.get('SUTURA_PROXY_ENGINE', '').strip().lower()
-    use_rust_proxy = proxy_template and proxy_engine == 'rust'
-    use_rust_mirror = closing == 'mirror' and tier_engine('mirror') == 'rust'
     core = tier_core()
-    if core is None and (tier_engine('closing') == 'rust' or use_rust_proxy
-                         or use_rust_mirror):
-        if use_rust_mirror:
-            core = rust_bridge.load(
-                'mirror', ('SUTURA_MIRROR_ENGINE', 'SUTURA_TIER_ENGINE'),
-                'python')
-        elif proxy_template:
-            core = rust_bridge.load(
-                'proxy', ('SUTURA_PROXY_ENGINE', 'SUTURA_TIER_ENGINE'),
-                'python')
-        else:
-            core = rust_bridge.load(
-                'closing', ('SUTURA_CLOSING_ENGINE', 'SUTURA_TIER_ENGINE'),
-                'python')
-    if (engine == 'rust' and closing in ('poisson', 'flat_back')
+    if core is None and tier_engine('closing') == 'rust':
+        core = rust_bridge.load(
+            'closing', ('SUTURA_CLOSING_ENGINE', 'SUTURA_TIER_ENGINE'),
+            'python')
+    if (engine == 'rust' and (closing in ('poisson', 'flat_back')
+            or proxy_template)
             and (core is None or not hasattr(core, 'closing_poisson'))):
-        if rust_bridge.require_rust():
-            rust_bridge.unavailable(
-                'SUTURA_CLOSING_ENGINE=rust requires '
-                'sutura_core_py.closing_poisson')
-    if (use_rust_proxy
-            and (core is None or not hasattr(core, 'proxy_template_repair'))):
-        if rust_bridge.require_rust():
-            rust_bridge.unavailable(
-                'SUTURA_PROXY_ENGINE=rust requires '
-                'sutura_core_py.proxy_template_repair')
-    if (use_rust_mirror
-            and (core is None or not hasattr(core, 'mirror_close'))):
-        if rust_bridge.require_rust():
-            rust_bridge.unavailable(
-                'SUTURA_MIRROR_ENGINE=rust requires '
-                'sutura_core_py.mirror_close')
-    if ((tier_engine('closing') != 'rust' and not use_rust_proxy
-         and not use_rust_mirror) or core is None):
+        rust_bridge.unavailable(
+            'SUTURA_CLOSING_ENGINE=rust requires '
+            'sutura_core_py.closing_poisson')
+    if tier_engine('closing') != 'rust' or core is None:
         return _closing_ladder_python(
             v, t, input_v, input_t, after, stats, tmpdir, closing,
             proxy_template)
@@ -95,37 +69,35 @@ def _closing_ladder_rust(v, t, input_v, input_t, after, stats, tmpdir,
     with method_health.tier_guard('closing', 'tier') as _g:
         in_v = input_v
         in_t = input_t
-        engine = os.environ.get('SUTURA_CLOSING_ENGINE', '').strip().lower()
-        use_rust_producer = (engine == 'rust'
-                             and hasattr(core, 'closing_poisson'))
-        if proxy_template:
-            use_rust_proxy = (
-                os.environ.get('SUTURA_PROXY_ENGINE', '').strip().lower()
-                == 'rust' and hasattr(core, 'proxy_template_repair'))
-            if use_rust_proxy:
-                cand_v, cand_t, repl = core.proxy_template_repair(
+        cengine = os.environ.get('SUTURA_CLOSING_ENGINE', '').strip().lower()
+        mengine = os.environ.get('SUTURA_MIRROR_ENGINE', '').strip().lower()
+        pengine = os.environ.get('SUTURA_PROXY_ENGINE', '').strip().lower()
+        if (proxy_template and pengine == 'rust'
+                and hasattr(core, 'proxy_template_repair')):
+            cand_v, cand_t, repl = core.proxy_template_repair(
+                np.ascontiguousarray(in_v, dtype=np.float64),
+                np.ascontiguousarray(in_t, dtype=np.int64), None, 3)
+            rep = json.loads(repl)
+        elif (not proxy_template and closing in ('poisson', 'flat_back')
+                and cengine == 'rust'):
+            if closing == 'poisson':
+                cand_v, cand_t, repl = core.closing_poisson(
                     np.ascontiguousarray(in_v, dtype=np.float64),
-                    np.ascontiguousarray(in_t, dtype=np.int64), None, 3)
-                rep = json.loads(repl)
+                    np.ascontiguousarray(in_t, dtype=np.int64), None)
             else:
-                import proxy_repair as _proxy
-                cand_v, cand_t, rep = _proxy.proxy_template_repair(in_v, in_t)
-        elif use_rust_producer and closing == 'poisson':
-            cand_v, cand_t, repl = core.closing_poisson(
-                np.ascontiguousarray(in_v, dtype=np.float64),
-                np.ascontiguousarray(in_t, dtype=np.int64), None)
+                cand_v, cand_t, repl = core.closing_flat_back(
+                    np.ascontiguousarray(in_v, dtype=np.float64),
+                    np.ascontiguousarray(in_t, dtype=np.int64), None)
             rep = json.loads(repl)
-        elif use_rust_producer and closing == 'flat_back':
-            cand_v, cand_t, repl = core.closing_flat_back(
-                np.ascontiguousarray(in_v, dtype=np.float64),
-                np.ascontiguousarray(in_t, dtype=np.int64), None)
-            rep = json.loads(repl)
-        elif (closing == 'mirror' and tier_engine('mirror') == 'rust'
-              and hasattr(core, 'mirror_close')):
+        elif (not proxy_template and closing == 'mirror'
+                and mengine == 'rust' and hasattr(core, 'mirror_close')):
             cand_v, cand_t, repl = core.mirror_close(
                 np.ascontiguousarray(in_v, dtype=np.float64),
-                np.ascontiguousarray(in_t, dtype=np.int64), None)
+                np.ascontiguousarray(in_t, dtype=np.int64), None, 0.35)
             rep = json.loads(repl)
+        elif proxy_template:
+            import proxy_repair as _proxy
+            cand_v, cand_t, rep = _proxy.proxy_template_repair(in_v, in_t)
         else:
             import closing as _closing_mod
             if closing == 'poisson':

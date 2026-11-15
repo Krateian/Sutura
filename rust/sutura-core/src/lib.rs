@@ -1,22 +1,29 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Python-free Sutura core.
 //!
 //! Phase 1 starts with the mesh boundary types and errors. The I/O readers,
 //! pipeline, policy and reporting modules are added in later slices; none of
 //! them may depend on pyo3 or numpy.
 
-pub mod closing;
+pub mod analysis;
+pub mod classify;
 pub mod config;
 pub mod error;
 pub mod fmt;
 pub mod mesh;
 pub mod mesh_io;
-pub mod mirror;
 pub mod p_weld;
+pub mod ranking;
+pub mod reduce;
+pub mod validate;
+pub mod closing;
+pub mod graft;
+pub mod mirror;
 pub mod proxy;
 pub mod repair;
 pub mod stage1;
 pub mod stage2;
-pub mod graft;
 pub mod report;
 pub use sutura_geom::rng;
 pub mod tiers;

@@ -97,6 +97,9 @@ def classify_with_engine(verts: np.ndarray, tris: np.ndarray,
                          engine: str = 'experimental',
                          extra_features: bool = False) -> Tuple[dict, str]:
     """Run classify_mesh with the selected engine. Returns (result_dict, used_engine_name)."""
+    from sutura_engine import classifier_rust
+    if classifier_rust.available(extra_features=extra_features):
+        return classifier_rust.classify_mesh(verts, tris, engine, extra_features)
     try:
         from mesh_classifier import classify_mesh as classic_classify
     except ImportError:

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! PLY reading and writing (ASCII and binary_little_endian).
 
 use std::fs::File;

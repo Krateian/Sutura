@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! 3MF (OPC ZIP + XML) parsing and rewriting.
 //!
 //! The Python implementation keeps the exact byte span of every `<mesh>`

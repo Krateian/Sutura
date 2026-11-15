@@ -225,6 +225,17 @@ jobs:
             cand-venv/bin/pip install --quiet wheels-cand-py/*.whl
             cand-venv/bin/python -c "import sutura_core_py"
           fi
+      # Large bench115 meshes peak at ~6.3 GB of process-tree RSS (measured
+      # locally on fountain-basin); with two venvs and page cache the 16 GB
+      # runner has been shut down mid-shard (exit 143).  Extra swap on the
+      # roomy /mnt disk keeps a spike from killing the runner.
+      - name: Extra swap on /mnt
+        run: |
+          if [ -d /mnt ] && [ "$(df -Pm /mnt | awk 'NR==2{print $4}')" -gt 20000 ]; then
+            sudo fallocate -l 12G /mnt/sutura-swap && sudo chmod 600 /mnt/sutura-swap
+            sudo mkswap /mnt/sutura-swap >/dev/null && sudo swapon /mnt/sutura-swap
+          fi
+          free -m | awk 'NR>1{print $1, $2, $3}'
       - name: Mark Rust CLI executable
         continue-on-error: true
         if: matrix.mode == 'io_parity'

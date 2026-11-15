@@ -39,10 +39,9 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
             'graft', ('SUTURA_GRAFT_ENGINE', 'SUTURA_TIER_ENGINE'), 'python')
     if engine == 'rust' and (
             core is None or not hasattr(core, 'graft_shell_wrap')):
-        if rust_bridge.require_rust():
-            rust_bridge.unavailable(
-                'SUTURA_GRAFT_ENGINE=rust requires '
-                'sutura_core_py.graft_shell_wrap')
+        rust_bridge.unavailable(
+            'SUTURA_GRAFT_ENGINE=rust requires '
+            'sutura_core_py.graft_shell_wrap')
     if tier_engine('graft') != 'rust' or core is None:
         return _graft_tier_python(
             v, t, input_v, input_t, after, stats, tmpdir, graft, intensity,

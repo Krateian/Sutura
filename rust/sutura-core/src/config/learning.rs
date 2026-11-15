@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Learning-triage aggregation and ranking bonus.
 //!
 //! Mirrors `sutura_engine/learning.py`: per-(template, method) success/time

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Coaptation (#19) tier orchestration, ported from
 //! `sutura_engine/pipeline/tiers/coaptation.py`.
 //!

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Repair policy: packaged defaults, user override merge, content hash.
 //!
 //! Mirrors `sutura_engine/policy/__init__.py`. The packaged

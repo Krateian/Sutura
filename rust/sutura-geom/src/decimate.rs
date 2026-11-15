@@ -316,7 +316,7 @@ fn weld_only(verts_in: &[V3]) -> (usize, usize) {
 fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<V3>> {
     let v = arr.as_array();
     if v.ncols() != 3 {
-        return Err("verts must be Nx3".to_string());
+        return Err(PyValueError::new_err("verts must be Nx3"));
     }
     let n = v.nrows();
     let mut out = Vec::with_capacity(n);
@@ -330,7 +330,7 @@ fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<V
 fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[i64; 3]>> {
     let t = arr.as_array();
     if t.ncols() != 3 {
-        return Err("tris must be Mx3".to_string());
+        return Err(PyValueError::new_err("tris must be Mx3"));
     }
     let n = t.nrows();
     let mut out = Vec::with_capacity(n);
@@ -398,7 +398,7 @@ pub fn decimate_qem<'py>(
             let arr = a.as_array();
             let k = arr.ncols();
             if k == 0 {
-                return Err("attributes must have at least one column".to_string());
+                return Err(PyValueError::new_err("attributes must have at least one column"));
             }
             if arr.nrows() != vrows.len() {
                 return Err(PyValueError::new_err(
