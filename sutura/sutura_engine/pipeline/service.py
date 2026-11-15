@@ -174,6 +174,29 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                         report, new_v, new_t = off_report, off_v, off_t
                     else:
                         report['flap']['final_fallback'] = fallback
+            if _fb(tamponade) and (report.get('tamponade') or {}).get('adopted'):
+                try:
+                    on_reason, on_metrics = _tamponade_final_needs_off(
+                        verts, tris, new_v, new_t)
+                except Exception:  # noqa: BLE001
+                    on_reason, on_metrics = None, None
+                if on_reason:
+                    off_report, off_v, off_t = _rust_call(
+                        (_fb(flap) if _fb(flap) else None), False)
+                    _, off_metrics = _tamponade_final_needs_off(
+                        verts, tris, off_v, off_t, force_metrics=True)
+                    on_tamp = dict(report['tamponade'])
+                    use_off = _tamponade_off_preferred(on_metrics, off_metrics)
+                    fallback = {'ran': True, 'used': 'off' if use_off else 'on',
+                                'reason': on_reason, 'on': on_metrics,
+                                'off': off_metrics}
+                    if use_off:
+                        on_tamp['adopted_final'] = False
+                        on_tamp['final_fallback'] = fallback
+                        off_report['tamponade'] = on_tamp
+                        report, new_v, new_t = off_report, off_v, off_t
+                    else:
+                        report['tamponade']['final_fallback'] = fallback
             save_mesh(out, new_v, new_t)
             report['_fp'] = history.mesh_fingerprint(verts, tris)
             report['defects'] = detect_defects(verts, tris)
