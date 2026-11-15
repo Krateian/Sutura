@@ -1021,10 +1021,10 @@ fn unavailable_tiers() -> Value {
         "local_remesh": entry("local_remesh is a Python deep-repair tier; no sutura-core implementation yet"),
         "dressing": entry("Dressing orchestration is not in sutura-core yet; only the sutura-geom coat producer exists"),
         "ftetwild": entry("fTetWild is an external Python tier; no Rust implementation exists"),
-        "repeat_builder": entry("the Repeat transplant producer stays in Python; only the Rust adoption gate exists"),
+        "repeat_builder": entry("unused: the Repeat producer now runs in sutura-core (tiers::repeat::repair_auto_report)"),
         "wall_builder": entry("the Wall-thicken producer stays in Python; only the Rust adoption gate exists"),
         "cad_likeness": entry("cad_likeness is a Python scoring helper; no sutura-core implementation yet"),
-        "ranking_scores": entry("repetition_score, single_side_score and relief_score are not ported; ranking treats them as 0.0"),
+        "ranking_scores": entry("unused: repetition_score, single_side_score and relief_score are produced by analysis.rs"),
         "method_escalation": entry("ranked multi-method escalation is file-level (src/out); sutura-core selects the baseline method only"),
     })
 }
@@ -1554,28 +1554,45 @@ pub fn repair(
         }
     }
 
-    // --- Repeated-element transplant and wall thicken (producers absent) --
+    // --- Repeated-element transplant (#11/#12) -------------------------------
+    //
+    // The whole producer -- pattern detection, template choice, Manifold
+    // transplant and the Hausdorff guard -- is Rust (`tiers::repeat::
+    // repair_auto_report`), so this no longer defers to Python.
     if let Some(mode) = opts.repeat {
-        let rec = tier_error(
-            "repeat",
-            "the Repeat transplant producer stays in Python; the ladder result was kept",
-        );
-        emit_tier(sink, "repeat", 4, &rec);
-        trace.record(
-            "repeat",
-            "tiers.repeat.repeat_tier",
+        let margin = policy_number(policy.as_ref(), "tiers.repeat", "obb_margin", 0.10);
+        let (rv, rt, report) = crate::tiers::repeat::repair_auto_report(
             &cur_v,
             &cur_t,
-            &cur_v,
-            &cur_t,
-            rec.clone(),
+            margin,
         );
-        let mut rec = rec;
+        let mut rec = report;
         rec["mode"] = Value::from(match mode {
             RepeatMode::Manual => "manual",
             RepeatMode::Auto => "auto",
         });
-        stats.insert("repeat".into(), rec);
+        let ran = rec.get("positions_repaired").and_then(Value::as_u64).unwrap_or(0) > 0;
+        rec["ran"] = Value::from(ran);
+        rec["adopted"] = Value::from(ran);
+        let in_v = cur_v.clone();
+        let in_t = cur_t.clone();
+        if ran {
+            cur_v = rv;
+            cur_t = rt;
+            tiers_run.push(Value::from("repeat"));
+        }
+        let r = rec.clone();
+        emit_tier(sink, "repeat", 4, &r);
+        trace.record(
+            "repeat",
+            "tiers.repeat.repeat_tier",
+            &in_v,
+            &in_t,
+            &cur_v,
+            &cur_t,
+            r.clone(),
+        );
+        stats.insert("repeat".into(), r);
     }
     if opts.wall_thicken {
         let rec = tier_error(
