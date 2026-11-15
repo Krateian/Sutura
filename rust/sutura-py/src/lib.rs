@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Thin PyO3 bridge over `sutura-core`.
 //!
 //! No repair logic lives here: the module only converts numpy arrays and

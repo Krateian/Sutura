@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Tamponade (#17) tier orchestration, ported from
 //! `sutura_engine/pipeline/tiers/tamponade.py`.
 //!

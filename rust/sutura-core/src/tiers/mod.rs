@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Repair-tier orchestration ported from the Python tier modules.
 //!
 //! The geometry kernels stay in `sutura-geom`; these modules own the

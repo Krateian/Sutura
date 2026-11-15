@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Mesh type classification: the classic engine and the v2 experimental head.
 //!
 //! Bit-parity port of `sutura/mesh_classifier.py` and

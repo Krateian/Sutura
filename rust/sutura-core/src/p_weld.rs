@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Reload-safe weld and P-HONEST verdict, matching `pipeline/p_weld.py`.
 
 use std::collections::HashMap;

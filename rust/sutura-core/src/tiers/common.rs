@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Shared helpers for the ported repair tiers.
 //!
 //! These mirror the small pure-numpy helpers the Python tier code uses

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Python-compatible `%g` formatting.
 //!
 //! `mesh_io.write_obj` uses `%.9g` (and 3MF uses `%.7g`). Rust's formatting

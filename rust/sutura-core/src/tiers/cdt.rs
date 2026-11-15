@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! CDT solid-engine tier, ported from `sutura_engine/pipeline/tiers/cdt.py`.
 //!
 //! The exact constrained tetrahedralization lives in

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Python-free Sutura core.
 //!
 //! Phase 1 starts with the mesh boundary types and errors. The I/O readers,

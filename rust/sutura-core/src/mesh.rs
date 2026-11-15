@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 use crate::error::{MeshError, MeshResult};
 
 /// A triangle mesh at the core boundary: float32 vertices, int32 indices.

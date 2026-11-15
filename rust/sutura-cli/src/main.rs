@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! `sutura` command-line entry point.
 //!
 //! Slice 1 of the Rust CLI: clap derive skeleton with the contract flags,

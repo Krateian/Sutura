@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Hole and non-manifold region detection, matching `sutura/defects.py`.
 
 use std::collections::{BTreeSet, HashMap};

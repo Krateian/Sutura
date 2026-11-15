@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Sutura Authors
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Wall-thicken (#15) tier gate, ported from
 //! `sutura_engine/pipeline/tiers/wall.py`.
 //!
