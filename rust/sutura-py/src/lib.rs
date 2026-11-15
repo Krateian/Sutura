@@ -543,6 +543,25 @@ fn classify_py(data_json: &str) -> PyResult<(String, Vec<String>, String)> {
     classify_json(data_json).map_err(PyValueError::new_err)
 }
 
+#[pyfunction(name = "classify_mesh")]
+fn classify_mesh_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    engine: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let tris: Vec<[usize; 3]> = t
+        .iter()
+        .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+        .collect();
+    let value = sutura_core::classify::classify_mesh(&v, &tris, engine);
+    let text = value.to_string();
+    let json = py.import("json")?;
+    json.call_method1("loads", (text,))
+}
+
 #[pyfunction(name = "repair_confidence")]
 fn repair_confidence_py<'py>(py: Python<'py>, data_json: &str) -> PyResult<Bound<'py, PyDict>> {
     let c = repair_confidence_json(data_json).map_err(PyValueError::new_err)?;
@@ -1123,6 +1142,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debris_removed_small_parts_py, m)?)?;
     m.add_function(wrap_pyfunction!(debris_possible_debris_py, m)?)?;
     m.add_function(wrap_pyfunction!(classify_py, m)?)?;
+    m.add_function(wrap_pyfunction!(classify_mesh_py, m)?)?;
     m.add_function(wrap_pyfunction!(repair_confidence_py, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_confidence_py, m)?)?;
     m.add_function(wrap_pyfunction!(summary_args_py, m)?)?;

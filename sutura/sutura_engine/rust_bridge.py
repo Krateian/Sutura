@@ -109,13 +109,15 @@ def classifier_features(verts, tris):
     """Rust classifier feature kernel, or ``(None, 'numpy')``.
 
     The kernel lives in ``sutura_geom`` (the geometry extension), not in the
-    ``sutura_core_py`` bridge. A missing extension falls back to NumPy;
-    ``SUTURA_REQUIRE_RUST=1`` turns that fallback into an error, and an
-    exception raised by a present kernel is propagated, never swallowed.
+    ``sutura_core_py`` bridge. It is the default for BOTH Python classifier
+    engines -- ``SUTURA_CLASSIFIER_BACKEND`` selects the classifier
+    implementation (see ``sutura_engine.classifier_rust``), not the features,
+    so the Python engine and the Rust CLI share one numeric core.
+
+    A missing extension falls back to NumPy; ``SUTURA_REQUIRE_RUST=1`` turns
+    that fallback into an error, and an exception raised by a present kernel
+    is propagated, never swallowed.
     """
-    requested = os.environ.get('SUTURA_CLASSIFIER_BACKEND', 'rust').strip().lower()
-    if requested != 'rust':
-        return None, 'numpy'
     try:
         import sutura_geom as mod
     except Exception as exc:  # noqa: BLE001 - environment dependent
