@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 sutura-geom = { path = "../sutura-geom", default-features = false, features = ["decimate"] }
+serde = { version = "1", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"

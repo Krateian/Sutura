@@ -24,6 +24,9 @@ use sutura_core::{
     summary_args_json, summary_text_json, write_obj, write_ply, write_stl_binary, Mesh,
     MeshError,
 };
+use sutura_core::repair::{
+    repair as pipeline_repair, CancelToken, NoopSink, RepairOptions, RepairOutcome,
+};
 
 fn io_error(e: std::io::Error) -> PyErr {
     match e.kind() {
@@ -757,6 +760,50 @@ fn stage2_split_pinched_py<'py>(
 }
 
 
+#[pyfunction(name = "pipeline_repair")]
+fn pipeline_repair_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    opts_json: &str,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>, String)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let opts: RepairOptions = serde_json::from_str(opts_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid repair options: {e}")))?;
+    let sink = NoopSink;
+    let cancel = CancelToken::new();
+    match pipeline_repair(&v, &t, &opts, &sink, &cancel) {
+        RepairOutcome::Ok {
+            verts,
+            tris,
+            report,
+        } => {
+            let mut av = numpy::ndarray::Array2::<f32>::zeros((verts.len(), 3));
+            for (i, p) in verts.iter().enumerate() {
+                av[[i, 0]] = p[0] as f32;
+                av[[i, 1]] = p[1] as f32;
+                av[[i, 2]] = p[2] as f32;
+            }
+            let mut at = numpy::ndarray::Array2::<i32>::zeros((tris.len(), 3));
+            for (i, r) in tris.iter().enumerate() {
+                at[[i, 0]] = r[0] as i32;
+                at[[i, 1]] = r[1] as i32;
+                at[[i, 2]] = r[2] as i32;
+            }
+            Ok((
+                PyArray2::from_owned_array(py, av),
+                PyArray2::from_owned_array(py, at),
+                report.to_string(),
+            ))
+        }
+        RepairOutcome::Unavailable { tier, reason } => Err(PyValueError::new_err(format!(
+            "unavailable tier '{tier}': {reason}"
+        ))),
+        RepairOutcome::Error { message } => Err(PyValueError::new_err(message)),
+    }
+}
+
 fn parse_params(json: &str) -> PyResult<serde_json::Value> {
     serde_json::from_str(json).map_err(|e| PyValueError::new_err(e.to_string()))
 }
@@ -1464,6 +1511,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage2_split_pinched_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_apply_chain_py, m)?)?;
     m.add_function(wrap_pyfunction!(stage1_extreme_passes_py, m)?)?;
+    m.add_function(wrap_pyfunction!(pipeline_repair_py, m)?)?;
     m.add_function(wrap_pyfunction!(graft_vn_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(graft_remesh_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(graft_helpers_probe_py, m)?)?;
