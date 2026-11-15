@@ -981,6 +981,24 @@ fn tier_coaptation_py<'py>(
     Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
 }
 
+/// Local re-mesh deep-repair tier on plain arrays.
+///
+/// Mirrors `_local_remesh_tier`: the Rust core computes the input topology
+/// summary, runs the tier and returns the adopted-or-unchanged arrays with the
+/// same report keys as the Python tier.
+#[pyfunction(name = "local_remesh_tier")]
+fn local_remesh_tier_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>, String)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let before = sutura_core::tiers::common::topology_summary(&v, &t);
+    let (ov, ot, _after, rep) = sutura_core::local_remesh::local_remesh(&v, &t, &before);
+    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rep.to_string()))
+}
+
 #[pyfunction(name = "tier_graft_decide")]
 fn tier_graft_decide_py<'py>(
     py: Python<'py>,
@@ -1234,6 +1252,47 @@ fn graft_shell_wrap_probe_py<'py>(
 }
 
 
+#[pyfunction(name = "stage1_chain_probe")]
+fn stage1_chain_probe_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    chain_json: &str,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let chain = parse_params(chain_json)?;
+    let (ov, ot, _applied, skipped, removed) =
+        sutura_core::stage1::chain::apply_chain(&v, &t, &chain);
+    Ok((
+        arrays_f64(py, &ov)?,
+        arrays_i64(py, &ot)?,
+        serde_json::json!({"skipped": skipped, "removed_small_parts": removed}).to_string(),
+    ))
+}
+
+#[pyfunction(name = "flap_probe")]
+fn flap_probe_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    params_json: &str,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let params = parse_params(params_json)?;
+    let (ov, ot, rec) = sutura_core::tiers::flap::run(&v, &t, &params);
+    Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
+}
+
 #[pyfunction(name = "closing_poisson")]
 fn closing_poisson_py<'py>(
     py: Python<'py>,
@@ -1483,12 +1542,15 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(graft_shell_wrap_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(graft_shell_wrap_py, m)?)?;
     m.add_function(wrap_pyfunction!(closing_poisson_py, m)?)?;
+    m.add_function(wrap_pyfunction!(flap_probe_py, m)?)?;
+    m.add_function(wrap_pyfunction!(stage1_chain_probe_py, m)?)?;
     m.add_function(wrap_pyfunction!(closing_flat_back_py, m)?)?;
     m.add_function(wrap_pyfunction!(mirror_close_py, m)?)?;
     m.add_function(wrap_pyfunction!(proxy_template_repair_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_splint_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_cdt_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_coaptation_py, m)?)?;
+    m.add_function(wrap_pyfunction!(local_remesh_tier_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_graft_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_tamponade_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_flap_py, m)?)?;

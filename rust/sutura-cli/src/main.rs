@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! `sutura` command-line entry point.
 //!
-//! Slice 1 of the Rust CLI: clap derive skeleton with the contract flags,
-//! `--help`, `--version`, `--list-intensities`, argument errors (exit 2) and
-//! the missing-file JSON error (exit 1). Repair itself is still handled by the
-//! Python CLI in this phase.
+//! The Rust CLI implements the single-file repair contract directly through
+//! `sutura_core::repair::repair`: STL/OBJ/PLY/3MF input, default output naming,
+//! `--json` / `--human` / `--lang tr`, NDJSON progress and SIGINT (130). No
+//! Python process is started. The read-only `validate` / `--dry-run` paths and
+//! the hidden `__io` helper subcommands share the same parser.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -17,6 +18,9 @@ use sutura_core::{
     check_units, load_mesh, parse_3mf_mesh_blocks, read_3mf_units, save_mesh, scan_bad_coordinates,
     Mesh, SourceFormat,
 };
+
+mod human;
+mod repair_cmd;
 
 /// Product version reported by `--version`, read from `sutura/repair.py` at
 /// build time (`build.rs`). The Python CLI is the single version source until
@@ -327,25 +331,8 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
         // No positional input: keep the Python CLI's usage error shape.
         return Err((2, Some("no input files".to_string())));
     }
-    for file in &cli.files {
-        if !file.exists() {
-            let input = file.display().to_string();
-            let payload = json!({
-                "input": input,
-                "error": format!("file not found: {}", file.display()),
-            });
-            println!("{}", serde_json::to_string(&payload).unwrap());
-            return Err((1, None));
-        }
-    }
 
-    Err((
-        2,
-        Some(
-            "repair is not implemented in the Rust CLI yet; the Python CLI remains the default"
-                .to_string(),
-        ),
-    ))
+    repair_cmd::run(&cli)
 }
 
 /// The 19 built-in repair methods, in registry order.

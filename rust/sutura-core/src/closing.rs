@@ -285,7 +285,12 @@ pub fn poisson_close(
     let (_mask, si_before, _skipped) = sutura_geom::self_intersections_core(&out_v, &ut);
     let si_before = si_before.max(0);
     let (out_v, out_t) = if si_before > 0 {
-        let params = json!({});
+        let params = json!({
+            "maxholesize": 1000,
+            "max_rounds": 3,
+            "time_budget": 5.0,
+            "face_fraction": 0.30,
+        });
         let (ex_v, ex_t, _rep) = crate::stage1::si_excise::run(
             &out_v, &out_t, &out_v, &out_t, &params,
         );

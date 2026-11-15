@@ -69,3 +69,10 @@ mode. The acceptance run for the Python double path used
 - Synthetic defect injection (FAZ13): `~/.local/share/sutura/venv/bin/python scripts/defect_injector.py in.stl out.stl --hole --non-manifold --count 5` corrupts a mesh with selectable defect types (`--hole`/`--non-manifold`/`--self-intersect`/`--flipped-normal`/`--degenerate`, any combination; `--count`/`--seed`) and writes a NEW file (input never modified). Validated by `tests/test_defect_injector.py`: hole/non-manifold via `defects.detect()`, flipped/degenerate via `defects.defect_type_colors()` (orange/yellow), self-intersect via the exact Rust classifier. Note: the `defect_type_colors` flipped test taught us that a clean, consistently-wound closed mesh must have ZERO colored faces — an inconsistent-winding cube fixture will false-positive (use the verified `_cube()` in the test, not an arbitrary quad builder).
 - `tests/real-world-samples/` (Thingi10K + Artec, original per-model licenses) are genuinely broken and hard-classify models; see its README for expected results and `docs/ATTRIBUTION.md` for the full per-file attribution. The corpus is 40 meshes (Phase 2 grew it from 16 with a deliberately hard curved/free-form mix, CC BY / CC0 only).
 
+## Gate wheels must be release builds
+
+A gap gate compares runtime and must load release `sutura_geom` and
+`sutura_core_py` wheels. A debug wheel is ~5x larger and ~5x slower; on
+`artec_metal-nut` that turned 46 s / 53 s into 246 s / 264 s and produced a
+false timing FAIL while every mesh stayed byte-SAME. Build with
+`maturin build --release` and check the `.so` size before queueing.

@@ -1,0 +1,28 @@
+# Third-Party Notices: fTetWild (Deterministic Fork)
+
+This package bundles or uses a modified executable version of fTetWild.
+
+1. fTetWild
+   - Original Authors: Yixin Hu, Teseo Schneider, Daniele Panozzo, Denis Zorin (New York University)
+   - License: Mozilla Public License Version 2.0 (MPL-2.0)
+   - Upstream Baseline: https://github.com/wildmeshing/fTetWild.git (commit: 8118f810478e0e65a7bf2d8cecdc5e203a876e97)
+   - Modifications: Deterministic RNG seeding, static Random class with reset(seed), sorted BFS queues, Geogram single-threaded configuration, serial execution shim eliminating Intel TBB dependency (see third_party/ftetwild/ftetwild.patch).
+   - Modified Files:
+     * CMakeLists.txt
+     * src/FloatTetwild.cpp
+     * src/Mesh.hpp
+     * src/TriangleInsertion.cpp
+     * src/main.cpp
+     * src/tbb_shim/*
+   - Source Code Availability: Provided via third_party/ftetwild/ftetwild.patch and accompanying build instructions in compliance with MPL-2.0 Sections 3.1 and 3.2.
+
+2. Geogram
+   - Original Author: Bruno Levy (Inria)
+   - License: BSD 3-Clause License
+   - Modifications: Deterministic BRIO ordering in random_shuffle template (src/lib/geogram/basic/algorithm.h; see third_party/ftetwild/geogram.patch).
+   - Modified Files:
+     * src/lib/geogram/basic/algorithm.h
+
+3. GNU Multiple Precision Arithmetic Library (GMP)
+   - License: GNU Lesser General Public License Version 3 (LGPL-3.0)
+   - Note: fTetWild CLI binary is executed as an isolated OS process across standard subprocess boundaries. Statically linked (libgmp.a) so no external runtime dependency is required.

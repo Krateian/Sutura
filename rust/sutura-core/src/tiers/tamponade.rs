@@ -456,6 +456,19 @@ fn base_record(params: &Value) -> Map<String, Value> {
     rec.insert("candidate_holes".into(), Value::Null);
     rec.insert("candidate_non_manifold".into(), Value::Null);
     rec.insert("candidate_parts".into(), Value::Null);
+    for key in [
+        "patch_vertices",
+        "trimmed_vertices",
+        "reference_used",
+        "reference_fallback",
+        "stent_used",
+        "stent_subplugs",
+        "stent_rejected",
+    ] {
+        rec.insert(key.into(), json!(0));
+    }
+    rec.insert("si_checked".into(), json!(false));
+    rec.insert("genus".into(), Value::Null);
     for k in [
         "plugs",
         "plug_faces",

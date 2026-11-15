@@ -514,7 +514,7 @@ fn has_positive_area(verts: &[[f64; 3]], tris: &[[i64; 3]], diag: f64) -> bool {
     })
 }
 
-fn surface_samples(
+pub(crate) fn surface_samples(
     verts: &[[f64; 3]],
     tris: &[[i64; 3]],
     samples: usize,

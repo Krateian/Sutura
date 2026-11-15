@@ -78,6 +78,10 @@ def _resolve_ftetwild_bridge():
             cand = os.path.abspath(cand)
             if os.path.isfile(cand):
                 return cand
+    _pkg_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cand = os.path.join(_pkg_dir, 'ftetwild_bridge.py')
+    if os.path.isfile(cand):
+        return cand
     return os.path.join(SUTURA_DIR, 'ftetwild_bridge.py')
 
 
