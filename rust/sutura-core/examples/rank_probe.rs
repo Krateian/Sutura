@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 use sutura_core::config::policy::default_policy;
-use sutura_core::ranking::{rank_methods, recommendations_json, Analysis};
+use sutura_core::ranking::{rank_methods, recommendations_json, suggest_methods, Analysis};
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let _path = args.next();
+    let mode = args.next().unwrap_or_else(|| "rank".to_string());
     // Fields are fed as a JSON object so the probe can compare with Python's
     // `rank_methods(analysis)` on the same analysis.
     let payload: serde_json::Value = serde_json::from_str(&args.next().expect("analysis json"))
@@ -27,8 +27,13 @@ fn main() {
         single_side_score: f("single_side_score"),
         relief_score: f("relief_score"),
         repetition_score: f("repetition_score"),
+        diagnosis_v2: payload.get("diagnosis_v2").cloned(),
     };
     let loaded = default_policy().expect("policy");
+    if mode == "suggest" {
+        println!("{}", suggest_methods(&loaded, &analysis, 3, None));
+        return;
+    }
     let recs = rank_methods(&loaded, &analysis, None, None);
     println!("{}", recommendations_json(&recs));
 }
