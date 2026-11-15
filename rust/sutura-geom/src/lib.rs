@@ -58,6 +58,7 @@ pub mod rng;
 pub mod resample;
 pub mod repeat_align;
 pub mod repeat_free;
+pub mod repeat_obb;
 pub mod repeat_patch;
 pub mod repeat_segment;
 pub mod roi;
@@ -3114,6 +3115,160 @@ fn cross_covariance_py<'py>(
 }
 
 #[cfg(feature = "python")]
+/// `repeat._compute_obb` through the shared kernel.
+///
+/// Returns `(center, extents, frame)`.
+#[pyfunction]
+#[pyo3(name = "compute_obb")]
+#[pyo3(signature = (points, margin=0.10, epsilon=1e-3))]
+fn compute_obb_py<'py>(
+    py: Python<'py>,
+    points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    margin: f64,
+    epsilon: f64,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let pts: Vec<[f64; 3]> = points
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let obb = crate::repeat_obb::compute_obb(&pts, margin, epsilon);
+    let rows: Vec<Vec<f64>> = obb.frame.iter().map(|r| r.to_vec()).collect();
+    Ok((
+        numpy::PyArray1::from_vec(py, obb.center.to_vec()).into_any(),
+        numpy::PyArray1::from_vec(py, obb.extents.to_vec()).into_any(),
+        numpy::PyArray2::from_vec2(py, &rows)?.into_any(),
+    ))
+}
+
+#[cfg(feature = "python")]
+/// `repeat._is_inside_obb` through the shared kernel.
+#[pyfunction]
+#[pyo3(name = "is_inside_obb")]
+#[pyo3(signature = (points, center, extents, frame, margin_factor=1.0))]
+fn is_inside_obb_py<'py>(
+    py: Python<'py>,
+    points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    center: PyArrayLike1<'py, f64, AllowTypeChange>,
+    extents: PyArrayLike1<'py, f64, AllowTypeChange>,
+    frame: PyArrayLike2<'py, f64, AllowTypeChange>,
+    margin_factor: f64,
+) -> PyResult<Bound<'py, PyAny>> {
+    let pts: Vec<[f64; 3]> = points
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let c = center.as_array();
+    let e = extents.as_array();
+    let f = frame.as_array();
+    if c.len() != 3 || e.len() != 3 || f.shape() != [3, 3] {
+        return Err(PyValueError::new_err("bad OBB geometry"));
+    }
+    let mut fr = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            fr[i][j] = f[[i, j]];
+        }
+    }
+    let mask = crate::repeat_obb::is_inside_obb(
+        &pts,
+        [c[0], c[1], c[2]],
+        [e[0], e[1], e[2]],
+        &fr,
+        margin_factor,
+    );
+    Ok(numpy::PyArray1::from_vec(py, mask).into_any())
+}
+
+#[cfg(feature = "python")]
+/// `repeat._compute_hausdorff_outside` through the shared kernel.
+#[pyfunction]
+#[pyo3(name = "hausdorff_outside")]
+#[pyo3(signature = (orig_v, orig_t, result_v, result_t, boxes, samples=5000))]
+fn hausdorff_outside_py(
+    orig_v: PyArrayLike2<'_, f64, AllowTypeChange>,
+    orig_t: PyArrayLike2<'_, i32, AllowTypeChange>,
+    result_v: PyArrayLike2<'_, f64, AllowTypeChange>,
+    result_t: PyArrayLike2<'_, i32, AllowTypeChange>,
+    boxes: &Bound<'_, PyAny>,
+    samples: usize,
+) -> PyResult<f64> {
+    let to_v = |a: &numpy::ndarray::ArrayView2<'_, f64>| -> Vec<[f64; 3]> {
+        a.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect()
+    };
+    let to_t = |a: &numpy::ndarray::ArrayView2<'_, i32>| -> Vec<[usize; 3]> {
+        a.rows()
+            .into_iter()
+            .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+            .collect()
+    };
+    let ov = orig_v.as_array();
+    let ot = orig_t.as_array();
+    let rv = result_v.as_array();
+    let rt = result_t.as_array();
+    let mut parsed = Vec::new();
+    for item in boxes.try_iter()? {
+        let tup: (Vec<f64>, Vec<f64>, Vec<Vec<f64>>) = item?.extract()?;
+        let mut frame = [[0.0f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                frame[i][j] = tup.2[i][j];
+            }
+        }
+        parsed.push(crate::repeat_obb::Obb {
+            center: [tup.0[0], tup.0[1], tup.0[2]],
+            extents: [tup.1[0], tup.1[1], tup.1[2]],
+            frame,
+        });
+    }
+    Ok(crate::repeat_obb::compute_hausdorff_outside(
+        &to_v(&ov),
+        &to_t(&ot),
+        &to_v(&rv),
+        &to_t(&rt),
+        &parsed,
+        samples,
+    ))
+}
+
+#[cfg(feature = "python")]
+/// `repeat._decimate_faces` through the shared kernel (meshopt QEM).
+#[pyfunction]
+#[pyo3(name = "decimate_faces")]
+fn decimate_faces_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    target: usize,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let (dv, dt) = crate::repeat_obb::decimate_faces(&v, &t, target);
+    let rows: Vec<Vec<f64>> = dv.iter().map(|p| p.to_vec()).collect();
+    let tri_rows: Vec<Vec<i64>> = dt
+        .iter()
+        .map(|f| vec![f[0] as i64, f[1] as i64, f[2] as i64])
+        .collect();
+    Ok((
+        numpy::PyArray2::from_vec2(py, &rows)?.into_any(),
+        numpy::PyArray2::from_vec2(py, &tri_rows)?.into_any(),
+    ))
+}
+
+#[cfg(feature = "python")]
 /// `repeat.align` through the shared kernel.
 ///
 /// Returns `(T, rel_rms)` where `T` is a 4x4 matrix.
@@ -3496,6 +3651,10 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
     m.add_function(wrap_pyfunction!(covariance_py, m)?)?;
     m.add_function(wrap_pyfunction!(cross_covariance_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_obb_py, m)?)?;
+    m.add_function(wrap_pyfunction!(is_inside_obb_py, m)?)?;
+    m.add_function(wrap_pyfunction!(hausdorff_outside_py, m)?)?;
+    m.add_function(wrap_pyfunction!(decimate_faces_py, m)?)?;
     m.add_function(wrap_pyfunction!(align_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_repetition_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_rotational_symmetry_free_py, m)?)?;

@@ -178,10 +178,18 @@ def _referenced_only(verts, tris):
 def _decimate_faces(verts, tris, target):
     """Quadric-decimate to ``target`` faces (Faz 4 W3b, native).
 
-    Uses ``sutura_geom.decimate_qem`` (meshopt); no PyMeshLab or trimesh is
-    needed.  The picker only needs a light LOD, so no border lock or normal
-    attribute is passed.  Returns ``(verts float64, tris int32)``.
+    Uses the shared QEM kernel (meshopt); no PyMeshLab or trimesh is needed.
+    The picker only needs a light LOD, so no border lock or normal attribute is
+    passed. Returns ``(verts float64, tris int32)``.
     """
+    core = getattr(sutura_geom, 'decimate_faces', None)
+    if core is not None:
+        dv, dt = core(np.ascontiguousarray(verts, dtype=np.float64),
+                      np.ascontiguousarray(tris, dtype=np.int64), int(target))
+        return (np.asarray(dv, dtype=np.float64), np.asarray(dt, dtype=np.int32))
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.decimate_faces is unavailable')
     dv, dt, _rec = topology.decimate_qem(
         verts, tris, int(target), lock_border=False, preserve_normal=False)
     return (np.asarray(dv, dtype=np.float64),
@@ -224,8 +232,17 @@ def check_mesh_validity(verts, tris):
 def _compute_obb(pts, margin=OBB_EXPANSION_MARGIN, epsilon=OBB_MIN_EPSILON):
     """Compute oriented bounding box (OBB) parameters (center, extents, rotation frame)."""
     pts = np.asarray(pts, dtype=np.float64)
+    core = getattr(sutura_geom, 'compute_obb', None)
+    if core is not None:
+        c, e, f = core(np.ascontiguousarray(pts), float(margin), float(epsilon))
+        return (np.asarray(c, dtype=np.float64),
+                np.asarray(e, dtype=np.float64),
+                np.asarray(f, dtype=np.float64))
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.compute_obb is unavailable')
     c = np.mean(pts, axis=0)
-    cov = (pts - c).T @ (pts - c) / max(len(pts), 1)
+    cov = _covariance_core(pts, c)
     w, v = _eigh3(cov)
     frame = v[:, [2, 1, 0]]
     if np.linalg.det(frame) < 0:
@@ -248,6 +265,16 @@ def _compute_obb(pts, margin=OBB_EXPANSION_MARGIN, epsilon=OBB_MIN_EPSILON):
 def _is_inside_obb(pts, center, extents, frame, margin_factor=1.0):
     """Boolean mask of whether points lie inside an oriented bounding box."""
     pts = np.asarray(pts, dtype=np.float64)
+    core = getattr(sutura_geom, 'is_inside_obb', None)
+    if core is not None:
+        return np.asarray(core(np.ascontiguousarray(pts),
+                               np.ascontiguousarray(center, dtype=np.float64),
+                               np.ascontiguousarray(extents, dtype=np.float64),
+                               np.ascontiguousarray(frame, dtype=np.float64),
+                               float(margin_factor)), dtype=bool)
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.is_inside_obb is unavailable')
     local = (pts - center) @ frame
     half = (extents * margin_factor) / 2.0
     return np.all(np.abs(local) <= half, axis=1)
@@ -531,6 +558,20 @@ def _execute_boolean_transplant(verts, tris, template_pts, transforms,
 def _compute_hausdorff_outside(orig_v, orig_t, result_v, result_t, dst_boxes, samples=5000):
     """One-sided Hausdorff distance from the original mesh to the result mesh
     outside ``dst_boxes`` (operates on plain vertex/triangle arrays)."""
+    core = getattr(sutura_geom, 'hausdorff_outside', None)
+    if core is not None:
+        return float(core(
+            np.ascontiguousarray(orig_v, dtype=np.float64),
+            np.ascontiguousarray(orig_t, dtype=np.int32),
+            np.ascontiguousarray(result_v, dtype=np.float64),
+            np.ascontiguousarray(result_t, dtype=np.int32),
+            [(np.asarray(c, dtype=np.float64),
+              np.asarray(e, dtype=np.float64),
+              np.asarray(f, dtype=np.float64)) for c, e, f in dst_boxes],
+            int(samples)))
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.hausdorff_outside is unavailable')
     sample_pts, _ = _surface_sample(orig_v, orig_t, samples, seed=0)
 
     # Filter out points inside any destination box
