@@ -17,7 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use sutura_geom::manifold::{stage2_rebuild_core, Stage2Report};
+use sutura_geom::manifold::{outer_shell_union_core, stage2_rebuild_core, Stage2Report};
+use sutura_geom::shell::{shell_analyze_and_filter, ShellAnalysisResult, ShellConfig};
 
 use crate::analysis::{analyze_mesh, Analysis as MeshAnalysis};
 use crate::classify::classify_mesh;
@@ -28,9 +29,10 @@ use crate::graft::shell::{shell_wrap, ShellWrapOptions};
 use crate::local_remesh;
 use crate::mesh::Mesh;
 use crate::mirror::mirror_close;
-use crate::p_weld::{enforce_reload_verdict, p_weld_final};
+use crate::p_weld::{enforce_reload_verdict, p_weld_final, reload_strict_holes_nm};
 use crate::proxy::proxy_template_repair;
 use crate::ranking::{rank_methods, recommendations_json, Analysis as RankingAnalysis};
+use crate::report::defects::detect_defects;
 use crate::report::health::build_report_value;
 use crate::stage1::chain::{
     apply_chain, cleanup_chain, delete_fallback_chain, extreme_extra_passes, stage1_chain,
@@ -327,6 +329,369 @@ pub(crate) fn boundary_loop_stats(tris: &[[i64; 3]]) -> (usize, usize) {
         .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
         .collect();
     crate::validate::boundary_loop_stats(0, &t32)
+}
+
+/// Port of `mesh_io.should_extract_outer_shell`.
+///
+/// True only for a mechanical (or heavy-SI, `si_count >= 200`) mesh whose
+/// face-connected components are mostly closed and at least two component
+/// bounding boxes overlap or touch. Components are joined only by edges used
+/// by exactly two faces, matching the Python `face_adjacency` rule.
+fn should_extract_outer_shell(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    mesh_type: &str,
+    si_count: usize,
+) -> bool {
+    let is_mech = mesh_type == "mechanical";
+    let is_heavy_si = si_count >= 200;
+    if !(is_mech || is_heavy_si) {
+        return false;
+    }
+    let n_faces = tris.len();
+    if n_faces == 0 || verts.is_empty() {
+        return false;
+    }
+
+    let mut edge_faces: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            if a < 0 || b < 0 || a as usize >= verts.len() || b as usize >= verts.len() {
+                return false;
+            }
+            let key = if a <= b { (a, b) } else { (b, a) };
+            edge_faces.entry(key).or_default().push(fi);
+        }
+    }
+
+    let mut parent: Vec<usize> = (0..n_faces).collect();
+    fn find(p: &mut [usize], mut x: usize) -> usize {
+        let mut root = x;
+        while p[root] != root {
+            root = p[root];
+        }
+        while p[x] != root {
+            let next = p[x];
+            p[x] = root;
+            x = next;
+        }
+        root
+    }
+    for faces in edge_faces.values() {
+        if faces.len() == 2 {
+            let a = find(&mut parent, faces[0]);
+            let b = find(&mut parent, faces[1]);
+            if a != b {
+                parent[b] = a;
+            }
+        }
+    }
+
+    let mut label_of_root: HashMap<usize, usize> = HashMap::new();
+    let mut comp_of_face = vec![0usize; n_faces];
+    for (fi, slot) in comp_of_face.iter_mut().enumerate() {
+        let root = find(&mut parent, fi);
+        let next = label_of_root.len();
+        let label = *label_of_root.entry(root).or_insert(next);
+        *slot = label;
+    }
+    let n_comp = label_of_root.len();
+    if n_comp <= 1 {
+        return false;
+    }
+
+    let mut comp_faces = vec![0usize; n_comp];
+    for &c in &comp_of_face {
+        comp_faces[c] += 1;
+    }
+
+    let mut comp_edge_counts: HashMap<(usize, (i64, i64)), usize> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        let c = comp_of_face[fi];
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let key = if a <= b { (a, b) } else { (b, a) };
+            *comp_edge_counts.entry((c, key)).or_insert(0) += 1;
+        }
+    }
+    let mut boundary_edges = vec![0usize; n_comp];
+    let mut not_closed = vec![false; n_comp];
+    for (&(c, _), &count) in &comp_edge_counts {
+        if count == 1 {
+            boundary_edges[c] += 1;
+        }
+        if count != 2 {
+            not_closed[c] = true;
+        }
+    }
+    for c in 0..n_comp {
+        if comp_faces[c] >= 4 && boundary_edges[c] >= 3 {
+            return false;
+        }
+    }
+    let closed_count = not_closed.iter().filter(|&&closed| !closed).count();
+    if (closed_count as f64) < (n_comp as f64) * 0.7 {
+        return false;
+    }
+
+    let mut lo = vec![[f64::INFINITY; 3]; n_comp];
+    let mut hi = vec![[f64::NEG_INFINITY; 3]; n_comp];
+    for (fi, t) in tris.iter().enumerate() {
+        let c = comp_of_face[fi];
+        for &vi in t {
+            let p = verts[vi as usize];
+            for k in 0..3 {
+                if p[k] < lo[c][k] {
+                    lo[c][k] = p[k];
+                }
+                if p[k] > hi[c][k] {
+                    hi[c][k] = p[k];
+                }
+            }
+        }
+    }
+
+    let mut gmin = [f64::INFINITY; 3];
+    let mut gmax = [f64::NEG_INFINITY; 3];
+    for p in verts {
+        for k in 0..3 {
+            if p[k] < gmin[k] {
+                gmin[k] = p[k];
+            }
+            if p[k] > gmax[k] {
+                gmax[k] = p[k];
+            }
+        }
+    }
+    let diag =
+        ((gmax[0] - gmin[0]).powi(2) + (gmax[1] - gmin[1]).powi(2) + (gmax[2] - gmin[2]).powi(2))
+            .sqrt();
+    let eps = 1e-4 * if diag > 1e-6 { diag } else { 1.0 };
+    for i in 0..n_comp {
+        for j in (i + 1)..n_comp {
+            if hi[i][0].min(hi[j][0]) >= lo[i][0].max(lo[j][0]) - eps
+                && hi[i][1].min(hi[j][1]) >= lo[i][1].max(lo[j][1]) - eps
+                && hi[i][2].min(hi[j][2]) >= lo[i][2].max(lo[j][2]) - eps
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Holes, non-manifold region count and vertex-connected parts, as the Python
+/// outer-shell phase gates measure them.
+fn shell_topo_counts(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> (usize, usize, usize) {
+    let holes = boundary_loop_stats(tris).0;
+    let v32: Vec<[f32; 3]> = verts
+        .iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect();
+    let t32: Vec<[i32; 3]> = tris
+        .iter()
+        .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
+        .collect();
+    let nm = detect_defects(&v32, &t32, false).non_manifold.len();
+    let parts = common::count_vertex_components(verts.len(), tris);
+    (holes, nm, parts)
+}
+
+fn u32_tris(tris: &[[i64; 3]]) -> Vec<[u32; 3]> {
+    tris.iter()
+        .map(|r| [r[0] as u32, r[1] as u32, r[2] as u32])
+        .collect()
+}
+
+fn usize_tris(tris: &[[i64; 3]]) -> Vec<[usize; 3]> {
+    tris.iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect()
+}
+
+fn i64_from_u32_tris(tris: &[[u32; 3]]) -> Vec<[i64; 3]> {
+    tris.iter()
+        .map(|r| [r[0] as i64, r[1] as i64, r[2] as i64])
+        .collect()
+}
+
+fn i64_from_usize_tris(tris: &[[usize; 3]]) -> Vec<[i64; 3]> {
+    tris.iter()
+        .map(|r| [r[0] as i64, r[1] as i64, r[2] as i64])
+        .collect()
+}
+
+/// Port of the Python Stage-1 outer-shell pre-step.
+///
+/// The caller must gate this on `mode == auto`; the Tamponade switch is part
+/// of the feature (a disabled Tamponade records `outer_shell_skipped`).
+fn run_outer_shell_prepass(
+    cur_v: &mut Vec<[f64; 3]>,
+    cur_t: &mut Vec<[i64; 3]>,
+    mesh_type: &str,
+    tamponade_enabled: bool,
+    stats: &mut Map<String, Value>,
+) {
+    if !should_extract_outer_shell(cur_v, cur_t, mesh_type, 0) {
+        return;
+    }
+    if !tamponade_enabled {
+        stats.insert(
+            "outer_shell_skipped".into(),
+            Value::from("tamponade_disabled"),
+        );
+        return;
+    }
+
+    let config = ShellConfig {
+        delta: 0.1,
+        keep_cavities: true,
+        split_intersections: true,
+        ..Default::default()
+    };
+    let ut = u32_tris(cur_t);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        shell_analyze_and_filter(cur_v, &ut, &config)
+    }));
+
+    let mut shell_adopted = false;
+    let mut shell_budget_exceeded = false;
+    let shell_phase: Option<String>;
+    let shell_reason: Option<String>;
+    let sinfo: Option<ShellAnalysisResult> = match outcome {
+        Ok((cand_v, cand_t, res)) => {
+            let in_counts = shell_topo_counts(cur_v, cur_t);
+            shell_budget_exceeded = res.budget_exceeded;
+            if res.is_disjoint {
+                shell_adopted = true;
+                shell_phase = Some("P-a_disjoint".into());
+                shell_reason = Some("disjoint_parts_no_overlap".into());
+            } else if res.coincident_opp_count > 0
+                && !res.has_internal_walls
+                && res.internal_walls_count == 0
+                && res.unresolved_coincident_count == 0
+                && res.reason == "ok"
+            {
+                let cand_counts = shell_topo_counts(&cand_v, &i64_from_u32_tris(&cand_t));
+                if cand_counts.0 <= in_counts.0
+                    && cand_counts.1 <= in_counts.1
+                    && cand_counts.2 <= in_counts.2
+                {
+                    shell_adopted = true;
+                    shell_phase = Some("P-b_coincident".into());
+                    shell_reason = Some("coincident_opposite_dissolved".into());
+                    *cur_v = quantize(&cand_v);
+                    *cur_t = i64_from_u32_tris(&cand_t);
+                } else {
+                    shell_phase = Some("P-b_coincident".into());
+                    shell_reason = Some("rejected_holes_or_parts_rose".into());
+                }
+            } else if !res.has_internal_walls && res.reason == "ok" {
+                let cand_counts = shell_topo_counts(&cand_v, &i64_from_u32_tris(&cand_t));
+                if cand_counts.0 <= in_counts.0
+                    && cand_counts.1 <= in_counts.1
+                    && cand_counts.2 <= in_counts.2
+                {
+                    shell_adopted = true;
+                    shell_phase = Some("P-c_penetrating".into());
+                    shell_reason = Some("penetrating_bodies_clipped_and_stitched".into());
+                    *cur_v = quantize(&cand_v);
+                    *cur_t = i64_from_u32_tris(&cand_t);
+                } else {
+                    shell_phase = Some("P-c_penetrating".into());
+                    shell_reason = Some("rejected_holes_or_parts_rose".into());
+                }
+            } else {
+                shell_phase = Some(
+                    if res.reason == "unresolved_coplanar_overlapping" {
+                        "P-c_penetrating"
+                    } else {
+                        "fallback"
+                    }
+                    .into(),
+                );
+                shell_reason = Some(res.reason.clone());
+            }
+            Some(res)
+        }
+        Err(_) => {
+            shell_phase = Some("error".into());
+            shell_reason = Some("shell_analyze_panicked".into());
+            None
+        }
+    };
+
+    let info = sinfo.as_ref();
+    let phase_value = shell_phase.clone().map(Value::from).unwrap_or(Value::Null);
+    let reason_value = shell_reason.clone().map(Value::from).unwrap_or(Value::Null);
+    stats.insert(
+        "tamponade_shell_prepass".into(),
+        json!({
+            "shell_adopted": shell_adopted,
+            "shell_phase": phase_value.clone(),
+            "shell_reason": reason_value.clone(),
+            "time_s": 0.0,
+            "shell_analyze_s": 0.0,
+            "topo_stats_s": 0.0,
+            "outer_count": info.map(|r| r.outer_count).unwrap_or(0),
+            "buried_count": info.map(|r| r.buried_count).unwrap_or(0),
+            "cavity_count": info.map(|r| r.cavity_count).unwrap_or(0),
+            "coincident_opp_count": info.map(|r| r.coincident_opp_count).unwrap_or(0),
+            "coincident_same_count": info.map(|r| r.coincident_same_count).unwrap_or(0),
+            "internal_walls_count": info.map(|r| r.internal_walls_count).unwrap_or(0),
+            "unresolved_coincident_count": info.map(|r| r.unresolved_coincident_count).unwrap_or(0),
+            "has_internal_walls": info.map(|r| r.has_internal_walls).unwrap_or(false),
+            "is_disjoint": info.map(|r| r.is_disjoint).unwrap_or(false),
+            "budget_exceeded": shell_budget_exceeded,
+            "max_coplanar_cluster_faces": config.max_coplanar_cluster_faces,
+            "max_coplanar_constraints": config.max_coplanar_constraints,
+            "max_plane_faces": config.max_plane_faces,
+            "max_coplanar_total_faces": config.max_coplanar_total_faces,
+        }),
+    );
+    stats.insert("shell_adopted".into(), Value::Bool(shell_adopted));
+    stats.insert("shell_phase".into(), phase_value);
+    stats.insert("shell_reason".into(), reason_value);
+
+    if shell_adopted {
+        return;
+    }
+
+    if shell_budget_exceeded {
+        stats.insert(
+            "outer_shell_skipped".into(),
+            Value::from("shell_budget_exceeded"),
+        );
+        return;
+    }
+    let (in_rholes, in_rnm) = reload_strict_holes_nm(cur_v, cur_t);
+    if in_rholes == 0 && in_rnm == 0 {
+        stats.insert(
+            "outer_shell_skipped".into(),
+            Value::from("healthy_multipart_input"),
+        );
+        return;
+    }
+
+    let ut = usize_tris(cur_t);
+    let union_out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        outer_shell_union_core(cur_v, &ut, None)
+    }));
+    if let Ok(Some((shell_v, shell_t))) = union_out {
+        if !shell_t.is_empty() {
+            let shell_t64 = i64_from_usize_tris(&shell_t);
+            let (out_rholes, out_rnm) = reload_strict_holes_nm(&shell_v, &shell_t64);
+            if out_rholes <= in_rholes && out_rnm <= in_rnm {
+                *cur_v = quantize(&shell_v);
+                *cur_t = shell_t64;
+                stats.insert("outer_shell_extracted".into(), Value::Bool(true));
+            } else {
+                stats.insert(
+                    "outer_shell_rejected".into(),
+                    Value::from("topology_regressed"),
+                );
+            }
+        }
+    }
 }
 
 fn read_thresholds(policy: Option<&LoadedPolicy>, section: &str, name: &str) -> Option<(i64, i64)> {
@@ -1104,10 +1469,6 @@ pub fn repair(
     let (_, largest_loop) = boundary_loop_stats(tris);
     max_hole = max_hole.max(2 * largest_loop as i64);
 
-    let before = common::topology_summary(verts, tris);
-    let holes_before = boundary_loop_stats(tris).0;
-    let nm_before = before.non_two_manifold_edges;
-
     let input_v = verts.to_vec();
     let input_t = tris.to_vec();
     let mut cur_v = verts.to_vec();
@@ -1181,6 +1542,28 @@ pub fn repair(
         }
         _ => None,
     };
+
+    // --- Outer-shell pre-pass ---------------------------------------------
+    // Python runs this only in `auto` mode, before the Tamponade prepass, on
+    // mechanical (or heavy-SI) multi-shell inputs. It is part of the Tamponade
+    // feature, so an explicit `--no-tamponade` skips it.
+    if cancel.is_cancelled() {
+        return cancelled();
+    }
+    if opts.mode == RepairMode::Auto {
+        let tamponade_enabled = opts.tamponade != Some(false);
+        run_outer_shell_prepass(
+            &mut cur_v,
+            &mut cur_t,
+            &triage.mesh_type,
+            tamponade_enabled,
+            &mut stats,
+        );
+    }
+    let before = common::topology_summary(&cur_v, &cur_t);
+    let holes_before = boundary_loop_stats(&cur_t).0;
+    let nm_before = before.non_two_manifold_edges;
+    let before_verts = cur_v.len();
 
     // --- Tamponade pre-pass ------------------------------------------------
     if cancel.is_cancelled() {
@@ -1802,7 +2185,7 @@ pub fn repair(
         "faces_removed".into(),
         Value::from(before.faces.saturating_sub(after.faces)),
     );
-    stage1.insert("vertices_before".into(), Value::from(verts.len()));
+    stage1.insert("vertices_before".into(), Value::from(before_verts));
     stage1.insert("vertices_after".into(), Value::from(cur_v.len()));
     stage1.insert("components_before".into(), Value::from(before.components));
     stage1.insert("applied_filters".into(), Value::from(applied));
@@ -1986,6 +2369,90 @@ mod tests {
             [3, 4, 7],
         ];
         (verts, tris)
+    }
+
+    fn push_box(verts: &mut Vec<[f64; 3]>, tris: &mut Vec<[i64; 3]>, origin: [f64; 3], size: f64) {
+        let (v, t) = cube();
+        let base = verts.len() as i64;
+        for p in v {
+            verts.push([
+                origin[0] + p[0] * size,
+                origin[1] + p[1] * size,
+                origin[2] + p[2] * size,
+            ]);
+        }
+        for tri in t {
+            tris.push([tri[0] + base, tri[1] + base, tri[2] + base]);
+        }
+    }
+
+    fn two_shells(nested: bool) -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
+        let mut verts = Vec::new();
+        let mut tris = Vec::new();
+        push_box(&mut verts, &mut tris, [0.0, 0.0, 0.0], 2.0);
+        if nested {
+            push_box(&mut verts, &mut tris, [0.5, 0.5, 0.5], 1.0);
+        } else {
+            push_box(&mut verts, &mut tris, [1.5, 1.5, 1.5], 2.0);
+        }
+        (verts, tris)
+    }
+
+    #[test]
+    fn should_extract_outer_shell_accepts_nested_and_overlapping_shells() {
+        for nested in [true, false] {
+            let (verts, tris) = two_shells(nested);
+            assert!(
+                should_extract_outer_shell(&verts, &tris, "mechanical", 0),
+                "nested={nested} must be considered"
+            );
+        }
+    }
+
+    #[test]
+    fn should_extract_outer_shell_rejects_single_open_and_organic() {
+        let (verts, tris) = cube();
+        assert!(!should_extract_outer_shell(&verts, &tris, "mechanical", 0));
+
+        let (verts, tris) = two_shells(true);
+        assert!(!should_extract_outer_shell(&verts, &tris, "organic", 0));
+
+        let (mut verts, mut tris) = two_shells(true);
+        tris.pop();
+        assert!(!should_extract_outer_shell(&verts, &tris, "mechanical", 0));
+
+        verts.clear();
+        tris.clear();
+        assert!(!should_extract_outer_shell(&verts, &tris, "mechanical", 0));
+    }
+
+    #[test]
+    fn shell_prepass_noops_when_not_considered() {
+        let (verts, tris) = cube();
+        let mut got_v = verts.clone();
+        let mut got_t = tris.clone();
+        let mut stats = Map::new();
+        run_outer_shell_prepass(&mut got_v, &mut got_t, "mechanical", true, &mut stats);
+        assert_eq!(got_v, verts);
+        assert_eq!(got_t, tris);
+        assert!(!stats.contains_key("tamponade_shell_prepass"));
+        assert!(!stats.contains_key("outer_shell_skipped"));
+    }
+
+    #[test]
+    fn shell_prepass_skips_when_tamponade_disabled() {
+        let (verts, tris) = two_shells(true);
+        let mut got_v = verts.clone();
+        let mut got_t = tris.clone();
+        let mut stats = Map::new();
+        run_outer_shell_prepass(&mut got_v, &mut got_t, "mechanical", false, &mut stats);
+        assert_eq!(got_v, verts);
+        assert_eq!(got_t, tris);
+        assert_eq!(
+            stats.get("outer_shell_skipped").and_then(Value::as_str),
+            Some("tamponade_disabled")
+        );
+        assert!(!stats.contains_key("tamponade_shell_prepass"));
     }
 
     #[test]
