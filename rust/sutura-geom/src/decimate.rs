@@ -252,7 +252,7 @@ pub fn decimate_impl(
                 &adapter,
                 &flat32,
                 &weights,
-                attr_stride,
+                attr_stride * 4,
                 &locks,
                 target_index_count,
                 err_in,
