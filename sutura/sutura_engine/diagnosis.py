@@ -361,11 +361,14 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
     # engines, feature modes or a classifier change. The v2 -> classic fallback
     # is deterministic for a given mesh, so the requested engine is a
     # sufficient discriminator (the engine actually used is recorded below).
+    #
+    # `cachefmt:2` covers the payload change from `to_dict()` (3-decimal
+    # presentation values) to the object's raw fields; see `_cache_payload`.
     m_hash = None
     cache_key = None
     if use_cache and cache.is_cache_enabled():
         m_hash = cache.hash_arrays(v, t)
-        cache_key = '%s|%s|%d|%s|diagv2:%s' % (version, engine,
+        cache_key = '%s|%s|%d|%s|diagv2:%s|cachefmt:2' % (version, engine,
                                      1 if extra_features else 0,
                                      CLASSIFIER_VERSION, DIAGNOSIS_V2_VERSION)
         cached_dict = cache.get_cached_analysis(m_hash, cache_key)
@@ -448,9 +451,25 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
         analysis.possible_debris = None
 
     if use_cache and m_hash and cache.is_cache_enabled():
-        cache.put_cached_analysis(m_hash, cache_key, to_dict(analysis))
+        cache.put_cached_analysis(m_hash, cache_key, _cache_payload(analysis))
 
     return analysis
+
+
+def _cache_payload(analysis: 'ObjectAnalysis') -> dict:
+    """The stored analysis: the object's RAW fields, not the rounded report.
+
+    `to_dict` exists for presentation and rounds (`repetition_score` to 3
+    decimals, `open_area_ratio` to 4). Storing that dict and rehydrating it
+    changed the object a warm run sees, so a cold and a warm run disagreed:
+    on a 528-face corpus mesh `repetition_score` read 0.7411 cold and 0.742
+    warm, and the method ranking -- which reads the field, not the report --
+    moved the `transplant` score with it.
+
+    The cache must hand back exactly what a fresh run produced, so it stores
+    `vars()` unchanged.
+    """
+    return {k: v for k, v in vars(analysis).items()}
 
 
 def analyze_file(path: str, engine: str = 'experimental',
