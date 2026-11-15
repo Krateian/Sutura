@@ -966,6 +966,7 @@ fn method_health_value(stats: &Map<String, Value>, unavailable: &Value) -> (Valu
         "repeat",
         "wall_thicken",
         "si_excise",
+        "ftetwild",
     ] {
         availability.insert(tier.to_string(), json!(["ok", Value::Null]));
     }
@@ -996,6 +997,11 @@ fn method_health_value(stats: &Map<String, Value>, unavailable: &Value) -> (Valu
     }
     let mut errors: Vec<Value> = Vec::new();
     for (tier, report) in stats {
+        // `ftetwild` mirrors `experimental_ftetwild`; count the canonical key
+        // once so an error is not reported twice.
+        if tier == "ftetwild" {
+            continue;
+        }
         if let Some(message) = report.get("error").and_then(Value::as_str) {
             errors.push(json!({
                 "method": tier,
@@ -1010,7 +1016,10 @@ fn method_health_value(stats: &Map<String, Value>, unavailable: &Value) -> (Valu
 }
 
 /// Tiers this slice does not execute. Every entry is explicit; none is silent.
-fn unavailable_tiers() -> Value {
+///
+/// fTetWild is compiled in but needs the standalone binary, so it only appears
+/// here (with a reason) when no executable was found.
+fn unavailable_tiers(ftetwild_reason: Option<&str>) -> Value {
     let entry = |reason: &str| {
         json!({
             "ran": false,
@@ -1018,15 +1027,21 @@ fn unavailable_tiers() -> Value {
             "reason": reason,
         })
     };
-    json!({
+    let mut tiers = json!({
         "dressing": entry("Dressing orchestration is not in sutura-core yet; only the sutura-geom coat producer exists"),
-        "ftetwild": entry("fTetWild is an external Python tier; no Rust implementation exists"),
         "repeat_builder": entry("the Repeat transplant producer stays in Python; only the Rust adoption gate exists"),
         "wall_builder": entry("the Wall-thicken producer stays in Python; only the Rust adoption gate exists"),
         "cad_likeness": entry("cad_likeness is a Python scoring helper; no sutura-core implementation yet"),
         "ranking_scores": entry("repetition_score, single_side_score and relief_score are not ported; ranking treats them as 0.0"),
         "method_escalation": entry("ranked multi-method escalation is file-level (src/out); sutura-core selects the baseline method only"),
     })
+    .as_object()
+    .cloned()
+    .expect("unavailable tier map");
+    if let Some(reason) = ftetwild_reason {
+        tiers.insert("ftetwild".to_string(), entry(reason));
+    }
+    Value::Object(tiers)
 }
 
 /// Repair one mesh given as float64/int64 arrays.
@@ -1109,6 +1124,8 @@ pub fn repair(
     );
     stats.insert("experimental_join_components".into(), Value::Bool(false));
     stats.insert("experimental_ftetwild".into(), Value::Bool(false));
+    stats.insert("ftetwild".into(), Value::Bool(false));
+    let ftetwild_bin = crate::ftetwild::find_binary();
 
     // The merged read-only analysis feeds the ranking and the report. Its
     // three behavioural scores are not ported yet; the missing list is exposed
@@ -1533,23 +1550,54 @@ pub fn repair(
                 stats.insert("cdt".into(), rec);
             }
 
-            // fTetWild is a Python-only tier in this slice.
-            if holes > 0 || nm > 0 {
-                let rec = tier_error(
-                    "ftetwild",
-                    "fTetWild is an external Python tier; no Rust implementation exists",
-                );
+            // fTetWild (#7): standalone deterministic binary when installed.
+            if (holes > 0 || nm > 0) && ftetwild_bin.is_some() {
+                let ft_in_v = cur_v.clone();
+                let ft_in_t = cur_t.clone();
+                let bin = ftetwild_bin.as_deref().expect("checked above");
+                let params = crate::ftetwild::params_from_env();
+                let rec = match crate::ftetwild::run_binary(&cur_v, &cur_t, bin, &params) {
+                    Ok((fv, ft, mut report)) => {
+                        let cand_after = common::topology_summary(&fv, &ft);
+                        let cand_holes = boundary_loop_stats(&ft).0;
+                        let cand_nm = cand_after.non_two_manifold_edges;
+                        let candidate_ok = !fv.is_empty()
+                            && !ft.is_empty()
+                            && cand_holes <= holes
+                            && cand_nm <= nm;
+                        report["ran"] = Value::Bool(true);
+                        report["adopted"] = Value::Bool(candidate_ok);
+                        report["input_holes"] = Value::from(holes);
+                        report["input_non_manifold"] = Value::from(nm);
+                        report["output_holes"] = Value::from(cand_holes);
+                        report["output_non_manifold"] = Value::from(cand_nm);
+                        if let Some(err) = report.get("error").and_then(Value::as_str) {
+                            report["reason"] = Value::from(err.to_string());
+                        } else if !candidate_ok {
+                            report["reason"] = Value::from("not_watertight");
+                        }
+                        if candidate_ok {
+                            cur_v = fv;
+                            cur_t = ft;
+                            after = cand_after;
+                            tiers_run.push(Value::from("ftetwild"));
+                        }
+                        report
+                    }
+                    Err(err) => tier_error("ftetwild", err),
+                };
                 emit_tier(sink, "ftetwild", 4, &rec);
                 trace.record(
                     "ftetwild",
                     "pipeline._ftetwild_tier",
-                    &cur_v,
-                    &cur_t,
+                    &ft_in_v,
+                    &ft_in_t,
                     &cur_v,
                     &cur_t,
                     rec.clone(),
                 );
-                stats.insert("experimental_ftetwild".into(), rec);
+                stats.insert("experimental_ftetwild".into(), rec.clone());
+                stats.insert("ftetwild".into(), rec);
             }
         }
 
@@ -1813,7 +1861,9 @@ pub fn repair(
         }),
     );
 
-    let unavailable = unavailable_tiers();
+    let unavailable = unavailable_tiers(ftetwild_bin.is_none().then_some(
+        "fTetWild binary not found; set FTETWILD_BIN/SUTURA_FTETWILD_BIN or install third_party/ftetwild/bin/ftetwild",
+    ));
     let (method_health, method_errors) = method_health_value(&stats, &unavailable);
     stats.insert("method_health".into(), method_health);
     stats.insert("method_errors".into(), method_errors);
@@ -1947,7 +1997,7 @@ mod tests {
             .get("unavailable")
             .and_then(Value::as_object)
             .expect("unavailable object");
-        for tier in ["dressing", "ftetwild"] {
+        for tier in ["dressing"] {
             let entry = unavailable.get(tier).expect(tier);
             assert_eq!(entry.get("ran").and_then(Value::as_bool), Some(false));
             assert_eq!(
@@ -1955,6 +2005,20 @@ mod tests {
                 Some(true)
             );
             assert!(entry.get("reason").and_then(Value::as_str).is_some());
+        }
+        if crate::ftetwild::find_binary().is_none() {
+            let entry = unavailable.get("ftetwild").expect("ftetwild");
+            assert_eq!(entry.get("ran").and_then(Value::as_bool), Some(false));
+            assert_eq!(
+                entry.get("unavailable").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert!(entry.get("reason").and_then(Value::as_str).is_some());
+        } else {
+            assert!(
+                unavailable.get("ftetwild").is_none(),
+                "an installed fTetWild binary is compiled in"
+            );
         }
         assert!(
             unavailable.get("local_remesh").is_none(),
@@ -2126,7 +2190,6 @@ mod tests {
             .expect("unavailable object");
         for tier in [
             "dressing",
-            "ftetwild",
             "repeat_builder",
             "wall_builder",
             "ranking_scores",
@@ -2145,6 +2208,24 @@ mod tests {
                     .unwrap_or(false),
                 "{tier} needs a non-empty reason"
             );
+        }
+        if crate::ftetwild::find_binary().is_none() {
+            let entry = unavailable.get("ftetwild").expect("ftetwild");
+            assert_eq!(entry.get("ran").and_then(Value::as_bool), Some(false));
+            assert_eq!(
+                entry.get("unavailable").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert!(
+                entry
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(|r| !r.is_empty())
+                    .unwrap_or(false),
+                "ftetwild needs a non-empty reason"
+            );
+        } else {
+            assert!(unavailable.get("ftetwild").is_none());
         }
     }
 

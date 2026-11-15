@@ -11,6 +11,7 @@ pub mod classify;
 pub mod config;
 pub mod error;
 pub mod fmt;
+pub mod ftetwild;
 pub mod mesh;
 pub mod mesh_io;
 pub mod p_weld;
