@@ -56,6 +56,7 @@ pub mod rbf;
 pub mod raycast;
 pub mod rng;
 pub mod resample;
+pub mod repeat_align;
 pub mod repeat_free;
 pub mod repeat_patch;
 pub mod repeat_segment;
@@ -3045,6 +3046,40 @@ fn lstsq3_py(
 }
 
 #[cfg(feature = "python")]
+/// `repeat.align` through the shared kernel.
+///
+/// Returns `(T, rel_rms)` where `T` is a 4x4 matrix.
+#[pyfunction]
+#[pyo3(name = "align")]
+#[pyo3(signature = (src_pts, dst_pts, allow_reflection=false, allow_scale=false, max_iters=20))]
+fn align_py<'py>(
+    py: Python<'py>,
+    src_pts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    dst_pts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    allow_reflection: bool,
+    allow_scale: bool,
+    max_iters: usize,
+) -> PyResult<(Bound<'py, PyAny>, f64)> {
+    let to_vec = |a: &numpy::ndarray::ArrayView2<'_, f64>| -> Vec<[f64; 3]> {
+        a.rows()
+            .into_iter()
+            .map(|r| [r[0], r[1], r[2]])
+            .collect()
+    };
+    let s = src_pts.as_array();
+    let d = dst_pts.as_array();
+    let (t, rms) = crate::repeat_align::align(
+        &to_vec(&s),
+        &to_vec(&d),
+        allow_reflection,
+        allow_scale,
+        max_iters,
+    );
+    let rows: Vec<Vec<f64>> = t.0.iter().map(|r| r.to_vec()).collect();
+    Ok((numpy::PyArray2::from_vec2(py, &rows)?.into_any(), rms))
+}
+
+#[cfg(feature = "python")]
 /// `repeat.detect_repetition` through the shared kernel.
 ///
 /// Returns `(score, route, info)` where `route` is `"free"`, `"patch"` or
@@ -3391,6 +3426,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
+    m.add_function(wrap_pyfunction!(align_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_repetition_py, m)?)?;
     m.add_function(wrap_pyfunction!(detect_rotational_symmetry_free_py, m)?)?;
     m.add_function(wrap_pyfunction!(segment_elements_py, m)?)?;
