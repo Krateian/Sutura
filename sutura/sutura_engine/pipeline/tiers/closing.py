@@ -36,9 +36,15 @@ def closing_ladder(v, t, input_v, input_t, after, stats, tmpdir,
     engine = os.environ.get('SUTURA_CLOSING_ENGINE', '').strip().lower()
     proxy_engine = os.environ.get('SUTURA_PROXY_ENGINE', '').strip().lower()
     use_rust_proxy = proxy_template and proxy_engine == 'rust'
+    use_rust_mirror = closing == 'mirror' and tier_engine('mirror') == 'rust'
     core = tier_core()
-    if core is None and (tier_engine('closing') == 'rust' or use_rust_proxy):
-        if proxy_template:
+    if core is None and (tier_engine('closing') == 'rust' or use_rust_proxy
+                         or use_rust_mirror):
+        if use_rust_mirror:
+            core = rust_bridge.load(
+                'mirror', ('SUTURA_MIRROR_ENGINE', 'SUTURA_TIER_ENGINE'),
+                'python')
+        elif proxy_template:
             core = rust_bridge.load(
                 'proxy', ('SUTURA_PROXY_ENGINE', 'SUTURA_TIER_ENGINE'),
                 'python')
@@ -58,8 +64,14 @@ def closing_ladder(v, t, input_v, input_t, after, stats, tmpdir,
             rust_bridge.unavailable(
                 'SUTURA_PROXY_ENGINE=rust requires '
                 'sutura_core_py.proxy_template_repair')
-    if ((tier_engine('closing') != 'rust' and not use_rust_proxy)
-            or core is None):
+    if (use_rust_mirror
+            and (core is None or not hasattr(core, 'mirror_close'))):
+        if rust_bridge.require_rust():
+            rust_bridge.unavailable(
+                'SUTURA_MIRROR_ENGINE=rust requires '
+                'sutura_core_py.mirror_close')
+    if ((tier_engine('closing') != 'rust' and not use_rust_proxy
+         and not use_rust_mirror) or core is None):
         return _closing_ladder_python(
             v, t, input_v, input_t, after, stats, tmpdir, closing,
             proxy_template)
@@ -105,6 +117,12 @@ def _closing_ladder_rust(v, t, input_v, input_t, after, stats, tmpdir,
             rep = json.loads(repl)
         elif use_rust_producer and closing == 'flat_back':
             cand_v, cand_t, repl = core.closing_flat_back(
+                np.ascontiguousarray(in_v, dtype=np.float64),
+                np.ascontiguousarray(in_t, dtype=np.int64), None)
+            rep = json.loads(repl)
+        elif (closing == 'mirror' and tier_engine('mirror') == 'rust'
+              and hasattr(core, 'mirror_close')):
+            cand_v, cand_t, repl = core.mirror_close(
                 np.ascontiguousarray(in_v, dtype=np.float64),
                 np.ascontiguousarray(in_t, dtype=np.int64), None)
             rep = json.loads(repl)

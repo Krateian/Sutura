@@ -932,6 +932,28 @@ pub fn watertight_check(
     }
 }
 
+/// Python-free body of `outer_shell_union`.
+pub fn outer_shell_union_core(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    dilation: Option<f64>,
+) -> Option<(Vec<[f64; 3]>, Vec<[usize; 3]>)> {
+    let comps = split_components(verts, tris);
+    if comps.len() <= 1 {
+        return Some((verts.to_vec(), tris.to_vec()));
+    }
+    let mut lo = verts[0];
+    let mut hi = verts[0];
+    for p in verts {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+    union_ladder(&comps, diag, dilation)
+}
+
 /// Union the edge-connected components of a multi-component mesh after
 /// dilating each around its area-weighted centroid, then keep the largest
 /// outer component. Replaces `hull.extract_outer_shell`'s manifold3d union.
@@ -949,20 +971,7 @@ pub fn outer_shell_union<'py>(
 )> {
     let v = parse_verts2(&verts)?;
     let t = parse_tris2(&tris, v.len())?;
-    let comps = split_components(&v, &t);
-    if comps.len() <= 1 {
-        return f64_arrays(py, &v, &t);
-    }
-    let mut lo = v[0];
-    let mut hi = v[0];
-    for p in &v {
-        for k in 0..3 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
-        }
-    }
-    let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
-    let Some((lv, lt)) = union_ladder(&comps, diag, dilation) else {
+    let Some((lv, lt)) = outer_shell_union_core(&v, &t, dilation) else {
         return f64_arrays(py, &v, &t);
     };
     f64_arrays(py, &lv, &lt)

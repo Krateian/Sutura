@@ -1139,6 +1139,43 @@ fn closing_flat_back_py<'py>(
     ))
 }
 
+#[pyfunction(name = "mirror_close")]
+#[pyo3(signature = (verts, tris, min_score=None))]
+fn mirror_close_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    min_score: Option<f64>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    String,
+)> {
+    let v = verts_f64(verts)?;
+    let t = tris_i64(tris)?;
+    let out = sutura_core::mirror::mirror_close(
+        &v,
+        &t,
+        min_score.unwrap_or(sutura_core::mirror::MIRROR_MIN_SCORE),
+    );
+    if std::env::var_os("SUTURA_MIRROR_DEBUG").is_some() {
+        eprintln!(
+            "[mirror-rust] verts={} tris={} mode={}",
+            out.verts.len(),
+            out.tris.len(),
+            out.report
+                .get("mode")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        );
+    }
+    Ok((
+        arrays_f64(py, &out.verts)?,
+        arrays_i64(py, &out.tris)?,
+        out.report.to_string(),
+    ))
+}
+
 #[pyfunction(name = "proxy_template_repair")]
 #[pyo3(signature = (verts, tris, voxel=None, max_iters=3))]
 fn proxy_template_repair_py<'py>(
@@ -1438,6 +1475,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tier_closing_decide_py, m)?)?;
     m.add_function(wrap_pyfunction!(closing_poisson_py, m)?)?;
     m.add_function(wrap_pyfunction!(closing_flat_back_py, m)?)?;
+    m.add_function(wrap_pyfunction!(mirror_close_py, m)?)?;
     m.add_function(wrap_pyfunction!(proxy_template_repair_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_splint_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_cdt_py, m)?)?;

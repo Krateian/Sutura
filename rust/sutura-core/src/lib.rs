@@ -10,6 +10,7 @@ pub mod error;
 pub mod fmt;
 pub mod mesh;
 pub mod mesh_io;
+pub mod mirror;
 pub mod p_weld;
 pub mod proxy;
 pub mod stage1;

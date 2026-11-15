@@ -357,7 +357,7 @@ pub fn poisson_close(
     }
 }
 
-fn boundary_loops(tris: &[[i64; 3]]) -> Vec<Vec<i64>> {
+pub(crate) fn boundary_loops(tris: &[[i64; 3]]) -> Vec<Vec<i64>> {
     if tris.is_empty() {
         return Vec::new();
     }
@@ -436,7 +436,7 @@ fn boundary_loops(tris: &[[i64; 3]]) -> Vec<Vec<i64>> {
     loops
 }
 
-fn loop_stats(verts: &[[f64; 3]], lp: &[i64]) -> (f64, f64, [f64; 3], [f64; 3]) {
+pub(crate) fn loop_stats(verts: &[[f64; 3]], lp: &[i64]) -> (f64, f64, [f64; 3], [f64; 3]) {
     let pts: Vec<[f64; 3]> = lp.iter().map(|&i| verts[i as usize]).collect();
     let mut perim = 0.0;
     for i in 0..pts.len() {
@@ -456,7 +456,7 @@ fn loop_stats(verts: &[[f64; 3]], lp: &[i64]) -> (f64, f64, [f64; 3], [f64; 3]) 
     (perim, spanned, va, mean(&pts))
 }
 
-fn jacobi_eigen(a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
+pub(crate) fn jacobi_eigen(a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
     let mut m = a;
     let mut v = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for _ in 0..32 {
