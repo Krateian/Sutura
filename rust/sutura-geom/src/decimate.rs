@@ -246,7 +246,7 @@ pub fn decimate_impl(
                 &adapter,
                 &flat32,
                 &weights,
-                attr_stride,
+                attr_stride * 4,
                 &locks,
                 target_index_count,
                 err_in,
@@ -660,6 +660,17 @@ mod tests {
         let (v, t) = sphere80();
         let normals: Vec<f64> = v.iter().flat_map(|p| p.iter().copied()).collect();
         let r = decimate_impl(&v, &t, 20, None, false, Some((&normals, 3))).unwrap();
+        assert_eq!(r.attributes_used, 3);
+        assert!(r.faces_out > 0 && r.faces_out <= 20);
+        assert_valid(&r.verts, &r.tris);
+    }
+
+    #[test]
+    fn preserve_normal_stride_is_bytes() {
+        let (v, t) = sphere80();
+        let normals: Vec<f64> = v.iter().flat_map(|p| p.iter().copied()).collect();
+        let r = decimate_impl(&v, &t, 20, None, false, Some((&normals, 3)))
+            .expect("attribute stride is in bytes");
         assert_eq!(r.attributes_used, 3);
         assert!(r.faces_out > 0 && r.faces_out <= 20);
         assert_valid(&r.verts, &r.tris);
