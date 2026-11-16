@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin==1.15.0"]
+build-backend = "maturin"
+
+[project]
+name = "sutura-core-py"
+version = "0.1.0"
+description = "Thin PyO3 bridge over sutura-core"
+requires-python = ">=3.11"
+license = { text = "MIT OR Apache-2.0" }
+
+[tool.maturin]
+module-name = "sutura_core_py"
+features = ["extension-module"]

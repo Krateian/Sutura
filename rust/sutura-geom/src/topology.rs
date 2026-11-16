@@ -15,10 +15,15 @@
 //! identical.  Non-finite coordinates are rejected here so the Python wrapper
 //! can fall back to numpy (numpy orders NaN/inf differently from `partial_cmp`).
 
+#[cfg(feature = "python")]
 use numpy::ndarray::Array2;
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArray1, PyArray2, PyArrayLike1, PyArrayLike2};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::PyDict;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -82,7 +87,8 @@ fn cmp_f32_row(a: &[f32; 3], b: &[f32; 3]) -> Ordering {
 
 /// Unique rows of a fixed-width 3-column i64 table, sorted lexicographically,
 /// with the index of each unique row's first occurrence in the input.  The
-/// stable sort makes the "first occurrence" rule explicit.
+/// stable sort makes the "first occurrence" rule explicit; this mirrors the
+/// oracle's `np.unique(..., return_index=True)` choice.
 fn unique_rows_i64_first(rows: &[[i64; 3]]) -> (Vec<[i64; 3]>, Vec<usize>) {
     let n = rows.len();
     let mut order: Vec<usize> = (0..n).collect();
@@ -103,6 +109,9 @@ fn unique_rows_i64_first(rows: &[[i64; 3]]) -> (Vec<[i64; 3]>, Vec<usize>) {
     (uniq, first)
 }
 
+/// Keep the LAST input index for each equal row.  This mirrors the oracle
+/// (`meshing_remove_duplicate_faces` keeps one representative per duplicate
+/// group); reversing the input lets a stable sort make the last occurrence win.
 fn unique_rows_i64_last(rows: &[[i64; 3]]) -> Vec<usize> {
     let n = rows.len();
     if n <= 1 {
@@ -149,6 +158,7 @@ fn unique_rows_f32(rows: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<i64>) {
     (uniq, inv)
 }
 
+#[cfg(feature = "python")]
 fn read_f32_rows(arr: &PyArrayLike2<'_, f32, AllowTypeChange>) -> PyResult<Vec<[f32; 3]>> {
     let v = arr.as_array();
     if v.ncols() != 3 {
@@ -162,6 +172,7 @@ fn read_f32_rows(arr: &PyArrayLike2<'_, f32, AllowTypeChange>) -> PyResult<Vec<[
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]>> {
     let v = arr.as_array();
     if v.ncols() != 3 {
@@ -175,6 +186,7 @@ fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[i64; 3]>> {
     let t = arr.as_array();
     if t.ncols() != 3 {
@@ -188,6 +200,7 @@ fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyArray2<i64>> {
     let mut a = Array2::<i64>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -198,6 +211,7 @@ fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyA
     PyArray2::from_owned_array(py, a)
 }
 
+#[cfg(feature = "python")]
 fn pairs_to_array2_i64<'py>(py: Python<'py>, pairs: &[(i64, i64)]) -> Bound<'py, PyArray2<i64>> {
     let mut a = Array2::<i64>::zeros((pairs.len(), 2));
     for (r, &(x, y)) in pairs.iter().enumerate() {
@@ -207,6 +221,7 @@ fn pairs_to_array2_i64<'py>(py: Python<'py>, pairs: &[(i64, i64)]) -> Bound<'py,
     PyArray2::from_owned_array(py, a)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_f32<'py>(py: Python<'py>, rows: &[[f32; 3]]) -> Bound<'py, PyArray2<f32>> {
     let mut a = Array2::<f32>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -226,6 +241,7 @@ fn rows_to_array2_f32<'py>(py: Python<'py>, rows: &[[f32; 3]]) -> Bound<'py, PyA
 /// table, `counts[n]` the number of half-edges using `edges[n]` (so boundary
 /// edges have count 1, non-manifold edges count > 2), and `inverse[h]` the
 /// edge id of the `h`-th half-edge.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (tris))]
 pub fn edge_table<'py>(
@@ -281,17 +297,11 @@ pub fn edge_table<'py>(
     ))
 }
 
-/// Remove duplicate faces (matching VCGLib / PyMeshLab meshing_remove_duplicate_faces).
-#[pyfunction]
-#[pyo3(signature = (tris))]
-pub fn remove_duplicate_faces<'py>(
-    py: Python<'py>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-) -> PyResult<Bound<'py, PyArray2<i64>>> {
-    let trows = read_i64_rows(&tris)?;
+/// Pure duplicate-face removal (no Python).
+pub fn remove_duplicate_faces_core(trows: &[[i64; 3]]) -> Vec<[i64; 3]> {
     let nf = trows.len();
     if nf <= 1 {
-        return Ok(rows_to_array2_i64(py, &trows));
+        return trows.to_vec();
     }
     let keys: Vec<[i64; 3]> = trows
         .iter()
@@ -302,38 +312,32 @@ pub fn remove_duplicate_faces<'py>(
         })
         .collect();
     let kept_indices = unique_rows_i64_last(&keys);
-    if kept_indices.len() == nf {
-        return Ok(rows_to_array2_i64(py, &trows));
-    }
-    let out: Vec<[i64; 3]> = kept_indices.iter().map(|&i| trows[i]).collect();
+    kept_indices.iter().map(|&i| trows[i]).collect()
+}
+
+/// Remove duplicate faces (matching VCGLib / PyMeshLab meshing_remove_duplicate_faces).
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (tris))]
+pub fn remove_duplicate_faces<'py>(
+    py: Python<'py>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let trows = read_i64_rows(&tris)?;
+    let out = remove_duplicate_faces_core(&trows);
     Ok(rows_to_array2_i64(py, &out))
 }
 
-/// Remove null / degenerate faces (matching VCGLib / PyMeshLab meshing_remove_null_faces).
-///
-/// ``safe`` keeps a *zero-area but topologically valid* face (three distinct,
-/// in-range, collinear vertices) when removing it would turn one of its edges
-/// into a boundary edge -- i.e. when that edge is used by fewer than three
-/// faces. Such a face contributes no area but it is part of a closed surface,
-/// so dropping it opens a hole (thingi10k_248395: 226 collinear faces, all
-/// interior, deleting them leaves 47 holes). PyMeshLab / ADMesh likewise keep
-/// these faces. Faces with a repeated index, an out-of-range index or a
-/// non-finite normal are always dropped (structurally invalid), and with
-/// ``safe=False`` the historical drop-everything behaviour is unchanged.
-#[pyfunction]
-#[pyo3(signature = (verts, tris, safe=false))]
-pub fn remove_null_faces<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+/// Pure null/degenerate-face removal (no Python).
+pub fn remove_null_faces_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
     safe: bool,
-) -> PyResult<Bound<'py, PyArray2<i64>>> {
-    let vrows = read_f32_rows(&verts)?;
-    let trows = read_i64_rows(&tris)?;
+) -> Vec<[i64; 3]> {
     let nv = vrows.len();
     let mut incidence: HashMap<(i64, i64), u32> = HashMap::new();
     if safe {
-        for r in &trows {
+        for r in trows {
             for (a, b) in [(r[0], r[1]), (r[1], r[2]), (r[2], r[0])] {
                 if a == b {
                     continue;
@@ -374,13 +378,39 @@ pub fn remove_null_faces<'py>(
                         incidence.get(&key).copied().unwrap_or(0) <= 2
                     });
                 if opens {
-                    out.push(r);
+                    out.push(*r);
                 }
             }
             continue;
         }
-        out.push(r);
+        out.push(*r);
     }
+    out
+}
+
+/// Remove null / degenerate faces (matching VCGLib / PyMeshLab meshing_remove_null_faces).
+///
+/// ``safe`` keeps a *zero-area but topologically valid* face (three distinct,
+/// in-range, collinear vertices) when removing it would turn one of its edges
+/// into a boundary edge -- i.e. when that edge is used by fewer than three
+/// faces. Such a face contributes no area but it is part of a closed surface,
+/// so dropping it opens a hole (thingi10k_248395: 226 collinear faces, all
+/// interior, deleting them leaves 47 holes). PyMeshLab / ADMesh likewise keep
+/// these faces. Faces with a repeated index, an out-of-range index or a
+/// non-finite normal are always dropped (structurally invalid), and with
+/// ``safe=False`` the historical drop-everything behaviour is unchanged.
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (verts, tris, safe=false))]
+pub fn remove_null_faces<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    safe: bool,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let vrows = read_f32_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let out = remove_null_faces_core(&vrows, &trows, safe);
     Ok(rows_to_array2_i64(py, &out))
 }
 
@@ -393,25 +423,33 @@ fn f32_canonical_bits(x: f32) -> u32 {
 /// Remove duplicate vertices (matching VCGLib / PyMeshLab meshing_remove_duplicate_vertices).
 /// Welds coincident vertices keeping first-occurrence order, drops degenerate faces
 /// with repeated vertex indices, and remaps surviving faces.
-#[pyfunction]
-#[pyo3(signature = (verts, tris))]
-pub fn remove_duplicate_vertices<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
-) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
-    let vrows = read_f32_rows(&verts)?;
-    let trows = read_i64_rows(&tris)?;
+///
+/// Pure-Rust core used by both the Python binding and downstream crates.
+pub fn remove_duplicate_vertices_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+    remove_duplicate_vertices_core_with_cancel(vrows, trows, None)
+}
+
+pub fn remove_duplicate_vertices_core_with_cancel(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
     let nv = vrows.len();
     if nv == 0 {
-        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
+        return (vrows.to_vec(), trows.to_vec());
     }
 
     let mut map: HashMap<[u32; 3], usize> = HashMap::with_capacity(nv);
     let mut new_verts: Vec<[f32; 3]> = Vec::with_capacity(nv);
     let mut old_to_new: Vec<usize> = Vec::with_capacity(nv);
 
-    for p in &vrows {
+    for (vi, p) in vrows.iter().enumerate() {
+        if vi % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
         let key = [
             f32_canonical_bits(p[0]),
             f32_canonical_bits(p[1]),
@@ -430,7 +468,7 @@ pub fn remove_duplicate_vertices<'py>(
 
     let has_duplicates = new_verts.len() < nv;
     let mut has_degenerate = false;
-    for r in &trows {
+    for r in trows {
         let (i0, i1, i2) = (r[0] as usize, r[1] as usize, r[2] as usize);
         if i0 >= nv || i1 >= nv || i2 >= nv {
             has_degenerate = true;
@@ -444,11 +482,14 @@ pub fn remove_duplicate_vertices<'py>(
     }
 
     if !has_duplicates && !has_degenerate {
-        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
+        return (vrows.to_vec(), trows.to_vec());
     }
 
     let mut new_tris: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
-    for r in &trows {
+    for (ri, r) in trows.iter().enumerate() {
+        if ri % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
         let (i0, i1, i2) = (r[0] as usize, r[1] as usize, r[2] as usize);
         if i0 >= nv || i1 >= nv || i2 >= nv {
             continue;
@@ -460,10 +501,27 @@ pub fn remove_duplicate_vertices<'py>(
         new_tris.push([n0, n1, n2]);
     }
 
+    (new_verts, new_tris)
+}
+
+/// Remove duplicate vertices (matching VCGLib / PyMeshLab meshing_remove_duplicate_vertices).
+/// Welds coincident vertices keeping first-occurrence order, drops degenerate faces
+/// with repeated vertex indices, and remaps surviving faces.
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn remove_duplicate_vertices<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
+    let vrows = read_f32_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let (new_verts, new_tris) = remove_duplicate_vertices_core(&vrows, &trows);
     Ok((rows_to_array2_f32(py, &new_verts), rows_to_array2_i64(py, &new_tris)))
 }
 
-pub(crate) fn remove_unreferenced_vertices_core(
+pub fn remove_unreferenced_vertices_core(
     vrows: &[[f32; 3]],
     trows: &[[i64; 3]],
 ) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
@@ -507,6 +565,7 @@ pub(crate) fn remove_unreferenced_vertices_core(
 
 /// Remove unreferenced vertices (matching VCGLib / PyMeshLab meshing_remove_unreferenced_vertices).
 /// Compacts vertex array preserving original relative order of referenced vertices.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn remove_unreferenced_vertices<'py>(
@@ -520,11 +579,82 @@ pub fn remove_unreferenced_vertices<'py>(
     Ok((rows_to_array2_f32(py, &wv), rows_to_array2_i64(py, &wt)))
 }
 
+/// Pure connected-component removal (no Python).
+pub fn remove_connected_components_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+    min_faces: i64,
+    remove_unreferenced: bool,
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+    remove_connected_components_core_with_cancel(
+        vrows, trows, min_faces, remove_unreferenced, None)
+}
+
+pub fn remove_connected_components_core_with_cancel(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+    min_faces: i64,
+    remove_unreferenced: bool,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+    let nf = trows.len();
+    if nf == 0 || min_faces <= 1 {
+        return (vrows.to_vec(), trows.to_vec());
+    }
+    let mut half_edges: Vec<((i64, i64), usize)> = Vec::with_capacity(3 * nf);
+    for (f_idx, tri) in trows.iter().enumerate() {
+        half_edges.push((canon(tri[0], tri[1]), f_idx));
+        half_edges.push((canon(tri[1], tri[2]), f_idx));
+        half_edges.push((canon(tri[2], tri[0]), f_idx));
+    }
+    half_edges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    let mut ds = DisjointSet::new(nf);
+    let mut i = 0usize;
+    let n_he = half_edges.len();
+    while i < n_he {
+        if i % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
+        let edge = half_edges[i].0;
+        let mut j = i + 1;
+        while j < n_he && half_edges[j].0 == edge {
+            ds.union(half_edges[i].1, half_edges[j].1);
+            j += 1;
+        }
+        i = j;
+    }
+    let mut comp_sizes = vec![0usize; nf];
+    for f in 0..nf {
+        if f % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
+        let root = ds.find(f);
+        comp_sizes[root] += 1;
+    }
+    let min_sz = min_faces.max(0) as usize;
+    let mut kept_tris: Vec<[i64; 3]> = Vec::with_capacity(nf);
+    for f in 0..nf {
+        let root = ds.find(f);
+        if comp_sizes[root] >= min_sz {
+            kept_tris.push(trows[f]);
+        }
+    }
+    if kept_tris.len() == nf {
+        return (vrows.to_vec(), trows.to_vec());
+    }
+    if remove_unreferenced {
+        remove_unreferenced_vertices_core(vrows, &kept_tris)
+    } else {
+        (vrows.to_vec(), kept_tris)
+    }
+}
+
 /// Remove connected components by face number (matching VCGLib / PyMeshLab
 /// meshing_remove_connected_component_by_face_number).
 /// Components of faces connected via shared undirected edges with fewer than
 /// `min_faces` triangles are removed. If `remove_unreferenced` is true, dangling
 /// vertices are pruned and faces reindexed.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, min_faces, remove_unreferenced=true))]
 pub fn remove_connected_components<'py>(
@@ -536,61 +666,18 @@ pub fn remove_connected_components<'py>(
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
     let vrows = read_f32_rows(&verts)?;
     let trows = read_i64_rows(&tris)?;
-    let nf = trows.len();
-    if nf == 0 || min_faces <= 1 {
-        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
-    }
+    let (wv, wt) = remove_connected_components_core(&vrows, &trows, min_faces, remove_unreferenced);
+    Ok((rows_to_array2_f32(py, &wv), rows_to_array2_i64(py, &wt)))
+}
 
-    let mut half_edges: Vec<((i64, i64), usize)> = Vec::with_capacity(3 * nf);
-    for (f_idx, tri) in trows.iter().enumerate() {
-        half_edges.push((canon(tri[0], tri[1]), f_idx));
-        half_edges.push((canon(tri[1], tri[2]), f_idx));
-        half_edges.push((canon(tri[2], tri[0]), f_idx));
-    }
-    half_edges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-
-    let mut ds = DisjointSet::new(nf);
-    let mut i = 0usize;
-    let n_he = half_edges.len();
-    while i < n_he {
-        let edge = half_edges[i].0;
-        let mut j = i + 1;
-        while j < n_he && half_edges[j].0 == edge {
-            ds.union(half_edges[i].1, half_edges[j].1);
-            j += 1;
-        }
-        i = j;
-    }
-
-    let mut comp_sizes = vec![0usize; nf];
-    for f in 0..nf {
-        let root = ds.find(f);
-        comp_sizes[root] += 1;
-    }
-
-    let min_sz = min_faces.max(0) as usize;
-    let mut kept_tris: Vec<[i64; 3]> = Vec::with_capacity(nf);
-    for f in 0..nf {
-        let root = ds.find(f);
-        if comp_sizes[root] >= min_sz {
-            kept_tris.push(trows[f]);
-        }
-    }
-
-    if kept_tris.len() == nf {
-        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
-    }
-
-    if remove_unreferenced {
-        let (wv, wt) = remove_unreferenced_vertices_core(&vrows, &kept_tris);
-        Ok((rows_to_array2_f32(py, &wv), rows_to_array2_i64(py, &wt)))
-    } else {
-        Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &kept_tris)))
-    }
+/// Pure face-orientation inversion (no Python).
+pub fn invert_face_orientation_core(trows: &[[i64; 3]]) -> Vec<[i64; 3]> {
+    trows.iter().map(|r| [r[1], r[0], r[2]]).collect()
 }
 
 /// Invert face orientation (matching VCGLib / PyMeshLab meshing_invert_face_orientation).
 /// Swaps the first two vertices of each triangle `[v0, v1, v2] -> [v1, v0, v2]`.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (tris))]
 pub fn invert_face_orientation<'py>(
@@ -598,10 +685,7 @@ pub fn invert_face_orientation<'py>(
     tris: PyArrayLike2<'py, i64, AllowTypeChange>,
 ) -> PyResult<Bound<'py, PyArray2<i64>>> {
     let trows = read_i64_rows(&tris)?;
-    let mut out: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
-    for r in trows {
-        out.push([r[1], r[0], r[2]]);
-    }
+    let out = invert_face_orientation_core(&trows);
     Ok(rows_to_array2_i64(py, &out))
 }
 
@@ -615,6 +699,7 @@ pub enum TopologyError {
     NonManifold,
 }
 
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (tris))]
 pub fn re_orient_faces_coherently<'py>(
@@ -631,6 +716,13 @@ pub fn re_orient_faces_coherently<'py>(
 }
 
 pub fn re_orient_faces_coherently_core(trows: &[[i64; 3]]) -> Result<Vec<[i64; 3]>, TopologyError> {
+    re_orient_faces_coherently_core_with_cancel(trows, None)
+}
+
+pub fn re_orient_faces_coherently_core_with_cancel(
+    trows: &[[i64; 3]],
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Result<Vec<[i64; 3]>, TopologyError> {
     let nf = trows.len();
     if nf == 0 {
         return Ok(Vec::new());
@@ -676,6 +768,9 @@ pub fn re_orient_faces_coherently_core(trows: &[[i64; 3]]) -> Result<Vec<[i64; 3
     let mut queue = std::collections::VecDeque::new();
 
     for start_f in 0..nf {
+        if start_f % 4096 == 0 && crate::cancel::cancelled(cancel) {
+            return Ok(trows.to_vec());
+        }
         if visited[start_f] {
             continue;
         }
@@ -725,6 +820,7 @@ pub fn re_orient_faces_coherently_core(trows: &[[i64; 3]]) -> Result<Vec<[i64; 3
 ///
 /// Iteratively removes the minimum-area incident face from each non-manifold edge (degree > 2)
 /// until all edges have at most 2 incident faces.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn repair_non_manifold_edges<'py>(
@@ -742,6 +838,14 @@ pub fn repair_non_manifold_edges_core(
     vrows: &[[f32; 3]],
     trows: &[[i64; 3]],
 ) -> Vec<[i64; 3]> {
+    repair_non_manifold_edges_core_with_cancel(vrows, trows, None)
+}
+
+pub fn repair_non_manifold_edges_core_with_cancel(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Vec<[i64; 3]> {
     let nf = trows.len();
     let nv = vrows.len();
     if nf == 0 {
@@ -749,7 +853,10 @@ pub fn repair_non_manifold_edges_core(
     }
 
     let mut areas: Vec<f64> = Vec::with_capacity(nf);
-    for tri in trows {
+    for (ti, tri) in trows.iter().enumerate() {
+        if ti % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return trows.to_vec();
+        }
         let i0 = tri[0];
         let i1 = tri[1];
         let i2 = tri[2];
@@ -797,6 +904,9 @@ pub fn repair_non_manifold_edges_core(
 
     let mut i = 0;
     while i < half_edges.len() {
+        if i % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return trows.to_vec();
+        }
         let mut j = i + 1;
         while j < half_edges.len() && half_edges[j].0 == half_edges[i].0 {
             j += 1;
@@ -812,6 +922,9 @@ pub fn repair_non_manifold_edges_core(
 
     let mut to_del: Vec<usize> = Vec::new();
     for (f_idx, edges) in face_edges.iter().enumerate() {
+        if f_idx % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return trows.to_vec();
+        }
         let mut has_nm = false;
         for e in edges {
             if let Some(flist) = edge_faces.get(e) {
@@ -862,6 +975,7 @@ pub fn repair_non_manifold_edges_core(
 }
 
 /// Repair non-manifold pinch vertices by splitting them (matching VCGLib meshing_repair_non_manifold_vertices).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn repair_non_manifold_vertices<'py>(
@@ -879,6 +993,14 @@ pub fn repair_non_manifold_vertices_core(
     vrows: &[[f32; 3]],
     trows: &[[i64; 3]],
 ) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+    repair_non_manifold_vertices_core_with_cancel(vrows, trows, None)
+}
+
+pub fn repair_non_manifold_vertices_core_with_cancel(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
     let nf = trows.len();
     let nv = vrows.len();
     if nf == 0 || nv == 0 {
@@ -892,6 +1014,9 @@ pub fn repair_non_manifold_vertices_core(
     let mut vert_faces: std::collections::HashMap<i64, Vec<usize>> = std::collections::HashMap::new();
 
     for (fi, tri) in trows.iter().enumerate() {
+        if fi % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
         for k in 0..3 {
             let e = canon(tri[k], tri[(k + 1) % 3]);
             half_edges.push((e, fi, k));
@@ -928,7 +1053,10 @@ pub fn repair_non_manifold_vertices_core(
     }
 
     let mut nm_verts: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    for (&vi, flist) in &vert_faces {
+    for (vfi, (&vi, flist)) in vert_faces.iter().enumerate() {
+        if vfi % 4096 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
         if nm_edge_verts.contains(&vi) {
             continue;
         }
@@ -939,6 +1067,9 @@ pub fn repair_non_manifold_vertices_core(
         queue.push_back(start_f);
 
         while let Some(curr_f) = queue.pop_front() {
+            if crate::cancel::cancelled(cancel) {
+                return (vrows.to_vec(), trows.to_vec());
+            }
             let tri = t_out[curr_f];
             let mut corner = usize::MAX;
             for k in 0..3 {
@@ -1027,6 +1158,7 @@ pub fn repair_non_manifold_vertices_core(
 }
 
 /// Remove selected faces matching VCGLib meshing_remove_selected_faces.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (tris, selected))]
 pub fn remove_selected_faces<'py>(
@@ -1053,6 +1185,7 @@ pub fn remove_selected_faces_core(
 }
 
 /// Compute unnormalized per-face normals matching VCGLib compute_normal_per_face ((p1-p0) x (p2-p0)).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn compute_normal_per_face<'py>(
@@ -1095,6 +1228,7 @@ pub fn compute_normal_per_face_core(
 }
 
 /// Compute unit per-vertex normals matching VCGLib compute_normal_per_vertex (Simple Average).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn compute_normal_per_vertex<'py>(
@@ -1152,6 +1286,7 @@ pub fn compute_normal_per_vertex_core(
 }
 
 /// Complete geometric measures of a triangle mesh (matching VCGLib / PyMeshLab get_geometric_measures).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn mesh_geometric_measures<'py>(
@@ -1247,6 +1382,7 @@ pub fn mesh_geometric_measures_core(
 }
 
 /// Complete topological measures of a triangle mesh (matching VCGLib / PyMeshLab get_topological_measures).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn mesh_topology<'py>(
@@ -1442,6 +1578,18 @@ pub fn mesh_topology<'py>(
 }
 
 /// `np.unique(v, axis=0, return_inverse=True)` for a float32 `(N, 3)` array.
+/// Pure vertex weld used by P-WELD and downstream Rust crates.
+pub fn weld_vertices_core(
+    rows: &[[f32; 3]],
+) -> Result<(Vec<[f32; 3]>, Vec<i64>), String> {
+    if rows.iter().flatten().any(|x| !x.is_finite()) {
+        return Err("non-finite coordinate".to_string());
+    }
+    let (uniq, inv) = unique_rows_f32(rows);
+    Ok((uniq, inv))
+}
+
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts))]
 pub fn weld_vertices<'py>(
@@ -1449,10 +1597,7 @@ pub fn weld_vertices<'py>(
     verts: PyArrayLike2<'py, f32, AllowTypeChange>,
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray1<i64>>)> {
     let rows = read_f32_rows(&verts)?;
-    if rows.iter().flatten().any(|x| !x.is_finite()) {
-        return Err(PyValueError::new_err("non-finite coordinate"));
-    }
-    let (uniq, inv) = unique_rows_f32(&rows);
+    let (uniq, inv) = weld_vertices_core(&rows).map_err(PyValueError::new_err)?;
     Ok((
         rows_to_array2_f32(py, &uniq),
         PyArray1::from_vec(py, inv),
@@ -1464,6 +1609,51 @@ pub fn weld_vertices<'py>(
 /// Positions are cast to float32, exactly-coincident positions merged,
 /// degenerate and duplicate faces dropped and unreferenced vertices removed.
 /// Bit-for-bit identical to the pure-numpy oracle.
+/// Pure STL save/reload-equivalent weld (P-HONEST).
+pub fn weld_reload_equivalent_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+) -> Result<(Vec<[f32; 3]>, Vec<[i64; 3]>), String> {
+    let nv = vrows.len();
+    if nv == 0 || trows.is_empty() {
+        return Ok((vrows.to_vec(), trows.to_vec()));
+    }
+    if vrows.iter().flatten().any(|x| !x.is_finite()) {
+        return Err("non-finite coordinate".to_string());
+    }
+    let (uniq, inv) = unique_rows_f32(vrows);
+    let mut t: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
+    for row in trows {
+        let mut r = [0i64; 3];
+        for k in 0..3 {
+            let idx = row[k];
+            if idx < 0 || idx as usize >= nv {
+                return Err("triangle index out of range".to_string());
+            }
+            r[k] = inv[idx as usize];
+        }
+        t.push(r);
+    }
+    t.retain(|r| r[0] != r[1] && r[1] != r[2] && r[0] != r[2]);
+    if t.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let keys: Vec<[i64; 3]> = t.iter().map(|r| { let mut k = *r; k.sort_unstable(); k }).collect();
+    let (_ku, first) = unique_rows_i64_first(&keys);
+    let mut fsorted = first;
+    fsorted.sort_unstable();
+    let t2: Vec<[i64; 3]> = fsorted.iter().map(|&i| t[i]).collect();
+    let mut used: Vec<i64> = t2.iter().flatten().copied().collect();
+    used.sort_unstable();
+    used.dedup();
+    let mut remap: HashMap<i64, i64> = HashMap::with_capacity(used.len());
+    for (i, &v) in used.iter().enumerate() { remap.insert(v, i as i64); }
+    let out_v: Vec<[f32; 3]> = used.iter().map(|&v| uniq[v as usize]).collect();
+    let out_t: Vec<[i64; 3]> = t2.iter().map(|r| [remap[&r[0]], remap[&r[1]], remap[&r[2]]]).collect();
+    Ok((out_v, out_t))
+}
+
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn weld_reload_equivalent<'py>(
@@ -1473,65 +1663,8 @@ pub fn weld_reload_equivalent<'py>(
 ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
     let vrows = read_f32_rows(&verts)?;
     let trows = read_i64_rows(&tris)?;
-    let nv = vrows.len();
-    let nf = trows.len();
-    if nv == 0 || nf == 0 {
-        return Ok((
-            rows_to_array2_f32(py, &vrows),
-            rows_to_array2_i64(py, &trows),
-        ));
-    }
-    if vrows.iter().flatten().any(|x| !x.is_finite()) {
-        return Err(PyValueError::new_err("non-finite coordinate"));
-    }
-    let (uniq, inv) = unique_rows_f32(&vrows);
-    let mut t: Vec<[i64; 3]> = Vec::with_capacity(nf);
-    for row in &trows {
-        let mut r = [0i64; 3];
-        for k in 0..3 {
-            let idx = row[k];
-            if idx < 0 || idx as usize >= nv {
-                return Err(PyValueError::new_err("triangle index out of range"));
-            }
-            r[k] = inv[idx as usize];
-        }
-        t.push(r);
-    }
-    t.retain(|r| r[0] != r[1] && r[1] != r[2] && r[0] != r[2]);
-    if t.is_empty() {
-        // mirror the oracle: an all-degenerate result drops the vertices too
-        return Ok((
-            PyArray2::<f32>::zeros(py, (0, 3), false),
-            PyArray2::<i64>::zeros(py, (0, 3), false),
-        ));
-    }
-    // duplicate faces (same unordered vertex set): keep the first occurrence
-    let keys: Vec<[i64; 3]> = t
-        .iter()
-        .map(|r| {
-            let mut k = *r;
-            k.sort_unstable();
-            k
-        })
-        .collect();
-    let (_ku, first) = unique_rows_i64_first(&keys);
-    let mut fsorted = first;
-    fsorted.sort_unstable();
-    let t2: Vec<[i64; 3]> = fsorted.iter().map(|&i| t[i]).collect();
-    // unreferenced vertices: drop and remap
-    let mut used: Vec<i64> = t2.iter().flatten().copied().collect();
-    used.sort_unstable();
-    used.dedup();
-    let mut remap = vec![-1i64; nv];
-    for (k, &uid) in used.iter().enumerate() {
-        remap[uid as usize] = k as i64;
-    }
-    let wv: Vec<[f32; 3]> = used.iter().map(|&u| uniq[u as usize]).collect();
-    let wt: Vec<[i64; 3]> = t2
-        .iter()
-        .map(|r| [remap[r[0] as usize], remap[r[1] as usize], remap[r[2] as usize]])
-        .collect();
-    Ok((rows_to_array2_f32(py, &wv), rows_to_array2_i64(py, &wt)))
+    let (ov, ot) = weld_reload_equivalent_core(&vrows, &trows).map_err(PyValueError::new_err)?;
+    Ok((rows_to_array2_f32(py, &ov), rows_to_array2_i64(py, &ot)))
 }
 
 #[cfg(test)]
@@ -1709,6 +1842,21 @@ mod tests {
         assert!(vol_opt.is_some());
         let vol = vol_opt.unwrap();
         assert!((vol.abs() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn null_face_safe_keeps_a_load_bearing_collinear_face() {
+        let v = [
+            [0.0f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let t = [[0i64, 1, 3], [1, 2, 3], [0, 1, 2]];
+        let safe = remove_null_faces_core(&v, &t, true);
+        assert!(safe.contains(&[0, 1, 2]), "safe mode must keep the load-bearing null face");
+        let strict = remove_null_faces_core(&v, &t, false);
+        assert!(!strict.contains(&[0, 1, 2]), "non-safe mode drops it");
     }
 }
 

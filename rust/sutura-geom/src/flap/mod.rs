@@ -14,6 +14,7 @@ pub mod guard;
 pub mod refine;
 pub mod topology;
 
+#[cfg(feature = "python")]
 pub use binding::flap_fill_py;
 
 use std::collections::{HashMap, HashSet};
@@ -675,6 +676,16 @@ pub struct Report {
 
 /// Run Flap on `verts`/`tris`, returning `(verts_out, tris_out, report)`.
 pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T3>, Report) {
+    flap_fill_with_cancel(verts, tris, prm, None)
+}
+
+/// `flap_fill` with a cooperative cancellation probe.
+pub fn flap_fill_with_cancel(
+    verts: &[V3],
+    tris: &[T3],
+    prm: &FlapParams,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> (Vec<V3>, Vec<T3>, Report) {
     let mut report = Report {
         refine: prm.refine,
         fair: prm.fair,
@@ -855,7 +866,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
     };
 
     for loop_v in &loops {
-        if crate::cancel::is_cancelled() {
+        if crate::cancel::is_cancelled() || crate::cancel::cancelled(cancel) {
             break;
         }
         let loop_arr = loop_v;

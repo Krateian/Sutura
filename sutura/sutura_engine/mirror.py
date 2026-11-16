@@ -100,8 +100,10 @@ def detect_mirror_plane(verts, tris):
     pts = verts[loop]
     c = np.mean(pts, axis=0)
     centered = pts - c
-    _, _, vh = np.linalg.svd(centered)
-    n = vh[2]
+    import sutura_geom
+    cov = np.ascontiguousarray(centered.T @ centered)
+    _eigs, vecs = sutura_geom.eigh3(cov)
+    n = np.asarray(vecs, dtype=np.float64)[:, 0]
     rms = float(np.sqrt(np.mean(np.dot(centered, n) ** 2)))
     rms_rel = rms / diag
 

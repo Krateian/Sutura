@@ -1,0 +1,21 @@
+[package]
+name = "sutura-cli"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Sutura command-line entry point"
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/Krateian/Sutura"
+
+[[bin]]
+name = "sutura"
+path = "src/main.rs"
+
+[dependencies]
+sutura-core = { path = "../sutura-core" }
+sutura-geom = { path = "../sutura-geom", default-features = false, features = ["decimate"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.11"
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"

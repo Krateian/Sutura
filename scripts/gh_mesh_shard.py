@@ -21,6 +21,7 @@ import traceback
 VERIFY = os.environ.get(
     'VERIFY_SCRIPT',
     'tools/.claude/skills/sutura-verify/scripts/verify_default_vs_optout.py')
+IO_PARITY = os.environ.get('IO_PARITY', 'tools/scripts/io_parity.py')
 SHAPE_REQUIRED = ('reload_holes', 'reload_non_manifold_edges', 'components',
                   'closed_shells', 'two_sided_max_mm', 'two_sided_p95_mm',
                   'leak_max_mm', 'leak_count', 'si_output')
@@ -35,7 +36,8 @@ BYTE_KEYS = ('md5', 'ftetwild_adopted')
 SI_FACE_CAP_NOTE = 'skipped (face cap)'
 # determinism is a byte comparison of two independent runs of the same ref,
 # with the stochastic fTetWild path excluded.
-FLAGS = {'byte': ['--byte', '--deterministic'],
+FLAGS = {'io_parity': [],
+         'byte': ['--byte', '--deterministic'],
          'determinism': ['--byte', '--deterministic',
                          '--exclude-nondeterministic'],
          'quality_ab': ['--quality', '--no-visual'],
@@ -127,8 +129,14 @@ def main():
         raise SystemExit('ENV_BASE is not supported by the harness '
                          '(candidate-side env only)')
     quality = mode in QUALITY_MODES
-    keys = SHAPE_KEYS if quality else BYTE_KEYS
-    required = SHAPE_REQUIRED if quality else BYTE_KEYS
+    if mode == 'io_parity':
+        keys = ('format', 'meshes', 'verts', 'tris', 'array_sha256',
+                'write_sha256', 'unit_warnings', 'material_refs', 'scan')
+        required = ('format', 'meshes', 'verts', 'tris', 'array_sha256',
+                    'write_sha256')
+    else:
+        keys = SHAPE_KEYS if quality else BYTE_KEYS
+        required = SHAPE_REQUIRED if quality else BYTE_KEYS
     corpus = os.path.join(os.getcwd(), 'corpus')
     sets = os.path.join(corpus, 'sets')
     files = [l.strip() for l in open(manifest(sets, set_name)) if l.strip()]
@@ -141,40 +149,68 @@ def main():
     outdir = tempfile.mkdtemp(prefix='shard-')
     # determinism compares two independent runs of the SAME ref (the
     # candidate, or the base when no candidate is given), never base vs cand.
-    a_repo, a_py = (('cand', 'cand-venv') if mode == 'determinism'
-                    else ('base', 'base-venv'))
-    cmd = [sys.executable, VERIFY] \
-        + [resolve_mesh(corpus, f) for f in files] + FLAGS[mode] + [
-            '--baseline-repo', os.path.abspath(a_repo),
-            '--baseline-python', os.path.abspath(a_py + '/bin/python'),
-            '--repo', os.path.abspath('cand'),
-            '--python', os.path.abspath('cand-venv/bin/python'),
-            '--out-dir', outdir]
-    if env_c:
-        if '_ENGINE=rust' in env_c:
-            # A Rust engine request must really run Rust: the candidate venv
-            # needs the bridge, and strict mode turns any silent Python
-            # fallback into an error instead of a false SAME.
+    if mode == 'io_parity':
+        # p10/core's mode: the Rust CLI is compared against the Python path on
+        # the I/O surface. It has its own tool and takes no --extra-arg.
+        rust_bin = os.environ.get('RUST_BIN',
+                                  os.path.abspath('cand-bin/sutura'))
+        cmd = [sys.executable, IO_PARITY] \
+            + [resolve_mesh(corpus, f) for f in files] + [
+                '--baseline-repo', os.path.abspath('base'),
+                '--baseline-python', os.path.abspath('base-venv/bin/python'),
+                '--rust-bin', rust_bin,
+                '--out-dir', outdir]
+    else:
+        a_repo, a_py = (('cand', 'cand-venv') if mode == 'determinism'
+                        else ('base', 'base-venv'))
+        cmd = [sys.executable, VERIFY] \
+            + [resolve_mesh(corpus, f) for f in files] + FLAGS[mode] + [
+                '--baseline-repo', os.path.abspath(a_repo),
+                '--baseline-python', os.path.abspath(a_py + '/bin/python'),
+                '--repo', os.path.abspath('cand'),
+                '--python', os.path.abspath('cand-venv/bin/python'),
+                '--out-dir', outdir]
+        if mode != 'determinism':
+            cmd += ['--baseline-env', 'SUTURA_IO_ENGINE=python']
+
+        # Is the Rust bridge installed in the candidate? From p10/core: probe
+        # once and require Rust when it is there, so a silent Python fallback
+        # cannot be scored as SAME. Tolerate a missing interpreter like main did.
+        try:
             probe = subprocess.run(
                 [os.path.abspath('cand-venv/bin/python'), '-c',
-                 'import sutura_core_py'], capture_output=True)
-            if probe.returncode != 0:
-                raise SystemExit('ENV_CAND asks for a Rust engine but the '
-                                 'candidate has no sutura_core_py bridge')
-            env_c += ',SUTURA_REQUIRE_RUST=1'
-        cmd += ['--opt-out-env', env_c]
-    # Repair CLI arguments applied to both sides (e.g. a forced method).  The
-    # tokens are restricted to a plain flag/value charset so a dispatch input
-    # cannot smuggle shell or path syntax into the harness command line.
-    for tok in os.environ.get('EXTRA_ARGS', '').split():
-        if not re.fullmatch(r'[A-Za-z0-9_.,=-]+', tok):
-            raise SystemExit('bad EXTRA_ARGS token')
-        cmd.append('--extra-arg=' + tok)
-    if mode == 'determinism':
-        # The baseline half is cached by input SHA + flags + repo head, so a
-        # warmed cache would compare a run against itself.  A fresh cache keeps
-        # the two runs independent, which is the point of the check.
-        cmd += ['--cache-dir', os.path.join(outdir, 'cache')]
+                 'import sutura_core_py'], capture_output=True, text=True)
+            bridge = probe.returncode == 0
+        except OSError:
+            bridge = False
+
+        if env_c:
+            if '_ENGINE=rust' in env_c:
+                # From main: an explicit Rust-engine request must really run
+                # Rust. A missing bridge is a configuration error, not a pass.
+                if not bridge:
+                    raise SystemExit(
+                        'ENV_CAND asks for a Rust engine but the candidate has '
+                        'no sutura_core_py bridge')
+                if 'SUTURA_REQUIRE_RUST' not in env_c:
+                    env_c += ',SUTURA_REQUIRE_RUST=1'
+            cmd += ['--opt-out-env', env_c]
+        elif bridge:
+            cmd += ['--opt-out-env', 'SUTURA_REQUIRE_RUST=1']
+
+        # Repair CLI arguments applied to both sides (e.g. a forced method). The
+        # tokens are restricted to a plain flag/value charset so a dispatch input
+        # cannot smuggle shell or path syntax into the harness command line.
+        for tok in os.environ.get('EXTRA_ARGS', '').split():
+            if not re.fullmatch(r'[A-Za-z0-9_.,=-]+', tok):
+                raise SystemExit('bad EXTRA_ARGS token')
+            cmd.append('--extra-arg=' + tok)
+
+        if mode == 'determinism':
+            # The baseline half is cached by input SHA + flags + repo head, so a
+            # warmed cache would compare a run against itself. A fresh cache
+            # keeps the two runs independent, which is the point of the check.
+            cmd += ['--cache-dir', os.path.join(outdir, 'cache')]
     r = subprocess.run(cmd, capture_output=True, text=True)
     rows = []
     log_lines = []

@@ -663,7 +663,8 @@ def main():
         help='main/baseline output cache (SHA + flags)')
     ap.add_argument('--jobs', type=int, default=1, help='parallel meshes (e.g. 4)')
     ap.add_argument('--opt-out-flag', default=None)
-    ap.add_argument('--opt-out-env', default=None)
+    ap.add_argument('--opt-out-env', action='append', default=[])
+    ap.add_argument('--baseline-env', action='append', default=[])
     ap.add_argument('--extra-arg', action='append', default=[])
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--timeout', type=int, default=900)
@@ -745,10 +746,26 @@ def main():
         cmd = [python_x, os.path.join(repo_x, 'sutura', 'repair.py'), in_path,
                '-o', out_stl, '--no-history'] + flags
         run_env = env.copy()
-        if side in ('optout', 'candidate') and args.opt_out_env:
-            # One or more KEY=VALUE pairs, comma separated.
-            for pair in args.opt_out_env.split(','):
-                k, v = pair.split('=', 1)
+        # Both call shapes are supported. `--opt-out-env` is `action='append'`
+        # (p10/core), and main's shard script passes several pairs joined by
+        # commas in ONE value, so a spec is split on commas too. `--baseline-env`
+        # (p10/core) applies to the baseline side only.
+        if side in ('optout', 'candidate'):
+            for spec in args.opt_out_env:
+                for pair in spec.split(','):
+                    pair = pair.strip()
+                    if not pair:
+                        continue
+                    k, v = pair.split('=', 1)
+                    run_env[k] = v
+        elif side == 'baseline':
+            for spec in args.baseline_env:
+                for pair in spec.split(','):
+                    pair = pair.strip()
+                    if not pair:
+                        continue
+                    k, v = pair.split('=', 1)
+                    run_env[k] = v
                 run_env[k] = v
         rc, sout, serr, el = run_cli(cmd, run_env, repo_x, args.timeout)
         if not os.path.exists(out_stl):

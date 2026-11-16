@@ -7,7 +7,9 @@ output. process_file (the batch driver) stays in the repair.py shim because it
 uses the VERSION literal that the release tooling parses from that file.
 Moved verbatim from sutura/repair.py; no logic change.
 """
+import json
 import os
+import sys
 import time
 
 import numpy as np
@@ -47,6 +49,13 @@ from sutura_engine.pipeline.tiers.tamponade import (
 )
 
 
+def _np_len(value):
+    try:
+        return len(value)
+    except TypeError:
+        return -1
+
+
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                 join_components=False, autorefine=False, ftetwild=False,
                 indirect_autorefine=False, extra_features=False, deep_repair=None,
@@ -61,7 +70,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  si_mode=None, dressing_force_adopt=False,
                  splint=False, splint_adaptive=None,
                  solid_engine='ftetwild', coaptation=False,
-                 progress=None, cancel=None):
+                 progress=None, cancel=None, forced_methods=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     bad_coords = scan_bad_coordinates(src)
     if bad_coords:
@@ -90,6 +99,127 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         verts = np.asarray(verts, dtype=np.float32)
         tris = np.asarray(tris, dtype=np.int32)
 
+    if os.environ.get('SUTURA_PIPELINE_ENGINE', '').strip().lower() == 'rust':
+        from sutura_engine import rust_bridge
+        core = rust_bridge.load('pipeline', ('SUTURA_PIPELINE_ENGINE',), 'python')
+        if core is None or not hasattr(core, 'pipeline_repair'):
+            rust_bridge.unavailable(
+                'SUTURA_PIPELINE_ENGINE=rust requires '
+                'sutura_core_py.pipeline_repair')
+        else:
+            def _fb(value):
+                if isinstance(value, bool):
+                    return value
+                return str(value).strip().lower() in (
+                    '1', 'true', 'yes', 'on', 'auto', 'force')
+            opts = {
+                'mode': mode,
+                'intensity': getattr(triage_spec, 'intensity', 'balanced'),
+                'profile': profile, 'deep_repair': deep_repair,
+                'closing': closing, 'proxy_template': _fb(proxy_template),
+                'graft': (_fb(graft) if _fb(graft) else None), 'tamponade': _fb(tamponade),
+                'ftetwild': ('always' if _fb(ftetwild) else None),
+                'flap': (_fb(flap) if _fb(flap) else None), 'coaptation': (_fb(coaptation) if _fb(coaptation) else None),
+                'splint': _fb(splint), 'dressing': _fb(dressing),
+                'dressing_drain': dressing_drain,
+                'dressing_defects': dressing_defects,
+                'dressing_rmax_scale': dressing_rmax_scale,
+                'dressing_sigma_scale': dressing_sigma_scale,
+                'dressing_force_adopt': bool(dressing_force_adopt),
+                'wall_thicken': _fb(wall_thicken), 'repeat': repeat,
+                'solid_engine': solid_engine, 'si_mode': si_mode,
+                'time_budget_s': None, 'seed': 0,
+                'forced_methods': list(forced_methods or []),
+                'engines': (sorted(engines.keys())
+                            if engines is not None else None),
+            }
+            def _rust_call(flap_value, tamponade_value):
+                call_opts = dict(opts)
+                call_opts['flap'] = flap_value
+                call_opts['tamponade'] = tamponade_value
+                rv, rt, rj = core.pipeline_repair(
+                    np.ascontiguousarray(verts, dtype=np.float64),
+                    np.ascontiguousarray(tris, dtype=np.int64),
+                    json.dumps(call_opts))
+                rep = json.loads(rj)
+                for debug_key in ('analysis', 'recommendations', 'trace',
+                                  'unavailable'):
+                    rep.pop(debug_key, None)
+                if rep.get('ok') is False and rep.get('error'):
+                    raise RuntimeError(rep['error'])
+                return rep, np.asarray(rv), np.asarray(rt)
+
+            report, new_v, new_t = _rust_call(
+                (_fb(flap) if _fb(flap) else None), _fb(tamponade))
+            if _fb(flap) and (report.get('flap') or {}).get('adopted'):
+                try:
+                    si_rise = _flap_si_rose(report.get('flap') or {})
+                    on_reason, on_metrics = _flap_final_needs_off(
+                        verts, tris, new_v, new_t, measure_si=si_rise,
+                        si_flagged=si_rise)
+                except Exception:  # noqa: BLE001
+                    si_rise = False
+                    on_reason, on_metrics = None, None
+                if on_reason:
+                    off_report, off_v, off_t = _rust_call(False, False)
+                    _, off_metrics = _flap_final_needs_off(
+                        verts, tris, off_v, off_t, measure_si=si_rise)
+                    on_flap = dict(report['flap'])
+                    use_off = _flap_off_preferred(
+                        (on_reason, on_metrics), (None, off_metrics))
+                    fallback = {'ran': True, 'used': 'off' if use_off else 'on',
+                                'reason': on_reason, 'on': on_metrics,
+                                'off': off_metrics}
+                    fallback['tamponade_skipped'] = bool(tamponade)
+                    if use_off:
+                        on_flap['adopted_final'] = False
+                        on_flap['final_fallback'] = fallback
+                        off_report['flap'] = on_flap
+                        report, new_v, new_t = off_report, off_v, off_t
+                    else:
+                        report['flap']['final_fallback'] = fallback
+            if _fb(tamponade) and (report.get('tamponade') or {}).get('adopted'):
+                try:
+                    on_reason, on_metrics = _tamponade_final_needs_off(
+                        verts, tris, new_v, new_t)
+                except Exception:  # noqa: BLE001
+                    on_reason, on_metrics = None, None
+                if on_reason:
+                    off_report, off_v, off_t = _rust_call(
+                        (_fb(flap) if _fb(flap) else None), False)
+                    _, off_metrics = _tamponade_final_needs_off(
+                        verts, tris, off_v, off_t, force_metrics=True)
+                    on_tamp = dict(report['tamponade'])
+                    use_off = _tamponade_off_preferred(on_metrics, off_metrics)
+                    fallback = {'ran': True, 'used': 'off' if use_off else 'on',
+                                'reason': on_reason, 'on': on_metrics,
+                                'off': off_metrics}
+                    if use_off:
+                        on_tamp['adopted_final'] = False
+                        on_tamp['final_fallback'] = fallback
+                        off_report['tamponade'] = on_tamp
+                        report, new_v, new_t = off_report, off_v, off_t
+                    else:
+                        report['tamponade']['final_fallback'] = fallback
+            # P-HONEST: the verdict must describe the mesh actually saved, not
+            # the in-memory index topology (same call as the Python path).
+            enforce_reload_verdict(report, new_v, new_t,
+                                   include_n2m=(ext == '.stl'))
+            # The Python path builds print_report at the end of the pipeline;
+            # the Rust core returns the report without it, so build it here
+            # with the same bridge the Rust CLI uses.
+            try:
+                _pr = core.build_print_report(
+                    json.dumps(report), verts, tris, new_v, new_t)
+                if _pr:
+                    report['print_report'] = json.loads(_pr)
+            except Exception:  # noqa: BLE001 - print report is best-effort
+                pass
+            save_mesh(out, new_v, new_t)
+            report['_fp'] = history.mesh_fingerprint(verts, tris)
+            report['defects'] = detect_defects(verts, tris)
+            return report
+
     _owns_trace = False
     if not trace.is_active() and os.environ.get('SUTURA_TRACE'):
         trace.begin_trace(trace_path=None, input_file=src,
@@ -105,6 +235,11 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         trace.record_stage('load', 'mesh_io.load_mesh', None, None, verts, tris,
                            gate={'status': 'ok', 'source': src})
 
+    def _pb(value):
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ('1', 'true', 'yes', 'on', 'auto', 'force')
+
     def _run(flap_value, run_tamponade=None):
         """Repair the loaded mesh with Flap on/off, through P-HONEST.
 
@@ -116,6 +251,47 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         """
         if run_tamponade is None:
             run_tamponade = tamponade
+        if os.environ.get('SUTURA_PIPELINE_ENGINE', '').strip().lower() == 'rust':
+            from sutura_engine import rust_bridge
+            core = rust_bridge.load(
+                'pipeline', ('SUTURA_PIPELINE_ENGINE',), 'python')
+            if core is None or not hasattr(core, 'pipeline_repair'):
+                rust_bridge.unavailable(
+                    'SUTURA_PIPELINE_ENGINE=rust requires '
+                    'sutura_core_py.pipeline_repair')
+            else:
+                if os.environ.get('SUTURA_PIPELINE_DEBUG'):
+                    print('[pipeline-rust] called verts=%d tris=%d' % (_np_len(verts), _np_len(tris)),
+                          file=sys.stderr, flush=True)
+                opts = {
+                    'mode': mode, 'intensity': getattr(triage_spec, 'intensity', 'balanced'),
+                    'profile': profile, 'deep_repair': deep_repair,
+                    'closing': closing, 'proxy_template': proxy_template,
+                    'graft': _pb(graft), 'tamponade': _pb(run_tamponade), 'ftetwild': ('always' if _pb(ftetwild) else None),
+                    'flap': _pb(flap_value), 'coaptation': _pb(coaptation),
+                    'splint': _pb(splint), 'dressing': _pb(dressing),
+                    'dressing_drain': dressing_drain,
+                    'dressing_defects': dressing_defects,
+                    'dressing_rmax_scale': dressing_rmax_scale,
+                    'dressing_sigma_scale': dressing_sigma_scale,
+                    'dressing_force_adopt': bool(dressing_force_adopt),
+                    'wall_thicken': _pb(wall_thicken), 'repeat': repeat,
+                    'solid_engine': solid_engine, 'si_mode': si_mode,
+                    'time_budget_s': None, 'seed': 0,
+                }
+                rv, rt, rj = core.pipeline_repair(
+                    np.ascontiguousarray(verts, dtype=np.float64),
+                    np.ascontiguousarray(tris, dtype=np.int64),
+                    json.dumps(opts))
+                report = json.loads(rj)
+                new_v, new_t = np.asarray(rv), np.asarray(rt)
+                if report.get('ok') is False and report.get('error'):
+                    raise RuntimeError(report['error'])
+                report['_fp'] = history.mesh_fingerprint(verts, tris)
+                report['defects'] = detect_defects(verts, tris)
+                if ext == '.obj':
+                    report['material_discarded'] = obj_has_material_refs(src)
+                return report, new_v, new_t
         report, new_v, new_t = repair_mesh_from_arrays(
             verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
             declared_unit=declared_unit, join_components=join_components,

@@ -51,7 +51,7 @@ const WIND_TAU: f64 = 0.1;
 const H5_TOL_EDGES: f64 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SplintAdaptive {
+pub enum SplintAdaptive {
     None,
     Hardened,
     Retry,
@@ -61,7 +61,7 @@ pub(crate) enum SplintAdaptive {
 /// `false`, so `SplintOpts::default()` reproduces the historical core output
 /// bit-for-bit.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct SplintOpts {
+pub struct SplintOpts {
     /// H2: canonicalize emitted world-space vertices through `f32` and dedup on
     /// the `f32` grid (post `de_norm`), so the output equals its reload weld.
     pub snap_f32: bool,
@@ -134,7 +134,7 @@ impl Default for SplintOpts {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SplintReport {
+pub struct SplintReport {
     pub ok: bool,
     pub res: usize,
     pub input_vertices: usize,
@@ -223,7 +223,7 @@ pub(crate) struct SplintReport {
     pub seconds: f64,
 }
 
-pub(crate) struct SplintOutput {
+pub struct SplintOutput {
     pub verts: Vec<[f64; 3]>,
     pub tris: Vec<[usize; 3]>,
     pub report: SplintReport,
@@ -792,7 +792,7 @@ pub(crate) fn splint_cut_core(
     splint_cut_core_opts(verts, tris, res, adaptive, parallel, SplintOpts::default())
 }
 
-pub(crate) fn splint_cut_core_opts(
+pub fn splint_cut_core_opts(
     verts: &[[f64; 3]],
     tris: &[[usize; 3]],
     res: usize,

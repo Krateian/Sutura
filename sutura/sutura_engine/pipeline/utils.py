@@ -76,11 +76,20 @@ def signed_volume(verts, tris):
     """Signed volume of a triangle mesh (sum of origin-tetrahedra volumes).
 
     The sign reflects the winding orientation: a negative value means the
-    faces are globally inverted (normals pointing inward). Pure numpy, works
-    for open meshes too (the value is then not a real volume, only a signed
-    sum - interpret with care)."""
+    faces are globally inverted (normals pointing inward). Works for open
+    meshes too (the value is then not a real volume, only a signed sum -
+    interpret with care).
+
+    The numeric kernel is shared with the Rust CLI: NumPy's ``einsum`` dot is
+    a BLAS path whose rounding no portable implementation reproduces, so the
+    kernel is the single source of truth and NumPy is only the fallback.
+    """
     if len(tris) == 0 or len(verts) == 0:
         return 0.0
+    from sutura_engine import rust_bridge
+    core_value = rust_bridge.signed_volume(verts, tris)
+    if core_value is not None:
+        return float(core_value)
     v = np.asarray(verts, dtype=np.float64)
     t = np.asarray(tris, dtype=np.int64)
     a = v[t[:, 0]]

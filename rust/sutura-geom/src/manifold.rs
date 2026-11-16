@@ -12,9 +12,13 @@
 use std::collections::{BTreeMap, HashMap};
 
 use manifold_csg::{CsgError, Manifold, OpType};
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArrayLike1, PyArrayLike2, PyArrayLike3};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 const DEBRIS_VOLUME_EPS: f64 = 1e-3;
@@ -183,6 +187,7 @@ fn mesh_to_f64(m: &Manifold) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
     (verts, tris)
 }
 
+#[cfg(feature = "python")]
 fn parse_verts2<'py>(a: &PyArrayLike2<'py, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]>> {
     let v = a.as_array();
     if v.ncols() != 3 {
@@ -193,6 +198,7 @@ fn parse_verts2<'py>(a: &PyArrayLike2<'py, f64, AllowTypeChange>) -> PyResult<Ve
         .collect())
 }
 
+#[cfg(feature = "python")]
 fn parse_tris2<'py>(
     a: &PyArrayLike2<'py, i32, AllowTypeChange>,
     n: usize,
@@ -214,6 +220,7 @@ fn parse_tris2<'py>(
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn f32_arrays<'py>(
     py: Python<'py>,
     verts: &[[f64; 3]],
@@ -236,6 +243,7 @@ fn f32_arrays<'py>(
     ))
 }
 
+#[cfg(feature = "python")]
 fn f64_arrays<'py>(
     py: Python<'py>,
     verts: &[[f64; 3]],
@@ -255,6 +263,7 @@ fn f64_arrays<'py>(
     ))
 }
 
+#[cfg(feature = "python")]
 fn parse_point3<'py>(a: &PyArrayLike1<'py, f64, AllowTypeChange>) -> PyResult<[f64; 3]> {
     let v = a.as_array();
     if v.len() != 3 {
@@ -265,6 +274,7 @@ fn parse_point3<'py>(a: &PyArrayLike1<'py, f64, AllowTypeChange>) -> PyResult<[f
     Ok([v[0], v[1], v[2]])
 }
 
+#[cfg(feature = "python")]
 fn parse_frame<'py>(a: &PyArrayLike2<'py, f64, AllowTypeChange>) -> PyResult<[[f64; 3]; 3]> {
     let v = a.as_array();
     if v.nrows() != 3 || v.ncols() != 3 {
@@ -568,6 +578,7 @@ fn largest_component(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<[f64; 3]>,
     comps.into_iter().nth(best).unwrap()
 }
 
+#[cfg(feature = "python")]
 fn set_report_common(
     report: &Bound<'_, PyDict>,
     input_v: usize,
@@ -583,64 +594,95 @@ fn set_report_common(
     Ok(())
 }
 
-/// Stage 2: rebuild a closed mesh as a valid Manifold solid, merging
-/// overlapping shells and dropping flat/post-union debris. Same algorithm and
-/// report fields as the retired `manifold_bridge.run_bridge`.
-#[pyfunction]
-#[pyo3(signature = (verts, tris))]
-pub fn stage2_rebuild<'py>(
-    py: Python<'py>,
-    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
-    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
-) -> PyResult<(
-    Bound<'py, numpy::PyArray2<f32>>,
-    Bound<'py, numpy::PyArray2<i32>>,
-    Bound<'py, PyDict>,
-)> {
-    let v = parse_verts2(&verts)?;
-    let t = parse_tris2(&tris, v.len())?;
-    let report = PyDict::new(py);
-    set_report_common(&report, v.len(), t.len(), "", false)?;
-    let man = match f32_mesh(&v, &t) {
+/// Pure Stage 2 report (no Python).
+#[derive(Clone, Debug, Default)]
+pub struct Stage2Report {
+    pub construct_status: String,
+    pub input_vertices: usize,
+    pub input_faces: usize,
+    pub input_watertight: bool,
+    pub error: Option<String>,
+    pub volume_before: Option<f64>,
+    pub volume_after_union: Option<f64>,
+    pub debris_parts_dropped: Option<usize>,
+    pub shells_merged: Option<usize>,
+    pub cavity_bbox_ratio: Option<f64>,
+    pub cavity_preserved: Option<bool>,
+    pub cavity_rejected_bbox: Option<bool>,
+    pub cavity_rejected_si: Option<bool>,
+    pub cavity_si_union: Option<i64>,
+    pub cavity_si_whole: Option<i64>,
+    pub post_union_debris_dropped: Option<usize>,
+    pub output_vertices: usize,
+    pub output_faces: usize,
+    pub volume_after: Option<f64>,
+    pub shells_found: Option<usize>,
+    pub shells: Option<usize>,
+    pub ok: bool,
+}
+
+/// Pure Stage 2 rebuild.  The Python `stage2_rebuild` binding is a thin
+/// wrapper over this function.
+pub fn stage2_rebuild_core(
+    v: &[[f64; 3]],
+    t: &[[i32; 3]],
+) -> (Vec<[f32; 3]>, Vec<[i32; 3]>, Stage2Report) {
+    for (fi, r) in t.iter().enumerate() {
+        for &idx in r {
+            if idx < 0 || (idx as usize) >= v.len() {
+                let mut rep = Stage2Report {
+                    input_vertices: v.len(),
+                    input_faces: t.len(),
+                    construct_status: "Error.InvalidIndex".to_string(),
+                    ..Default::default()
+                };
+                rep.error = Some(format!(
+                    "triangle {} references vertex {} but the mesh has {} vertices",
+                    fi, idx, v.len()
+                ));
+                return (Vec::new(), Vec::new(), rep);
+            }
+        }
+    }
+    let tu: Vec<[usize; 3]> = t
+        .iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let mut rep = Stage2Report {
+        input_vertices: v.len(),
+        input_faces: tu.len(),
+        ..Default::default()
+    };
+    let man = match f32_mesh(v, &tu) {
         Ok(m) => m,
         Err(e) => {
             let st = format!("Error.{e:?}");
-            set_report_common(&report, v.len(), t.len(), &st, false)?;
-            report.set_item(
-                "error",
-                format!("manifold3d could not process the input ({st})"),
-            )?;
-            let (ev, et) = f32_arrays(py, &[], &[])?;
-            return Ok((ev, et, report));
+            rep.construct_status = st.clone();
+            rep.error = Some(format!("manifold3d could not process the input ({st})"));
+            return (Vec::new(), Vec::new(), rep);
         }
     };
     let st = status_string(man.status());
     let watertight = man.status().is_ok() && !man.is_empty();
-    set_report_common(&report, v.len(), t.len(), &st, watertight)?;
+    rep.construct_status = st.clone();
+    rep.input_watertight = watertight;
     if man.is_empty() {
-        report.set_item(
-            "error",
-            format!("manifold3d could not process the input ({st})"),
-        )?;
-        let (ev, et) = f32_arrays(py, &[], &[])?;
-        return Ok((ev, et, report));
+        rep.error = Some(format!("manifold3d could not process the input ({st})"));
+        return (Vec::new(), Vec::new(), rep);
     }
-    report.set_item("volume_before", man.volume())?;
+    rep.volume_before = Some(man.volume());
     let volume_before = man.volume();
-    // `from_mesh` keeps an inner inverted shell as a cavity; the decomposed
-    // `Add` union below would fill it. `Manifold::clone` only copies the lazy
-    // CSG handle, so keeping the whole oriented solid is cheap.
     let whole = man.clone();
 
     let mut cur = man;
     let (n_pre, parts) = stage2_components(&cur);
-    report.set_item("shells_found", n_pre)?;
+    rep.shells_found = Some(n_pre);
     let mut shells = n_pre;
     if n_pre > 1 {
         let flags: Vec<bool> = parts.iter().map(is_debris_part).collect();
         let dropped = flags.iter().filter(|x| **x).count();
         if dropped > 0 {
-            report.set_item("debris_parts_dropped", dropped)?;
+            rep.debris_parts_dropped = Some(dropped);
         }
         let kept: Vec<Manifold> = if dropped > 0 && dropped < parts.len() {
             parts
@@ -651,60 +693,56 @@ pub fn stage2_rebuild<'py>(
         } else {
             parts
         };
-        report.set_item("shells_merged", kept.len())?;
+        rep.shells_merged = Some(kept.len());
         shells = kept.len();
         cur = if kept.len() == 1 {
             kept.into_iter().next().unwrap()
         } else {
             Manifold::batch_boolean(&kept, OpType::Add)
         };
-        report.set_item("volume_after_union", cur.volume())?;
+        rep.volume_after_union = Some(cur.volume());
         // The `Add` union reorients every part outward, so it turns a genuine
         // inner cavity into solid and the union volume grows past the
         // cavity-aware `volume_before`. Keep the whole oriented solid instead,
         // but only when nothing was dropped (a kept `whole` would resurrect
         // debris the filter already removed) and the input really has an
-        // inverted component — a buried *positive* shell never grows the volume
-        // and is left to the union as before.
+        // inverted component — a buried *positive* shell never grows the
+        // volume and is left to the union as before.
         if dropped == 0
             && cur.volume() - volume_before > CAVITY_VOLUME_REL_TOL * volume_before.abs()
-            && has_inverted_component(&v, &t)
+            && has_inverted_component(v, &tu)
         {
-            // Keep the cavity only when it does not add self-intersections:
-            // a clean void does not cross its host shell, so the whole and the
-            // union report the same exact SI count.  A higher whole count means
-            // the "cavity" shells cross the body or each other (44041), and the
-            // union is the better result.  Part count is deliberately NOT a
-            // criterion: a clean cavity legitimately adds one shell (43766).
-            // A cavity must be a meaningful pocket, not a near-copy of the
-            // body: reject when the largest inverted shell is not clearly
-            // smaller than the body's bounding box (39344 interior).
-            let (cav_diag, body_diag) = cavity_bbox_ratio(&v, &t).unwrap_or((0.0, 0.0));
+            let (cav_diag, body_diag) = cavity_bbox_ratio(v, &tu).unwrap_or((0.0, 0.0));
             let bbox_ratio = if body_diag > 0.0 {
                 cav_diag / body_diag
             } else {
                 1.0
             };
-            report.set_item("cavity_bbox_ratio", bbox_ratio)?;
+            rep.cavity_bbox_ratio = Some(bbox_ratio);
+            // A cavity must be a meaningful pocket, not a near-copy of the
+            // body: reject when the largest inverted shell is not clearly
+            // smaller than the body's bounding box (39344 interior).
             if body_diag <= 0.0 || cav_diag >= CAVITY_MAX_BBOX_RATIO * body_diag {
-                report.set_item("cavity_preserved", false)?;
-                report.set_item("cavity_rejected_bbox", true)?;
+                rep.cavity_preserved = Some(false);
+                rep.cavity_rejected_bbox = Some(true);
             } else {
                 // Keep the cavity only when it does not add self-intersections:
                 // a clean void does not cross its host shell, so the whole and
-                // the union report the same exact SI count.  A higher whole
+                // the union report the same exact SI count. A higher whole
                 // count means the "cavity" shells cross the body or each other
-                // (44041), and the union is the better result.
+                // (44041), and the union is the better result. Part count is
+                // deliberately NOT a criterion: a clean cavity legitimately
+                // adds one shell (43766).
                 let (uv, ut) = mesh_to_f64(&cur);
                 let (_, si_union, skipped_union) = crate::self_intersections_core(&uv, &ut);
-                let (_, si_whole, skipped_whole) = crate::self_intersections_core(&v, &t);
-                report.set_item("cavity_si_union", si_union)?;
-                report.set_item("cavity_si_whole", si_whole)?;
+                let (_, si_whole, skipped_whole) = crate::self_intersections_core(v, &tu);
+                rep.cavity_si_union = Some(si_union);
+                rep.cavity_si_whole = Some(si_whole);
                 if !skipped_union && !skipped_whole && si_whole > si_union {
-                    report.set_item("cavity_preserved", false)?;
-                    report.set_item("cavity_rejected_si", true)?;
+                    rep.cavity_preserved = Some(false);
+                    rep.cavity_rejected_si = Some(true);
                 } else {
-                    report.set_item("cavity_preserved", true)?;
+                    rep.cavity_preserved = Some(true);
                     cur = whole;
                 }
             }
@@ -734,7 +772,7 @@ pub fn stage2_rebuild<'py>(
                 })
                 .collect();
             if kept.len() < vols.len() {
-                report.set_item("post_union_debris_dropped", vols.len() - kept.len())?;
+                rep.post_union_debris_dropped = Some(vols.len() - kept.len());
                 shells = kept.len();
                 cur = if kept.len() == 1 {
                     kept.into_iter().next().unwrap()
@@ -747,26 +785,125 @@ pub fn stage2_rebuild<'py>(
 
     if cur.status().is_err() {
         let est = status_string(cur.status());
-        report.set_item(
-            "error",
-            format!("manifold3d could not process the input ({est})"),
-        )?;
-        let (ev, et) = f32_arrays(py, &[], &[])?;
-        return Ok((ev, et, report));
+        rep.error = Some(format!("manifold3d could not process the input ({est})"));
+        return (Vec::new(), Vec::new(), rep);
     }
 
     let (ov, ot) = mesh_to_f32(&cur);
-    report.set_item("output_vertices", ov.len())?;
-    report.set_item("output_faces", ot.len())?;
-    report.set_item("volume_after", cur.volume())?;
-    report.set_item("shells", shells)?;
-    report.set_item("ok", true)?;
-    let (pv, pt) = f32_arrays(py, &ov, &ot)?;
+    rep.output_vertices = ov.len();
+    rep.output_faces = ot.len();
+    rep.volume_after = Some(cur.volume());
+    rep.shells = Some(shells);
+    rep.ok = true;
+    let ov32: Vec<[f32; 3]> = ov
+        .iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect();
+    let ot32: Vec<[i32; 3]> = ot
+        .iter()
+        .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
+        .collect();
+    (ov32, ot32, rep)
+}
+
+/// Stage 2: rebuild a closed mesh as a valid Manifold solid, merging
+/// overlapping shells and dropping flat/post-union debris. Same algorithm and
+/// report fields as the retired `manifold_bridge.run_bridge`.
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn stage2_rebuild<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+) -> PyResult<(
+    Bound<'py, numpy::PyArray2<f32>>,
+    Bound<'py, numpy::PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let v = parse_verts2(&verts)?;
+    let t = parse_tris2(&tris, v.len())?;
+    let t32: Vec<[i32; 3]> = t
+        .iter()
+        .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
+        .collect();
+    let (ov, ot, rep) = stage2_rebuild_core(&v, &t32);
+    // Key set matches `report_schema.json`'s `stage2` object (class A); the
+    // parsed contract passed. `ok` is emitted on both the success and error
+    // paths (the old `set_report_common` wrote it in the error path too).
+    let report = PyDict::new(py);
+    report.set_item("construct_status", rep.construct_status)?;
+    report.set_item("input_vertices", rep.input_vertices)?;
+    report.set_item("input_faces", rep.input_faces)?;
+    report.set_item("input_watertight", rep.input_watertight)?;
+    report.set_item("ok", rep.ok)?;
+    if let Some(x) = rep.error {
+        report.set_item("error", x)?;
+    }
+    if let Some(x) = rep.volume_before {
+        report.set_item("volume_before", x)?;
+    }
+    if let Some(x) = rep.volume_after_union {
+        report.set_item("volume_after_union", x)?;
+    }
+    if let Some(x) = rep.debris_parts_dropped {
+        report.set_item("debris_parts_dropped", x)?;
+    }
+    if let Some(x) = rep.shells_merged {
+        report.set_item("shells_merged", x)?;
+    }
+    if let Some(x) = rep.cavity_bbox_ratio {
+        report.set_item("cavity_bbox_ratio", x)?;
+    }
+    if let Some(x) = rep.cavity_preserved {
+        report.set_item("cavity_preserved", x)?;
+    }
+    if let Some(x) = rep.cavity_rejected_bbox {
+        report.set_item("cavity_rejected_bbox", x)?;
+    }
+    if let Some(x) = rep.cavity_rejected_si {
+        report.set_item("cavity_rejected_si", x)?;
+    }
+    if let Some(x) = rep.cavity_si_union {
+        report.set_item("cavity_si_union", x)?;
+    }
+    if let Some(x) = rep.cavity_si_whole {
+        report.set_item("cavity_si_whole", x)?;
+    }
+    if let Some(x) = rep.post_union_debris_dropped {
+        report.set_item("post_union_debris_dropped", x)?;
+    }
+    if let Some(x) = rep.shells_found {
+        report.set_item("shells_found", x)?;
+    }
+    if let Some(x) = rep.shells {
+        report.set_item("shells", x)?;
+    }
+    if let Some(x) = rep.volume_after {
+        report.set_item("volume_after", x)?;
+    }
+    report.set_item("output_vertices", rep.output_vertices)?;
+    report.set_item("output_faces", rep.output_faces)?;
+    let vv: Vec<Vec<f32>> = ov.iter().map(|p| vec![p[0], p[1], p[2]]).collect();
+    let tt: Vec<Vec<i32>> = ot.iter().map(|r| vec![r[0], r[1], r[2]]).collect();
+    // The error path must keep the historical (0, 3) shape; from_vec2 on an
+    // empty Vec would produce (0, 0) and break callers that index [:, k].
+    let pv = if vv.is_empty() {
+        numpy::PyArray2::<f32>::zeros(py, [0, 3], false)
+    } else {
+        numpy::PyArray2::<f32>::from_vec2(py, &vv)?
+    };
+    let pt = if tt.is_empty() {
+        numpy::PyArray2::<i32>::zeros(py, [0, 3], false)
+    } else {
+        numpy::PyArray2::<i32>::from_vec2(py, &tt)?
+    };
     Ok((pv, pt, report))
 }
 
 /// Independent watertight/manifold verdict (the old
 /// `manifold_bridge.watertight_check`). Never raises for bad mesh input.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 pub fn watertight_check(
@@ -795,9 +932,32 @@ pub fn watertight_check(
     }
 }
 
+/// Python-free body of `outer_shell_union`.
+pub fn outer_shell_union_core(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    dilation: Option<f64>,
+) -> Option<(Vec<[f64; 3]>, Vec<[usize; 3]>)> {
+    let comps = split_components(verts, tris);
+    if comps.len() <= 1 {
+        return Some((verts.to_vec(), tris.to_vec()));
+    }
+    let mut lo = verts[0];
+    let mut hi = verts[0];
+    for p in verts {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+    union_ladder(&comps, diag, dilation)
+}
+
 /// Union the edge-connected components of a multi-component mesh after
 /// dilating each around its area-weighted centroid, then keep the largest
 /// outer component. Replaces `hull.extract_outer_shell`'s manifold3d union.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, dilation=None))]
 pub fn outer_shell_union<'py>(
@@ -811,20 +971,7 @@ pub fn outer_shell_union<'py>(
 )> {
     let v = parse_verts2(&verts)?;
     let t = parse_tris2(&tris, v.len())?;
-    let comps = split_components(&v, &t);
-    if comps.len() <= 1 {
-        return f64_arrays(py, &v, &t);
-    }
-    let mut lo = v[0];
-    let mut hi = v[0];
-    for p in &v {
-        for k in 0..3 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
-        }
-    }
-    let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
-    let Some((lv, lt)) = union_ladder(&comps, diag, dilation) else {
+    let Some((lv, lt)) = outer_shell_union_core(&v, &t, dilation) else {
         return f64_arrays(py, &v, &t);
     };
     f64_arrays(py, &lv, &lt)
@@ -899,7 +1046,39 @@ fn union_ladder(
     }
 }
 
+/// Pure union of two f64 meshes (no Python).  Returns `(verts, tris)`.
+pub fn union_pair_core(
+    av: &[[f64; 3]],
+    at: &[[usize; 3]],
+    bv: &[[f64; 3]],
+    bt: &[[usize; 3]],
+) -> Result<(Vec<[f64; 3]>, Vec<[usize; 3]>), String> {
+    let a = f64_mesh(av, at).map_err(|e| format!("manifold import failed: {e:?}"))?;
+    let b = f64_mesh(bv, bt).map_err(|e| format!("manifold import failed: {e:?}"))?;
+    let out = a.union(&b);
+    if out.status().is_err() {
+        return Err(format!("manifold union failed: {:?}", out.status()));
+    }
+    Ok(mesh_to_f64(&out))
+}
+
+/// Pure watertight/manifold verdict (the `watertight_check` body).
+pub fn watertight_check_core(verts: &[[f64; 3]], tris: &[[i32; 3]]) -> bool {
+    if verts.is_empty() || tris.is_empty() {
+        return false;
+    }
+    let t: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f32_mesh(verts, &t))) {
+        Ok(Ok(m)) => m.status().is_ok() && !m.is_empty(),
+        _ => false,
+    }
+}
+
 /// Union two f64 meshes (Graft local stitch).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (av, at, bv, bt))]
 pub fn union_pair<'py>(
@@ -916,18 +1095,8 @@ pub fn union_pair<'py>(
     let a_t = parse_tris2(&at, a_v.len())?;
     let b_v = parse_verts2(&bv)?;
     let b_t = parse_tris2(&bt, b_v.len())?;
-    let a = f64_mesh(&a_v, &a_t)
-        .map_err(|e| PyValueError::new_err(format!("manifold import failed: {e:?}")))?;
-    let b = f64_mesh(&b_v, &b_t)
-        .map_err(|e| PyValueError::new_err(format!("manifold import failed: {e:?}")))?;
-    let out = a.union(&b);
-    if out.status().is_err() {
-        return Err(PyValueError::new_err(format!(
-            "manifold union failed: {:?}",
-            out.status()
-        )));
-    }
-    let (ov, ot) = mesh_to_f64(&out);
+    let (ov, ot) = union_pair_core(&a_v, &a_t, &b_v, &b_t)
+        .map_err(PyValueError::new_err)?;
     f64_arrays(py, &ov, &ot)
 }
 
@@ -936,6 +1105,77 @@ pub fn union_pair<'py>(
 /// The OBB is computed in Python (numpy eig) and passed in, so this function
 /// performs only the Manifold CSG sequence. Returns vertices, triangles,
 /// absolute volume change, destination boxes and the watertight verdict.
+/// Pure boolean transplant report (no Python).
+#[derive(Clone, Debug)]
+pub struct BooleanTransplantReport {
+    pub vol_change: f64,
+    pub boxes: Vec<([f64; 3], [f64; 3], [[f64; 3]; 3])>,
+    pub watertight: bool,
+}
+
+/// Pure repeated-element transplant.  The Python `boolean_transplant` binding
+/// is a thin wrapper over this function.
+pub fn boolean_transplant_core(
+    v: &[[f64; 3]],
+    t: &[[usize; 3]],
+    c_src: [f64; 3],
+    ext_src: [f64; 3],
+    frame_src: [[f64; 3]; 3],
+    mats: &[([[f64; 3]; 3], [f64; 3])],
+) -> Result<(Vec<[f64; 3]>, Vec<[usize; 3]>, BooleanTransplantReport), String> {
+    let man = f64_mesh(v, t)
+        .map_err(|e| format!("manifold3d error status on input mesh: {e:?}"))?;
+    if man.status().is_err() {
+        return Err(format!(
+            "manifold3d error status on input mesh: {:?}",
+            man.status()
+        ));
+    }
+    if man.is_empty() {
+        return Err("manifold3d solid is empty".to_string());
+    }
+    let initial_vol = man.volume();
+    let box_src = Manifold::cube(ext_src[0], ext_src[1], ext_src[2], true)
+        .transform(&mat3x4(frame_src, c_src));
+    let element_solid = man.intersection(&box_src);
+    let mut current = man;
+    let eps = 1e-3;
+    let ext_cut = [
+        ext_src[0] * (1.0 - eps),
+        ext_src[1] * (1.0 - eps),
+        ext_src[2] * (1.0 - eps),
+    ];
+    let cube_cut = Manifold::cube(ext_cut[0], ext_cut[1], ext_cut[2], true);
+    let box_src_cut = cube_cut.transform(&mat3x4(frame_src, c_src));
+    let mut boxes = Vec::with_capacity(mats.len());
+    for (r, tr) in mats {
+        let c_dst = {
+            let x = mat3_vec(*r, c_src);
+            [x[0] + tr[0], x[1] + tr[1], x[2] + tr[2]]
+        };
+        let frame_dst = mat3_mul(*r, frame_src);
+        boxes.push((c_dst, ext_src, frame_dst));
+        let box_dst_cut = box_src_cut.transform(&mat3x4(*r, *tr));
+        let cavity = current.difference(&box_dst_cut);
+        let element_prime = element_solid.transform(&mat3x4(*r, *tr));
+        current = cavity.union(&element_prime);
+    }
+    let is_watertight = current.status().is_ok();
+    let vol_change = (current.volume() - initial_vol).abs();
+    let (ov, ot) = mesh_to_f64(&current);
+    Ok((
+        ov,
+        ot,
+        BooleanTransplantReport {
+            vol_change,
+            boxes,
+            watertight: is_watertight,
+        },
+    ))
+}
+
+/// Boolean transplant of a repeated element (Graft/Repeat CSG).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, center, extents, frame, transforms))]
 pub fn boolean_transplant<'py>(
@@ -972,64 +1212,25 @@ pub fn boolean_transplant<'py>(
         ];
         mats.push((r, [tm[[i, 0, 3]], tm[[i, 1, 3]], tm[[i, 2, 3]]]));
     }
-
-    let man = f64_mesh(&v, &t).map_err(|e| {
-        PyValueError::new_err(format!("manifold3d error status on input mesh: {e:?}"))
-    })?;
-    if man.status().is_err() {
-        return Err(PyValueError::new_err(format!(
-            "manifold3d error status on input mesh: {:?}",
-            man.status()
-        )));
-    }
-    if man.is_empty() {
-        return Err(PyValueError::new_err("manifold3d solid is empty"));
-    }
-    let initial_vol = man.volume();
-
-    let box_src = Manifold::cube(ext_src[0], ext_src[1], ext_src[2], true)
-        .transform(&mat3x4(frame_src, c_src));
-    let element_solid = man.intersection(&box_src);
-    let mut current = man;
-
-    let eps = 1e-3;
-    let ext_cut = [
-        ext_src[0] * (1.0 - eps),
-        ext_src[1] * (1.0 - eps),
-        ext_src[2] * (1.0 - eps),
-    ];
-    let cube_cut = Manifold::cube(ext_cut[0], ext_cut[1], ext_cut[2], true);
-    let box_src_cut = cube_cut.transform(&mat3x4(frame_src, c_src));
-
+    let (ov, ot, rep) = boolean_transplant_core(
+        &v, &t, c_src, ext_src, frame_src, &mats,
+    )
+    .map_err(PyValueError::new_err)?;
     let boxes = PyList::empty(py);
-    for (r, tr) in mats {
-        let c_dst = {
-            let x = mat3_vec(r, c_src);
-            [x[0] + tr[0], x[1] + tr[1], x[2] + tr[2]]
-        };
-        let frame_dst = mat3_mul(r, frame_src);
-        let c_arr = numpy::PyArray1::from_vec(py, c_dst.to_vec());
-        let e_arr = numpy::PyArray1::from_vec(py, ext_src.to_vec());
+    for (c, e, f) in rep.boxes {
+        let c_arr = numpy::PyArray1::from_vec(py, c.to_vec());
+        let e_arr = numpy::PyArray1::from_vec(py, e.to_vec());
         let f_arr = numpy::PyArray2::from_vec2(
             py,
-            &frame_dst.iter().map(|row| row.to_vec()).collect::<Vec<_>>(),
+            &f.iter().map(|row| row.to_vec()).collect::<Vec<_>>(),
         )?;
         boxes.append(PyTuple::new(
             py,
             [c_arr.into_any(), e_arr.into_any(), f_arr.into_any()],
         )?)?;
-
-        let box_dst_cut = box_src_cut.transform(&mat3x4(r, tr));
-        let cavity = current.difference(&box_dst_cut);
-        let element_prime = element_solid.transform(&mat3x4(r, tr));
-        current = cavity.union(&element_prime);
     }
-
-    let is_watertight = current.status().is_ok();
-    let vol_change = (current.volume() - initial_vol).abs();
-    let (ov, ot) = mesh_to_f64(&current);
     let (pv, pt) = f64_arrays(py, &ov, &ot)?;
-    Ok((pv, pt, vol_change, boxes, is_watertight))
+    Ok((pv, pt, rep.vol_change, boxes, rep.watertight))
 }
 
 #[cfg(test)]
@@ -1190,5 +1391,15 @@ mod tests {
             olo[0] < lo[0] - eps || ohi[0] > hi[0] + eps,
             "explicit dilation did not grow the result: {olo:?}..{ohi:?} vs {lo:?}..{hi:?}"
         );
+    }
+
+    #[test]
+    fn stage2_rejects_out_of_range_triangle() {
+        let v = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let t = vec![[0, 1, 3]];
+        let (ov, ot, rep) = stage2_rebuild_core(&v, &t);
+        assert!(ov.is_empty());
+        assert!(ot.is_empty());
+        assert!(rep.error.unwrap().contains("references vertex 3"));
     }
 }

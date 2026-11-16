@@ -6,6 +6,7 @@ The VCG filter chains, extreme extra passes, the guarded self-intersection
 excise + re-cap and the opt-in join-small-components prototype. Moved verbatim
 from sutura/repair.py; no logic change.
 """
+import json
 import os
 import time
 
@@ -14,6 +15,11 @@ import numpy as np
 import topology
 import triage
 from sutura_engine import health as method_health
+from sutura_engine import rust_bridge
+
+
+def _stage1_core():
+    return rust_bridge.load('stage1', ('SUTURA_STAGE1_ENGINE',), 'python')
 
 
 def _close_holes_step(maxholesize):
@@ -143,6 +149,21 @@ def apply_chain(verts, tris, chain, sink=None):
     t = np.asarray(tris, dtype=np.int64)
     if t.ndim != 2:
         t = t.reshape(-1, 3)
+    _core = _stage1_core()
+    if _core is not None:
+        ov, ot, _applied, _skipped_json, _small_json = _core.stage1_apply_chain(
+            v, t, json.dumps(chain))
+        _skipped = json.loads(_skipped_json)
+        for _name, _msg in _skipped.items():
+            method_health.record_error('stage1:' + _name, 'filter',
+                                       RuntimeError(_msg))
+        if sink is not None and any(
+                str(_name) == 'meshing_remove_connected_component_by_face_number'
+                for _name, _params in chain):
+            sink['removed_small_parts'] = (
+                json.loads(_small_json) if _small_json else None)
+        return np.asarray(ov, dtype=np.float64), np.asarray(ot, dtype=np.int64), \
+            int(_applied), _skipped
     applied = 0
     skipped = {}
     selected = np.zeros(len(t), dtype=bool)
@@ -217,6 +238,18 @@ def extreme_extra_passes(verts, tris, params):
     """
     v = np.asarray(verts, dtype=np.float64)
     t = np.asarray(tris, dtype=np.int64)
+    _core = _stage1_core()
+    if _core is not None:
+        (_applied, _found, _removed, _applied2, _skipped_json,
+         _ov, _ot) = _core.stage1_extreme_passes(
+            v, t, json.dumps(params))
+        _skipped2 = json.loads(_skipped_json)
+        for _name, _msg in _skipped2.items():
+            method_health.record_error('stage1:' + _name, 'filter',
+                                       RuntimeError(_msg))
+        return (bool(_applied), int(_found), int(_removed), int(_applied2),
+                _skipped2, np.asarray(_ov, dtype=np.float64),
+                np.asarray(_ot, dtype=np.int64))
     mask, found = topology.self_intersecting_faces(v, t)
     if int(found) <= 0:
         return False, max(int(found), 0), 0, 0, {}, v, t
@@ -507,6 +540,29 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
 
     Returns ``(verts, tris, report)``.
     """
+    _core = _stage1_core()
+    if _core is not None:
+        _rv = np.ascontiguousarray(
+            np.asarray(verts if ref_verts is None else ref_verts,
+                       dtype=np.float64))
+        _rt = np.ascontiguousarray(
+            np.asarray(tris if ref_tris is None else ref_tris,
+                       dtype=np.int64))
+        _params = {
+            'maxholesize': int(maxholesize),
+            'max_rounds': int(max_rounds),
+            'time_budget': (None if time_budget is None else float(time_budget)),
+            'face_fraction': float(face_fraction),
+            'shape_guard': bool(si_excise_shape_guard_enabled(shape_guard)),
+            'guard_mode': si_excise_guard_mode(),
+        }
+        _ov, _ot, _report_json = _core.stage1_si_excise(
+            np.ascontiguousarray(verts, dtype=np.float64),
+            np.ascontiguousarray(tris, dtype=np.int64),
+            _rv, _rt, json.dumps(_params))
+        return (np.asarray(_ov, dtype=np.float64),
+                np.asarray(_ot, dtype=np.int64),
+                json.loads(_report_json))
     # Started before any work so the reported ``seconds`` covers the whole
     # pass, including the lazily built shape-guard mask (it used to start
     # after the mask, hiding its cost).

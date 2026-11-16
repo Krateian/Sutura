@@ -171,3 +171,80 @@ mod tests {
         assert!((dist[0] - 1.0).abs() < 1e-12);
     }
 }
+
+/// Reusable nearest-neighbour tree over a fixed point cloud.
+///
+/// The single Rust-side handle for "build once, query in batches"; the pyo3
+/// `KdTree` class is a thin wrapper over this type, so the Python pipeline and
+/// the CLI share one implementation and one tie-break order.
+pub struct KdTree {
+    tree: PointTree,
+    point_count: usize,
+}
+
+impl KdTree {
+    pub fn new(points: &[[f64; 3]]) -> Option<Self> {
+        let tree = build_tree(points)?;
+        Some(Self {
+            tree,
+            point_count: points.len(),
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.point_count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.point_count == 0
+    }
+
+    /// Flat `(distances, indices, neighbours)` in query-major order.
+    pub fn query(&self, queries: &[[f64; 3]], k: usize) -> (Vec<f64>, Vec<i32>, usize) {
+        query_neighbours(&self.tree, self.point_count, queries, k)
+    }
+
+    /// Nearest-neighbour distances (`k = 1`), one per query.
+    pub fn nearest_distances(&self, queries: &[[f64; 3]]) -> Vec<f64> {
+        self.query(queries, 1).0
+    }
+}
+
+#[cfg(test)]
+mod kdtree_tests {
+    use super::*;
+
+    #[test]
+    fn nearest_distances_match_a_brute_force_scan() {
+        let points = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [2.0, 2.0, 2.0],
+        ];
+        let tree = KdTree::new(&points).expect("tree");
+        assert_eq!(tree.len(), 4);
+        let queries = [[0.1, 0.1, 0.0], [1.9, 1.9, 1.9], [0.0, 1.0, 0.0]];
+        let dists = tree.nearest_distances(&queries);
+        for (q, got) in queries.iter().zip(dists.iter()) {
+            let want = points
+                .iter()
+                .map(|p| {
+                    ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2))
+                        .sqrt()
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn batch_query_is_query_major() {
+        let points = [[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
+        let tree = KdTree::new(&points).expect("tree");
+        let (dist, idx, k) = tree.query(&[[0.1, 0.0, 0.0], [4.9, 0.0, 0.0]], 2);
+        assert_eq!(k, 2);
+        assert_eq!(idx, vec![0, 1, 1, 0]);
+        assert!((dist[0] - 0.1).abs() < 1e-12);
+    }
+}

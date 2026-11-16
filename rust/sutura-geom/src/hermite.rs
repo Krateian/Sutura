@@ -362,10 +362,12 @@ pub struct HermiteReport {
     pub si_hermite: i64,
 }
 
+#[cfg(feature = "python")]
 pub fn report_dict<'py>(
     py: pyo3::Python<'py>,
     r: &HermiteReport,
 ) -> pyo3::PyResult<pyo3::Bound<'py, pyo3::types::PyDict>> {
+#[cfg(feature = "python")]
     use pyo3::types::PyDictMethods;
     let d = pyo3::types::PyDict::new(py);
     d.set_item("used", r.used)?;

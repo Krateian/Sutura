@@ -1,0 +1,41 @@
+{
+ "schema_version": 2,
+ "templates": {
+  "mechanical": {
+   "1": {
+    "n": 6,
+    "ok": 5,
+    "total_ms": 600
+   },
+   "2": {
+    "n": 3,
+    "ok": 1,
+    "total_ms": 900
+   },
+   "13": {
+    "n": 1,
+    "ok": 0,
+    "total_ms": 5000
+   }
+  },
+  "organic": {
+   "1": {
+    "n": 8,
+    "ok": 6,
+    "total_ms": 400
+   },
+   "7": {
+    "n": 2,
+    "ok": 2,
+    "total_ms": 300
+   }
+  },
+  "_none_": {
+   "9": {
+    "n": 1,
+    "ok": 1,
+    "total_ms": 1000
+   }
+  }
+ }
+}

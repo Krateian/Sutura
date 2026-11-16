@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Human-readable reports and interactive budget prompts (P1a split).
 Moved verbatim from sutura/repair.py; no logic change."""
+import json
+import os
 import sys
 import time
 
@@ -10,6 +12,15 @@ import numpy as np
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.tiers.dressing import _dressing_suggestion_text
 import classification
+from sutura_engine import rust_bridge
+
+
+def _rust_core():
+    return rust_bridge.load('report', ('SUTURA_REPORT_ENGINE',), 'rust')
+
+
+def _json_arg(data):
+    return rust_bridge.json_arg(data)
 
 # --- Print-impact report ---------------------------------------------------
 #
@@ -257,6 +268,14 @@ def build_print_report(report, in_arrays=None, out_arrays=None):
     fields; the only optional measurement is the sampled deviation in
     ``_deviation_pct`` (Rust BVH, gated by ``DEVIATION_MAX_FACES``).
     """
+    _core = _rust_core()
+    if _core is not None:
+        _iv = _as_f64(in_arrays[0]) if in_arrays else None
+        _it = _as_i32(in_arrays[1]) if in_arrays else None
+        _ov = _as_f64(out_arrays[0]) if out_arrays else None
+        _ot = _as_i32(out_arrays[1]) if out_arrays else None
+        _r = _core.build_print_report(_json_arg(report), _iv, _it, _ov, _ot)
+        return None if _r is None else json.loads(_r)
     s1 = report.get('stage1')
     if not isinstance(s1, dict):
         return None
@@ -349,6 +368,10 @@ def aggregate_print_reports(prs):
     geometry block takes the object with the largest absolute volume change
     (a single representative worst case). Returns None when empty.
     """
+    _core = _rust_core()
+    if _core is not None:
+        _r = _core.aggregate_print_reports(_json_arg(prs))
+        return None if _r is None else json.loads(_r)
     prs = [p for p in prs if p]
     if not prs:
         return None
@@ -781,7 +804,7 @@ def _score_field(name, value):
     return '%s: n/a' % name if value is None else '%s: %s/100' % (name, value)
 
 
-def human_report(r, show_defects=False, show_diff=False):
+def human_report(r, show_defects=False, show_diff=False, lang=None):
     if 'error' in r and 'stage1' not in r:
         return 'ERROR: %s' % r['error']
     brief = classification.brief(r)
@@ -1218,7 +1241,12 @@ def human_report(r, show_defects=False, show_diff=False):
         if _sug.get('method') == 'dressing':
             lines.append('')
             lines.append(_dressing_suggestion_text(_sug))
-    return '\n'.join(lines)
+    _text = '\n'.join(lines)
+    _lang = lang or os.environ.get('SUTURA_LANG', 'en')
+    if _lang == 'tr':
+        import report_lang
+        return report_lang.translate(_text, 'tr')
+    return _text
 
 
 def human_validate(r, show_defects=False):
