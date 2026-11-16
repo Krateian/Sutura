@@ -397,7 +397,9 @@ fn fs(input: VsOut) -> @location(0) vec4<f32> {
     // (the Before view), so the defect tint still applies there.
     let ramp_rgb = deviation_colour(input.ramp);
     let defect_c = mix(base, hot, clamp(input.defect, 0.0, 1.0) * u.heat.x);
-    let c = select(defect_c, ramp_rgb * (0.35 + 0.65 * d), input.ramp >= 0.0);
+    // The ramp is NOT shaded (Python uses `dev_lut[idx]` verbatim); only the
+    // neutral body takes the diffuse term. Shading it dimmed the dark navy end.
+    let c = select(defect_c, ramp_rgb, input.ramp >= 0.0);
     return vec4<f32>(c, 1.0);
 }
 "#;

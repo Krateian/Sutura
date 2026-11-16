@@ -96,11 +96,13 @@ impl CpuViewer {
             // ramp wins over the defect blend, which wins over neutral grey.
             let ramp = if heatmap { dev } else { None };
             if let Some(idx) = ramp {
+                // Verbatim, per `heatmap.draw_frame`: the ramp colour is not
+                // shaded, only the neutral body is. Shading it too made the
+                // already-dark navy end darker still and hurt legibility.
                 let c = dev_lut[idx as usize % dev_lut.len()];
-                let k = 0.35 + 0.65 * shade;
-                r = c[0] as f32 * k;
-                g = c[1] as f32 * k;
-                b = c[2] as f32 * k;
+                r = c[0] as f32;
+                g = c[1] as f32;
+                b = c[2] as f32;
             } else if heatmap && defect > 0.0 {
                 let k = defect.clamp(0.0, 1.0);
                 let hot = (242.0 * (0.45 + 0.55 * shade), 71.0 * (0.45 + 0.55 * shade), 31.0 * (0.45 + 0.55 * shade));
