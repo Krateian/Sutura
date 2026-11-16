@@ -103,9 +103,14 @@ jobs:
           done
           # 2. Ad-hoc signature, inside out.
           codesign -dv --verbose=2 "$APP" 2>&1 | grep -q 'Signature=adhoc'
-          # 3. It actually runs and repairs.
+          # 3. It actually runs and repairs. Capture stdout to a file and grep
+          # the file rather than piping into `grep -q`: `grep -q` exits at the
+          # first match, closing the pipe while the CLI is still printing, which
+          # is what produced "Broken pipe (os error 32)" here. (The CLI also
+          # handles that case now, but a gate should not depend on it.)
           "$APP/Contents/MacOS/sutura" --version
-          "$APP/Contents/MacOS/sutura" --list-methods | grep -q quick_clean
+          "$APP/Contents/MacOS/sutura" --list-methods > /tmp/methods.txt
+          grep -q quick_clean /tmp/methods.txt
           # 4. The licences ship.
           test -f "$APP/Contents/Resources/LICENSE"
           test -f "$APP/Contents/Resources/ATTRIBUTION.md"
@@ -180,9 +185,11 @@ jobs:
           ! grep -ri 'python\|venv' "$root/share/applications/" 
           grep -q '^Exec=sutura %F' "$root/share/applications/sutura.desktop"
           grep -q '^Exec=sutura-gui' "$root/share/applications/sutura-app.desktop"
-          # 3. It runs and repairs.
+          # 3. It runs and repairs. Same reason as the macOS job: grep the file,
+          # not a pipe that `grep -q` closes early.
           "$root/bin/sutura" --version
-          "$root/bin/sutura" --list-methods | grep -q quick_clean
+          "$root/bin/sutura" --list-methods > /tmp/methods.txt
+          grep -q quick_clean /tmp/methods.txt
           # 4. Licences ship.
           test -f "$root/LICENSE"
           test -f "$root/ATTRIBUTION.md"
