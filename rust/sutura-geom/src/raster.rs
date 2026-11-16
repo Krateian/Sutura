@@ -11,6 +11,12 @@
 //! Deliberately not reused from the viewer: the viewer is a realtime surface with
 //! a perspective camera and depth buffer, while these outputs must be
 //! deterministic, headless and identical to Python's.
+//!
+//! **The deviation ramp is drawn with no shading multiplier.** Python indexes
+//! `dev_lut` and uses the colour verbatim (`heatmap.draw_frame`), while the
+//! neutral body colour *is* shaded via `grey_lut`. Applying a shade factor to the
+//! ramp too (the obvious thing to do) dimmed every ramp pixel and put the match
+//! at 81% instead of 99.85%.
 
 /// The fixed isometric camera basis, rows = [right, up, forward].
 pub const ISOMETRIC: [[f64; 3]; 3] = [
