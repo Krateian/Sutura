@@ -3562,7 +3562,14 @@ fn repair_impl(
         0.01,
         &mut engine_entries,
     );
-    let pw = p_weld_final(&cur_v, &cur_t);
+    let pw = crate::p_weld::p_weld_final_with_cancel(
+        &cur_v,
+        &cur_t,
+        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+    );
+    if cancel.is_cancelled() {
+        return cancelled();
+    }
     cur_v = to_f64(&pw.verts);
     cur_t = to_i64(&pw.tris);
     let pw_gate = pw

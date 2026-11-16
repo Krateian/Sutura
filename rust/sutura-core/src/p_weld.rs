@@ -233,7 +233,27 @@ pub struct PWeldResult {
 }
 
 pub fn p_weld_final(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> PWeldResult {
+    p_weld_final_with_cancel(verts, tris, None)
+}
+
+/// `p_weld_final` with a cooperative cancellation probe.
+pub fn p_weld_final_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> PWeldResult {
+    let early = || PWeldResult {
+        verts: verts.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect(),
+        tris: tris.iter().map(|t| [t[0] as i32, t[1] as i32, t[2] as i32]).collect(),
+        report: None,
+    };
+    if sutura_geom::cancel::cancelled(cancel) {
+        return early();
+    }
     let (bh, bnm, bn2m) = reload_topology(verts, tris);
+    if sutura_geom::cancel::cancelled(cancel) {
+        return early();
+    }
     if bh == 0 && bnm == 0 && bn2m == 0 {
         let v32: Vec<[f32; 3]> = verts.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
         let t32: Vec<[i32; 3]> = tris.iter().map(|t| [t[0] as i32, t[1] as i32, t[2] as i32]).collect();
@@ -248,8 +268,14 @@ pub fn p_weld_final(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> PWeldResult {
     let t32: Vec<[i32; 3]> = tris.iter().map(|t| [t[0] as i32, t[1] as i32, t[2] as i32]).collect();
     let v32: Vec<[f32; 3]> = verts.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
     let (orig_boundary, orig_nm) = index_boundary_nm(tris);
+    if sutura_geom::cancel::cancelled(cancel) {
+        return early();
+    }
     if orig_boundary == 0 && orig_nm == 0 {
         let (cv, ct) = separate_weld_collisions(verts, tris);
+        if sutura_geom::cancel::cancelled(cancel) {
+            return early();
+        }
         let cv64: Vec<[f64; 3]> = cv.iter().map(|p| [p[0] as f64, p[1] as f64, p[2] as f64]).collect();
         let (ch, cnm, cn2m) = reload_topology(&cv64, &ct);
         if ch == 0 && cnm == 0 && cn2m == 0 {
@@ -265,10 +291,16 @@ pub fn p_weld_final(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> PWeldResult {
         }
     }
     let (wv, wt) = match weld_reload_equivalent(verts, tris) { Ok(x) => x, Err(_) => return PWeldResult { verts: v32, tris: t32, report: Some(rec) } };
+    if sutura_geom::cancel::cancelled(cancel) {
+        return early();
+    }
     let welded_faces = wt.len().max(1);
     let (rv, rt) = repair_welded_topology(&wv, &wt);
     let candidates = [("weld-repair", (rv.clone(), rt.clone())), ("weld-repair+close", close_small_holes(&wv.iter().map(|p| [p[0] as f64, p[1] as f64, p[2] as f64]).collect::<Vec<_>>(), &wt))];
     for (name, (cv, ct)) in candidates {
+        if sutura_geom::cancel::cancelled(cancel) {
+            return early();
+        }
         if (ct.len() as f64) < MIN_FACE_FRACTION * welded_faces as f64 { continue; }
         let cv64: Vec<[f64; 3]> = cv.iter().map(|p| [p[0] as f64, p[1] as f64, p[2] as f64]).collect();
         let (ch, cnm, cn2m) = reload_topology(&cv64, &ct);
