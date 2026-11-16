@@ -279,6 +279,17 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         repeat_source,
         repeat_target,
         time_budget_s: None,
+        // The CLI still rejects the Dressing flags (above), so these can never
+        // be set from here -- and that is unchanged behaviour. The GUI does not
+        // go through `build_options`; it fills `RepairSettings` directly, so it
+        // can turn Dressing on now that the core has the tier.
+        dressing: false,
+        dressing_drain: None,
+        dressing_defects: None,
+        dressing_rmax_scale: None,
+        dressing_sigma_scale: None,
+        dressing_force_adopt: false,
+        wall_thicken: false,
     };
     sutura_core::repair_settings::options_from(&settings).map_err(RepairFailure::from)
 }

@@ -116,6 +116,15 @@ pub struct RepairSettings {
     pub repeat_source: Option<[f64; 3]>,
     pub repeat_target: Option<[f64; 3]>,
     pub time_budget_s: Option<f64>,
+    /// Dressing tier and its four knobs. Present on `RepairOptions` already; the
+    /// switches live here so the GUI can expose them through the same mapping.
+    pub dressing: bool,
+    pub dressing_drain: Option<serde_json::Value>,
+    pub dressing_defects: Option<String>,
+    pub dressing_rmax_scale: Option<f64>,
+    pub dressing_sigma_scale: Option<f64>,
+    pub dressing_force_adopt: bool,
+    pub wall_thicken: bool,
 }
 
 impl RepairSettings {
@@ -300,8 +309,13 @@ pub fn options_from(
         ),
         splint: tri(settings.no_splint, settings.experimental_splint, false)
             .unwrap_or(false),
-        dressing: false,
-        wall_thicken: false,
+        dressing: settings.dressing,
+        dressing_drain: settings.dressing_drain.clone(),
+        dressing_defects: settings.dressing_defects.clone(),
+        dressing_rmax_scale: settings.dressing_rmax_scale,
+        dressing_sigma_scale: settings.dressing_sigma_scale,
+        dressing_force_adopt: settings.dressing_force_adopt,
+        wall_thicken: settings.wall_thicken,
         repeat,
         repeat_source: settings.repeat_source,
         repeat_target: settings.repeat_target,
