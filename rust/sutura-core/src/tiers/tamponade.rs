@@ -419,7 +419,6 @@ fn annotation_json(info: &TamponadeInfo) -> Map<String, Value> {
         );
     }
     m.insert("trimmed_vertices".into(), json!(info.trimmed_vertices));
-    m.insert("patch_vertices".into(), json!(info.patch_vertices));
     m.insert("plugs_rolled_back".into(), json!(info.plugs_rolled_back));
     m.insert("plugs_leaking".into(), json!(info.plugs_leaking));
     m.insert("plugs_double_wall".into(), json!(info.plugs_double_wall));
@@ -459,7 +458,7 @@ fn base_record(params: &Value) -> Map<String, Value> {
     );
     rec.insert("work_budget".into(), Value::Null);
     rec.insert("work_units".into(), Value::Null);
-    rec.insert("h_min".into(), json!(json_f(params, "h_min", 0.0)));
+    rec.insert("h_min".into(), Value::Null);
     rec.insert(
         "input_faces".into(),
         json!(json_i(params, "input_faces", 0)),
@@ -473,7 +472,6 @@ fn base_record(params: &Value) -> Map<String, Value> {
     rec.insert("candidate_non_manifold".into(), Value::Null);
     rec.insert("candidate_parts".into(), Value::Null);
     for key in [
-        "patch_vertices",
         "trimmed_vertices",
         "reference_used",
         "reference_fallback",
