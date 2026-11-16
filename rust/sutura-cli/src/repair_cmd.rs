@@ -1624,9 +1624,9 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
                 "tr" => human::translate(&text, "tr"),
                 _ => text,
             };
-            println!("{text}\n");
+            outln!("{text}\n");
         } else {
-            println!("{}", py_json(report));
+            outln!("{}", py_json(report));
         }
         return if failures > 0 {
             Err((1, None))
@@ -1642,8 +1642,8 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
                 "tr" => human::translate(&text, "tr"),
                 _ => text,
             };
-            println!("{text}");
-            println!();
+            outln!("{text}");
+            outln!();
         }
         let ok = results
             .iter()
@@ -1657,7 +1657,7 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
             .iter()
             .filter(|r| r.get("category").and_then(Value::as_str) == Some("error") || r.get("error").is_some())
             .count();
-        println!(
+        outln!(
             "Summary: {} file(s), {} watertight, {} with warnings, {} failed.",
             total, ok, warnings, errors
         );
@@ -1695,7 +1695,7 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
                 "issue_counts": issue_counts,
             }
         });
-        println!("{}", py_json(&payload));
+        outln!("{}", py_json(&payload));
     }
     let _ = methods_given;
     if failures > 0 {

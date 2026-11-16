@@ -22,6 +22,9 @@ use sutura_core::{
 // and must not depend on this binary crate.
 use sutura_core::repair_settings::METHODS;
 
+#[macro_use]
+mod output;
+
 mod human;
 mod repair_cmd;
 
@@ -238,7 +241,7 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
     if cli.list_intensities {
         let loaded = sutura_core::config::policy::load_policy(None)
             .map_err(|e| (1, Some(e.to_string())))?;
-        println!(
+        outln!(
             "{}",
             sutura_core::config::intensity::format_intensities(&loaded, None)
         );
@@ -358,8 +361,8 @@ fn ftetwild_available() -> bool {
 }
 
 fn print_list_methods() {
-    println!("Repair methods:");
-    println!("  num  id                    family      available  name");
+    outln!("Repair methods:");
+    outln!("  num  id                    family      available  name");
     let ftw = ftetwild_available();
     for (num, id, family, name) in METHODS {
         let (ok, reason) = if id == "ftetwild" && !ftw {
@@ -372,7 +375,7 @@ fn print_list_methods() {
         } else {
             format!("  ({reason})")
         };
-        println!(
+        outln!(
             "  {:<4} {:<21} {:<11} {:<10} {}{}",
             num,
             id,
@@ -382,7 +385,7 @@ fn print_list_methods() {
             suffix
         );
     }
-    println!();
+    outln!();
     let loaded = match sutura_core::config::policy::load_policy(None) {
         Ok(policy) => policy,
         Err(e) => {
@@ -402,8 +405,8 @@ fn print_list_methods() {
                 .join(", ")
         })
         .unwrap_or_default();
-    println!("Automatic deep-tier order: {order}");
-    println!(
+    outln!("Automatic deep-tier order: {order}");
+    outln!(
         "Policy: schema {}, hash {}, {}",
         loaded.schema_version,
         loaded.content_hash,
@@ -474,24 +477,24 @@ fn probe(path: &Path, json_out: bool) -> Result<(), (u8, String)> {
         "scan": scan,
     });
     if json_out {
-        println!("{}", serde_json::to_string(&payload).unwrap());
+        outln!("{}", serde_json::to_string(&payload).unwrap());
     } else {
-        println!("format: {}", format_name(format));
-        println!("bytes: {bytes_in}");
+        outln!("format: {}", format_name(format));
+        outln!("bytes: {bytes_in}");
         for m in payload["meshes"].as_array().unwrap() {
-            println!(
+            outln!(
                 "mesh: name={} index={} verts={} tris={} bbox={}",
                 m["name"], m["index"], m["verts"], m["tris"], m["bbox"]
             );
         }
         for w in payload["unit_warnings"].as_array().unwrap() {
-            println!("warning: {}", w["unit_hint"]);
+            outln!("warning: {}", w["unit_hint"]);
         }
         if material_refs {
-            println!("warning: OBJ material/texture references are not preserved");
+            outln!("warning: OBJ material/texture references are not preserved");
         }
         if let Some(s) = scan {
-            println!("scan: {s}");
+            outln!("scan: {s}");
         }
     }
     Ok(())
@@ -501,7 +504,7 @@ fn convert(input: &Path, output: &Path, json_out: bool) -> Result<(), (u8, Strin
     let mesh = load_mesh(input).map_err(|e| (1, format!("{}: {e}", input.display())))?;
     save_mesh(output, &mesh).map_err(|e| (1, format!("{}: {e}", output.display())))?;
     if json_out {
-        println!(
+        outln!(
             "{}",
             serde_json::to_string(&json!({
                 "input": input.display().to_string(),
@@ -512,7 +515,7 @@ fn convert(input: &Path, output: &Path, json_out: bool) -> Result<(), (u8, Strin
             .unwrap()
         );
     } else {
-        println!(
+        outln!(
             "wrote {} ({} verts, {} tris)",
             output.display(),
             mesh.vertex_count(),
@@ -619,25 +622,25 @@ fn run_read_only(cli: &Cli, files: &[PathBuf], kind: ReadOnly) -> Result<(), (u8
     if reports.len() == 1 {
         let report = &reports[0];
         if human {
-            println!("{}", match kind {
+            outln!("{}", match kind {
                 ReadOnly::Validate => human_validate(report),
                 ReadOnly::DryRun => human_dry_run(report),
                 ReadOnly::Analyze => sutura_core::analyze::format_analyze_human(report),
             });
         } else {
-            println!("{}", serde_json::to_string(report).unwrap());
+            outln!("{}", serde_json::to_string(report).unwrap());
         }
     } else if human {
         for report in &reports {
-            println!("{}", match kind {
+            outln!("{}", match kind {
                 ReadOnly::Validate => human_validate(report),
                 ReadOnly::DryRun => human_dry_run(report),
                 ReadOnly::Analyze => sutura_core::analyze::format_analyze_human(report),
             });
-            println!();
+            outln!();
         }
     } else {
-        println!("{}", serde_json::to_string(&json!({"files": reports})).unwrap());
+        outln!("{}", serde_json::to_string(&json!({"files": reports})).unwrap());
     }
     if errors > 0 {
         return Err((1, None));
