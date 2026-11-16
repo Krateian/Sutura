@@ -124,6 +124,12 @@ struct Cli {
     dry_run: bool,
     #[arg(short = 'y', long, global = true)]
     yes: bool,
+    /// Check for a newer release (`update` / `license` / `none`).
+    #[arg(long = "check-update")]
+    check_update: bool,
+    /// Print the release notes saved by the last update (works offline).
+    #[arg(long = "whats-new")]
+    whats_new: bool,
     #[arg(long = "experimental-join-components", global = true)]
     experimental_join_components: bool,
     #[arg(long = "experimental-autorefine", global = true)]
@@ -260,6 +266,46 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
         } else {
             Err((code, None))
         };
+    }
+    if cli.whats_new {
+        // Pure filesystem read: the snapshot is written by the updater before it
+        // installs, so this works with no network.
+        let dir = sutura_core::whatsnew::current_dir();
+        match (sutura_core::whatsnew::current_tag(), sutura_core::whatsnew::current_body()) {
+            (Some(tag), Some(body)) => {
+                outln!("{}", sutura_core::whatsnew::plain_text(&tag, &body, &dir));
+            }
+            _ => outln!(
+                "no release notes saved yet; see {}",
+                sutura_core::updater::RELEASES_URL
+            ),
+        }
+        return Ok(());
+    }
+    if cli.check_update {
+        let status = sutura_core::updater::check_for_update(PRODUCT_VERSION, true);
+        if cli.json {
+            outln!(
+                "{}",
+                crate::repair_cmd::py_json(&serde_json::json!({
+                    "status": status.status,
+                    "tag": status.tag,
+                    "current": PRODUCT_VERSION,
+                }))
+            );
+        } else {
+            match (status.status, status.tag.as_deref()) {
+                ("update", Some(tag)) => outln!("update available: {tag} (current {PRODUCT_VERSION})"),
+                ("license", Some(tag)) => outln!(
+                    "Sutura {tag} changes the license terms (PolyForm Noncommercial 1.0.0 - \
+commercial use requires a separate agreement). This update will not be applied \
+automatically - download it manually from {} if you accept the new terms.",
+                    sutura_core::updater::RELEASES_URL
+                ),
+                _ => outln!("no update available (current {PRODUCT_VERSION})"),
+            }
+        }
+        return Ok(());
     }
     if let Some(Command::Io { command }) = cli.command {
         return match command {
