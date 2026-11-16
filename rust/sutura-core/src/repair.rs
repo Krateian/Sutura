@@ -3136,10 +3136,25 @@ fn repair_impl(
     let pinch_in_v = cur_v.clone();
     let pinch_in_t = cur_t.clone();
     let pinch = split_pinched_vertices(&cur_v, &cur_t);
-    cur_v = to_f64(&pinch.verts);
-    cur_t = to_i64(&pinch.tris);
+    // Match Python: only take the split result when the tier actually ran.
+    // On the no-pinch path Python keeps the input arrays, while the core
+    // returns them with a cyclic rotation of each triangle.
+    let pinch_report = if let Some(rep) = pinch.report {
+        cur_v = to_f64(&pinch.verts);
+        cur_t = to_i64(&pinch.tris);
+        rep
+    } else {
+        Value::Bool(false)
+    };
+    // Python's pipeline repairs a globally inverted winding before Stage 2
+    // (mesh_volume < 0 -> invert once; invert back if still negative).
+    if common::signed_volume(&cur_v, &cur_t) < 0.0 {
+        cur_t = sutura_geom::topology::invert_face_orientation_core(&cur_t);
+        if common::signed_volume(&cur_v, &cur_t) < 0.0 {
+            cur_t = sutura_geom::topology::invert_face_orientation_core(&cur_t);
+        }
+    }
     after = common::topology_summary(&cur_v, &cur_t);
-    let pinch_report = pinch.report.unwrap_or(Value::Bool(false));
     trace.record(
         "pinch_split",
         "stage2._split_pinched_vertices",
