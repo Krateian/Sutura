@@ -2032,7 +2032,7 @@ fn run_splint_tier(
         "work_limit": work,
         "stage1_holes": holes,
         "stage1_nm": nm,
-        "guard": Value::Null,
+        "guard": json!({"si_policy": "non_rise"}),
     });
     splint::run(cur_v, cur_t, input_v, input_t, &params)
 }
@@ -2057,7 +2057,7 @@ fn run_coaptation_tier(
         "cap": 0,
         "ulp_k": ulp_k,
         "work_limit": work,
-        "guard": Value::Null,
+        "guard": json!({"si_policy": "strict_zero"}),
     });
     coaptation::run(cur_v, cur_t, input_v, input_t, &params)
 }
@@ -2341,7 +2341,6 @@ fn repair_impl(
     );
     stats.insert("experimental_join_components".into(), Value::Bool(false));
     stats.insert("experimental_ftetwild".into(), Value::Bool(false));
-    stats.insert("ftetwild".into(), Value::Bool(false));
     let ftetwild_bin = crate::ftetwild::find_binary();
 
     // The merged read-only analysis feeds the ranking and the report. Its
@@ -3247,6 +3246,71 @@ fn repair_impl(
     stats.insert("stage1".into(), Value::Object(stage1));
     if allow_si_escalation && si_escalation_allowed(opts) {
         stage1_snapshot = Some((cur_v.clone(), cur_t.clone()));
+    }
+
+    // Python `_deep_repair_offer`: name the final tier and list the tiers a
+    // deeper mode could still run when damage remains.
+    let final_tier = [
+        "ftetwild", "cdt", "graft", "dressing", "splint", "coaptation", "local",
+    ]
+    .iter()
+    .find(|tier| {
+        let rec = match **tier {
+            "ftetwild" => stats.get("experimental_ftetwild"),
+            "local" => stats.get("local_remesh"),
+            other => stats.get(other),
+        };
+        rec.map(adopted).unwrap_or(false)
+    })
+    .copied()
+    .unwrap_or("stage1");
+    if let Some(deep) = stats.get_mut("deep_repair").and_then(Value::as_object_mut) {
+        deep.insert("final_tier".into(), Value::from(final_tier));
+        if holes_after > 0 || nm_after > 0 {
+            let mut tiers: Vec<&str> = Vec::new();
+            if opts.deep_repair == DeepRepair::Off {
+                tiers.push("local");
+            }
+            let within_cap = spec
+                .ftetwild_max_faces
+                .map(|cap| cur_t.len() <= cap as usize)
+                .unwrap_or(true);
+            if (opts.deep_repair == DeepRepair::Off
+                || opts.deep_repair == DeepRepair::Local)
+                && within_cap
+                && crate::ftetwild::find_binary().is_some()
+            {
+                tiers.push("ftetwild");
+            }
+            if !tiers.is_empty() {
+                let n_faces = input_t.len();
+                let n_regions = (holes_after + nm_after) as f64;
+                let mut estimate = Map::new();
+                if tiers.contains(&"local") {
+                    let e = 0.5 + 0.05 * n_regions + 0.02 * n_faces as f64 / 1000.0;
+                    estimate.insert(
+                        "local".into(),
+                        Value::from((e * 10.0).round() / 10.0),
+                    );
+                }
+                if tiers.contains(&"ftetwild") {
+                    let e = (1e-3 * n_faces as f64).min(spec.ftetwild_timeout);
+                    estimate.insert(
+                        "ftetwild".into(),
+                        Value::from((e * 10.0).round() / 10.0),
+                    );
+                }
+                deep.insert(
+                    "available".into(),
+                    json!({
+                        "holes_remaining": holes_after,
+                        "nm_remaining": nm_after,
+                        "tiers": tiers,
+                        "estimate_s": Value::Object(estimate),
+                    }),
+                );
+            }
+        }
     }
 
     // --- Stage 2 -----------------------------------------------------------

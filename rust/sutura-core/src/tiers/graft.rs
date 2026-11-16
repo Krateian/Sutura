@@ -48,6 +48,7 @@ fn rec_base(params: &Value, grec: &Value) -> Map<String, Value> {
     rec.insert("fallback_work_budget".into(), Value::Null);
     rec.insert("grid_cells".into(), Value::Null);
     rec.insert("reject_reason".into(), Value::Null);
+    rec.insert("budget_reason".into(), Value::Null);
     rec.insert("input_faces".into(), Value::Null);
     rec.insert("input_vertices".into(), Value::Null);
     rec.insert("candidate_faces".into(), Value::Null);
@@ -130,6 +131,10 @@ pub fn decide(
         rec.insert("ran".into(), json!(true));
         rec.insert("skipped_budget".into(), json!(true));
         rec.insert("reject_reason".into(), json!("budget"));
+        rec.insert(
+            "budget_reason".into(),
+            grec.get("reason").cloned().unwrap_or(Value::Null),
+        );
         rec.insert(
             "reason".into(),
             grec.get("reason").cloned().unwrap_or(Value::Null),

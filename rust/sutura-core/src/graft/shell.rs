@@ -759,8 +759,8 @@ pub fn shell_wrap_with_cancel(
     if let Some(budget) = fb_budget {
         if grid_cost > budget {
             let reason = format!(
-                "Graft skipped: estimated grid work {} is above the deterministic fallback budget {}; the stage-1 result was kept",
-                grid_cost, budget
+                "Graft skipped: estimated grid work {} (kilo cell-face units, {} raw x {} hole factor) is above the deterministic fallback budget {}; the stage-1 result was kept",
+                grid_cost, raw_grid_cost, hole_factor, budget
             );
             report.insert("budget_exceeded".into(), json!(true));
             report.insert("budget_limited_by".into(), json!("work"));
