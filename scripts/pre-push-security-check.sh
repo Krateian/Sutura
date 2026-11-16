@@ -49,9 +49,22 @@ scan_range() {
     done
 
     # 3) public IPv4 addresses (private/local ranges are allowed)
+    #
+    # Two filters, both needed:
+    #
+    # a) Each octet is bounded to 0-255. Without it any four dot-separated
+    #    numbers match, so a Cargo.lock dependency version such as
+    #    `sdk-1.4.341.0` (octet 341) tripped the hook.
+    # b) A match immediately preceded by a version marker (v, dot, dash or
+    #    alnum) is a dotted version, not an address: `v1.2.3.4` in a version-
+    #    parser test has every octet in range, so (a) alone cannot exclude it.
+    #    A real address in prose or config is preceded by whitespace or a
+    #    delimiter, so this does not weaken the check.
     local ips
+    local octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
     ips=$(git diff "$range" 2>/dev/null | grep -E '^\+' \
-        | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
+        | grep -oE "(^|[^0-9A-Za-z._-])($octet\.){3}$octet" \
+        | grep -oE "($octet\.){3}$octet" \
         | grep -vE '^(192\.168\.|10\.|127\.|0\.)' | sort -u || true)
     if [ -n "$ips" ]; then
         echo "${RED}PUBLIC IP ADDRESS in $range:${NC}"
