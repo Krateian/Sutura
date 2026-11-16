@@ -3898,6 +3898,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "faer",
+ "image",
  "kiddo",
  "libc",
  "manifold-csg",

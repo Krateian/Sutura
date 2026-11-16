@@ -54,6 +54,7 @@ pub mod pointcloud;
 pub mod predicates2d;
 pub mod predicates3d;
 pub mod profile;
+pub mod raster;
 pub mod rbf;
 pub mod raycast;
 pub mod rng;
