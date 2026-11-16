@@ -25,7 +25,7 @@ pub mod cdt3d;
 pub mod choice;
 pub mod classify;
 mod budget;
-mod cancel;
+pub mod cancel;
 #[cfg(feature = "python")]
 pub mod cluster;
 #[cfg(feature = "decimate")]
@@ -1067,6 +1067,17 @@ pub fn morph_close_core(
     r: f64,
     opts: &MorphCloseOptions,
 ) -> Result<(Vec<[f64; 3]>, Vec<[i32; 3]>, MorphCloseReport), String> {
+    morph_close_core_with_cancel(v, t, r, opts, None)
+}
+
+/// `morph_close_core` with a cooperative cancellation probe.
+pub fn morph_close_core_with_cancel(
+    v: &[[f64; 3]],
+    t: &[[i32; 3]],
+    r: f64,
+    opts: &MorphCloseOptions,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Result<(Vec<[f64; 3]>, Vec<[i32; 3]>, MorphCloseReport), String> {
     if !(r >= 0.0) {
         return Err("r must be >= 0".to_string());
     }
@@ -1111,8 +1122,11 @@ pub fn morph_close_core(
         (_, Some(g)) => g.bvh(),
         _ => unreachable!(),
     };
-    let (w, u, mut s) = bvh.sdf_grid(origin, voxel, dims);
+    let (w, u, mut s) = bvh.sdf_grid_with_cancel(origin, voxel, dims, cancel);
     let mut stab_stats = None;
+    if crate::cancel::cancelled(cancel) {
+        return Err("cancelled".to_string());
+    }
     if opts.raystab {
         let stabber = build_stabber(bvh, opts.raystab_dirs, opts.raystab_seed, opts.raystab_parity);
         stab_stats = Some(raycast::disambiguate_sdf(
@@ -1143,6 +1157,9 @@ pub fn morph_close_core(
             raycast::AMBIG_HI,
         ));
     }
+    if crate::cancel::cancelled(cancel) {
+        return Err("cancelled".to_string());
+    }
     let field = if r > 0.0 {
         let closed = morph::close_sdf(&s, dims, r as f32, voxel as f32);
         if opts.fill_cavities {
@@ -1159,12 +1176,18 @@ pub fn morph_close_core(
         opts.surface.as_deref(),
         Some("tets") | Some("tet") | Some("marching_tets")
     );
+    if crate::cancel::cancelled(cancel) {
+        return Err("cancelled".to_string());
+    }
     let mut dc = if use_tets {
         dual_contour::marching_tets_mesh(&field, dims, origin, voxel)
     } else {
         dual_contour::dual_contour(&field, dims, origin, voxel)
     };
     let mut hermite_info: Option<hermite::HermiteReport> = None;
+    if crate::cancel::cancelled(cancel) {
+        return Err("cancelled".to_string());
+    }
     if !use_tets && opts.hermite.unwrap_or_else(hermite::enabled_by_default) {
         let (better, rep) = hermite::refine_vertices(bvh, &field, dims, origin, voxel, dc);
         dc = better;

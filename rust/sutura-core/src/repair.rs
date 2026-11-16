@@ -24,10 +24,10 @@ use sutura_geom::shell::{shell_analyze_and_filter, ShellAnalysisResult, ShellCon
 
 use crate::analysis::{analyze_mesh, Analysis as MeshAnalysis};
 use crate::classify::classify_mesh;
-use crate::closing::{flat_back_close, poisson_close};
+use crate::closing::{flat_back_close_with_cancel, poisson_close_with_cancel};
 use crate::config::intensity::{resolve_intensity, IntensitySpec};
 use crate::config::policy::{load_policy, LoadedPolicy, PolicyValue};
-use crate::graft::shell::{shell_wrap, ShellWrapOptions};
+use crate::graft::shell::{shell_wrap_with_cancel, ShellWrapOptions};
 use crate::local_remesh;
 use crate::mesh::Mesh;
 use crate::mirror::mirror_close;
@@ -37,7 +37,8 @@ use crate::ranking::{rank_methods, recommendations_json, Analysis as RankingAnal
 use crate::report::defects::detect_defects;
 use crate::report::health::build_report_value;
 use crate::stage1::chain::{
-    apply_chain, cleanup_chain, delete_fallback_chain, extreme_extra_passes, stage1_chain,
+    apply_chain_with_cancel, cleanup_chain, delete_fallback_chain,
+    extreme_extra_passes, stage1_chain,
 };
 use crate::stage1::si_excise;
 use crate::stage2::split_pinched_vertices;
@@ -282,6 +283,12 @@ impl CancelToken {
 impl Default for CancelToken {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl sutura_geom::cancel::Cancel for CancelToken {
+    fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
     }
 }
 
@@ -1917,6 +1924,7 @@ fn run_graft_tier(
     intensity: &str,
     spec: &IntensitySpec,
     time_budget: Option<f64>,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     if let Some(cap) = spec.graft_max_faces {
         if input_t.len() > cap as usize {
@@ -1940,7 +1948,7 @@ fn run_graft_tier(
         hybrid: true,
         ..ShellWrapOptions::default()
     };
-    let produced = match shell_wrap(input_v, input_t, &opts) {
+    let produced = match shell_wrap_with_cancel(input_v, input_t, &opts, cancel) {
         Ok(out) => out,
         Err(e) => {
             return (
@@ -1977,6 +1985,7 @@ fn run_dressing_tier(
     intensity: &str,
     opts: &RepairOptions,
     policy: Option<&LoadedPolicy>,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     let params = json!({
         "intensity": intensity,
@@ -1994,7 +2003,8 @@ fn run_dressing_tier(
         "sigma_scale": opts.dressing_sigma_scale,
         "force_adopt": opts.dressing_force_adopt,
     });
-    dressing_tier::run(cur_v, cur_t, input_v, input_t, intensity, &params)
+    dressing_tier::run_with_cancel(
+        cur_v, cur_t, input_v, input_t, intensity, &params, cancel)
 }
 
 fn run_splint_tier(
@@ -2072,14 +2082,15 @@ fn run_closing_tier(
     input_v: &[[f64; 3]],
     input_t: &[[i64; 3]],
     mode: ClosingMode,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     let (cand_v, cand_t, rep, tier) = match mode {
         ClosingMode::Poisson => {
-            let out = poisson_close(input_v, input_t, None);
+            let out = poisson_close_with_cancel(input_v, input_t, None, cancel);
             (out.verts, out.tris, out.report, "poisson")
         }
         ClosingMode::FlatBack => {
-            let out = flat_back_close(input_v, input_t, None);
+            let out = flat_back_close_with_cancel(input_v, input_t, None, cancel);
             (out.verts, out.tris, out.report, "flat_back")
         }
         ClosingMode::Mirror => {
@@ -2098,6 +2109,7 @@ fn run_proxy_tier(
     cur_t: &[[i64; 3]],
     input_v: &[[f64; 3]],
     input_t: &[[i64; 3]],
+    _cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     let out = proxy_template_repair(input_v, input_t, None, 3);
     let params = json!({"tier": "proxy_template"});
@@ -2282,6 +2294,9 @@ fn repair_impl(
     let spec = resolve_intensity_spec(opts, policy.as_ref());
     let intensity_for_tamponade = spec.base.clone().unwrap_or_else(|| spec.name.clone());
     let triage = resolve_triage(opts, policy.as_ref(), verts, tris);
+    if cancel.is_cancelled() {
+        return cancelled();
+    }
     let min_component = triage.min_component;
     let mut max_hole = triage.max_hole;
     let (_, largest_loop) = boundary_loop_stats(tris);
@@ -2343,6 +2358,9 @@ fn repair_impl(
     );
     let mesh_analysis: Option<MeshAnalysis> =
         analyze_mesh(&mesh32, &triage.engine, opts.si_mode != SiMode::Off).ok();
+    if cancel.is_cancelled() {
+        return cancelled();
+    }
     let recommendations = match (policy.as_ref(), mesh_analysis.as_ref()) {
         (Some(loaded), Some(analysis)) => {
             let rank_analysis = RankingAnalysis {
@@ -2362,13 +2380,13 @@ fn repair_impl(
         _ => None,
     };
 
+    if cancel.is_cancelled() {
+        return cancelled();
+    }
     // --- Outer-shell pre-pass ---------------------------------------------
     // Python runs this only in `auto` mode, before the Tamponade prepass, on
     // mechanical (or heavy-SI) multi-shell inputs. It is part of the Tamponade
     // feature, so an explicit `--no-tamponade` skips it.
-    if cancel.is_cancelled() {
-        return cancelled();
-    }
     if opts.mode == RepairMode::Auto {
         let tamponade_enabled = opts.tamponade != Some(false);
         run_outer_shell_prepass(
@@ -2396,7 +2414,11 @@ fn repair_impl(
     let mut tamponade_gate_skipped = false;
     if opts.tamponade != Some(false) {
         let hygiene = Value::Array(cleanup_chain(true));
-        let (clean_v, clean_t, _, _, _) = apply_chain(&cur_v, &cur_t, &hygiene);
+        let (clean_v, clean_t, _, _, _) = apply_chain_with_cancel(
+            &cur_v, &cur_t, &hygiene, Some(cancel as &dyn sutura_geom::cancel::Cancel));
+        if cancel.is_cancelled() {
+            return cancelled();
+        }
         let params = tamponade_params(
             &clean_v,
             &clean_t,
@@ -2405,7 +2427,12 @@ fn repair_impl(
             true,
             policy.as_ref(),
         );
-        let (out_v, out_t, mut rec) = tamponade::run(&clean_v, &clean_t, &params);
+        let (out_v, out_t, mut rec) = tamponade::run_with_cancel(
+            &clean_v,
+            &clean_t,
+            &params,
+            Some(cancel as &dyn sutura_geom::cancel::Cancel),
+        );
         ensure_tamponade_defaults(&mut rec);
         tamponade_prepass_adopted = adopted(&rec);
         tamponade_gate_skipped = rec
@@ -2427,7 +2454,12 @@ fn repair_impl(
     }
     if opts.flap == Some(true) {
         let params = flap_params(&cur_t, &spec.name, policy.as_ref());
-        let (out_v, out_t, rec) = flap::run(&cur_v, &cur_t, &params);
+        let (out_v, out_t, rec) = flap::run_with_cancel(
+            &cur_v,
+            &cur_t,
+            &params,
+            Some(cancel as &dyn sutura_geom::cancel::Cancel),
+        );
         if adopted(&rec) {
             cur_v = out_v;
             cur_t = out_t;
@@ -2463,14 +2495,22 @@ fn repair_impl(
         );
     }
     let chain = Value::Array(stage1_chain(max_hole, min_component, false));
-    let (v1, t1, mut applied, mut skipped, removed_small) = apply_chain(&cur_v, &cur_t, &chain);
+    let (v1, t1, mut applied, mut skipped, removed_small) = apply_chain_with_cancel(
+        &cur_v, &cur_t, &chain, Some(cancel as &dyn sutura_geom::cancel::Cancel));
     cur_v = v1;
     cur_t = t1;
+    if cancel.is_cancelled() {
+        return cancelled();
+    }
 
     let mut after = common::topology_summary(&cur_v, &cur_t);
     if after.non_two_manifold_edges > 0 || after.non_two_manifold_vertices > 0 {
         let fallback = Value::Array(delete_fallback_chain(max_hole, min_component, false));
-        let (fv, ft, f_applied, f_skipped, _) = apply_chain(&cur_v, &cur_t, &fallback);
+        let (fv, ft, f_applied, f_skipped, _) = apply_chain_with_cancel(
+            &cur_v, &cur_t, &fallback, Some(cancel as &dyn sutura_geom::cancel::Cancel));
+        if cancel.is_cancelled() {
+            return cancelled();
+        }
         let f_after = common::topology_summary(&fv, &ft);
         let damage_before = after.non_two_manifold_edges + after.non_two_manifold_vertices;
         let damage_after = f_after.non_two_manifold_edges + f_after.non_two_manifold_vertices;
@@ -2582,7 +2622,12 @@ fn repair_impl(
             false,
             policy.as_ref(),
         );
-        let (out_v, out_t, mut rec) = tamponade::run(&cur_v, &cur_t, &params);
+        let (out_v, out_t, mut rec) = tamponade::run_with_cancel(
+            &cur_v,
+            &cur_t,
+            &params,
+            Some(cancel as &dyn sutura_geom::cancel::Cancel),
+        );
         ensure_tamponade_defaults(&mut rec);
         if adopted(&rec) {
             cur_v = out_v;
@@ -2590,6 +2635,9 @@ fn repair_impl(
         }
         emit_tier(sink, "tamponade_post", 3, &rec);
         stats.insert("tamponade".into(), rec);
+        if cancel.is_cancelled() {
+            return cancelled();
+        }
     }
 
     // --- Registry methods 8/9/10: closing / proxy-template / mirror -------
@@ -2599,7 +2647,10 @@ fn repair_impl(
         let cl_in_v = cur_v.clone();
         let cl_in_t = cur_t.clone();
         let (cv, ct, rec) = if opts.proxy_template {
-            run_proxy_tier(&cur_v, &cur_t, &input_v, &input_t)
+            run_proxy_tier(
+                &cur_v, &cur_t, &input_v, &input_t,
+                Some(cancel as &dyn sutura_geom::cancel::Cancel),
+            )
         } else {
             run_closing_tier(
                 &cur_v,
@@ -2607,6 +2658,7 @@ fn repair_impl(
                 &input_v,
                 &input_t,
                 opts.closing.expect("closing mode present"),
+                Some(cancel as &dyn sutura_geom::cancel::Cancel),
             )
         };
         if adopted(&rec) {
@@ -2615,6 +2667,9 @@ fn repair_impl(
             after = common::topology_summary(&cur_v, &cur_t);
         }
         emit_tier(sink, "closing", 3, &rec);
+        if cancel.is_cancelled() {
+            return cancelled();
+        }
         trace.record(
             "closing_ladder",
             "tiers.closing.closing_ladder",
@@ -2639,6 +2694,7 @@ fn repair_impl(
             let (gv, gt, rec) = run_graft_tier(
                 &cur_v, &cur_t, &s1_in_v, &s1_in_t, holes, nm,
                 &intensity_for_tamponade, &spec, opts.time_budget_s,
+                Some(cancel as &dyn sutura_geom::cancel::Cancel),
             );
             if adopted(&rec) {
                 cur_v = gv;
@@ -2683,6 +2739,7 @@ fn repair_impl(
                     &intensity_for_tamponade,
                     &spec,
                     opts.time_budget_s,
+                    Some(cancel as &dyn sutura_geom::cancel::Cancel),
                 );
                 if adopted(&rec) {
                     cur_v = gv;
@@ -2723,6 +2780,7 @@ fn repair_impl(
                     &intensity_for_tamponade,
                     opts,
                     policy.as_ref(),
+                    Some(cancel as &dyn sutura_geom::cancel::Cancel),
                 );
                 if adopted(&rec) {
                     cur_v = dv;
@@ -2890,7 +2948,7 @@ fn repair_impl(
                     ),
                     guard: ftetwild_guard_policy(policy.as_ref()),
                 };
-                if let Some(result) = crate::ftetwild::run_tier(
+                if let Some(result) = crate::ftetwild::run_tier_with_cancel(
                     &cur_v,
                     &cur_t,
                     &input_v,
@@ -2900,6 +2958,7 @@ fn repair_impl(
                     &spec,
                     &tuning,
                     ft_trigger == crate::ftetwild::Trigger::Always,
+                    Some(cancel as &dyn sutura_geom::cancel::Cancel),
                 ) {
                     if result.adopted {
                         cur_v = result.verts;

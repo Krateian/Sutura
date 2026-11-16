@@ -1492,6 +1492,16 @@ pub fn coat(
     tris: &[[i64; 3]],
     opts: &CoatOptions,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
+    coat_with_cancel(verts, tris, opts, None)
+}
+
+/// `coat` with a cooperative cancellation probe.
+pub fn coat_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    opts: &CoatOptions,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     let intensity = if matches!(
         opts.intensity.as_str(),
         "quick" | "balanced" | "thorough" | "extreme"
@@ -1502,6 +1512,12 @@ pub fn coat(
     };
     let ispec = spec(intensity);
     let time_budget = opts.time_budget.unwrap_or(ispec.time_budget);
+    if sutura_geom::cancel::cancelled(cancel) {
+        let mut m = Map::new();
+        m.insert("error".into(), json!("cancelled"));
+        m.insert("ran".into(), json!(false));
+        return (verts.to_vec(), tris.to_vec(), Value::Object(m));
+    }
     let mut report_map = Map::new();
     for (key, value) in [
         ("method", json!(16)),
@@ -1876,6 +1892,19 @@ pub fn run(
     intensity: &str,
     params: &Value,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
+    run_with_cancel(v, t, input_v, input_t, intensity, params, None)
+}
+
+/// `run` with a cooperative cancellation probe.
+pub fn run_with_cancel(
+    v: &[[f64; 3]],
+    t: &[[i64; 3]],
+    input_v: &[[f64; 3]],
+    input_t: &[[i64; 3]],
+    intensity: &str,
+    params: &Value,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     let mut rec = base_record();
     let mut opts = CoatOptions::from_value(params);
     if opts.intensity == DEFAULT_INTENSITY {
@@ -1890,7 +1919,12 @@ pub fn run(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let (cand_v, cand_t, drec) = coat(input_v, input_t, &opts);
+    if sutura_geom::cancel::cancelled(cancel) {
+        let mut rec = base_record();
+        rec.insert("reason".into(), json!("cancelled"));
+        return (v.to_vec(), t.to_vec(), Value::Object(rec));
+    }
+    let (cand_v, cand_t, drec) = coat_with_cancel(input_v, input_t, &opts, cancel);
     rec.insert("ran".into(), json!(true));
     for (from, to) in [
         ("drain", "drain"),

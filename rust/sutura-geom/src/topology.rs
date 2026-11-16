@@ -429,6 +429,14 @@ pub fn remove_duplicate_vertices_core(
     vrows: &[[f32; 3]],
     trows: &[[i64; 3]],
 ) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+    remove_duplicate_vertices_core_with_cancel(vrows, trows, None)
+}
+
+pub fn remove_duplicate_vertices_core_with_cancel(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
     let nv = vrows.len();
     if nv == 0 {
         return (vrows.to_vec(), trows.to_vec());
@@ -438,7 +446,10 @@ pub fn remove_duplicate_vertices_core(
     let mut new_verts: Vec<[f32; 3]> = Vec::with_capacity(nv);
     let mut old_to_new: Vec<usize> = Vec::with_capacity(nv);
 
-    for p in vrows {
+    for (vi, p) in vrows.iter().enumerate() {
+        if vi % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
         let key = [
             f32_canonical_bits(p[0]),
             f32_canonical_bits(p[1]),
@@ -475,7 +486,10 @@ pub fn remove_duplicate_vertices_core(
     }
 
     let mut new_tris: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
-    for r in trows {
+    for (ri, r) in trows.iter().enumerate() {
+        if ri % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
         let (i0, i1, i2) = (r[0] as usize, r[1] as usize, r[2] as usize);
         if i0 >= nv || i1 >= nv || i2 >= nv {
             continue;
@@ -572,6 +586,17 @@ pub fn remove_connected_components_core(
     min_faces: i64,
     remove_unreferenced: bool,
 ) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+    remove_connected_components_core_with_cancel(
+        vrows, trows, min_faces, remove_unreferenced, None)
+}
+
+pub fn remove_connected_components_core_with_cancel(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+    min_faces: i64,
+    remove_unreferenced: bool,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
     let nf = trows.len();
     if nf == 0 || min_faces <= 1 {
         return (vrows.to_vec(), trows.to_vec());
@@ -587,6 +612,9 @@ pub fn remove_connected_components_core(
     let mut i = 0usize;
     let n_he = half_edges.len();
     while i < n_he {
+        if i % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
         let edge = half_edges[i].0;
         let mut j = i + 1;
         while j < n_he && half_edges[j].0 == edge {
@@ -597,6 +625,9 @@ pub fn remove_connected_components_core(
     }
     let mut comp_sizes = vec![0usize; nf];
     for f in 0..nf {
+        if f % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
         let root = ds.find(f);
         comp_sizes[root] += 1;
     }
@@ -685,6 +716,13 @@ pub fn re_orient_faces_coherently<'py>(
 }
 
 pub fn re_orient_faces_coherently_core(trows: &[[i64; 3]]) -> Result<Vec<[i64; 3]>, TopologyError> {
+    re_orient_faces_coherently_core_with_cancel(trows, None)
+}
+
+pub fn re_orient_faces_coherently_core_with_cancel(
+    trows: &[[i64; 3]],
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Result<Vec<[i64; 3]>, TopologyError> {
     let nf = trows.len();
     if nf == 0 {
         return Ok(Vec::new());
@@ -730,6 +768,9 @@ pub fn re_orient_faces_coherently_core(trows: &[[i64; 3]]) -> Result<Vec<[i64; 3
     let mut queue = std::collections::VecDeque::new();
 
     for start_f in 0..nf {
+        if start_f % 4096 == 0 && crate::cancel::cancelled(cancel) {
+            return Ok(trows.to_vec());
+        }
         if visited[start_f] {
             continue;
         }
@@ -797,6 +838,14 @@ pub fn repair_non_manifold_edges_core(
     vrows: &[[f32; 3]],
     trows: &[[i64; 3]],
 ) -> Vec<[i64; 3]> {
+    repair_non_manifold_edges_core_with_cancel(vrows, trows, None)
+}
+
+pub fn repair_non_manifold_edges_core_with_cancel(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Vec<[i64; 3]> {
     let nf = trows.len();
     let nv = vrows.len();
     if nf == 0 {
@@ -804,7 +853,10 @@ pub fn repair_non_manifold_edges_core(
     }
 
     let mut areas: Vec<f64> = Vec::with_capacity(nf);
-    for tri in trows {
+    for (ti, tri) in trows.iter().enumerate() {
+        if ti % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return trows.to_vec();
+        }
         let i0 = tri[0];
         let i1 = tri[1];
         let i2 = tri[2];
@@ -852,6 +904,9 @@ pub fn repair_non_manifold_edges_core(
 
     let mut i = 0;
     while i < half_edges.len() {
+        if i % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return trows.to_vec();
+        }
         let mut j = i + 1;
         while j < half_edges.len() && half_edges[j].0 == half_edges[i].0 {
             j += 1;
@@ -867,6 +922,9 @@ pub fn repair_non_manifold_edges_core(
 
     let mut to_del: Vec<usize> = Vec::new();
     for (f_idx, edges) in face_edges.iter().enumerate() {
+        if f_idx % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return trows.to_vec();
+        }
         let mut has_nm = false;
         for e in edges {
             if let Some(flist) = edge_faces.get(e) {
@@ -935,6 +993,14 @@ pub fn repair_non_manifold_vertices_core(
     vrows: &[[f32; 3]],
     trows: &[[i64; 3]],
 ) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+    repair_non_manifold_vertices_core_with_cancel(vrows, trows, None)
+}
+
+pub fn repair_non_manifold_vertices_core_with_cancel(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
     let nf = trows.len();
     let nv = vrows.len();
     if nf == 0 || nv == 0 {
@@ -948,6 +1014,9 @@ pub fn repair_non_manifold_vertices_core(
     let mut vert_faces: std::collections::HashMap<i64, Vec<usize>> = std::collections::HashMap::new();
 
     for (fi, tri) in trows.iter().enumerate() {
+        if fi % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
         for k in 0..3 {
             let e = canon(tri[k], tri[(k + 1) % 3]);
             half_edges.push((e, fi, k));
@@ -984,7 +1053,10 @@ pub fn repair_non_manifold_vertices_core(
     }
 
     let mut nm_verts: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    for (&vi, flist) in &vert_faces {
+    for (vfi, (&vi, flist)) in vert_faces.iter().enumerate() {
+        if vfi % 4096 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
         if nm_edge_verts.contains(&vi) {
             continue;
         }
@@ -995,6 +1067,9 @@ pub fn repair_non_manifold_vertices_core(
         queue.push_back(start_f);
 
         while let Some(curr_f) = queue.pop_front() {
+            if crate::cancel::cancelled(cancel) {
+                return (vrows.to_vec(), trows.to_vec());
+            }
             let tri = t_out[curr_f];
             let mut corner = usize::MAX;
             for k in 0..3 {

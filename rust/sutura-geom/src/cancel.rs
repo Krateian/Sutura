@@ -60,3 +60,26 @@ pub(crate) struct SignalGuard;
 impl SignalGuard {
     pub(crate) fn install() -> Self { SignalGuard }
 }
+
+/// Read-only cancellation probe shared with `sutura-core`.
+///
+/// The pipeline owns the concrete token (`CancelToken`); geometry loops only
+/// need a cheap read.  `None` preserves the historical uncancellable behaviour
+/// for bridge and unit-test call sites.
+pub trait Cancel: Sync {
+    fn is_cancelled(&self) -> bool;
+}
+
+/// A probe that never cancels, for call sites without a token.
+pub struct NeverCancel;
+
+impl Cancel for NeverCancel {
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+
+#[inline]
+pub fn cancelled(cancel: Option<&dyn Cancel>) -> bool {
+    cancel.map(|c| c.is_cancelled()).unwrap_or(false)
+}

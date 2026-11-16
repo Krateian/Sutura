@@ -1093,17 +1093,32 @@ impl MeshBvh {
         voxel: f64,
         dims: [usize; 3],
     ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+        self.sdf_grid_with_cancel(origin, voxel, dims, None)
+    }
+
+    /// `sdf_grid` with a cooperative cancellation probe. On cancellation the
+    /// partial grids are returned; the caller checks the token and aborts.
+    pub fn sdf_grid_with_cancel(
+        &self,
+        origin: [f64; 3],
+        voxel: f64,
+        dims: [usize; 3],
+        cancel: Option<&dyn crate::cancel::Cancel>,
+    ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
         let slice = dims[0] * dims[1];
         let n = slice * dims[2];
         let mut winding = vec![0.0f32; n];
         let mut unsigned = vec![0.0f32; n];
         let mut signed = vec![0.0f32; n];
-        winding
+        let _ = winding
             .par_chunks_mut(slice)
             .zip(unsigned.par_chunks_mut(slice))
             .zip(signed.par_chunks_mut(slice))
             .enumerate()
-            .for_each(|(k, ((wch, uch), sch))| {
+            .try_for_each(|(k, ((wch, uch), sch))| -> Result<(), ()> {
+                if crate::cancel::cancelled(cancel) {
+                    return Err(());
+                }
                 let z = origin[2] + voxel * k as f64;
                 for j in 0..dims[1] {
                     let y = origin[1] + voxel * j as f64;
@@ -1118,6 +1133,7 @@ impl MeshBvh {
                         sch[row + i] = if w > 0.5 { -u } else { u };
                     }
                 }
+                Ok(())
             });
         (winding, unsigned, signed)
     }
