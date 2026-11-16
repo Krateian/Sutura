@@ -135,6 +135,29 @@ fn small_parts_json(v: &[[f64; 3]], t: &[[i64; 3]], min_faces: usize) -> Option<
 }
 
 /// Run a chain. Returns `(verts, tris, applied, skipped, removed_small_parts)`.
+fn stage1_fp(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut feed = |b: u8| {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    };
+    for p in verts {
+        for c in p {
+            for b in c.to_le_bytes() {
+                feed(b);
+            }
+        }
+    }
+    for t in tris {
+        for c in t {
+            for b in c.to_le_bytes() {
+                feed(b);
+            }
+        }
+    }
+    h
+}
+
 pub fn apply_chain(
     verts: &[[f64; 3]],
     tris: &[[i64; 3]],
@@ -173,6 +196,15 @@ pub fn apply_chain_with_cancel_errors(
     let mut removed_small_parts = None;
     let mut selected = vec![false; t.len()];
     let steps = chain.as_array().cloned().unwrap_or_default();
+    let fp_on = std::env::var_os("SUTURA_STAGE1_FP").is_some();
+    if fp_on {
+        eprintln!(
+            "[stage1-fp] input faces={} verts={} {:016x}",
+            t.len(),
+            v.len(),
+            stage1_fp(&v, &t)
+        );
+    }
     for entry in steps {
         if sutura_geom::cancel::cancelled(cancel) {
             break;
@@ -288,11 +320,22 @@ pub fn apply_chain_with_cancel_errors(
             }
             Ok(())
         })();
+        let failed = res.is_err();
         match res {
             Ok(()) => applied += 1,
             Err(msg) => {
                 skipped.insert(name.to_string(), Value::from(msg));
             }
+        }
+        if fp_on {
+            eprintln!(
+                "[stage1-fp] {}{} faces={} verts={} {:016x}",
+                name,
+                if failed { " SKIP" } else { "" },
+                t.len(),
+                v.len(),
+                stage1_fp(&v, &t)
+            );
         }
         if sutura_geom::cancel::cancelled(cancel) {
             break;

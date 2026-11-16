@@ -8,6 +8,7 @@ from sutura/repair.py; no logic change.
 """
 import json
 import os
+import sys
 import time
 
 import numpy as np
@@ -20,6 +21,17 @@ from sutura_engine import rust_bridge
 
 def _stage1_core():
     return rust_bridge.load('stage1', ('SUTURA_STAGE1_ENGINE',), 'python')
+
+
+def _stage1_fp(v, t):
+    """FNV-1a over the f64/i64 bit patterns; mirrors the Rust debug probe."""
+    h = 0xcbf29ce484222325
+    for arr, dtype in ((v, '<f8'), (t, '<i8')):
+        data = np.ascontiguousarray(arr, dtype=dtype).tobytes()
+        for byte in data:
+            h ^= byte
+            h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return '%016x' % h
 
 
 def _close_holes_step(maxholesize):
@@ -167,6 +179,10 @@ def apply_chain(verts, tris, chain, sink=None):
     applied = 0
     skipped = {}
     selected = np.zeros(len(t), dtype=bool)
+    fp_on = bool(os.environ.get('SUTURA_STAGE1_FP'))
+    if fp_on:
+        print('[stage1-fp] input faces=%d verts=%d %s' % (
+            len(t), len(v), _stage1_fp(v, t)), file=sys.stderr)
     for name, params in chain:
         try:
             if name == 'meshing_remove_duplicate_faces':
@@ -215,6 +231,10 @@ def apply_chain(verts, tris, chain, sink=None):
         except Exception as exc:  # noqa: BLE001 - a chain step never crashes a repair
             method_health.record_error('stage1:' + name, 'filter', exc)
             skipped[name] = str(exc)
+        if fp_on:
+            print('[stage1-fp] %s%s faces=%d verts=%d %s' % (
+                name, ' SKIP' if name in skipped else '',
+                len(t), len(v), _stage1_fp(v, t)), file=sys.stderr)
     return v, t, applied, skipped
 
 
