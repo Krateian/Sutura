@@ -5,7 +5,7 @@
 //! Every filter is a pure `sutura-geom` kernel; the Python module keeps the
 //! same chain definitions and delegates here when `SUTURA_STAGE1_ENGINE=rust`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use serde_json::{json, Value};
 use sutura_geom::topology::{
@@ -337,3 +337,114 @@ pub fn extreme_extra_passes(
     t = t2;
     (true, found, removed, applied2, skipped2, v, t)
 }
+
+/// Python `stage1.join_small_components`: move every connected component
+/// smaller than `mincomponentsize` onto the nearest vertex of the nearest
+/// larger component, fuse the coincident vertices and re-close the holes.
+/// Returns `(verts, tris, moved, remaining_small)`; opt-in only
+/// (`--experimental-join-components`).
+pub fn join_small_components(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    mincomponentsize: i64,
+    maxholesize: i64,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, usize, usize) {
+    let n = tris.len();
+    if n == 0 {
+        return (verts.to_vec(), tris.to_vec(), 0, 0);
+    }
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    fn union(parent: &mut [usize], a: usize, b: usize) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb {
+            parent[ra] = rb;
+        }
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut vertex_faces: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        for &vi in t {
+            vertex_faces.entry(vi).or_default().push(fi);
+        }
+    }
+    for faces in vertex_faces.values() {
+        let first = faces[0];
+        for &fi in &faces[1..] {
+            union(&mut parent, first, fi);
+        }
+    }
+    let comps: Vec<usize> = (0..n).map(|i| find(&mut parent, i)).collect();
+    let mut counts: HashMap<usize, usize> = HashMap::new();
+    for &c in &comps {
+        *counts.entry(c).or_insert(0) += 1;
+    }
+    let mut large: Vec<usize> = Vec::new();
+    let mut small: Vec<usize> = Vec::new();
+    for (&c, &count) in &counts {
+        if count as i64 >= mincomponentsize {
+            large.push(c);
+        } else {
+            small.push(c);
+        }
+    }
+    if large.is_empty() || small.is_empty() {
+        return (verts.to_vec(), tris.to_vec(), 0, small.len());
+    }
+    let mut comp_verts: HashMap<usize, BTreeSet<i64>> = HashMap::new();
+    for (fi, &c) in comps.iter().enumerate() {
+        let set = comp_verts.entry(c).or_default();
+        for &x in &tris[fi] {
+            set.insert(x);
+        }
+    }
+    let comp_verts: HashMap<usize, Vec<usize>> = comp_verts
+        .into_iter()
+        .map(|(c, set)| (c, set.into_iter().map(|x| x as usize).collect()))
+        .collect();
+    let mut v_new = verts.to_vec();
+    let mut moved = 0usize;
+    for &sc in &small {
+        let sv = &comp_verts[&sc];
+        let sv3: Vec<[f64; 3]> = sv.iter().map(|&i| verts[i]).collect();
+        let mut best = f64::INFINITY;
+        let mut best_translate: Option<[f64; 3]> = None;
+        for &lc in &large {
+            let lv = &comp_verts[&lc];
+            let lv3: Vec<[f64; 3]> = lv.iter().map(|&i| verts[i]).collect();
+            for a in &sv3 {
+                for b in &lv3 {
+                    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                    if d2 < best {
+                        best = d2;
+                        best_translate = Some(d);
+                    }
+                }
+            }
+        }
+        if let Some(tr) = best_translate {
+            for &i in sv {
+                v_new[i] = [v_new[i][0] + tr[0], v_new[i][1] + tr[1], v_new[i][2] + tr[2]];
+            }
+            moved += 1;
+        }
+    }
+    let chain = Value::Array(vec![
+        step("meshing_remove_duplicate_vertices", json!({})),
+        step("meshing_repair_non_manifold_vertices", json!({})),
+        step("meshing_remove_duplicate_faces", json!({})),
+        step("meshing_close_holes", json!({"maxholesize": maxholesize})),
+        step("meshing_remove_unreferenced_vertices", json!({})),
+    ]);
+    let (v2, t2, _applied, _skipped, _removed) = apply_chain(&v_new, tris, &chain);
+    let remaining = small.len().saturating_sub(moved);
+    (v2, t2, moved, remaining)
+}
+

@@ -2523,10 +2523,7 @@ fn repair_impl(
         "experimental_indirect_autorefine".into(),
         Value::Bool(false),
     );
-    stats.insert(
-        "experimental_join_components".into(),
-        Value::Bool(opts.join_components),
-    );
+    stats.insert("experimental_join_components".into(), Value::Bool(false));
     stats.insert("experimental_ftetwild".into(), Value::Bool(false));
     let ftetwild_bin = crate::ftetwild::find_binary();
     let (selected_engines, engine_warnings) =
@@ -2712,6 +2709,20 @@ fn repair_impl(
     cur_t = t1;
     if cancel.is_cancelled() {
         return cancelled();
+    }
+    if opts.join_components {
+        let (vj, tj, moved, remaining) = crate::stage1::chain::join_small_components(
+            &cur_v,
+            &cur_t,
+            min_component,
+            max_hole,
+        );
+        cur_v = vj;
+        cur_t = tj;
+        stats.insert(
+            "experimental_join_components".into(),
+            json!({"moved": moved, "remaining_small": remaining}),
+        );
     }
 
     let mut after = common::topology_summary(&cur_v, &cur_t);
