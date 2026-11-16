@@ -570,6 +570,9 @@ fn run_outer_shell_prepass(
     tamponade_enabled: bool,
     stats: &mut Map<String, Value>,
 ) {
+    let t_shell = Instant::now();
+    let mut shell_analyze_s = 0.0f64;
+    let mut topo_stats_s = 0.0f64;
     if !should_extract_outer_shell(cur_v, cur_t, mesh_type, 0) {
         return;
     }
@@ -588,9 +591,12 @@ fn run_outer_shell_prepass(
         ..Default::default()
     };
     let ut = u32_tris(cur_t);
+    let t_analyze = Instant::now();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         shell_analyze_and_filter(cur_v, &ut, &config)
     }));
+    shell_analyze_s = t_analyze.elapsed().as_secs_f64();
+    let t_topo = Instant::now();
 
     let mut shell_adopted = false;
     let mut shell_budget_exceeded = false;
@@ -659,6 +665,7 @@ fn run_outer_shell_prepass(
         }
     };
 
+    topo_stats_s = t_topo.elapsed().as_secs_f64();
     let info = sinfo.as_ref();
     let phase_value = shell_phase.clone().map(Value::from).unwrap_or(Value::Null);
     let reason_value = shell_reason.clone().map(Value::from).unwrap_or(Value::Null);
@@ -668,9 +675,9 @@ fn run_outer_shell_prepass(
             "shell_adopted": shell_adopted,
             "shell_phase": phase_value.clone(),
             "shell_reason": reason_value.clone(),
-            "time_s": 0.0,
-            "shell_analyze_s": 0.0,
-            "topo_stats_s": 0.0,
+            "time_s": (t_shell.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
+            "shell_analyze_s": (shell_analyze_s * 1000.0).round() / 1000.0,
+            "topo_stats_s": (topo_stats_s * 1000.0).round() / 1000.0,
             "outer_count": info.map(|r| r.outer_count).unwrap_or(0),
             "buried_count": info.map(|r| r.buried_count).unwrap_or(0),
             "cavity_count": info.map(|r| r.cavity_count).unwrap_or(0),
