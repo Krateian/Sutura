@@ -3855,6 +3855,7 @@ dependencies = [
  "rust-i18n",
  "serde_json",
  "sutura-core",
+ "sutura-geom",
  "sys-locale",
  "tiny-skia",
 ]

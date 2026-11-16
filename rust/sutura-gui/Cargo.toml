@@ -9,6 +9,7 @@ repository = "https://github.com/Krateian/Sutura"
 
 [dependencies]
 sutura-core = { path = "../sutura-core" }
+sutura-geom = { path = "../sutura-geom", default-features = false, features = ["decimate"] }
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 egui = "0.37"
 egui-wgpu = "0.37"

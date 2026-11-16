@@ -86,3 +86,9 @@ app:
   about_body: Sutura, 3D baskı için bozuk mesh'leri onarır. Bu, Rust/egui GUI'sidir; bu fazda onarım çekirdeği hâlâ Python CLI üzerinden çalışır.
   updater_title: Güncellemeler
   updater_body: Güncelleyici ayrı sutura-updater crate'iyle gelecek. Henüz ağ erişimi yok.
+  repeat_pick: Tekrar noktalarını seç
+  repeat_pick_title: Tekrar Noktası Seçimi
+  repeat_pick_hint: "Önce sağlıklı bölgeye (kaynak), sonra hasarlı bölgeye (hedef) tıklayın. Üçüncü tıklama kaynağı taşır."
+  repeat_pick_state: "kaynak: %{source}    hedef: %{target}"
+  repeat_pick_apply: Bu noktaları kullan
+  repeat_pick_cancel: İptal

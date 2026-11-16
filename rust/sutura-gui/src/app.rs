@@ -153,6 +153,8 @@ pub struct SuturaApp {
     auto_batch_started: bool,
     about_open: bool,
     updater_open: bool,
+    /// The repeat picker window, created on demand from the selected mesh.
+    repeat_picker: Option<crate::repeat_picker::RepeatPicker>,
     screenshot_path: Option<PathBuf>,
     screenshot_requested: bool,
     exit_after_screenshot: bool,
@@ -193,6 +195,7 @@ impl SuturaApp {
             auto_batch_started: false,
             about_open: options.about,
             updater_open: options.updater,
+            repeat_picker: None,
             screenshot_path: options.screenshot_path,
             screenshot_requested: false,
             exit_after_screenshot: options.exit_after_screenshot,
@@ -278,6 +281,14 @@ impl SuturaApp {
         };
         self.files.push(entry);
         self.selected = Some(self.files.len() - 1);
+    }
+
+    /// Open the repeat picker on the selected file's input mesh.
+    fn open_repeat_picker(&mut self) {
+        let Some(idx) = self.selected else { return };
+        let Some(entry) = self.files.get(idx) else { return };
+        let Some(mesh) = entry.input.clone() else { return };
+        self.repeat_picker = Some(crate::repeat_picker::RepeatPicker::new(&mesh));
     }
 
     fn apply_selection(&mut self) {
@@ -654,6 +665,9 @@ impl eframe::App for SuturaApp {
                     ui.label(rust_i18n::t!("app.language").to_string());
                     if ui.button(rust_i18n::t!("app.updates").to_string()).clicked() {
                         self.updater_open = true;
+                    }
+                    if ui.button(rust_i18n::t!("app.repeat_pick").to_string()).clicked() {
+                        self.open_repeat_picker();
                     }
                     if ui.button(rust_i18n::t!("app.about").to_string()).clicked() {
                         self.about_open = true;
@@ -1145,6 +1159,58 @@ impl eframe::App for SuturaApp {
             self.updater_open = open;
         }
 
+        if let Some(picker) = self.repeat_picker.as_mut() {
+            let mut open = true;
+            let mut apply = false;
+            let mut cancel = false;
+            egui::Window::new(rust_i18n::t!("app.repeat_pick_title").to_string())
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(&ctx, |ui| {
+                    ui.label(rust_i18n::t!("app.repeat_pick_hint").to_string());
+                    picker.show(ui);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            rust_i18n::t!(
+                                "app.repeat_pick_state",
+                                source = fmt_point(picker.source),
+                                target = fmt_point(picker.target)
+                            )
+                            .to_string(),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        let ready = picker.source.is_some() && picker.target.is_some();
+                        if ui
+                            .add_enabled(ready, egui::Button::new(rust_i18n::t!("app.repeat_pick_apply").to_string()))
+                            .clicked()
+                        {
+                            apply = true;
+                        }
+                        if ui.button(rust_i18n::t!("app.repeat_pick_cancel").to_string()).clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if apply {
+                if let (Some(source), Some(target)) = (picker.source, picker.target) {
+                    // The same fields the CLI's `--repeat-source/--repeat-target`
+                    // land in, so the picker cannot diverge from the flags.
+                    self.settings.repeat_source = Some(source);
+                    self.settings.repeat_target = Some(target);
+                    self.log(format!(
+                        "repeat points set: source {}, target {}",
+                        fmt_point(Some(source)),
+                        fmt_point(Some(target))
+                    ));
+                }
+                self.repeat_picker = None;
+            } else if cancel || !open {
+                self.repeat_picker = None;
+            }
+        }
+
         if let Some((idx, output)) = self.pending_overwrite.clone() {
             egui::Window::new(rust_i18n::t!("app.overwrite_title").to_string())
                 .collapsible(false)
@@ -1188,6 +1254,14 @@ impl Drop for SuturaApp {
         if let Some(token) = self.cancel_token.take() {
             token.cancel();
         }
+    }
+}
+
+/// Format a picked point for display, or a placeholder when unset.
+fn fmt_point(p: Option<[f64; 3]>) -> String {
+    match p {
+        Some([x, y, z]) => format!("({x:.2}, {y:.2}, {z:.2})"),
+        None => "-".to_string(),
     }
 }
 

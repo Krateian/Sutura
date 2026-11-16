@@ -86,3 +86,9 @@ app:
   about_body: Sutura repairs broken meshes for 3D printing. This is the Rust/egui GUI; the repair core still runs through the Python CLI in this phase.
   updater_title: Updates
   updater_body: The updater will ship with the separate sutura-updater crate. No network access yet.
+  repeat_pick: Pick repeat points
+  repeat_pick_title: Repeat Pick
+  repeat_pick_hint: "Click the healthy region first (source), then the damaged one (target). A third click moves the source."
+  repeat_pick_state: "source: %{source}    target: %{target}"
+  repeat_pick_apply: Use these points
+  repeat_pick_cancel: Cancel

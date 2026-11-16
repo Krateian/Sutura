@@ -1,6 +1,7 @@
 mod app;
 mod i18n;
 mod mesh;
+mod repeat_picker;
 mod viewer;
 
 rust_i18n::i18n!("locales", fallback = "en");
