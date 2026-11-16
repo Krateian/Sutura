@@ -1363,6 +1363,12 @@ fn process_one(
     methods: &[u64],
     progress: Option<&JsonProgress>,
 ) -> (Value, bool) {
+    let t_cli = Instant::now();
+    let cli_t = |label: &str, d: std::time::Duration| {
+        if std::env::var_os("SUTURA_CLI_TIMINGS").is_some() {
+            eprintln!("[cli-t] {label} {:.3}", d.as_secs_f64());
+        }
+    };
     let input_display = path.display().to_string();
     if !path.exists() {
         return (
@@ -1382,6 +1388,7 @@ fn process_one(
             )
         }
     };
+    cli_t("load", t_cli.elapsed());
     if let Some(progress) = progress {
         progress.stage(2, "prepass");
     }
@@ -1406,6 +1413,7 @@ fn process_one(
     let outcome = repair(&verts, &tris, opts, &CoreSink, &token);
     stop.store(true, Ordering::SeqCst);
     let _ = monitor.join();
+    cli_t("repair", started.elapsed());
 
     let (out_v, out_t, core_report) = match outcome {
         RepairOutcome::Ok {
