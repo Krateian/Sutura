@@ -17,7 +17,6 @@ import json
 import sys
 
 FAILING = ('WORSE', 'FAIL', 'ERROR', 'CHANGED', 'MISSING', 'VISUAL-WORSE',
-FAILING = ('WORSE', 'FAIL', 'ERROR', 'CHANGED', 'MISSING', 'VISUAL-WORSE',
            'TIMEOUT', 'CRASHED', 'DIFF')
 COLS = [
     ('Holes b/c', 'reload_holes', '%s'),
