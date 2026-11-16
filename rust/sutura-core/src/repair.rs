@@ -194,6 +194,10 @@ pub struct RepairOptions {
     pub si_mode: SiMode,
     pub ftetwild: Option<Value>,
     pub time_budget_s: Option<f64>,
+    /// Opt-in Stage-1 `meshing_join_components` pass (Python
+    /// `--experimental-join-components`).
+    #[serde(default)]
+    pub join_components: bool,
     /// Per-run overrides for the intensity spec (None keeps the policy value).
     #[serde(default)]
     pub ftetwild_max_faces: Option<i64>,
@@ -250,6 +254,7 @@ impl Default for RepairOptions {
             si_mode: SiMode::Report,
             ftetwild: None,
             time_budget_s: None,
+            join_components: false,
             ftetwild_max_faces: None,
             ftetwild_timeout: None,
             graft_max_faces: None,
@@ -2503,7 +2508,10 @@ fn repair_impl(
         "experimental_indirect_autorefine".into(),
         Value::Bool(false),
     );
-    stats.insert("experimental_join_components".into(), Value::Bool(false));
+    stats.insert(
+        "experimental_join_components".into(),
+        Value::Bool(opts.join_components),
+    );
     stats.insert("experimental_ftetwild".into(), Value::Bool(false));
     let ftetwild_bin = crate::ftetwild::find_binary();
     let (selected_engines, engine_warnings) =
@@ -2675,7 +2683,7 @@ fn repair_impl(
             cur_v.first()
         );
     }
-    let chain = Value::Array(stage1_chain(max_hole, min_component, false));
+    let chain = Value::Array(stage1_chain(max_hole, min_component, opts.join_components));
     let mut stage1_errors: Vec<Value> = Vec::new();
     let (v1, t1, mut applied, mut skipped, removed_small) =
         crate::stage1::chain::apply_chain_with_cancel_errors(
@@ -2784,7 +2792,7 @@ fn repair_impl(
         let params = json!({
             "maxholesize": max_hole,
             "mincomponentsize": min_component,
-            "join_components": false,
+            "join_components": opts.join_components,
         });
         let (ran, found, removed, _applied_extra, _skipped_extra, ev, et) =
             extreme_extra_passes(&cur_v, &cur_t, &params);

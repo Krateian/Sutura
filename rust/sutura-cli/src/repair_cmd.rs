@@ -261,10 +261,6 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             cli.experimental_indirect_autorefine,
         ),
         (
-            "--experimental-join-components",
-            cli.experimental_join_components,
-        ),
-        (
             "--experimental-edge-tiebreak",
             cli.experimental_edge_tiebreak,
         ),
@@ -397,6 +393,7 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         si_mode,
         ftetwild,
         time_budget_s: None,
+        join_components: cli.experimental_join_components,
         ftetwild_max_faces: cli.ftetwild_max_faces,
         ftetwild_timeout: cli.ftetwild_timeout,
         graft_max_faces: cli.graft_max_faces,
