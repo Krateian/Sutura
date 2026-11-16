@@ -1925,6 +1925,7 @@ fn run_graft_tier(
     spec: &IntensitySpec,
     time_budget: Option<f64>,
     cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+    report_stage1_counts: bool,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     if let Some(cap) = spec.graft_max_faces {
         if input_t.len() > cap as usize {
@@ -1961,8 +1962,8 @@ fn run_graft_tier(
     let params = json!({
         "max_faces": spec.graft_max_faces,
         "time_budget": time_budget.or(Some(spec.graft_timeout)),
-        "stage1_holes": holes,
-        "stage1_nm": nm,
+        "stage1_holes": if report_stage1_counts { json!(holes) } else { Value::Null },
+        "stage1_nm": if report_stage1_counts { json!(nm) } else { Value::Null },
         "guard": json!({"si_policy": "improved_flag"}),
     });
     graft_tier::decide(
@@ -2694,6 +2695,7 @@ fn repair_impl(
                 &cur_v, &cur_t, &s1_in_v, &s1_in_t, holes, nm,
                 &intensity_for_tamponade, &spec, opts.time_budget_s,
                 Some(cancel as &dyn sutura_geom::cancel::Cancel),
+                false,
             );
             if adopted(&rec) {
                 cur_v = quantize(&gv);
@@ -2739,6 +2741,7 @@ fn repair_impl(
                     &spec,
                     opts.time_budget_s,
                     Some(cancel as &dyn sutura_geom::cancel::Cancel),
+                    true,
                 );
                 let cov_failed = rec
                     .get("coverage_ok")

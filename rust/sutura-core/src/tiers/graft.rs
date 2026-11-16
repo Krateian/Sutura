@@ -106,7 +106,7 @@ pub fn decide(
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     let mut rec = rec_base(params, grec);
     rec.insert("input_faces".into(), json!(input_t.len()));
-    rec.insert("input_vertices".into(), json!(input_v.len()));
+    rec.insert("input_vertices".into(), Value::Null);
 
     for (k, name) in [
         ("budget_exceeded", "budget_exceeded"),
