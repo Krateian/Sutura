@@ -2460,6 +2460,7 @@ fn repair_impl(
         );
     }
     let before = common::topology_summary(&cur_v, &cur_t);
+    let input_components = common::topology_summary(&input_v, &input_t).components;
     let holes_before = boundary_loop_stats(&cur_t).0;
     let nm_before = before.non_two_manifold_edges;
     let before_verts = cur_v.len();
@@ -3286,6 +3287,7 @@ fn repair_impl(
     {
         let vb = geom_volume(&stage1_volume_before_v, &stage1_volume_before_t);
         let va = geom_volume(&cur_v, &cur_t);
+        stage1.insert("volume_change_percent".into(), Value::Null);
         if vb != 0.0 {
             let pct = (va - vb) / vb.abs() * 100.0;
             stage1.insert(
@@ -3300,6 +3302,7 @@ fn repair_impl(
         let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
         stage1.insert("surface_area_before".into(), Value::from(round3(sa_before)));
         stage1.insert("surface_area_after".into(), Value::from(round3(sa_after)));
+        stage1.insert("surface_area_change_percent".into(), Value::Null);
         if sa_before != 0.0 {
             let pct = (sa_after - sa_before) / sa_before * 100.0;
             stage1.insert(
@@ -3308,7 +3311,7 @@ fn repair_impl(
             );
         }
     }
-    stage1.insert("components_before".into(), Value::from(before.components));
+    stage1.insert("components_before".into(), Value::from(input_components));
     {
         let ut: Vec<[usize; 3]> = cur_t
             .iter()
@@ -3336,6 +3339,28 @@ fn repair_impl(
     if skipped.as_object().map(|m| !m.is_empty()).unwrap_or(false) {
         stage1.insert("skipped".into(), skipped);
     }
+    let possible = crate::report::possible_debris(
+        &cur_v,
+        &to_i32(&cur_t),
+        min_component as usize,
+        0.005,
+    )
+    .map(|d| {
+        json!({
+            "count": d.count,
+            "capped": d.capped,
+            "parts": d.parts.iter().map(|p| json!({
+                "faces": p.faces,
+                "volume_pct": p.volume_pct,
+                "size_pct": p.size_pct,
+                "distance_mm": p.distance_mm,
+            })).collect::<Vec<_>>(),
+        })
+    });
+    stage1.insert(
+        "possible_debris".into(),
+        possible.unwrap_or(Value::Null),
+    );
     stats.insert("stage1".into(), Value::Object(stage1));
     if allow_si_escalation && si_escalation_allowed(opts) {
         stage1_snapshot = Some((cur_v.clone(), cur_t.clone()));
