@@ -48,6 +48,7 @@ pub mod mincut;
 pub mod morph;
 pub mod octree;
 pub mod point;
+pub mod pick;
 pub mod pointcloud;
 pub mod predicates2d;
 pub mod predicates3d;
