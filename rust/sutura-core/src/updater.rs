@@ -21,6 +21,39 @@ pub const CHECK_INTERVAL_SECONDS: i64 = 7 * 24 * 60 * 60;
 /// The release at/after which the licence terms changed.
 pub const LICENSE_BOUNDARY_VERSION: &str = "0.2.0";
 
+/// Overrides the release API endpoint. A **test hook**: it exists so the offline
+/// path can be exercised for real (point it at `http://127.0.0.1:9` and the
+/// connection is refused exactly as it would be with no network). Unset — the
+/// normal case — GitHub is used.
+pub const API_ENV: &str = "SUTURA_UPDATE_API";
+
+/// The release endpoint in use: [`API_ENV`] when set and non-empty, else GitHub.
+///
+/// A trailing slash is trimmed so `${API}/tags` cannot produce `//tags`, which
+/// some servers treat as a different path.
+pub fn api_endpoint() -> String {
+    match std::env::var(API_ENV) {
+        Ok(v) if !v.trim().is_empty() => v.trim().trim_end_matches('/').to_string(),
+        _ => GITHUB_API.to_string(),
+    }
+}
+
+/// The tags endpoint, derived from [`api_endpoint`].
+///
+/// When the endpoint is the default `/releases/latest`, the tags URL is the
+/// documented [`GITHUB_TAGS_API`]; an override is assumed to be a
+/// `/releases/latest`-style URL whose sibling `/tags` is meaningful.
+pub fn tags_endpoint() -> String {
+    let api = api_endpoint();
+    if api == GITHUB_API {
+        return GITHUB_TAGS_API.to_string();
+    }
+    match api.rsplit_once('/') {
+        Some((base, _last)) => format!("{base}/tags"),
+        None => api,
+    }
+}
+
 const PRE_BETA: u8 = 0;
 const PRE_STABLE: u8 = 1;
 
@@ -183,14 +216,14 @@ pub fn is_appimage() -> bool {
 
 /// The latest release's tag: `/releases/latest`, else the newest tag.
 pub fn fetch_latest_release() -> Option<String> {
-    if let Some(data) = http::get_json(GITHUB_API) {
+    if let Some(data) = http::get_json(&api_endpoint()) {
         if let Some(tag) = data.get("tag_name").and_then(Value::as_str) {
             return Some(tag.to_string());
         }
     }
     // No published release yet: fall back to the newest *stable* tag, skipping
     // prereleases so a beta never surfaces to a normal user.
-    let tags = http::get_json(GITHUB_TAGS_API)?;
+    let tags = http::get_json(&tags_endpoint())?;
     tags.as_array()?
         .iter()
         .filter_map(|t| t.get("name").and_then(Value::as_str))
@@ -200,7 +233,7 @@ pub fn fetch_latest_release() -> Option<String> {
 
 /// The release object (tag, body, assets) as GitHub returned it.
 pub fn fetch_latest_release_full() -> Option<Value> {
-    http::get_json(GITHUB_API)
+    http::get_json(&api_endpoint())
 }
 
 /// Outcome of a check.
@@ -262,6 +295,10 @@ fn none() -> UpdateStatus {
 mod tests {
     use super::*;
 
+    /// The tests below mutate process-global environment variables, so they hold
+    /// this for their whole body rather than relying on the runner's threading.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Values pinned from `updater.parse_version` / `is_newer` in Python.
     #[test]
     fn version_parsing_and_ordering() {
@@ -318,18 +355,53 @@ mod tests {
         })));
     }
 
-    /// With no network the check reports `none` and does not panic.
+    /// The endpoint hook: unset means GitHub; an override is used verbatim with
+    /// a trailing slash trimmed, and a blank value counts as unset.
     #[test]
-    fn offline_check_is_none() {
-        if std::env::var_os("SUTURA_TEST_NETWORK").is_some() {
-            return; // opt-in network test
-        }
-        // Force through a bogus config dir so a real config is not touched.
-        let dir = std::env::temp_dir().join(format!("sutura-upd-test-{}", std::process::id()));
+    fn endpoint_hook_defaults_to_github_and_can_be_overridden() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(API_ENV);
+        assert_eq!(api_endpoint(), GITHUB_API);
+        assert_eq!(tags_endpoint(), GITHUB_TAGS_API);
+
+        std::env::set_var(API_ENV, "http://127.0.0.1:9");
+        assert_eq!(api_endpoint(), "http://127.0.0.1:9");
+
+        std::env::set_var(API_ENV, "http://127.0.0.1:9/releases/latest/");
+        assert_eq!(api_endpoint(), "http://127.0.0.1:9/releases/latest");
+        assert_eq!(tags_endpoint(), "http://127.0.0.1:9/releases/tags");
+
+        std::env::set_var(API_ENV, "   ");
+        assert_eq!(api_endpoint(), GITHUB_API);
+
+        std::env::remove_var(API_ENV);
+    }
+
+    /// **The real offline path.** Pointing the endpoint at a closed port makes
+    /// the connection genuinely refused, so this measures the same code an
+    /// offline machine runs: the check reports `none` rather than hanging or
+    /// panicking, and nothing is written except the attempted `last_check`.
+    #[test]
+    fn offline_endpoint_yields_none_and_records_the_attempt() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("sutura-upd-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // `fetch_latest_release` on a machine with no network returns None;
-        // this asserts the *shape* of the offline path, not the network.
-        assert_eq!(none().status, "none");
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var(API_ENV, "http://127.0.0.1:9");
+
+        std::env::remove_var("APPIMAGE");
+        let status = check_for_update("0.9.9", true);
+        assert_eq!(status.status, "none");
+        assert_eq!(status.tag, None);
+
+        // The attempt is recorded so the next run waits instead of retrying
+        // immediately — and the check itself never errored out to the user.
+        let cfg = load_config();
+        assert!(cfg.get("last_check").and_then(Value::as_i64).is_some());
+
+        std::env::remove_var(API_ENV);
+        std::env::remove_var("XDG_CONFIG_HOME");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
