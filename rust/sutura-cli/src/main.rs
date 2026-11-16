@@ -267,6 +267,23 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
             Err((code, None))
         };
     }
+    // `clear-cache` is a positional subcommand, like Python (`repair.py:1092`):
+    // it must be the first file argument, and it exits 0 either way.
+    if cli.files.first().map(|p| p.as_os_str()) == Some(std::ffi::OsStr::new("clear-cache")) {
+        let freed = sutura_core::cache::clear();
+        let human_bytes = sutura_core::cache::format_bytes(freed);
+        if cli.json {
+            outln!(
+                "{}",
+                crate::repair_cmd::py_json(&serde_json::json!({
+                    "cleared": true, "freed_bytes": freed, "freed_human": human_bytes,
+                }))
+            );
+        } else {
+            outln!("Cache cleared: {human_bytes} freed");
+        }
+        return Ok(());
+    }
     if cli.whats_new {
         // Pure filesystem read: the snapshot is written by the updater before it
         // installs, so this works with no network.
@@ -738,6 +755,9 @@ fn read_only_one(
             // `diagnosis.analyze_file` never overrides the default, so SI is
             // always counted for `--analyze`.
             true,
+            // `--no-cache` used to be parsed and dropped; it now really opts out,
+            // and `SUTURA_NO_CACHE` is honoured inside the same gate.
+            !cli.no_cache && sutura_core::cache::enabled(),
         ));
     }
     let prefix = match kind {

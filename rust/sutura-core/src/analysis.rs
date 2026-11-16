@@ -113,6 +113,103 @@ impl Analysis {
         }
         Value::Object(out)
     }
+
+    /// The **raw** field set stored in the analysis cache.
+    ///
+    /// Python's cache stores `vars(analysis)` — the dataclass fields unrounded —
+    /// so a warm run returns exactly what a cold run produced. This is
+    /// deliberately **not** `to_json`, which rounds for presentation, and it is
+    /// listed explicitly rather than derived so the two fields that are not
+    /// struct members in this port (`self_intersections_estimated`,
+    /// `classifier_version`) are included. Missing them would silently write a
+    /// 20-field payload that Python's rehydration would then clamp.
+    ///
+    /// Key order matches `ObjectAnalysis`'s declaration order, which is the order
+    /// `vars()` yields and therefore the order in the cached JSON.
+    pub fn cache_payload(&self) -> Value {
+        let mut out = Map::new();
+        out.insert("faces".into(), json!(self.faces));
+        out.insert("vertices".into(), json!(self.vertices));
+        out.insert("components".into(), json!(self.components));
+        out.insert("boundary_loops".into(), json!(self.boundary_loops));
+        out.insert("largest_loop_len".into(), json!(self.largest_loop_len));
+        out.insert("largest_loop_ratio".into(), json!(self.largest_loop_ratio));
+        out.insert("open_area_ratio".into(), json!(self.open_area_ratio));
+        out.insert("non_manifold_edges".into(), json!(self.non_manifold_edges));
+        out.insert("self_intersections".into(), json!(self.self_intersections));
+        // Not a struct field in this port; Python defaults it to false and no
+        // code path here estimates, so the constant is the true value.
+        out.insert("self_intersections_estimated".into(), json!(false));
+        out.insert("mesh_type".into(), json!(self.mesh_type));
+        out.insert("type_confidence".into(), json!(self.type_confidence));
+        out.insert("repetition_score".into(), json!(self.repetition_score));
+        out.insert("single_side_score".into(), json!(self.single_side_score));
+        out.insert("relief_score".into(), json!(self.relief_score));
+        out.insert("bbox_diagonal".into(), json!(self.bbox_diagonal));
+        out.insert("surface_area".into(), json!(self.surface_area));
+        out.insert(
+            "model".into(),
+            match &self.model {
+                Some(name) => json!(name),
+                None => Value::Null,
+            },
+        );
+        out.insert("classifier_engine".into(), json!(self.classifier_engine));
+        out.insert("classifier_version".into(), json!(CLASSIFIER_VERSION));
+        out.insert(
+            "diagnosis_v2".into(),
+            self.diagnosis_v2.clone().unwrap_or(Value::Null),
+        );
+        out.insert(
+            "possible_debris".into(),
+            self.possible_debris.clone().unwrap_or(Value::Null),
+        );
+        Value::Object(out)
+    }
+
+    /// Rebuild an `Analysis` from a cached payload.
+    ///
+    /// `model` is taken from the caller, not the payload: Python overwrites it
+    /// after rehydration so a cached entry is never model-name-poisoned
+    /// (`diagnosis.py:376-381`).
+    pub fn from_cache_payload(payload: &Value, model: Option<&str>) -> Self {
+        let i = |k: &str| payload.get(k).and_then(Value::as_i64).unwrap_or(0) as usize;
+        let f = |k: &str| payload.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+        let s = |k: &str| {
+            payload
+                .get(k)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        Self {
+            faces: i("faces"),
+            vertices: i("vertices"),
+            components: i("components"),
+            boundary_loops: i("boundary_loops"),
+            largest_loop_len: i("largest_loop_len"),
+            largest_loop_ratio: f("largest_loop_ratio"),
+            open_area_ratio: f("open_area_ratio"),
+            non_manifold_edges: i("non_manifold_edges"),
+            self_intersections: i("self_intersections"),
+            mesh_type: s("mesh_type"),
+            type_confidence: f("type_confidence"),
+            repetition_score: f("repetition_score"),
+            single_side_score: f("single_side_score"),
+            relief_score: f("relief_score"),
+            bbox_diagonal: f("bbox_diagonal"),
+            surface_area: f("surface_area"),
+            model: model.map(str::to_string).or_else(|| {
+                payload
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
+            classifier_engine: s("classifier_engine"),
+            possible_debris: payload.get("possible_debris").cloned().filter(|v| !v.is_null()),
+            diagnosis_v2: payload.get("diagnosis_v2").cloned().filter(|v| !v.is_null()),
+        }
+    }
 }
 
 /// `np.linalg.norm(v.max(axis=0) - v.min(axis=0))` on a float32 mesh.
@@ -375,11 +472,43 @@ pub fn analyze_file(
     engine: &str,
     count_self_intersections: bool,
 ) -> Result<Vec<Analysis>, String> {
+    analyze_file_cached(path, engine, count_self_intersections, crate::cache::enabled())
+}
+
+/// `analyze_file` with the content-addressed cache, matching `diagnosis.analyze_mesh`.
+///
+/// The cache is keyed on the **geometry**, so two objects with identical meshes
+/// in one 3MF share an entry — exactly as Python's does. `model` is applied after
+/// the lookup (a cached entry must not carry a previous object's name), and the
+/// timings are zeroed on write so both languages store the same bytes.
+pub fn analyze_file_cached(
+    path: impl AsRef<std::path::Path>,
+    engine: &str,
+    count_self_intersections: bool,
+    use_cache: bool,
+) -> Result<Vec<Analysis>, String> {
     let meshes = crate::mesh_io::load_meshes(path).map_err(|e| e.to_string())?;
+    let key = crate::cache::cache_key(crate::cache::app_version(), engine, false);
     let mut out = Vec::with_capacity(meshes.len());
     for (name, mesh) in meshes {
+        let mesh_id = crate::cache::mesh_id(&mesh.verts, &mesh.tris);
+        if use_cache {
+            if let Some(payload) = crate::cache::get(&mesh_id, &key) {
+                // `model` comes from the caller, so a warm entry never inherits
+                // another object's name (`diagnosis.py:376-381`).
+                out.push(Analysis::from_cache_payload(&payload, name.as_deref()));
+                continue;
+            }
+        }
         let mut a = analyze_mesh(&mesh, engine, count_self_intersections)?;
-        a.model = name;
+        a.model = name.clone();
+        if use_cache {
+            // Stored exactly as computed, timings included: Python's cache
+            // validates `_cache_version` only, so the two languages never
+            // invalidate each other, and storing real timings is what makes a
+            // warm run reproduce the cold output byte for byte.
+            crate::cache::put(&mesh_id, &key, &a.cache_payload());
+        }
         out.push(a);
     }
     Ok(out)

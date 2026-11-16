@@ -12,7 +12,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::analysis::{analyze_file, combine, Analysis};
+use crate::analysis::{analyze_file, analyze_file_cached, combine, Analysis};
 use crate::config::external_engines::external_engines;
 use crate::config::LoadedPolicy;
 use crate::ranking::{recommendations_json, rank_methods, suggest_methods};
@@ -26,11 +26,12 @@ pub fn analyze_report(
     loaded: &LoadedPolicy,
     engine: &str,
     count_self_intersections: bool,
+    use_cache: bool,
 ) -> Value {
     let mut result = Map::new();
     result.insert("input".into(), json!(path));
 
-    let objs = match analyze_file(path, engine, count_self_intersections) {
+    let objs = match analyze_file_cached(path, engine, count_self_intersections, use_cache) {
         Ok(o) => o,
         Err(e) => {
             result.insert("error".into(), json!(format!("analysis failed: {}", e)));

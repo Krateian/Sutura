@@ -8,6 +8,7 @@
 
 pub mod analysis;
 pub mod analyze;
+pub mod cache;
 pub mod classify;
 pub mod config;
 pub mod error;
