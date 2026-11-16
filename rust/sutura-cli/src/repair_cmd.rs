@@ -308,11 +308,21 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             "--self-repair/--self-check are not implemented in the Rust CLI",
         ));
     }
-    if cli.max_geometry_change.is_some() || cli.max_risk.is_some() {
-        return Err(RepairFailure::new(
-            2,
-            "--max-geometry-change/--max-risk budgets are not implemented in the Rust CLI",
-        ));
+    if let Some(v) = cli.max_geometry_change {
+        if v < 0.0 {
+            return Err(RepairFailure::new(
+                2,
+                "--max-geometry-change must be >= 0",
+            ));
+        }
+    }
+    if let Some(v) = cli.max_risk {
+        if !(0.0..=100.0).contains(&v) {
+            return Err(RepairFailure::new(
+                2,
+                "--max-risk must be between 0 and 100",
+            ));
+        }
     }
     if cli.classifier_engine.as_deref() == Some("classic") {
         return Err(RepairFailure::new(
@@ -891,6 +901,105 @@ fn method_control(methods: &[u64]) -> Value {
     })
 }
 
+fn geom_change_pct(stage1: &Value) -> Option<f64> {
+    let mut values = Vec::new();
+    for key in ["volume_change_percent", "surface_area_change_percent"] {
+        if let Some(v) = stage1.get(key).and_then(Value::as_f64) {
+            values.push(v.abs());
+        }
+    }
+    values.into_iter().reduce(f64::max)
+}
+
+fn budget_check_value(
+    report: &Value,
+    max_geom: Option<f64>,
+    max_risk: Option<f64>,
+) -> Option<Value> {
+    if max_geom.is_none() && max_risk.is_none() {
+        return None;
+    }
+    let mut geoms: Vec<f64> = Vec::new();
+    let mut risks: Vec<f64> = Vec::new();
+    if let Some(objs) = report.get("object_reports").and_then(Value::as_array) {
+        for rep in objs {
+            if let Some(g) = geom_change_pct(rep.get("stage1").unwrap_or(&Value::Null)) {
+                geoms.push(g);
+            }
+            if let Some(r) = rep.get("repair_risk").and_then(Value::as_f64) {
+                risks.push(r);
+            }
+        }
+    } else {
+        if let Some(g) = geom_change_pct(report.get("stage1").unwrap_or(&Value::Null)) {
+            geoms.push(g);
+        }
+        if let Some(r) = report.get("repair_risk").and_then(Value::as_f64) {
+            risks.push(r);
+        }
+    }
+    let geom = geoms.into_iter().reduce(f64::max);
+    let risk = risks.into_iter().reduce(f64::max);
+    let mut exceeded = Vec::new();
+    if let (Some(budget), Some(value)) = (max_geom, geom) {
+        if value > budget {
+            exceeded.push(json!({
+                "metric": "geometry_change",
+                "value": (value * 100.0).round() / 100.0,
+                "budget": budget,
+            }));
+        }
+    }
+    if let (Some(budget), Some(value)) = (max_risk, risk) {
+        if value > budget {
+            exceeded.push(json!({
+                "metric": "risk",
+                "value": value.round() as i64,
+                "budget": budget,
+            }));
+        }
+    }
+    Some(json!({
+        "geometry_change_pct": geom.map(|g| (g * 100.0).round() / 100.0),
+        "risk_score": risk.map(|r| r.round() as i64),
+        "max_geometry_change_pct": max_geom,
+        "max_risk_score": max_risk,
+        "within_budget": exceeded.is_empty(),
+        "exceeded": exceeded,
+    }))
+}
+
+fn budget_message(budget: &Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(items) = budget.get("exceeded").and_then(Value::as_array) {
+        for item in items {
+            match item.get("metric").and_then(Value::as_str) {
+                Some("geometry_change") => {
+                    let value = item.get("value").and_then(Value::as_f64).unwrap_or(0.0);
+                    let cap = item.get("budget").and_then(Value::as_f64).unwrap_or(0.0);
+                    parts.push(format!("geometry change {value:.2}% (budget {cap:.2}%)"));
+                }
+                Some("risk") => {
+                    let value = item.get("value").and_then(Value::as_i64).unwrap_or(0);
+                    let cap = item.get("budget").and_then(Value::as_f64).unwrap_or(0.0);
+                    parts.push(format!("risk {value} (budget {cap})"));
+                }
+                _ => {}
+            }
+        }
+    }
+    parts.join("; ")
+}
+
+fn budget_temp_path(output: &Path) -> PathBuf {
+    let stem = output.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+    let ext = output.extension().and_then(|s| s.to_str()).unwrap_or("stl");
+    output.with_file_name(format!(
+        "{stem}.sutura-tmp-{}.{ext}",
+        std::process::id()
+    ))
+}
+
 fn si_escalation(stage1: &Value, exact_si: &Value, deep: DeepRepair) -> Value {
     let stage1_si = stage1
         .get("self_intersections_remaining")
@@ -1465,7 +1574,16 @@ fn process_one(
         None => unique_output(path),
     };
     let out_mesh = to_mesh(&out_v, &out_t);
-    if let Err(e) = save_mesh(&output, &out_mesh) {
+    // Python treats 0 as "budget disabled" (``args.max_risk or None``).
+    let max_geom = cli.max_geometry_change.filter(|v| *v > 0.0);
+    let max_risk = cli.max_risk.filter(|v| *v > 0.0);
+    let budgeted = max_geom.is_some() || max_risk.is_some();
+    let save_path = if budgeted {
+        budget_temp_path(&output)
+    } else {
+        output.clone()
+    };
+    if let Err(e) = save_mesh(&save_path, &out_mesh) {
         if let Some(progress) = progress {
             progress.end();
         }
@@ -1494,6 +1612,41 @@ fn process_one(
         obj.insert("input".into(), Value::from(input_display));
         obj.insert("output".into(), Value::from(output.display().to_string()));
         contract_order(obj);
+    }
+    if budgeted {
+        let budget = budget_check_value(&report, max_geom, max_risk);
+        let within = budget
+            .as_ref()
+            .and_then(|b| b.get("within_budget"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if within || cli.force {
+            if let Err(e) = std::fs::rename(&save_path, &output) {
+                let _ = std::fs::remove_file(&save_path);
+                if let Some(obj) = report.as_object_mut() {
+                    obj.insert("error".into(), Value::from(format!("write failed: {e}")));
+                }
+            }
+        } else {
+            let _ = std::fs::remove_file(&save_path);
+            if let Some(obj) = report.as_object_mut() {
+                let message = if let Some(b) = &budget {
+                    format!(
+                        "Save declined: the repair exceeded your budget ({}). No output was written; re-run with --force to save anyway.",
+                        budget_message(b)
+                    )
+                } else {
+                    "Save declined: the repair exceeded your budget. No output was written; re-run with --force to save anyway.".to_string()
+                };
+                obj.insert("status".into(), Value::from("budget_declined"));
+                obj.insert("error".into(), Value::from(message));
+            }
+        }
+        if let Some(budget) = budget {
+            if let Some(obj) = report.as_object_mut() {
+                obj.insert("budget".into(), budget);
+            }
+        }
     }
     let failed = report.get("category").and_then(Value::as_str) == Some("error")
         || report.get("error").is_some();
