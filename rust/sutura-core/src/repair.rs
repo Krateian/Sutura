@@ -2729,7 +2729,7 @@ fn repair_impl(
             {
                 let g_in_v = cur_v.clone();
                 let g_in_t = cur_t.clone();
-                let (gv, gt, rec) = run_graft_tier(
+                let (gv, gt, mut rec) = run_graft_tier(
                     &cur_v,
                     &cur_t,
                     &s1_in_v,
@@ -2741,7 +2741,15 @@ fn repair_impl(
                     opts.time_budget_s,
                     Some(cancel as &dyn sutura_geom::cancel::Cancel),
                 );
-                if adopted(&rec) {
+                let cov_failed = rec
+                    .get("coverage_ok")
+                    .and_then(Value::as_bool)
+                    == Some(false);
+                let fid_failed = rec
+                    .get("fidelity_ok")
+                    .and_then(Value::as_bool)
+                    == Some(false);
+                if adopted(&rec) && !cov_failed && !fid_failed {
                     cur_v = quantize(&gv);
                     cur_t = gt;
                     after = common::topology_summary(&cur_v, &cur_t);
@@ -2749,6 +2757,21 @@ fn repair_impl(
                     nm = after.non_two_manifold_edges;
                     graft_ok = true;
                     tiers_run.push(Value::from("graft"));
+                } else if adopted(&rec) {
+                    // The ladder holds a low-coverage/low-fidelity candidate
+                    // aside and lets fTetWild/the next tier run, exactly like
+                    // the Python deep-repair ladder.
+                    if let Some(obj) = rec.as_object_mut() {
+                        obj.insert("adopted".into(), json!(false));
+                        obj.insert(
+                            "reason".into(),
+                            json!(if cov_failed {
+                                "superseded by fTetWild (input coverage below threshold)"
+                            } else {
+                                "superseded by fTetWild (fidelity below threshold)"
+                            }),
+                        );
+                    }
                 }
                 emit_tier(sink, "graft", 4, &rec);
                 trace.record(
