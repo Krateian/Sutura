@@ -7161,8 +7161,8 @@ mod tests {
                 .collect();
             let bvh = MeshBvh::from_arrays(&verts, &idx);
             for &h in &[0.05_f64, 0.2_f64] {
-                let comp = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &config, false, None);
-                let percell = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &config, true, None);
+                let comp = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &config, false, None, None);
+                let percell = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &config, true, None, None);
                 assert_eq!(
                     comp, percell,
                     "component vs per-cell verdict differ (h={}, rim={:?})",
@@ -7195,8 +7195,8 @@ mod tests {
                 .collect();
             let bvh = MeshBvh::from_arrays(&verts, &idx);
             for &h in &[0.05_f64, 0.2_f64] {
-                let a = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &accurate, false, None);
-                let f = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &fast, false, None);
+                let a = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &accurate, false, None, None);
+                let f = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &fast, false, None, None);
                 assert_eq!(a, f, "fwn vs accurate verdict differ (h={}, rim={:?})", h, rim);
             }
         }
