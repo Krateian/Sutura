@@ -2393,6 +2393,13 @@ fn repair_impl(
         return cancelled();
     }
 
+    let t_start = Instant::now();
+    let mut t_prepass = 0.0f64;
+    let mut t_stage1 = 0.0f64;
+    let mut t_deep = 0.0f64;
+    let mut t_stage2 = 0.0f64;
+    let mut t_reload = 0.0f64;
+
     emit_stage(sink, 1, "validate");
     let policy = load_policy(None).ok();
     let spec = resolve_intensity_spec(opts, policy.as_ref());
@@ -2495,6 +2502,7 @@ fn repair_impl(
     // Python runs this only in `auto` mode, before the Tamponade prepass, on
     // mechanical (or heavy-SI) multi-shell inputs. It is part of the Tamponade
     // feature, so an explicit `--no-tamponade` skips it.
+    let t_prepass_start = Instant::now();
     if opts.mode == RepairMode::Auto {
         let tamponade_enabled = opts.tamponade != Some(false);
         run_outer_shell_prepass(
@@ -2587,6 +2595,7 @@ fn repair_impl(
     }
 
     stage_fp_log("after_prepass", &cur_v, &cur_t);
+    t_prepass = t_prepass_start.elapsed().as_secs_f64();
     crate::engines::run_and_replace(
         &selected_engines,
         "before_stage1",
@@ -2754,6 +2763,8 @@ fn repair_impl(
     ) {
         after = common::topology_summary(&cur_v, &cur_t);
     }
+    t_stage1 = t_start.elapsed().as_secs_f64();
+    let t_deep_start = Instant::now();
 
     // Tamponade second chance when the pre-pass did not adopt.
     if opts.tamponade == Some(true) && !tamponade_prepass_adopted && !tamponade_gate_skipped {
@@ -3301,6 +3312,8 @@ fn repair_impl(
     deep.insert("available".into(), Value::Null);
     stats.insert("deep_repair".into(), Value::Object(deep));
 
+    t_deep = t_deep_start.elapsed().as_secs_f64();
+
     // Pinch split before Stage 2, matching the pipeline's P1a split.
     let pinch_in_v = cur_v.clone();
     let pinch_in_t = cur_t.clone();
@@ -3526,6 +3539,7 @@ fn repair_impl(
         return cancelled();
     }
     emit_stage(sink, 5, "stage 2");
+    let t_stage2_start = Instant::now();
     if two_manifold && holes_after == 0 {
         let s2_in_v = cur_v.clone();
         let s2_in_t = cur_t.clone();
@@ -3559,6 +3573,8 @@ fn repair_impl(
         );
     }
 
+    t_stage2 = t_stage2_start.elapsed().as_secs_f64();
+
     // --- P-WELD ------------------------------------------------------------
     if cancel.is_cancelled() {
         return cancelled();
@@ -3575,11 +3591,13 @@ fn repair_impl(
         0.01,
         &mut engine_entries,
     );
+    let t_reload_start = Instant::now();
     let pw = crate::p_weld::p_weld_final_with_cancel(
         &cur_v,
         &cur_t,
         Some(cancel as &dyn sutura_geom::cancel::Cancel),
     );
+    t_reload = t_reload_start.elapsed().as_secs_f64();
     if cancel.is_cancelled() {
         return cancelled();
     }
@@ -3641,11 +3659,12 @@ fn repair_impl(
     stats.insert(
         "timings".into(),
         json!({
-            "prepass": 0.0,
-            "stage1": 0.0,
-            "deep_repair": 0.0,
-            "stage2": 0.0,
-            "reload_weld": 0.0,
+            "prepass": (t_prepass * 1000.0).round() / 1000.0,
+            "stage1": (t_stage1 * 1000.0).round() / 1000.0,
+            "deep_repair": (t_deep * 1000.0).round() / 1000.0,
+            "stage2": (t_stage2 * 1000.0).round() / 1000.0,
+            "reload_weld": (t_reload * 1000.0).round() / 1000.0,
+            "file_total": ((t_start.elapsed().as_secs_f64()) * 1000.0).round() / 1000.0,
         }),
     );
 
