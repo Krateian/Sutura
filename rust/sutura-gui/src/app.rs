@@ -140,6 +140,10 @@ pub struct SuturaApp {
     pending_overwrite: Option<(usize, PathBuf)>,
     pending_batch: Option<Vec<usize>>,
     intensity: Intensity,
+    /// The full repair settings the panel edits. This IS the source of truth:
+    /// `options_from` turns it into `RepairOptions`, the same function the CLI
+    /// uses, so a control here cannot drift from the CLI.
+    settings: RepairSettings,
     batch: Vec<usize>,
     batch_total: usize,
     batch_done: usize,
@@ -179,6 +183,7 @@ impl SuturaApp {
             pending_overwrite: None,
             pending_batch: None,
             intensity: options.intensity,
+            settings: RepairSettings::from_intensity(options.intensity.value(), false),
             batch: Vec::new(),
             batch_total: 0,
             batch_done: 0,
@@ -339,7 +344,13 @@ impl SuturaApp {
         // child process to signal any more.
         let cancel = Arc::new(CancelToken::new());
         self.cancel_token = Some(cancel.clone());
-        let settings = RepairSettings::from_intensity(self.intensity.value(), force);
+        // The panel edits `settings`; intensity is one of its fields, so keep
+        // them in step rather than carrying two sources.
+        self.settings.intensity = Some(self.intensity.value().to_string());
+        if force {
+            self.settings.force = true;
+        }
+        let settings = self.settings.clone();
         std::thread::spawn(move || {
             run_repair(&input, &output, settings, tx, cancel);
         });
@@ -731,6 +742,165 @@ impl eframe::App for SuturaApp {
                             }
                         });
                 });
+                // Every control below writes `self.settings` directly. Nothing
+                // here builds a RepairOptions by hand: `options_from` does that,
+                // in the core, for the CLI and the GUI alike.
+                ui.horizontal(|ui| {
+                    ui.label(rust_i18n::t!("app.deep_repair").to_string());
+                    let current = self
+                        .settings
+                        .deep_repair
+                        .clone()
+                        .unwrap_or_else(|| "full".to_string());
+                    egui::ComboBox::from_id_salt("deep_repair")
+                        .selected_text(current.clone())
+                        .show_ui(ui, |ui| {
+                            for value in ["off", "local", "full"] {
+                                if ui
+                                    .selectable_label(current == value, value)
+                                    .clicked()
+                                {
+                                    self.settings.deep_repair = Some(value.to_string());
+                                }
+                            }
+                        });
+                });
+
+                ui.separator();
+                ui.label(rust_i18n::t!("app.tiers").to_string());
+                let mut tamponade = self.settings.no_tamponade == false;
+                if ui
+                    .checkbox(&mut tamponade, rust_i18n::t!("app.tier_tamponade").to_string())
+                    .changed()
+                {
+                    self.settings.no_tamponade = !tamponade;
+                    self.settings.experimental_tamponade = false;
+                }
+                let mut flap = self.settings.no_flap == false;
+                if ui
+                    .checkbox(&mut flap, rust_i18n::t!("app.tier_flap").to_string())
+                    .changed()
+                {
+                    self.settings.no_flap = !flap;
+                    self.settings.experimental_flap = false;
+                }
+                let mut coaptation = self.settings.no_coaptation == false;
+                if ui
+                    .checkbox(
+                        &mut coaptation,
+                        rust_i18n::t!("app.tier_coaptation").to_string(),
+                    )
+                    .changed()
+                {
+                    self.settings.no_coaptation = !coaptation;
+                    self.settings.experimental_coaptation = false;
+                }
+                // Splint is OFF by default, so it is expressed as an opt-in.
+                ui.checkbox(
+                    &mut self.settings.experimental_splint,
+                    rust_i18n::t!("app.tier_splint").to_string(),
+                );
+                let mut dressing = self.settings.dressing;
+                if ui
+                    .checkbox(&mut dressing, rust_i18n::t!("app.tier_dressing").to_string())
+                    .changed()
+                {
+                    self.settings.dressing = dressing;
+                }
+                if self.settings.dressing {
+                    ui.checkbox(
+                        &mut self.settings.dressing_force_adopt,
+                        rust_i18n::t!("app.dressing_force_adopt").to_string(),
+                    );
+                }
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(rust_i18n::t!("app.si_mode").to_string());
+                    let current = self
+                        .settings
+                        .si_mode
+                        .clone()
+                        .unwrap_or_else(|| "report".to_string());
+                    egui::ComboBox::from_id_salt("si_mode")
+                        .selected_text(current.clone())
+                        .show_ui(ui, |ui| {
+                            for value in ["repair", "report", "off"] {
+                                if ui.selectable_label(current == value, value).clicked() {
+                                    self.settings.si_mode = Some(value.to_string());
+                                }
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label(rust_i18n::t!("app.solid_engine").to_string());
+                    let current = self
+                        .settings
+                        .solid_engine
+                        .clone()
+                        .unwrap_or_else(|| "ftetwild".to_string());
+                    egui::ComboBox::from_id_salt("solid_engine")
+                        .selected_text(current.clone())
+                        .show_ui(ui, |ui| {
+                            for value in ["ftetwild", "cdt"] {
+                                if ui.selectable_label(current == value, value).clicked() {
+                                    self.settings.solid_engine = Some(value.to_string());
+                                }
+                            }
+                        });
+                });
+
+                ui.separator();
+                ui.label(rust_i18n::t!("app.methods").to_string());
+                // Multiple selection, not a sequence: `forced_methods` is a set
+                // in the core (membership only), so offering reordering would
+                // promise an order nothing honours.
+                let mut selected: Vec<u8> = self
+                    .settings
+                    .methods
+                    .as_deref()
+                    .map(|s| {
+                        s.split(',')
+                            .filter_map(|t| t.trim().parse::<u8>().ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mut changed = false;
+                egui::ScrollArea::vertical()
+                    .id_salt("methods_scroll")
+                    .max_height(140.0)
+                    .show(ui, |ui| {
+                        for (num, id, _category, name) in
+                            sutura_core::repair_settings::METHODS
+                        {
+                            let mut on = selected.contains(&num);
+                            if ui
+                                .checkbox(&mut on, format!("{num}. {name} ({id})"))
+                                .changed()
+                            {
+                                if on {
+                                    selected.push(num);
+                                } else {
+                                    selected.retain(|n| *n != num);
+                                }
+                                changed = true;
+                            }
+                        }
+                    });
+                if changed {
+                    self.settings.methods = if selected.is_empty() {
+                        None
+                    } else {
+                        selected.sort_unstable();
+                        Some(
+                            selected
+                                .iter()
+                                .map(|n| n.to_string())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        )
+                    };
+                }
                 ui.label(rust_i18n::t!("app.settings_more").to_string());
                 ui.separator();
                 ui.heading(rust_i18n::t!("app.report").to_string());

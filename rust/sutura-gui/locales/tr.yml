@@ -53,7 +53,18 @@ app:
   verdict_low_confidence_areas: "Onarıldı, %{count} tahmini bölgede şekil değişti - kontrol edin"
   verdict_not_repaired: Tam onarılmadı
   verdict_unavailable: Şekil kontrolü kullanılamıyor
-  settings_more: Daha fazla ayar, çekirdek profil API'siyle gelecek.
+  settings_more: "Daha fazla ayar, çekirdek profil API'siyle gelecek."
+  deep_repair: "Derin onarım"
+  tiers: "Katmanlar"
+  tier_tamponade: "Tamponade"
+  tier_flap: "Flap"
+  tier_coaptation: "Coaptation"
+  tier_splint: "Splint"
+  tier_dressing: "Dressing"
+  dressing_force_adopt: "Dressing: zorla kabul"
+  si_mode: "SI modu"
+  solid_engine: "Katı motoru"
+  methods: "Yöntemler"
   intensity: Yoğunluk
   intensity_quick: Hızlı
   intensity_balanced: Dengeli

@@ -349,6 +349,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dressing_and_wall_switches_reach_the_options() {
+        // These were hardcoded to `false` before they were part of the settings;
+        // a GUI checkbox must actually change the options.
+        let off = RepairSettings::default();
+        let (o, _, _) = options_from(&off).unwrap();
+        assert!(!o.dressing, "dressing defaults off");
+        assert!(!o.wall_thicken, "wall thicken defaults off");
+
+        let on = RepairSettings {
+            dressing: true,
+            dressing_drain: Some(serde_json::json!({"kind": "manual"})),
+            dressing_defects: Some("auto".to_string()),
+            dressing_rmax_scale: Some(1.5),
+            dressing_sigma_scale: Some(0.75),
+            dressing_force_adopt: true,
+            wall_thicken: true,
+            ..Default::default()
+        };
+        let (o, _, _) = options_from(&on).unwrap();
+        assert!(o.dressing);
+        assert!(o.wall_thicken);
+        assert!(o.dressing_force_adopt);
+        assert_eq!(o.dressing_rmax_scale, Some(1.5));
+        assert_eq!(o.dressing_sigma_scale, Some(0.75));
+        assert_eq!(o.dressing_defects.as_deref(), Some("auto"));
+        assert!(o.dressing_drain.is_some());
+    }
+
+    #[test]
     fn every_registry_number_parses_and_maps() {
         for num in 1..=19u64 {
             // Method 12 requires its two points, so supply them for the sweep;
