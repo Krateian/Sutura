@@ -13,8 +13,7 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 use sutura_core::repair::{
-    repair, CancelToken, DeepRepair, ProgressSink, RepairMode, RepairOptions, RepairOutcome,
-    RepeatMode, SiMode, SolidEngine,
+    repair, CancelToken, DeepRepair, ProgressSink, RepairOptions, RepairOutcome,
 };
 use sutura_core::{check_units, load_mesh, save_mesh, Mesh};
 
