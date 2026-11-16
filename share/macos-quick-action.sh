@@ -50,7 +50,11 @@ fi
 CLI_CMD=()
 if [ -n "$APP" ]; then
     MACOS="$APP/Contents/MacOS"
-    for cand in "$MACOS/sutura-cli/sutura-cli" "$MACOS/sutura-cli"; do
+    # `scripts/package_rust.sh` puts the CLI at Contents/MacOS/sutura (beside
+    # sutura-gui); the Python .app this script was written for never shipped a
+    # CLI at all. The old `sutura-cli` names are checked last so an older bundle
+    # layout still works.
+    for cand in "$MACOS/sutura" "$MACOS/sutura-cli/sutura-cli" "$MACOS/sutura-cli"; do
         if [ -x "$cand" ]; then CLI_CMD=("$cand"); break; fi
     done
 fi
@@ -59,6 +63,8 @@ if [ "${#CLI_CMD[@]}" -eq 0 ] && [ -x "$HOME/.local/bin/sutura" ]; then
     CLI_CMD=("$HOME/.local/bin/sutura")
 fi
 if [ "${#CLI_CMD[@]}" -eq 0 ]; then
+    # Legacy Python installs only. A Rust install always resolves above, so this
+    # is a fallback for machines that still have the conda distribution.
     for py in "$HOME/miniforge3/envs/sutura-env/bin/python" \
               "$HOME/miniconda3/envs/sutura-env/bin/python" \
               "$HOME/anaconda3/envs/sutura-env/bin/python"; do
