@@ -1264,23 +1264,15 @@ fn augment_report(
     }
 
     let report_snapshot = Value::Object(obj.clone());
-    if let Some(pr) = sutura_core::report::build_print_report_value(
-        &report_snapshot,
-        Some(&in_f64),
-        Some(&input.tris),
-        Some(&out_f64),
-        Some(&out_i32),
-    ) {
-        obj.insert("print_report".into(), pr);
-    }
-
     let cfg = score_cfg();
+    // Fidelity only reads the pipeline fields; feeding it the pre-print
+    // snapshot avoids serialising/traversing the large print_report.
     let fidelity = sutura_core::report::compute_fidelity_value(
         &in_f64,
         &input.tris,
         &out_f64,
         &out_i32,
-        &Value::Object(obj.clone()),
+        &report_snapshot,
         &cfg,
     );
     if let Some(fmap) = fidelity.as_object() {
@@ -1294,6 +1286,15 @@ fn augment_report(
             };
             obj.insert(key.clone(), value);
         }
+    }
+    if let Some(pr) = sutura_core::report::build_print_report_value(
+        &report_snapshot,
+        Some(&in_f64),
+        Some(&input.tris),
+        Some(&out_f64),
+        Some(&out_i32),
+    ) {
+        obj.insert("print_report".into(), pr);
     }
 
     let confidence = sutura_core::report::repair_confidence_value(&Value::Object(obj.clone()));
