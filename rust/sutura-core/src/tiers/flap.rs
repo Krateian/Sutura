@@ -448,12 +448,28 @@ pub fn debris(
         let flat = area <= 0.0 || diag <= 0.0 || vol <= 0.0 || thickness <= flat_th * diag;
         if flat && vol <= vol_eps {
             keep[c] = false;
+            // Python logs the mean of the component's unique vertices, rounded
+            // to 4 decimals (not the bbox midpoint).
+            let mut sum = [0.0f64; 3];
+            for &vi in &verts {
+                let p = wv_f[vi];
+                sum[0] += p[0];
+                sum[1] += p[1];
+                sum[2] += p[2];
+            }
+            let n = verts.len() as f64;
+            let round4 = |x: f64| (x * 10000.0).round() / 10000.0;
+            let centroid = [
+                round4(sum[0] / n),
+                round4(sum[1] / n),
+                round4(sum[2] / n),
+            ];
             dropped.push(json!({
                 "faces": face_counts[c],
                 "volume": vol,
                 "thickness": thickness,
                 "diag": diag,
-                "centroid": [(lo[0]+hi[0])/2.0, (lo[1]+hi[1])/2.0, (lo[2]+hi[2])/2.0],
+                "centroid": centroid,
             }));
         }
     }
