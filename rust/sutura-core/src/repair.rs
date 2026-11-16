@@ -202,6 +202,9 @@ pub struct RepairOptions {
     pub seed: u64,
     #[serde(default)]
     pub forced_methods: Vec<u8>,
+    /// `--engines`: tag only these configured external engines.
+    #[serde(default)]
+    pub engines: Option<Vec<String>>,
 }
 
 impl Default for RepairOptions {
@@ -234,6 +237,7 @@ impl Default for RepairOptions {
             time_budget_s: None,
             seed: 0,
             forced_methods: Vec::new(),
+            engines: None,
         }
     }
 }
@@ -3416,10 +3420,39 @@ fn repair_impl(
         }),
     );
 
-    let unavailable = unavailable_tiers(ftetwild_bin.is_none().then_some(
+    let mut unavailable = unavailable_tiers(ftetwild_bin.is_none().then_some(
         "fTetWild binary not found; set FTETWILD_BIN/SUTURA_FTETWILD_BIN or install third_party/ftetwild/bin/ftetwild",
     ));
-    let (method_health, method_errors) = method_health_value(&stats, &unavailable);
+    if let Some(selected) = opts.engines.as_ref() {
+        if let Some(obj) = unavailable.as_object_mut() {
+            for name in selected {
+                obj.insert(
+                    name.clone(),
+                    json!({
+                        "ran": false,
+                        "unavailable": true,
+                        "reason": "external engine execution is not implemented in the Rust pipeline",
+                    }),
+                );
+            }
+        }
+    }
+    let (mut method_health, method_errors) = method_health_value(&stats, &unavailable);
+    if let Some(selected) = opts.engines.as_ref() {
+        if let Some(skips) = method_health
+            .get_mut("skips")
+            .and_then(Value::as_array_mut)
+        {
+            for name in selected {
+                skips.push(json!({
+                    "method": name,
+                    "stage": "availability",
+                    "kind": "skipped",
+                    "message": "external engine execution is not implemented in the Rust pipeline",
+                }));
+            }
+        }
+    }
     stats.insert("method_health".into(), method_health);
     stats.insert("method_errors".into(), method_errors);
     stats.insert("trace".into(), trace.into_value());

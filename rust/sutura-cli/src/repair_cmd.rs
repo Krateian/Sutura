@@ -190,12 +190,10 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             Some(parts)
         }
     };
-    // Validation is all this slice does. Python passes the selection down as
-    // `engine_filter` so only those engines run; wiring that into `repair()` is
-    // go's engine slice, so the selected names are deliberately not consumed
-    // here yet — but a bad name must still be a usage error, not a silent
-    // no-op that pretends to have filtered something.
-    let _selected_engines = engines_sel;
+    // The selection is consumed by `repair()`: the configured engines named
+    // here are the only ones tagged, and any the Rust pipeline cannot run are
+    // reported as unavailable instead of silently ignored.
+    let selected_engines = engines_sel;
     if cli.wall_min_thickness.is_some() {
         return Err(RepairFailure::new(
             2,
@@ -328,7 +326,10 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         dressing_force_adopt: false,
         wall_thicken: false,
     };
-    sutura_core::repair_settings::options_from(&settings).map_err(RepairFailure::from)
+    let (mut opts, strict, nums) =
+        sutura_core::repair_settings::options_from(&settings).map_err(RepairFailure::from)?;
+    opts.engines = selected_engines;
+    Ok((opts, strict, nums))
 }
 
 fn unique_output(src: &Path) -> PathBuf {
@@ -1251,7 +1252,17 @@ fn augment_report(
             obj.insert(key.into(), value);
         }
     }
-    obj.insert("method_health".into(), method_health());
+    let mut health = method_health();
+    if let Some(core) = obj.get("method_health").and_then(Value::as_object) {
+        if let Some(h) = health.as_object_mut() {
+            for key in ["errors", "skips"] {
+                if let Some(value) = core.get(key) {
+                    h.insert(key.into(), value.clone());
+                }
+            }
+        }
+    }
+    obj.insert("method_health".into(), health);
     for extra in ["analysis", "ftetwild", "recommendations", "trace", "unavailable"] {
         obj.remove(extra);
     }
