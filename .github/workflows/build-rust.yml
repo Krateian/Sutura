@@ -122,6 +122,19 @@ jobs:
             if [ -f "$f" ]; then echo "$(du -h "$f" | cut -f1)  $(basename "$f")"; fi
           done
 
+      # The updater refuses an artifact whose `<asset>.sha256` does not match
+      # (`install::download_verified`), so every package ships its digest next to
+      # it under the exact name the updater looks for. Artifacts only — no
+      # release or tag is created here.
+      - name: Write sha256 manifests
+        run: |
+          cd dist
+          for f in *.dmg *.app.tar.gz; do
+            [ -f "$f" ] || continue
+            shasum -a 256 "$f" | awk '{print $1"  "$2}' > "$f.sha256"
+            echo "wrote $f.sha256: $(cat "$f.sha256")"
+          done
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -129,6 +142,7 @@ jobs:
           path: |
             dist/*.dmg
             dist/*.app.tar.gz
+            dist/*.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -202,10 +216,22 @@ jobs:
             if [ -f "$f" ]; then echo "$(du -h "$f" | cut -f1)  $(basename "$f")"; fi
           done
 
+      # Same contract as macOS: the updater verifies `<asset>.sha256`.
+      - name: Write sha256 manifests
+        run: |
+          cd dist
+          for f in *.tar.gz; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" | awk '{print $1"  "$2}' > "$f.sha256"
+            echo "wrote $f.sha256: $(cat "$f.sha256")"
+          done
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: sutura-rust-linux-x86_64
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
           if-no-files-found: error
           retention-days: 14
