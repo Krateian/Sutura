@@ -105,12 +105,16 @@ fn solid_area_fraction(
         let c = centers[i];
         pts.push([c[0] - n[0] * eps, c[1] - n[1] * eps, c[2] - n[2] * eps]);
     }
+    // One BVH for the whole shape card: the point chunks below only vary
+    // the queries, so rebuilding the tree per chunk was pure overhead.
+    let ut = common::to_usize_tris(t);
+    let bvh = sutura_geom::winding::MeshBvh::from_arrays(v, &ut);
     let mut w: Vec<f64> = Vec::with_capacity(pts.len());
     for chunk in pts.chunks(2048) {
         if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
             return None;
         }
-        w.extend(common::winding_points(v, t, chunk));
+        w.extend(bvh.winding_points_par(chunk));
     }
     let n = tt.len();
     if w.len() < 2 * n {
