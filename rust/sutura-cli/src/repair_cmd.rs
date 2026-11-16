@@ -1296,7 +1296,15 @@ fn augment_report(
             obj.insert(key.into(), value);
         }
     }
-    obj.insert("method_health".into(), method_health());
+    let mut health = method_health();
+    if let Some(core) = obj.get("method_health").and_then(Value::as_object) {
+        if let Some(errors) = core.get("errors") {
+            if let Some(h) = health.as_object_mut() {
+                h.insert("errors".into(), errors.clone());
+            }
+        }
+    }
+    obj.insert("method_health".into(), health);
     for extra in ["analysis", "ftetwild", "recommendations", "trace", "unavailable"] {
         obj.remove(extra);
     }

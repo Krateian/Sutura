@@ -203,6 +203,16 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             # the in-memory index topology (same call as the Python path).
             enforce_reload_verdict(report, new_v, new_t,
                                    include_n2m=(ext == '.stl'))
+            # The Python path builds print_report at the end of the pipeline;
+            # the Rust core returns the report without it, so build it here
+            # with the same bridge the Rust CLI uses.
+            try:
+                _pr = core.build_print_report(
+                    json.dumps(report), verts, tris, new_v, new_t)
+                if _pr:
+                    report['print_report'] = json.loads(_pr)
+            except Exception:  # noqa: BLE001 - print report is best-effort
+                pass
             save_mesh(out, new_v, new_t)
             report['_fp'] = history.mesh_fingerprint(verts, tris)
             report['defects'] = detect_defects(verts, tris)

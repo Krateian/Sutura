@@ -152,6 +152,20 @@ pub fn apply_chain_with_cancel(
     chain: &Value,
     cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, usize, Value, Option<Value>) {
+    let mut _errors = Vec::new();
+    apply_chain_with_cancel_errors(verts, tris, chain, cancel, &mut _errors)
+}
+
+/// `apply_chain_with_cancel` that also appends Python-style Stage-1 filter
+/// exceptions to `errors`.  The Rust filters succeed where trimesh raised, so
+/// these records are health-only and do not skip the filter.
+pub fn apply_chain_with_cancel_errors(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    chain: &Value,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+    errors: &mut Vec<Value>,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, usize, Value, Option<Value>) {
     let mut v = verts.to_vec();
     let mut t = tris.to_vec();
     let mut applied = 0usize;
@@ -169,6 +183,29 @@ pub fn apply_chain_with_cancel(
         };
         let name = a[0].as_str().unwrap_or("");
         let params = a.get(1).cloned().unwrap_or_else(|| json!({}));
+        if name == "meshing_re_orient_faces_coherently"
+            || name == "meshing_close_holes"
+        {
+            let summary = crate::tiers::common::topology_summary(&v, &t);
+            if name == "meshing_re_orient_faces_coherently"
+                && summary.non_two_manifold_edges > 0
+            {
+                errors.push(json!({
+                    "method": "stage1:meshing_re_orient_faces_coherently",
+                    "stage": "filter",
+                    "kind": "exception",
+                    "message": "ValueError: Mesh has some not 2-manifold faces, Orientability requires manifoldness",
+                }));
+            }
+            if name == "meshing_close_holes" && summary.non_two_manifold_edges > 0 {
+                errors.push(json!({
+                    "method": "stage1:meshing_close_holes",
+                    "stage": "filter",
+                    "kind": "exception",
+                    "message": "ValueError: mesh has non-2-manifold edges",
+                }));
+            }
+        }
         let res: Result<(), String> = (|| {
             match name {
                 "meshing_remove_duplicate_faces" => {

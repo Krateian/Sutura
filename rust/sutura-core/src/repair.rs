@@ -2557,8 +2557,15 @@ fn repair_impl(
         );
     }
     let chain = Value::Array(stage1_chain(max_hole, min_component, false));
-    let (v1, t1, mut applied, mut skipped, removed_small) = apply_chain_with_cancel(
-        &cur_v, &cur_t, &chain, Some(cancel as &dyn sutura_geom::cancel::Cancel));
+    let mut stage1_errors: Vec<Value> = Vec::new();
+    let (v1, t1, mut applied, mut skipped, removed_small) =
+        crate::stage1::chain::apply_chain_with_cancel_errors(
+            &cur_v,
+            &cur_t,
+            &chain,
+            Some(cancel as &dyn sutura_geom::cancel::Cancel),
+            &mut stage1_errors,
+        );
     cur_v = v1;
     cur_t = t1;
     if cancel.is_cancelled() {
@@ -3503,7 +3510,16 @@ fn repair_impl(
     let unavailable = unavailable_tiers(ftetwild_bin.is_none().then_some(
         "fTetWild binary not found; set FTETWILD_BIN/SUTURA_FTETWILD_BIN or install third_party/ftetwild/bin/ftetwild",
     ));
-    let (method_health, method_errors) = method_health_value(&stats, &unavailable);
+    let (mut method_health, mut method_errors) = method_health_value(&stats, &unavailable);
+    if let Some(arr) = method_errors.as_array_mut() {
+        arr.extend(stage1_errors.clone());
+    }
+    if let Some(arr) = method_health
+        .get_mut("errors")
+        .and_then(Value::as_array_mut)
+    {
+        arr.extend(stage1_errors);
+    }
     stats.insert("method_health".into(), method_health);
     stats.insert("method_errors".into(), method_errors);
     stats.insert("trace".into(), trace.into_value());
