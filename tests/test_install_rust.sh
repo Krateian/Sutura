@@ -119,5 +119,54 @@ grep -q '"\$MACOS/sutura"' "$REPO/share/macos-quick-action.sh" \
     || fail "macos-quick-action.sh does not check Contents/MacOS/sutura"
 
 echo
+echo "install-macos-rust.sh (app.tar.gz path)"
+
+# The .dmg path needs hdiutil; the tar path exercises the same copy/swap logic.
+APP_HOME="$WORK/home_mac"
+mkdir -p "$APP_HOME" "$WORK/macapp/Sutura.app/Contents/MacOS" \
+         "$WORK/macapp/Sutura.app/Contents/Resources"
+cp "$REPO/rust/target/release/sutura" "$WORK/macapp/Sutura.app/Contents/MacOS/sutura"
+chmod +x "$WORK/macapp/Sutura.app/Contents/MacOS/sutura"
+cp "$REPO/share/macos-quick-action.sh" "$WORK/macapp/Sutura.app/Contents/Resources/"
+cp -R "$REPO/share/Sutura Quick Action.workflow" \
+      "$WORK/macapp/Sutura.app/Contents/Resources/"
+cat > "$WORK/macapp/Sutura.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleShortVersionString</key><string>0.9.9</string>
+</dict></plist>
+PLIST
+MAC_PKG="$WORK/pkg/Sutura-rust-v0.9.9-arm64.app.tar.gz"
+tar -C "$WORK/macapp" -czf "$MAC_PKG" Sutura.app
+( cd "$WORK/pkg" && shasum -a 256 "$(basename "$MAC_PKG")" | awk '{print $1"  "$2}' > "$(basename "$MAC_PKG").sha256" )
+
+cat > "$FAKEBIN/uname" <<'EOF'
+#!/bin/sh
+echo Darwin
+EOF
+chmod +x "$FAKEBIN/uname"
+
+if HOME="$APP_HOME" PATH="$FAKEBIN:$PATH" bash "$REPO/install-macos-rust.sh" \
+        --from "$MAC_PKG" >"$WORK/mac.log" 2>&1; then
+    pass "macOS install exits 0"
+else
+    fail "macOS install failed: $(tail -2 "$WORK/mac.log")"
+fi
+[ -d "$APP_HOME/Applications/Sutura.app" ] && pass "app in ~/Applications" \
+    || fail "app missing"
+[ -x "$APP_HOME/.local/bin/sutura" ] && pass "macOS CLI symlink" || fail "macOS CLI missing"
+WF="$APP_HOME/Library/Services/Sutura Quick Action.workflow"
+[ -d "$WF" ] && pass "Quick Action workflow installed" || fail "workflow missing"
+# İ7 end to end: the installed bundle's CLI is where the action looks.
+[ -x "$APP_HOME/Applications/Sutura.app/Contents/MacOS/sutura" ] \
+    && pass "bundle carries Contents/MacOS/sutura (İ7)" || fail "bundle CLI missing (İ7)"
+[ -f "$APP_HOME/.local/share/sutura/macos-quick-action.sh" ] \
+    && pass "Quick Action helper installed" || fail "helper missing"
+
+HOME="$APP_HOME" PATH="$FAKEBIN:$PATH" bash "$REPO/uninstall-rust.sh" >/dev/null 2>&1
+[ ! -d "$APP_HOME/Applications/Sutura.app" ] && pass "macOS app removed" || fail "app still present"
+[ ! -d "$WF" ] && pass "Quick Action removed" || fail "workflow still present"
+
+echo
 if [ "$FAIL" -eq 0 ]; then echo "ALL PASS"; else echo "FAILURES"; fi
 exit "$FAIL"
