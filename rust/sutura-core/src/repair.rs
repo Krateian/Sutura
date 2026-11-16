@@ -1963,7 +1963,7 @@ fn run_graft_tier(
         "time_budget": time_budget.or(Some(spec.graft_timeout)),
         "stage1_holes": holes,
         "stage1_nm": nm,
-        "guard": Value::Null,
+        "guard": json!({"si_policy": "improved_flag"}),
     });
     graft_tier::decide(
         cur_v,
@@ -2441,7 +2441,7 @@ fn repair_impl(
             .map(|g| g == "shape_card")
             .unwrap_or(false);
         if tamponade_prepass_adopted {
-            cur_v = out_v;
+            cur_v = quantize(&out_v);
             cur_t = out_t;
         }
         emit_tier(sink, "tamponade_prepass", 2, &rec);
@@ -2461,7 +2461,7 @@ fn repair_impl(
             Some(cancel as &dyn sutura_geom::cancel::Cancel),
         );
         if adopted(&rec) {
-            cur_v = out_v;
+            cur_v = quantize(&out_v);
             cur_t = out_t;
         }
         if std::env::var_os("SUTURA_PIPELINE_DEBUG").is_some() {
@@ -2630,7 +2630,7 @@ fn repair_impl(
         );
         ensure_tamponade_defaults(&mut rec);
         if adopted(&rec) {
-            cur_v = out_v;
+            cur_v = quantize(&out_v);
             cur_t = out_t;
         }
         emit_tier(sink, "tamponade_post", 3, &rec);
@@ -2697,7 +2697,7 @@ fn repair_impl(
                 Some(cancel as &dyn sutura_geom::cancel::Cancel),
             );
             if adopted(&rec) {
-                cur_v = gv;
+                cur_v = quantize(&gv);
                 cur_t = gt;
                 after = common::topology_summary(&cur_v, &cur_t);
                 holes = boundary_loop_stats(&cur_t).0;
@@ -2742,7 +2742,7 @@ fn repair_impl(
                     Some(cancel as &dyn sutura_geom::cancel::Cancel),
                 );
                 if adopted(&rec) {
-                    cur_v = gv;
+                    cur_v = quantize(&gv);
                     cur_t = gt;
                     after = common::topology_summary(&cur_v, &cur_t);
                     holes = boundary_loop_stats(&cur_t).0;
