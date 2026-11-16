@@ -1903,6 +1903,68 @@ fn finalize_rejected(field: &mut Map<String, Value>, base: &SiMetrics) {
     field.insert("baseline".into(), base.to_value());
 }
 
+fn cad_likeness(v: &[[f64; 3]], t: &[[i64; 3]]) -> Value {
+    let f = t.len();
+    if f == 0 || v.is_empty() {
+        return json!({"score": 0.0, "planar_fraction": 0.0,
+                      "sharp_fraction": 0.0, "cad_like": false});
+    }
+    let mut normals: Vec<[f64; 3]> = Vec::with_capacity(f);
+    for r in t {
+        let a = v[r[0] as usize];
+        let b = v[r[1] as usize];
+        let c = v[r[2] as usize];
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let n = [
+            u[1] * w[2] - u[2] * w[1],
+            u[2] * w[0] - u[0] * w[2],
+            u[0] * w[1] - u[1] * w[0],
+        ];
+        let ln = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        let d = if ln == 0.0 { 1.0 } else { ln };
+        normals.push([n[0] / d, n[1] / d, n[2] / d]);
+    }
+    let mut edges: Vec<((i64, i64), usize)> = Vec::with_capacity(f * 3);
+    for (fi, r) in t.iter().enumerate() {
+        for k in 0..3 {
+            let a = r[k];
+            let b = r[(k + 1) % 3];
+            edges.push(((a.min(b), a.max(b)), fi));
+        }
+    }
+    edges.sort_by_key(|(key, _)| *key);
+    let mut angles: Vec<f64> = Vec::new();
+    let mut i = 0usize;
+    while i < edges.len() {
+        let mut j = i + 1;
+        while j < edges.len() && edges[j].0 == edges[i].0 {
+            j += 1;
+        }
+        if j - i == 2 {
+            let n1 = normals[edges[i].1];
+            let n2 = normals[edges[i + 1].1];
+            let dot = (n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])
+                .abs()
+                .clamp(0.0, 1.0);
+            angles.push(dot.acos().to_degrees());
+        }
+        i = j;
+    }
+    let n = angles.len();
+    let flat = angles.iter().filter(|a| **a < 1.0).count();
+    let sharp = angles.iter().filter(|a| **a > 30.0).count();
+    let planar_fraction = if n == 0 { 0.0 } else { flat as f64 / n as f64 };
+    let sharp_fraction = if n == 0 { 0.0 } else { sharp as f64 / n as f64 };
+    let score = planar_fraction.max(sharp_fraction);
+    json!({
+        "score": score,
+        "planar_fraction": planar_fraction,
+        "sharp_fraction": sharp_fraction,
+        "cad_like": score >= 0.5,
+    })
+}
+
 fn tier_error(tier: &str, message: impl Into<String>) -> Value {
     json!({
         "tier": tier,
@@ -3129,7 +3191,14 @@ fn repair_impl(
         "coaptation".into(),
         stats.get("coaptation").cloned().unwrap_or(Value::Null),
     );
-    deep.insert("cad_likeness".into(), Value::Null);
+    deep.insert(
+        "cad_likeness".into(),
+        if opts.deep_repair == DeepRepair::Full {
+            cad_likeness(&s1_in_v, &s1_in_t)
+        } else {
+            Value::Null
+        },
+    );
     deep.insert("dressing_damage".into(), Value::Null);
     deep.insert("available".into(), Value::Null);
     stats.insert("deep_repair".into(), Value::Object(deep));
@@ -3214,6 +3283,20 @@ fn repair_impl(
             let pct = (va - vb) / vb.abs() * 100.0;
             stage1.insert(
                 "volume_change_percent".into(),
+                Value::from((pct * 100.0).round() / 100.0),
+            );
+        }
+    }
+    {
+        let sa_before = common::surface_area(&stage1_volume_before_v, &stage1_volume_before_t);
+        let sa_after = common::surface_area(&cur_v, &cur_t);
+        let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
+        stage1.insert("surface_area_before".into(), Value::from(round3(sa_before)));
+        stage1.insert("surface_area_after".into(), Value::from(round3(sa_after)));
+        if sa_before != 0.0 {
+            let pct = (sa_after - sa_before) / sa_before * 100.0;
+            stage1.insert(
+                "surface_area_change_percent".into(),
                 Value::from((pct * 100.0).round() / 100.0),
             );
         }
@@ -3439,6 +3522,18 @@ fn repair_impl(
         Value::Object(map) => map,
         _ => Map::new(),
     };
+    let geom_change = {
+        let mut worst: Option<f64> = None;
+        if let Some(s1) = out.get("stage1").and_then(Value::as_object) {
+            for key in ["volume_change_percent", "surface_area_change_percent"] {
+                if let Some(v) = s1.get(key).and_then(Value::as_f64) {
+                    let a = v.abs();
+                    worst = Some(worst.map_or(a, |w| w.max(a)));
+                }
+            }
+        }
+        worst
+    };
     let (num, id, name) = baseline_method(opts.deep_repair);
     let outcome = if reachable { "accepted" } else { "rejected" };
     let reason = if reachable {
@@ -3457,7 +3552,7 @@ fn repair_impl(
             "holes": final_holes,
             "non_manifold": final_nm,
             "hausdorff_rel": Value::Null,
-            "geom_change_pct": Value::Null,
+            "geom_change_pct": geom_change.map(Value::from).unwrap_or(Value::Null),
             "guard_rejected": Value::Null,
             "guard_reason": Value::Null,
             "si_flagged": false,
