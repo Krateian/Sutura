@@ -20,7 +20,12 @@ permissions:
 jobs:
   macos-arm64:
     name: macOS arm64 (.app/.dmg)
-    runs-on: macos-14          # Apple Silicon, arm64
+    # `macos-14` is not a valid label on this repository ("configuration
+    # 'macos-14-arm64-us-default' is not supported"); the run failed at job
+    # setup. `macos-latest` is what the working Python workflow uses, and it
+    # provisions `macos-26-arm64` -- genuinely Apple Silicon, so the arm64
+    # target and the .app are native.
+    runs-on: macos-latest
     timeout-minutes: 60
     steps:
       - name: Check out repository
