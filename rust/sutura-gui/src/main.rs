@@ -2,6 +2,7 @@ mod app;
 mod i18n;
 mod mesh;
 mod repeat_picker;
+mod updater_ui;
 mod viewer;
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -19,6 +20,8 @@ fn main() -> eframe::Result<()> {
     let mut headless_cancel_ms: Option<u64> = None;
     let mut headless_analyze: Option<std::path::PathBuf> = None;
     let mut headless_objects: Option<std::path::PathBuf> = None;
+    // Pixels to pick in headless mode: `--headless-pick X,Y` (repeatable).
+    let mut headless_picks: Vec<(i64, i64)> = Vec::new();
     let mut heatmap = false;
     let mut about = false;
     let mut updater = false;
@@ -53,6 +56,18 @@ fn main() -> eframe::Result<()> {
             "--headless-objects" => {
                 headless_objects = args.next().map(std::path::PathBuf::from);
             }
+            // Hidden gate hook: click these pixels through the picker and print
+            // the resulting points, so Python's picker can be compared exactly.
+            "--headless-pick" => {
+                if let Some(spec) = args.next() {
+                    let mut it = spec.split(',');
+                    if let (Some(x), Some(y)) = (it.next(), it.next()) {
+                        if let (Ok(x), Ok(y)) = (x.trim().parse::<i64>(), y.trim().parse::<i64>()) {
+                            headless_picks.push((x, y));
+                        }
+                    }
+                }
+            }
             "--heatmap" => heatmap = true,
             "--about" => about = true,
             "--updates" => updater = true,
@@ -82,6 +97,16 @@ fn main() -> eframe::Result<()> {
 
     // Hidden headless modes (not in --help): run the UI's own analysis and object
     // listing without a window so the parity gate can compare them to the CLI.
+    if !headless_picks.is_empty() {
+        let input = match files.first() {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("--headless-pick needs an input file");
+                std::process::exit(2);
+            }
+        };
+        return app::headless_pick(&input, &headless_picks);
+    }
     if headless_analyze.is_some() || headless_objects.is_some() {
         let input = match files.first() {
             Some(p) => p.clone(),

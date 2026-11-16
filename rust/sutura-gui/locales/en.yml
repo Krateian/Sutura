@@ -85,7 +85,19 @@ app:
   updates: Updates
   about_body: Sutura repairs broken meshes for 3D printing. This is the Rust/egui GUI; the repair core still runs through the Python CLI in this phase.
   updater_title: Updates
-  updater_body: The updater will ship with the separate sutura-updater crate. No network access yet.
+  updater_current: "Current version: %{version}"
+  updater_checking: Checking for updates...
+  updater_available: "Sutura %{tag} is available."
+  updater_install: Download and install
+  updater_license: "Sutura %{tag} changes the license terms. Automatic install is disabled; open the releases page to review and install it yourself."
+  updater_open_page: Open the releases page
+  updater_downloading: "Downloading %{tag}..."
+  updater_installing: "Installing %{tag}..."
+  updater_done: "Updated to %{tag}."
+  updater_whats_new: What's new
+  updater_no_notes: No release notes are saved locally.
+  updater_check: Check for updates
+  updater_body: Check for a newer release. Nothing is downloaded or installed until you approve it.
   repeat_pick: Pick repeat points
   repeat_pick_title: Repeat Pick
   repeat_pick_hint: "Click the healthy region first (source), then the damaged one (target). A third click moves the source."

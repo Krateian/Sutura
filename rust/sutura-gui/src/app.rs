@@ -155,6 +155,10 @@ pub struct SuturaApp {
     updater_open: bool,
     /// The repeat picker window, created on demand from the selected mesh.
     repeat_picker: Option<crate::repeat_picker::RepeatPicker>,
+    /// Updater state (check / download / install), driven on a worker thread.
+    updater: crate::updater_ui::Updater,
+    /// The "what's new" window, reading the snapshot off disk.
+    notes_open: bool,
     screenshot_path: Option<PathBuf>,
     screenshot_requested: bool,
     exit_after_screenshot: bool,
@@ -196,6 +200,8 @@ impl SuturaApp {
             about_open: options.about,
             updater_open: options.updater,
             repeat_picker: None,
+            updater: crate::updater_ui::Updater::new(),
+            notes_open: false,
             screenshot_path: options.screenshot_path,
             screenshot_requested: false,
             exit_after_screenshot: options.exit_after_screenshot,
@@ -571,6 +577,10 @@ impl eframe::App for SuturaApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_repair();
+        // Updater events drive its panel; a change means a repaint.
+        if self.updater.poll() {
+            ctx.request_repaint();
+        }
 
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for file in dropped {
@@ -1149,14 +1159,115 @@ impl eframe::App for SuturaApp {
         }
         if self.updater_open {
             let mut open = self.updater_open;
-            egui::Window::new(rust_i18n::t!("app.updater_title").to_string())
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .show(&ctx, |ui| {
-                    ui.label(rust_i18n::t!("app.updater_body").to_string());
-                });
+            let mut check = false;
+            let mut install: Option<String> = None;
+            let mut show_notes = false;
+            {
+                use crate::updater_ui::Phase;
+                let u = &mut self.updater;
+                egui::Window::new(rust_i18n::t!("app.updater_title").to_string())
+                    .open(&mut open)
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(&ctx, |ui| {
+                        ui.label(
+                            rust_i18n::t!("app.updater_current", version = u.current_version.as_str())
+                                .to_string(),
+                        );
+                        match &u.phase {
+                            Phase::Idle => {
+                                ui.label(rust_i18n::t!("app.updater_body").to_string());
+                            }
+                            Phase::Checking => {
+                                ui.label(rust_i18n::t!("app.updater_checking").to_string());
+                            }
+                            Phase::Available { tag } => {
+                                ui.label(rust_i18n::t!("app.updater_available", tag = tag.as_str()).to_string());
+                                if ui.button(rust_i18n::t!("app.updater_install").to_string()).clicked() {
+                                    install = Some(tag.clone());
+                                }
+                            }
+                            Phase::License { tag } => {
+                                ui.label(rust_i18n::t!("app.updater_license", tag = tag.as_str()).to_string());
+                                ui.hyperlink_to(
+                                    rust_i18n::t!("app.updater_open_page").to_string(),
+                                    u.releases_url,
+                                );
+                            }
+                            Phase::Downloading { tag } => {
+                                ui.label(rust_i18n::t!("app.updater_downloading", tag = tag.as_str()).to_string());
+                            }
+                            Phase::Installing { tag } => {
+                                ui.label(rust_i18n::t!("app.updater_installing", tag = tag.as_str()).to_string());
+                            }
+                            Phase::Done { tag, has_notes } => {
+                                ui.label(rust_i18n::t!("app.updater_done", tag = tag.as_str()).to_string());
+                                if *has_notes {
+                                    if ui.button(rust_i18n::t!("app.updater_whats_new").to_string()).clicked() {
+                                        show_notes = true;
+                                    }
+                                }
+                            }
+                            Phase::Failed(msg) => {
+                                ui.colored_label(egui::Color32::from_rgb(235, 60, 70), msg);
+                            }
+                        }
+                        ui.separator();
+                        ui.add_enabled(
+                            !u.is_busy(),
+                            egui::Button::new(rust_i18n::t!("app.updater_check").to_string()),
+                        )
+                        .clicked()
+                        .then(|| check = true);
+                    });
+            }
+            if check {
+                self.updater.start_check(true);
+            }
+            if let Some(tag) = install {
+                self.updater.start_install(tag);
+            }
+            if show_notes {
+                self.notes_open = true;
+            }
             self.updater_open = open;
+        }
+
+        if self.notes_open {
+            let mut open = self.notes_open;
+            let dir = sutura_core::whatsnew::current_dir();
+            let showed = match (
+                sutura_core::whatsnew::current_tag(),
+                sutura_core::whatsnew::current_body(),
+            ) {
+                (Some(tag), Some(body)) => {
+                    let text = sutura_core::whatsnew::plain_text(&tag, &body, &dir);
+                    egui::Window::new(rust_i18n::t!("app.updater_whats_new").to_string())
+                        .open(&mut open)
+                        .collapsible(false)
+                        .show(&ctx, |ui| {
+                            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                                ui.label(text);
+                            });
+                        });
+                    true
+                }
+                _ => false,
+            };
+            if !showed {
+                // No snapshot: point at the releases page instead.
+                egui::Window::new(rust_i18n::t!("app.updater_whats_new").to_string())
+                    .open(&mut open)
+                    .collapsible(false)
+                    .show(&ctx, |ui| {
+                        ui.label(rust_i18n::t!("app.updater_no_notes").to_string());
+                        ui.hyperlink_to(
+                            rust_i18n::t!("app.updater_open_page").to_string(),
+                            sutura_core::updater::RELEASES_URL,
+                        );
+                    });
+            }
+            self.notes_open = open;
         }
 
         if let Some(picker) = self.repeat_picker.as_mut() {
@@ -1412,6 +1523,35 @@ pub fn headless_analyze(
         }
         None => println!("{}", serde_json::to_string(&value).unwrap_or_default()),
     }
+    Ok(())
+}
+
+/// Headless pick gate: click the given pixels through the same picker the UI
+/// uses and print the resulting points as JSON.
+///
+/// This exists so the gate measures the **fid → point** mapping
+/// (`gui.py`'s `verts[tris[fid-1]].mean`), not a rendered image: anti-aliasing
+/// is not part of the contract, the picked 3D point is.
+pub fn headless_pick(input: &Path, picks: &[(i64, i64)]) -> eframe::Result<()> {
+    let mesh = match crate::mesh::DisplayMesh::load(input) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("pick failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut picker = crate::repeat_picker::RepeatPicker::new(&mesh);
+    let mut out = Vec::new();
+    for (x, y) in picks {
+        let changed = picker.click(*x, *y);
+        out.push(serde_json::json!({
+            "x": x, "y": y,
+            "picked": changed,
+            "source": picker.source.map(|p| [p[0], p[1], p[2]]),
+            "target": picker.target.map(|p| [p[0], p[1], p[2]]),
+        }));
+    }
+    println!("{}", serde_json::json!({"picks": out}));
     Ok(())
 }
 
