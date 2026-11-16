@@ -119,7 +119,7 @@ jobs:
       - name: Report artifact sizes
         run: |
           for f in dist/*.dmg dist/*.app.tar.gz; do
-            [ -f "$f" ] && echo "$(du -h "$f" | cut -f1)  $(basename "$f")"
+            if [ -f "$f" ]; then echo "$(du -h "$f" | cut -f1)  $(basename "$f")"; fi
           done
 
       - name: Upload artifact
@@ -199,7 +199,7 @@ jobs:
       - name: Report artifact sizes
         run: |
           for f in dist/*.tar.gz; do
-            [ -f "$f" ] && echo "$(du -h "$f" | cut -f1)  $(basename "$f")"
+            if [ -f "$f" ]; then echo "$(du -h "$f" | cut -f1)  $(basename "$f")"; fi
           done
 
       - name: Upload artifact
