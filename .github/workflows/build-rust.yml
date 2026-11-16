@@ -78,13 +78,23 @@ jobs:
           set -e
           APP=$(ls -d dist/*.app 2>/dev/null | head -1)
           if [ -z "$APP" ]; then
-            # package_rust.sh leaves only the .dmg; mount it to inspect.
+            # package_rust.sh normally leaves only the .dmg, so mount it and
+            # DISCOVER the .app name from the volume rather than deriving it
+            # from the dmg file name -- the dmg is `Sutura-rust-v<ver>-arm64`
+            # while the bundle inside is `Sutura.app`, and guessing produced
+            # `Sutura-rust.app` (a real failure: No such file or directory).
             dmg=$(ls dist/*.dmg | head -1)
             mkdir -p /tmp/mnt
             hdiutil attach "$dmg" -mountpoint /tmp/mnt -nobrowse -quiet
-            APP="/tmp/mnt/$(basename "${dmg%.dmg}" | sed 's/-v.*//').app"
+            APP=$(ls -d /tmp/mnt/*.app | head -1)
+            if [ -z "$APP" ]; then
+              echo "error: no .app inside $dmg" >&2
+              ls -la /tmp/mnt >&2
+              exit 1
+            fi
           fi
           echo "inspecting $APP"
+          test -d "$APP/Contents/MacOS"
           # 1. No Python anywhere in the bundle.
           test "$(find "$APP" -name '*python*' | wc -l | tr -d ' ')" = "0"
           for bin in "$APP/Contents/MacOS/sutura" "$APP/Contents/MacOS/sutura-gui"; do
