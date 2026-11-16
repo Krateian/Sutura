@@ -19,6 +19,7 @@ import json
 import os
 import re
 import select
+import shutil
 import signal
 import subprocess
 import sys
@@ -92,6 +93,56 @@ def _find_repo_root():
         if parent == cur:
             break
         cur = parent
+    return None
+
+
+def find_ftetwild_binary():
+    """Locate the standalone fTetWild CLI binary, if present.
+
+    Search order:
+      1. FTETWILD_BIN environment variable
+      2. PyInstaller / frozen bundles (_MEIPASS/bin/ftetwild, sys.executable dir)
+      3. macOS .app bundle (Contents/MacOS/ftetwild, Contents/Resources/bin/ftetwild)
+      4. Repo third_party/ftetwild/bin/ftetwild
+      5. Package data: sutura/bin/ftetwild
+      6. System PATH (shutil.which('ftetwild'))
+    """
+    env_bin = os.environ.get('FTETWILD_BIN')
+    if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
+        return os.path.abspath(env_bin)
+
+    if getattr(sys, 'frozen', False):
+        base = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+        for rel in ('bin/ftetwild', 'ftetwild', 'bin/ftetwild.exe', 'ftetwild.exe'):
+            cand = os.path.join(base, rel)
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                return cand
+
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    for cand in (
+        os.path.join(exe_dir, 'ftetwild'),
+        os.path.join(exe_dir, '..', 'MacOS', 'ftetwild'),
+        os.path.join(exe_dir, '..', 'Resources', 'bin', 'ftetwild'),
+    ):
+        norm = os.path.normpath(cand)
+        if os.path.isfile(norm) and os.access(norm, os.X_OK):
+            return norm
+
+    root = _find_repo_root()
+    if root:
+        cand = os.path.join(root, 'third_party', 'ftetwild', 'bin', 'ftetwild')
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    pkg_cand = os.path.join(this_dir, 'bin', 'ftetwild')
+    if os.path.isfile(pkg_cand) and os.access(pkg_cand, os.X_OK):
+        return pkg_cand
+
+    path_cand = shutil.which('ftetwild')
+    if path_cand:
+        return path_cand
+
     return None
 
 
@@ -483,6 +534,21 @@ def status(env_info=None):
       - layout: str
       - reason: str or None
     """
+    bin_path = find_ftetwild_binary()
+    if env_info is None and bin_path:
+        size = os.path.getsize(bin_path) if os.path.isfile(bin_path) else 0
+        return {
+            'installed': True,
+            'supported': True,
+            'version': 'standalone-binary',
+            'location': bin_path,
+            'size_bytes': size,
+            'size_human': format_bytes(size),
+            'layout': 'standalone_binary',
+            'reason': None,
+            'binary_path': bin_path,
+        }
+
     if env_info is None:
         env_info = resolve_environment()
 

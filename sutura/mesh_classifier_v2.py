@@ -44,6 +44,8 @@ Invariant: this module must NEVER import pymeshlab / trimesh / scipy.
 """
 import numpy as np
 
+from sutura_engine import rust_bridge
+
 # Single classifier identity, shared with the classic engine (used in the
 # analysis cache key; see sutura_engine.diagnosis.analyze_mesh).
 try:
@@ -489,9 +491,18 @@ def classify_mesh(verts, tris, extra_features=False):
     baked weights: the classic decision verbatim (metrics gain the RANSAC
     features).
     """
-    near90, flat, gentle = _dihedral_stats(verts, tris)
-    plane_count, plane_area = _ransac_plane_features(verts, tris)
-    developable = _curvature_developable_fraction(verts, tris)
+    features, feature_engine = rust_bridge.classifier_features(verts, tris)
+    if features is not None:
+        near90 = float(features['near90'])
+        flat = float(features['flat'])
+        gentle = float(features['gentle'])
+        plane_count = int(features['plane_count'])
+        plane_area = float(features['plane_area'])
+        developable = float(features['developable_fraction'])
+    else:
+        near90, flat, gentle = _dihedral_stats(verts, tris)
+        plane_count, plane_area = _ransac_plane_features(verts, tris)
+        developable = _curvature_developable_fraction(verts, tris)
     mechanical, organic = _class_scores(near90, flat, gentle)
 
     metrics = {
@@ -522,7 +533,9 @@ def classify_mesh(verts, tris, extra_features=False):
 
     if p_mech is None:
         # no trained head baked yet -> classic decision
-        return _classic_decision(mechanical, organic, metrics)
+        result = _classic_decision(mechanical, organic, metrics)
+        result['feature_engine'] = feature_engine
+        return result
 
     # head verdict: single threshold at p=0.50 (LOO-CV-validated on the
     # labeled set). No classic veto: it was counterproductive, reverting
@@ -543,7 +556,8 @@ def classify_mesh(verts, tris, extra_features=False):
 
     return {'type': head_type,
             'confidence': round(head_conf, 3),
-            'metrics': metrics}
+            'metrics': metrics,
+            'feature_engine': feature_engine}
 
 
 def _classic_decision(mechanical, organic, metrics):

@@ -34,6 +34,38 @@ REPETITION_MIN_MEMBERS = 3
 REPETITION_SIMILARITY_TOL = 0.30
 
 
+def _eigh3(cov):
+    """Symmetric 3x3 eigendecomposition from the shared numeric core.
+
+    ``np.linalg.eigh`` is LAPACK, so the Rust kernel is the single source of
+    truth and both languages read the same eigenpairs -- including the
+    eigenvector signs, which matter here because the vectors are used as
+    rotation axes. Falls back to LAPACK only when the binding is missing, and
+    ``SUTURA_REQUIRE_RUST=1`` turns that fallback into an error instead of
+    silently producing different numbers.
+    """
+    a = np.asarray(cov, dtype=np.float64)
+    core = getattr(sutura_geom, 'eigh3', None)
+    if core is not None:
+        return core(a)
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.eigh3 is unavailable')
+    return np.linalg.eigh(a)
+
+
+def _canonical_axis_sign(ax):
+    """+1 when the largest-magnitude component is positive, else -1.
+
+    An eigenvector is only defined up to sign. The kernel already returns
+    canonical signs, but a candidate axis can still arrive negated (a cross
+    product's sign, a hand-written axis), so the detector decides ties by this
+    rule rather than by whichever sign happened to be generated first.
+    """
+    dominant = int(np.argmax(np.abs(ax)))
+    return 1.0 if ax[dominant] >= 0.0 else -1.0
+
+
 def _rotation_matrix(angle, direction, point=None):
     """4x4 rotation about ``direction`` through ``point`` (Rodrigues, numpy).
 
@@ -125,7 +157,7 @@ def _compute_obb(pts, margin=OBB_EXPANSION_MARGIN, epsilon=OBB_MIN_EPSILON):
     pts = np.asarray(pts, dtype=np.float64)
     c = np.mean(pts, axis=0)
     cov = (pts - c).T @ (pts - c) / max(len(pts), 1)
-    w, v = np.linalg.eigh(cov)
+    w, v = _eigh3(cov)
     frame = v[:, [2, 1, 0]]
     if np.linalg.det(frame) < 0:
         frame[:, 2] = -frame[:, 2]
@@ -243,7 +275,7 @@ def segment_elements(verts, tris, angle_deg=DEFAULT_FEATURE_ANGLE_DEG):
 
         # PCA frame and eigenvalues
         cov = (pts - centroid).T @ (pts - centroid) / max(len(pts), 1)
-        eigvals, eigvecs = np.linalg.eigh(cov)
+        eigvals, eigvecs = _eigh3(cov)
         frame = eigvecs[:, [2, 1, 0]]
         if np.linalg.det(frame) < 0:
             frame[:, 2] = -frame[:, 2]
@@ -301,8 +333,8 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
     cov_src = (src_scaled - c_src).T @ (src_scaled - c_src) / max(len(src_scaled), 1)
     cov_dst = (dst_pts - c_dst).T @ (dst_pts - c_dst) / max(len(dst_pts), 1)
 
-    _, v_src = np.linalg.eigh(cov_src)
-    _, v_dst = np.linalg.eigh(cov_dst)
+    _, v_src = _eigh3(cov_src)
+    _, v_dst = _eigh3(cov_dst)
 
     r_src = v_src[:, [2, 1, 0]]
     r_dst = v_dst[:, [2, 1, 0]]
@@ -462,7 +494,7 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
 
     tol = 0.015 * diag
     cov = (dense_pts - c).T @ (dense_pts - c) / max(len(dense_pts), 1)
-    _, eigvecs = np.linalg.eigh(cov)
+    _, eigvecs = _eigh3(cov)
     tree = sutura_geom.KdTree(dense_pts)
 
     candidate_orders = list(range(2, max_order + 1)) + [72, 80, 90, 100, 120]
@@ -475,13 +507,21 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
         np.array([0.0, 0.0, 1.0]),
     ] + [eigvecs[:, i] for i in range(3)]
 
+    # An eigenvector is only defined up to sign, and rotating by +theta about
+    # +ax is a different point set than rotating by +theta about -ax. Rotational
+    # symmetry is a property of the unoriented axis (an n-fold axis is n-fold
+    # whichever way you traverse it), so every candidate is evaluated in BOTH
+    # directions and the better score wins. Together with the canonical signs
+    # `_eigh3` returns, this makes the score a function of the axis line: the
+    # same mesh scores identically no matter which sign the solver produced.
+    #
     # The per-candidate surface-distance lookups dominate the runtime (a few
     # hundred exact nearest-neighbour queries of the sampled query points). Build every
     # candidate rotation one at a time with the original scalar expression (so
     # the resulting coordinates and distances are bit-identical to the scalar
-    # loop) but defer the lookups into TWO batched, threaded KD-tree queries:
-    # one for the first-order check of every candidate, one for the multi-step
-    # verification of the candidates that passed the first gate. The scalar
+    # loop) but defer the lookups into ONE batched, threaded KD-tree query. Both
+    # directions of every axis are joined into that same batch, so the extra
+    # work is more points in one call rather than another call. The scalar
     # reductions and the best-match selection then run unchanged in the
     # original axis-major / order-minor iteration order.
     q0 = query_pts - c
@@ -500,12 +540,18 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
         v_vec = np.cross(ax, u)
         v_vec = v_vec / (np.linalg.norm(v_vec) + 1e-12)
 
-        for n in candidate_orders:
-            th = 2.0 * np.pi / n
-            R = _rotation_matrix(th, ax, point=c)[:3, :3]
-            rot = q0 @ R.T + c
-            move_d = float(np.mean(np.linalg.norm(rot - query_pts, axis=1)))
-            candidates.append((ax, u, v_vec, n, th, rot, move_d))
+        # Cannonical direction first, so ties resolve in a fixed order.
+        sign = _canonical_axis_sign(ax)
+        for direction in (sign, -sign):
+            ax_d = ax * direction
+            u_d = u * direction
+            v_d = v_vec * direction
+            for n in candidate_orders:
+                th = 2.0 * np.pi / n
+                R = _rotation_matrix(th, ax_d, point=c)[:3, :3]
+                rot = q0 @ R.T + c
+                move_d = float(np.mean(np.linalg.norm(rot - query_pts, axis=1)))
+                candidates.append((ax_d, u_d, v_d, n, th, rot, move_d))
 
     if candidates:
         rot_stack = np.stack([cand[5] for cand in candidates])
@@ -614,7 +660,7 @@ def _detect_repetition_patches(verts, tris):
     # 2. Check for Rotational and Helical Patterns on Cylinder
     c_rough = np.mean(centroids, axis=0)
     cov_p = (centroids - c_rough).T @ (centroids - c_rough) / len(centroids)
-    w_p, V_p = np.linalg.eigh(cov_p)
+    w_p, V_p = _eigh3(cov_p)
 
     patch_normals = []
     for m in members:
@@ -626,7 +672,7 @@ def _detect_repetition_patches(verts, tris):
         norm = np.sum(cross, axis=0)
         patch_normals.append(norm / (np.linalg.norm(norm) + 1e-12))
     cov_n = np.array(patch_normals).T @ np.array(patch_normals)
-    w_n, Vn = np.linalg.eigh(cov_n)
+    w_n, Vn = _eigh3(cov_n)
 
     candidates = [Vn[:, 0], V_p[:, 0], V_p[:, 1], V_p[:, 2]]
 
@@ -640,6 +686,12 @@ def _detect_repetition_patches(verts, tris):
         if norm_ax < 1e-6:
             continue
         ax = ax / norm_ax
+        # Canonical axis direction before the basis is built. `u` and `v` are
+        # cross products of `ax`, so a negated eigenvector would reflect the 2D
+        # frame and move `theta_vals` (arctan2) -- which changes the pattern fit
+        # even though the axis line is the same. Canonicalising here makes the
+        # whole route a function of the axis line.
+        ax = ax * _canonical_axis_sign(ax)
         if abs(ax[0]) < 0.9:
             u = np.cross(ax, [1, 0, 0])
         else:
@@ -659,6 +711,8 @@ def _detect_repetition_patches(verts, tris):
                 fit_r = float(np.sqrt(r_sq))
                 radial_dists = np.sqrt((x_2d - cx) ** 2 + (y_2d - cy) ** 2)
                 rel_std = float(np.std(radial_dists) / fit_r)
+                # Strictly-better wins, so the first (canonical-order) candidate
+                # keeps the slot on an exact tie.
                 if rel_std < best_rel_std:
                     best_rel_std = rel_std
                     best_axis = ax

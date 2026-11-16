@@ -35,10 +35,15 @@
 
 use std::collections::HashMap;
 
+#[cfg(feature = "python")]
 use numpy::ndarray::Array2;
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArray2, PyArrayLike2};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::PyDict;
 
 use meshopt::{simplify, simplify_with_attributes_and_locks, typed_to_bytes, SimplifyOptions, VertexDataAdapter};
@@ -83,16 +88,17 @@ pub fn decimate_impl(
     target_error: Option<f64>,
     lock_border: bool,
     attributes: Option<(&[f64], usize)>,
-) -> PyResult<DecimateReport> {
+) -> Result<DecimateReport, String> {
     let nv_in = verts_in.len();
     let nf_in = tris_in.len();
 
     let attr_stride = attributes.map(|(_, s)| s).unwrap_or(0);
     if let Some((flat, stride)) = attributes {
         if stride == 0 || flat.len() != nv_in * stride {
-            return Err(PyValueError::new_err(
-                "attributes must hold one row of the same width per vertex",
-            ));
+            return Err(
+                "attributes must hold one row of the same width per vertex"
+                    .to_string(),
+            );
         }
     }
 
@@ -100,14 +106,14 @@ pub fn decimate_impl(
     for f in tris_in {
         for &v in f {
             if v < 0 || v as usize >= nv_in {
-                return Err(PyValueError::new_err(format!(
+                return Err(format!(
                     "tris contains vertex index {v} outside 0..{nv_in}"
-                )));
+                ));
             }
         }
     }
 
-    let no_op_report = |welded: usize, merged: usize| -> PyResult<DecimateReport> {
+    let no_op_report = |welded: usize, merged: usize| -> Result<DecimateReport, String> {
         Ok(DecimateReport {
             verts: verts_in.to_vec(),
             tris: tris_in.to_vec(),
@@ -212,7 +218,7 @@ pub fn decimate_impl(
         .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
         .collect();
     let adapter = VertexDataAdapter::new(typed_to_bytes(&positions_f32), 12, 0)
-        .map_err(|e| PyValueError::new_err(format!("meshopt vertex adapter: {e}")))?;
+        .map_err(|e| format!("meshopt vertex adapter: {e}"))?;
 
     let mut indices: Vec<u32> = Vec::with_capacity(welded_tris.len() * 3);
     for f in &welded_tris {
@@ -246,7 +252,7 @@ pub fn decimate_impl(
                 &adapter,
                 &flat32,
                 &weights,
-                attr_stride,
+                attr_stride * 4,
                 &locks,
                 target_index_count,
                 err_in,
@@ -306,6 +312,7 @@ fn weld_only(verts_in: &[V3]) -> (usize, usize) {
     (map.len(), verts_in.len() - map.len())
 }
 
+#[cfg(feature = "python")]
 fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<V3>> {
     let v = arr.as_array();
     if v.ncols() != 3 {
@@ -319,6 +326,7 @@ fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<V
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[i64; 3]>> {
     let t = arr.as_array();
     if t.ncols() != 3 {
@@ -332,6 +340,7 @@ fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_f64<'py>(py: Python<'py>, rows: &[V3]) -> Bound<'py, PyArray2<f64>> {
     let mut a = Array2::<f64>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -342,6 +351,7 @@ fn rows_to_array2_f64<'py>(py: Python<'py>, rows: &[V3]) -> Bound<'py, PyArray2<
     PyArray2::from_owned_array(py, a)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyArray2<i64>> {
     let mut a = Array2::<i64>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -362,8 +372,10 @@ fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyA
 /// dict (`faces_in`, `faces_out`, `target_faces`, `weld_merged`,
 /// `welded_vertices`, `degenerate_removed`, `target_error_used`,
 /// `result_error`, `lock_border`, `attributes_used`, `no_op`, `engine`).
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, target_faces, target_error=None, lock_border=false, attributes=None))]
+#[cfg(feature = "python")]
 pub fn decimate_qem<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -409,7 +421,8 @@ pub fn decimate_qem<'py>(
         .unwrap_or(0);
     let att_ref = attr_flat.as_deref().map(|f| (f, attr_stride));
 
-    let rep = decimate_impl(&vrows, &trows, target_faces, target_error, lock_border, att_ref)?;
+    let rep = decimate_impl(&vrows, &trows, target_faces, target_error, lock_border, att_ref)
+        .map_err(PyValueError::new_err)?;
 
     let dict = PyDict::new(py);
     dict.set_item("faces_in", rep.faces_in)?;

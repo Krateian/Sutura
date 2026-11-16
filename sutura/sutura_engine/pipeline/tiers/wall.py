@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Sutura Authors
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """wall tier (P1a split). Moved verbatim from sutura/repair.py; no logic change."""
+import json
 import os
 
 import numpy as np
@@ -10,9 +11,67 @@ from defects import detect as detect_defects
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.tiers.repeat import _clean_and_orient
 from sutura_engine.pipeline.utils import boundary_loop_stats
+from sutura_engine.pipeline.tiers.engine import tier_core, tier_engine
 
 
 def wall_thicken_tier(cur_v, cur_t, after, stats, v, t, min_thickness=None):
+    """Wall-thicken tier entry point (Python by default, Rust gate when opted in)."""
+    cur_v = np.asarray(cur_v, dtype=np.float64)
+    cur_t = np.asarray(cur_t, dtype=np.int64)
+    v = np.asarray(v if v is not None else cur_v, dtype=np.float64)
+    t = np.asarray(t if t is not None else cur_t, dtype=np.int64)
+    core = tier_core()
+    if tier_engine('wall') != 'rust' or core is None:
+        return _wall_thicken_tier_python(cur_v, cur_t, after, stats, v, t,
+                                         min_thickness)
+    return _wall_thicken_tier_rust(cur_v, cur_t, after, stats, v, t,
+                                   min_thickness, core)
+
+
+def _wall_thicken_tier_rust(cur_v, cur_t, after, stats, v, t, min_thickness,
+                            core):
+    stats = stats if stats is not None else {}
+    rec = {'tier': 'wall_thicken', 'ran': True, 'adopted': False,
+           'watertight': False, 'min_before': None, 'min_after': None,
+           'min_thickness': None, 'delta': None, 'thin_before': None,
+           'thin_after': None, 'faces': None, 'notes': [], 'reason': None}
+    stats['wall_thicken'] = rec
+    payload = None
+    rep = {}
+    cand_v = cand_t = None
+    with method_health.tier_guard('wall_thicken', 'tier') as _g:
+        import wall_thickness as _wt
+        cand_v, cand_t, rep = _wt.thicken_to_min(
+            np.asarray(v, dtype=np.float64),
+            np.asarray(t, dtype=np.int64), min_thickness=min_thickness)
+        if len(cand_t):
+            cand_v, cand_t = _clean_and_orient(cand_v, cand_t)
+        payload = core.tier_wall_decide(
+            np.ascontiguousarray(cur_v, dtype=np.float64),
+            np.ascontiguousarray(cur_t, dtype=np.int64),
+            np.ascontiguousarray(v, dtype=np.float64),
+            np.ascontiguousarray(t, dtype=np.int64),
+            np.ascontiguousarray(cand_v, dtype=np.float64),
+            np.ascontiguousarray(cand_t, dtype=np.int64),
+            json.dumps(rep, default=str), json.dumps({}))
+    if _g.error is not None or payload is None:
+        rec['ran'] = False
+        rec['reason'] = 'error: %s: %s' % (type(_g.error).__name__, _g.error)
+        stats['wall_thicken'] = rec
+        return cur_v, cur_t, after
+    out_v, out_t, rec_json = payload
+    rec = json.loads(rec_json)
+    stats['wall_thicken'] = rec
+    if not rec.get('adopted'):
+        return cur_v, cur_t, after
+    out_v = np.asarray(out_v, dtype=np.float64)
+    out_t = np.asarray(out_t, dtype=np.int64)
+    return (out_v, out_t,
+            topology.mesh_topology(np.asarray(out_v, dtype=np.float32),
+                                   np.asarray(out_t, dtype=np.int32)))
+
+
+def _wall_thicken_tier_python(cur_v, cur_t, after, stats, v, t, min_thickness=None):
     """Thin-wall thicken-to-min tier for registry method 15 (P-WALL).
 
     Array-native: ``cur_v``/``cur_t`` is the current mesh and the adopted

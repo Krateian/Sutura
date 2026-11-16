@@ -1,0 +1,15 @@
+# Managed by the Sutura Method control panel (Options -> Methods).
+# Panel-owned sections: [order] / [methods]. Comments in these sections
+# may be regenerated. The packaged default policy is never modified.
+
+
+[gates]
+
+[gates.adoption]
+face_ratio = 99.0
+
+[si_escalation]
+method_num = 2
+
+[auto]
+generative_max_hausdorff_rel = 0.5

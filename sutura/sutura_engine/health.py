@@ -73,9 +73,11 @@ run, and wrapping them would change bookkeeping the top level relies on):
 """
 import contextvars
 import enum
+import json
 import os
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from sutura_engine import rust_bridge
 
 KIND_IMPORT = 'import'
 KIND_MISSING_SYMBOL = 'missing_symbol'
@@ -101,6 +103,13 @@ GEOM_SYMBOL_MISSING_MESSAGE = (
 # path. Optional bindings (dressing_coat, orient3d, shell_analyze, ...) are
 # feature-detected by their callers and are intentionally NOT in this list.
 REQUIRED_GEOM_SYMBOLS = ('flap_fill', 'morph_close', 'tamponade')
+
+def _rust_core():
+    return rust_bridge.load('report', ('SUTURA_REPORT_ENGINE',), 'rust')
+
+
+def _json_arg(data):
+    return rust_bridge.json_arg(data)
 
 
 class GeometryRequiredError(RuntimeError):
@@ -389,6 +398,13 @@ def build_report(collector: Optional[_Collector] = None,
     """The JSON ``method_health`` section: availability + this run's errors."""
     collector = collector if collector is not None else current()
     avail = availability if availability is not None else check_availability_detail()
+    _core = _rust_core()
+    if _core is not None:
+        av = {mid: [st.value, reason] for mid, (st, reason) in avail.items()}
+        return json.loads(_core.health_build_report(
+            _json_arg(av),
+            _json_arg([e.to_dict() for e in collector.errors]),
+            _json_arg([e.to_dict() for e in collector.skips])))
     errors = list(collector.errors)
     errored = {e.method for e in errors}
     methods: Dict[str, Dict[str, Any]] = {}
@@ -413,6 +429,9 @@ def build_report(collector: Optional[_Collector] = None,
 
 def human_line(report: Dict[str, Any]) -> str:
     """``Methods: N/M OK (X failed, Y skipped)`` with the tail only when non-zero."""
+    _core = _rust_core()
+    if _core is not None:
+        return _core.health_human_line(_json_arg(report))
     total = report.get('total', 0)
     ok = report.get('ok', 0)
     failed = report.get('failed', 0)

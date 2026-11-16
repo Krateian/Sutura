@@ -17,10 +17,15 @@
 //! contouring, so the output is already a closed, two-manifold surface; the
 //! caller still validates it (`_check_validity`) and drops debris components.
 
+#[cfg(feature = "python")]
 use numpy::ndarray::Array2;
+#[cfg(feature = "python")]
 use numpy::{AllowTypeChange, PyArray2, PyArrayLike2};
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::PyDict;
 
 use crate::{dual_contour, plan_grid, winding};
@@ -65,6 +70,23 @@ pub fn resample_core(
     use_tets: bool,
     mass_point: bool,
 ) -> Result<ResampleReport, String> {
+    resample_core_with_cancel(
+        verts, tris, voxel, offset, absdist, raystab_full, use_tets, mass_point, None,
+    )
+}
+
+/// `resample_core` with a cooperative cancellation probe.
+pub fn resample_core_with_cancel(
+    verts: &[V3],
+    tris: &[[i64; 3]],
+    voxel: f64,
+    offset: f64,
+    absdist: bool,
+    raystab_full: bool,
+    use_tets: bool,
+    mass_point: bool,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Result<ResampleReport, String> {
     if !voxel.is_finite() || voxel <= 0.0 {
         return Err("voxel must be a positive finite number".to_string());
     }
@@ -107,7 +129,13 @@ pub fn resample_core(
     let (origin, voxel, dims, coarsened) = plan_grid(bmin, bmax, Some(voxel), 96.0, pad);
 
     let bvh = winding::MeshBvh::from_arrays(verts, &rt);
-    let (_w, u, mut s) = bvh.sdf_grid(origin, voxel, dims);
+    if crate::cancel::cancelled(cancel) {
+        return Err("cancelled".to_string());
+    }
+    let (_w, u, mut s) = bvh.sdf_grid_with_cancel(origin, voxel, dims, cancel);
+    if crate::cancel::cancelled(cancel) {
+        return Err("cancelled".to_string());
+    }
     let use_raystab = raystab_full && !absdist;
     if use_raystab {
         let stabber = crate::raycast::Stabber::new(
@@ -130,6 +158,9 @@ pub fn resample_core(
             f32::INFINITY,
             true,
         );
+    }
+    if crate::cancel::cancelled(cancel) {
+        return Err("cancelled".to_string());
     }
     let off = offset as f32;
     let field: Vec<f32> = if absdist {
@@ -163,6 +194,7 @@ pub fn resample_core(
     })
 }
 
+#[cfg(feature = "python")]
 fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<V3>> {
     let v = arr.as_array();
     if v.ncols() != 3 {
@@ -176,6 +208,7 @@ fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<V
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[i64; 3]>> {
     let t = arr.as_array();
     if t.ncols() != 3 {
@@ -189,6 +222,7 @@ fn read_i64_rows(arr: &PyArrayLike2<'_, i64, AllowTypeChange>) -> PyResult<Vec<[
     Ok(out)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_f64<'py>(py: Python<'py>, rows: &[V3]) -> Bound<'py, PyArray2<f64>> {
     let mut a = Array2::<f64>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -199,6 +233,7 @@ fn rows_to_array2_f64<'py>(py: Python<'py>, rows: &[V3]) -> Bound<'py, PyArray2<
     PyArray2::from_owned_array(py, a)
 }
 
+#[cfg(feature = "python")]
 fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyArray2<i64>> {
     let mut a = Array2::<i64>::zeros((rows.len(), 3));
     for (r, row) in rows.iter().enumerate() {
@@ -220,6 +255,7 @@ fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyA
 /// pass: only winding-outside cells may be flipped, and only to inside, on a
 /// stable supermajority; see `resample_core`.  The default `False` is
 /// byte-identical to the winding-only field.
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (verts, tris, voxel, offset=0.0, absdist=false, raystab_full=false, surface=None, vertex_mode=None))]
 pub fn resample_uniform<'py>(
@@ -490,4 +526,53 @@ mod tests {
         let qef = resample_core(&v, &t, 0.1, 0.0, false, false, false, false).unwrap();
         assert!(tets.verts.len() > qef.verts.len());
     }
+}
+
+/// Pure resampling entry point with the Python defaults resolved.
+pub fn resample_uniform_core(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    voxel: f64,
+    offset: f64,
+    absdist: bool,
+    raystab_full: bool,
+    surface: Option<&str>,
+    vertex_mode: Option<&str>,
+) -> Result<ResampleReport, String> {
+    resample_uniform_core_with_cancel(
+        verts, tris, voxel, offset, absdist, raystab_full, surface, vertex_mode, None,
+    )
+}
+
+/// `resample_uniform_core` with a cooperative cancellation probe.
+pub fn resample_uniform_core_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    voxel: f64,
+    offset: f64,
+    absdist: bool,
+    raystab_full: bool,
+    surface: Option<&str>,
+    vertex_mode: Option<&str>,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Result<ResampleReport, String> {
+    let use_tets = matches!(
+        surface.map(|s| s.to_ascii_lowercase()).as_deref(),
+        Some("tets") | Some("tet") | Some("marching_tets")
+    );
+    let mass_point = matches!(
+        vertex_mode.map(|s| s.to_ascii_lowercase()).as_deref(),
+        Some("mass") | Some("mass_point") | Some("surface_nets")
+    );
+    resample_core_with_cancel(
+        verts,
+        tris,
+        voxel,
+        offset,
+        absdist,
+        raystab_full,
+        use_tets,
+        mass_point,
+        cancel,
+    )
 }

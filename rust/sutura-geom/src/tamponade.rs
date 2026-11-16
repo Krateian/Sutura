@@ -972,6 +972,7 @@ fn throat_separates(
     config: &TamponadeConfig,
     percell: bool,
     deadline: Option<Instant>,
+    cancel: Option<&dyn crate::cancel::Cancel>,
 ) -> CutVerdict {
     const TERM: f64 = 1.0e12;
 
@@ -1094,31 +1095,40 @@ fn throat_separates(
     // the graph edges and the union-find over the traversable edges then run
     // serially in the original row-major order, so the components and the cut
     // are unchanged.
-    let wall_bits: Vec<u8> = (0..total)
-        .into_par_iter()
-        .map(|idx| {
-            let iz = idx / (nx * ny);
-            let rem = idx % (nx * ny);
-            let iy = rem / nx;
-            let ix = rem % nx;
-            let c = cell_center(ix, iy, iz);
-            let mut bits = 0u8;
-            if ix + 1 < nx && crosses_wall(bvh, c, cell_center(ix + 1, iy, iz)) {
-                bits |= 1;
+    let mut wall_bits: Vec<u8> = vec![0u8; total];
+    let slice = nx * ny;
+    let wall_res = wall_bits
+        .par_chunks_mut(slice)
+        .enumerate()
+        .try_for_each(|(iz, chunk)| -> Result<(), ()> {
+            if crate::cancel::cancelled(cancel) {
+                return Err(());
             }
-            if iy + 1 < ny && crosses_wall(bvh, c, cell_center(ix, iy + 1, iz)) {
-                bits |= 2;
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let c = cell_center(ix, iy, iz);
+                    let mut bits = 0u8;
+                    if ix + 1 < nx && crosses_wall(bvh, c, cell_center(ix + 1, iy, iz)) {
+                        bits |= 1;
+                    }
+                    if iy + 1 < ny && crosses_wall(bvh, c, cell_center(ix, iy + 1, iz)) {
+                        bits |= 2;
+                    }
+                    if iz + 1 < nz && crosses_wall(bvh, c, cell_center(ix, iy, iz + 1)) {
+                        bits |= 4;
+                    }
+                    chunk[iy * nx + ix] = bits;
+                }
             }
-            if iz + 1 < nz && crosses_wall(bvh, c, cell_center(ix, iy, iz + 1)) {
-                bits |= 4;
-            }
-            bits
-        })
-        .collect();
+            Ok(())
+        });
+    if wall_res.is_err() {
+        return CutVerdict::Timeout;
+    }
 
     let mut near_surface: Vec<bool> = vec![false; total];
     for iz in 0..nz {
-        if deadline_passed(deadline) {
+        if deadline_passed(deadline) || crate::cancel::cancelled(cancel) {
             return CutVerdict::Timeout;
         }
         for iy in 0..ny {
@@ -1142,7 +1152,7 @@ fn throat_separates(
     }
 
     for iz in 0..nz {
-        if deadline_passed(deadline) {
+        if deadline_passed(deadline) || crate::cancel::cancelled(cancel) {
             return CutVerdict::Timeout;
         }
         for iy in 0..ny {
@@ -1182,7 +1192,12 @@ fn throat_separates(
                 q.push_back(idx);
             }
         }
+        let mut pops = 0usize;
         while let Some(idx) = q.pop_front() {
+            pops += 1;
+            if pops % 8192 == 0 && crate::cancel::cancelled(cancel) {
+                return CutVerdict::Timeout;
+            }
             let d = dist[idx];
             let iz = idx / (nx * ny);
             let rem = idx % (nx * ny);
@@ -1307,7 +1322,7 @@ fn throat_separates(
             owner.push(r);
         }
         let sample_pts: Vec<[f64; 3]> = sample_idx.iter().map(|&c| center_of(c)).collect();
-        if deadline_passed(deadline) {
+        if deadline_passed(deadline) || crate::cancel::cancelled(cancel) {
             return CutVerdict::Timeout;
         }
         let ws = winding(&sample_pts);
@@ -4064,13 +4079,19 @@ fn plug_leak_mask(
     regions: &[PlugRegion],
     tol: f64,
     orig_nv: usize,
+    cancel: Option<&dyn crate::cancel::Cancel>,
 ) -> Vec<bool> {
-    regions
-        .iter()
-        .map(|region| {
-            plug_leak(orig_bvh, orig_verts, new_verts, tris, region, tol, orig_nv)
-        })
-        .collect()
+    let mut out = Vec::with_capacity(regions.len());
+    for region in regions {
+        if crate::cancel::cancelled(cancel) {
+            break;
+        }
+        out.push(plug_leak(
+            orig_bvh, orig_verts, new_verts, tris, region, tol, orig_nv,
+        ));
+    }
+    out.resize(regions.len(), false);
+    out
 }
 
 /// Normal of triangle `(a, b, c)`, zero for a degenerate face.
@@ -4213,14 +4234,19 @@ fn plug_double_wall_mask(
     tris: &[[u32; 3]],
     regions: &[PlugRegion],
     tol: f64,
+    cancel: Option<&dyn crate::cancel::Cancel>,
 ) -> Vec<bool> {
-    regions
-        .iter()
-        .map(|region| {
-            plug_is_double_wall(orig_bvh, orig_verts, orig_tris, new_verts, tris,
-                                region, tol)
-        })
-        .collect()
+    let mut out = Vec::with_capacity(regions.len());
+    for region in regions {
+        if crate::cancel::cancelled(cancel) {
+            break;
+        }
+        out.push(plug_is_double_wall(
+            orig_bvh, orig_verts, orig_tris, new_verts, tris, region, tol,
+        ));
+    }
+    out.resize(regions.len(), false);
+    out
 }
 
 /// True when the plug region is edge-connected to the rest of the output: it
@@ -4273,9 +4299,13 @@ fn build_plug_metrics_json(
     dw: &[bool],
     floating: &[bool],
     tol: f64,
+    cancel: Option<&dyn crate::cancel::Cancel>,
 ) -> String {
     let mut out = String::from("[");
     for (ri, region) in regions.iter().enumerate() {
+        if crate::cancel::cancelled(cancel) {
+            break;
+        }
         if rolled.get(ri).copied().unwrap_or(false) {
             continue;
         }
@@ -5542,6 +5572,16 @@ pub fn tamponade_repair(
     tris: &[[u32; 3]],
     config: &TamponadeConfig,
 ) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, TamponadeInfo) {
+    tamponade_repair_with_cancel(verts, tris, config, None)
+}
+
+/// `tamponade_repair` with a cooperative cancellation probe.
+pub fn tamponade_repair_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    config: &TamponadeConfig,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, TamponadeInfo) {
     let t0 = Instant::now();
     let mut info = TamponadeInfo::default();
     info.healthy_faces_kept = tris.len();
@@ -5821,7 +5861,7 @@ pub fn tamponade_repair(
         if rim.len() < 3 {
             continue;
         }
-        if crate::cancel::is_cancelled() {
+        if crate::cancel::is_cancelled() || crate::cancel::cancelled(cancel) {
             break;
         }
         // Deterministic work gate: charge the cut-grid cells (plus a small
@@ -5921,6 +5961,9 @@ pub fn tamponade_repair(
             None
         };
         let mincut_skipped = !tiny && single_shell && reference.is_some();
+        if crate::cancel::cancelled(cancel) {
+            break;
+        }
 
         // No per-loop wall clock: the cut runs to completion; the loop gate
         // above already charged its deterministic cell cost.
@@ -5928,8 +5971,18 @@ pub fn tamponade_repair(
 
         if !tiny && !mincut_skipped {
             let tc0 = Instant::now();
-            let verdict =
-                throat_separates(verts, &rim, h, model_diag, bvh, antipodal_gwn.as_ref(), config, percell, loop_deadline);
+            let verdict = throat_separates(
+                verts,
+                &rim,
+                h,
+                model_diag,
+                bvh,
+                antipodal_gwn.as_ref(),
+                config,
+                percell,
+                loop_deadline,
+                cancel,
+            );
             let dt = tc0.elapsed().as_secs_f64();
             cut_s += dt;
             if profile {
@@ -5974,6 +6027,9 @@ pub fn tamponade_repair(
             );
         }
 
+        if crate::cancel::cancelled(cancel) {
+            break;
+        }
         let tp0 = Instant::now();
         // T3: fit a smooth "laser" reference surface (line 2) through the intact
         // ring 2..=3 tissue. When it is available, seal at the reference level —
@@ -6082,6 +6138,9 @@ pub fn tamponade_repair(
                 }
             }
 
+            if crate::cancel::cancelled(cancel) {
+                break;
+            }
             if let Some(cand) = cand {
                 let cap_counts = edge_use_counts(&cand);
                 let collides = cap_counts
@@ -6376,6 +6435,9 @@ pub fn tamponade_repair(
         stent_candidates.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 
         for (region_key, loop_v) in stent_candidates {
+            if crate::cancel::cancelled(cancel) {
+                break;
+            }
             if deadline_passed(deadline) {
                 info.reason = "timeout exceeded".to_string();
                 break;
@@ -6453,10 +6515,11 @@ pub fn tamponade_repair(
         let reload_regressed = full.worse_than(&base);
         let tol = leak_tol(model_diag);
         let leak_drop = plug_leak_mask(
-            &bvh, verts, &out_verts, &out_tris, &plug_regions, tol, verts.len());
+            &bvh, verts, &out_verts, &out_tris, &plug_regions, tol, verts.len(),
+            cancel);
         info.plugs_leaking = leak_drop.iter().filter(|&&d| d).count();
         let dw_drop = plug_double_wall_mask(
-            &bvh, verts, tris, &out_verts, &out_tris, &plug_regions, tol);
+            &bvh, verts, tris, &out_verts, &out_tris, &plug_regions, tol, cancel);
         info.plugs_double_wall = dw_drop.iter().filter(|&&d| d).count();
         // Connectivity gate: every plug must be edge-connected to the shell
         // through its loop (not a floating component or a closed sub-shell).
@@ -6476,6 +6539,9 @@ pub fn tamponade_repair(
         // reopens), so only a no-gain region is dropped here.
         let mut stent_no_gain = vec![false; plug_regions.len()];
         for (ri, region) in plug_regions.iter().enumerate() {
+            if crate::cancel::cancelled(cancel) {
+                break;
+            }
             if region.stent {
                 let without = reload_verdict_without(&out_verts, &out_tris, region);
                 if without.boundary_loops <= full.boundary_loops {
@@ -6493,6 +6559,9 @@ pub fn tamponade_repair(
             let mut drop = vec![false; plug_regions.len()];
             if reload_regressed {
                 for (ri, region) in plug_regions.iter().enumerate() {
+                    if crate::cancel::cancelled(cancel) {
+                        break;
+                    }
                     let without = reload_verdict_without(&out_verts, &out_tris, region);
                     if (without.boundary_edges < full.boundary_edges
                         || without.nm_edges < full.nm_edges
@@ -6568,7 +6637,7 @@ pub fn tamponade_repair(
             }
             info.plug_metrics_json = build_plug_metrics_json(
                 &bvh, verts, tris, &out_verts, &out_tris, &plug_regions, &rolled,
-                &leak_drop, &dw_drop, &float_drop, tol,
+                &leak_drop, &dw_drop, &float_drop, tol, cancel,
             );
             if give_up {
                 // Restore the exact input topology and vertices (also undoes
@@ -6595,7 +6664,7 @@ pub fn tamponade_repair(
             // No adoption gate fired: every plug survives, report them all.
             info.plug_metrics_json = build_plug_metrics_json(
                 &bvh, verts, tris, &out_verts, &out_tris, &plug_regions, &rolled,
-                &leak_drop, &dw_drop, &float_drop, tol,
+                &leak_drop, &dw_drop, &float_drop, tol, cancel,
             );
         }
     }
@@ -6612,6 +6681,7 @@ pub fn tamponade_repair(
     // plugs are in place.  All logic lives in `melt.rs`; this hook only carries
     // the counters back.  A no-op when melting is disabled or there is no SI.
     if config.melt_si {
+        let _mt = Instant::now();
         let melt_params = crate::melt::MeltParams::default();
         let m = crate::melt::melt_si(
             &out_verts,

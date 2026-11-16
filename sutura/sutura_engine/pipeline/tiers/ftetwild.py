@@ -51,6 +51,13 @@ def ftetwild_available():
             # are not enough, and 'auto' must stay a silent no-op.
             _FTETWILD_AVAILABLE = False
             return False
+        try:
+            from sutura.ftetwild_manager import find_ftetwild_binary
+            if find_ftetwild_binary() is not None:
+                _FTETWILD_AVAILABLE = True
+                return True
+        except Exception:
+            pass
         if os.path.exists(VENV311):
             import glob
             root = os.path.dirname(os.path.dirname(VENV311))
@@ -90,8 +97,14 @@ def run_ftetwild(inter, out_obj, params=None, timeout=None):
     # the output so nothing lands in the user's folder (e.g. a Dolphin /
     # Finder right-click repair runs with the file's folder as cwd).
     workdir = os.path.dirname(os.path.abspath(out_obj))
-    # 1) primary: the fixed Linux two-venv layout (python3.11 + pytetwild)
-    if os.path.exists(VENV311) and os.path.exists(FTETWILD_BRIDGE):
+    try:
+        from sutura.ftetwild_manager import find_ftetwild_binary
+        has_bin = find_ftetwild_binary() is not None
+    except Exception:
+        has_bin = False
+
+    # 1) primary: the fixed Linux two-venv layout (python3.11 + pytetwild), unless binary is present
+    if not has_bin and os.path.exists(VENV311) and os.path.exists(FTETWILD_BRIDGE):
         try:
             r = subprocess.run(
                 [VENV311, FTETWILD_BRIDGE, inter, out_obj] + extra,

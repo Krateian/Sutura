@@ -4,8 +4,8 @@ on:
     inputs:
       base_ref:      { description: 'Side A ref (branch, tag or SHA)', required: true, default: 'main' }
       candidate_ref: { description: 'Side B ref (empty = single-side)', required: false, default: '' }
-      sets:          { description: 'Comma list; each entry NAME or NAME@mode (quality_ab|byte|determinism|single_side|bench115). Full run: derived264@quality_ab,samples40@quality_ab,bench115@bench115', required: true, default: 'samples40@quality_ab,oracle36@quality_ab' }
-      mode:          { description: 'Default mode for entries without @mode: quality_ab | byte | determinism | single_side | bench115', required: true, default: 'quality_ab' }
+      sets:          { description: 'Comma list; each entry NAME or NAME@mode (quality_ab|byte|determinism|single_side|bench115|io_parity). Full run: derived264@quality_ab,samples40@quality_ab,bench115@bench115', required: true, default: 'samples40@quality_ab,oracle36@quality_ab' }
+      mode:          { description: 'Default mode for entries without @mode: quality_ab | byte | determinism | single_side | bench115 | io_parity', required: true, default: 'quality_ab' }
       env_base:      { description: 'Side A env (unsupported by the harness; candidate side only)', required: false, default: '' }
       env_candidate: { description: 'Side B env, e.g. SUTURA_SI_EXCISE=0', required: false, default: '' }
       shards:        { description: 'Shard count override (per set)', required: false, default: '' }
@@ -32,7 +32,7 @@ jobs:
           python3 - <<'PY'
           import json, os, re
           counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5,'derived264':20,'bench115':12}
-          modes=('quality_ab','byte','determinism','single_side','bench115')
+          modes=('quality_ab','byte','determinism','single_side','bench115','io_parity')
           override=int(os.environ.get('SHARDS') or 0)
           default_mode=os.environ['MODE']
           inc=[]
@@ -67,13 +67,27 @@ jobs:
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
-          # The Rust bridge (sutura_core_py) exists on the Rust-port branches;
-          # without it an ENGINE=rust request would silently run Python.
+      # Both sides of this merge build Rust artifacts for the base ref; they are
+      # independent steps, so both are kept. From main: the bridge wheel
+      # (sutura_core_py) without which an ENGINE=rust request would silently run
+      # Python. From p10/core: the Rust CLI artifact.
+      - name: Build bridge wheel (if the base has sutura-py)
+        run: |
           if [ -f rust/sutura-py/Cargo.toml ]; then
             (cd rust/sutura-py && ../../venv/bin/maturin build --release --out ../sutura-geom/dist)
+            echo "base has sutura-py; bridge wheel built"
+          else
+            echo "base has no sutura-py crate; bridge wheel skipped"
           fi
+      - name: Build Rust CLI
+        if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
+        working-directory: rust
+        run: cargo build --release -p sutura-cli
       - uses: actions/upload-artifact@v4
         with: { name: wheel-base, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
+        with: { name: sutura-cli-base, path: rust/target/release/sutura, retention-days: 3 }
   build-cand:
     needs: preflight
     if: inputs.candidate_ref != ''
@@ -89,13 +103,32 @@ jobs:
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
-          # The Rust bridge (sutura_core_py) exists on the Rust-port branches;
-          # without it an ENGINE=rust request would silently run Python.
+      - name: Build Rust CLI
+        if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
+        working-directory: rust
+        run: cargo build --release -p sutura-cli
+      # One bridge build for the candidate. It writes to `dist` (the layout
+      # p10/core introduced and the upload step expects) and publishes the
+      # `bridge` output that gates `wheel-cand-py`, so a candidate without
+      # sutura-py uploads nothing instead of failing the job.
+      - name: Build bridge wheel (if the candidate has sutura-py)
+        id: bridge
+        run: |
           if [ -f rust/sutura-py/Cargo.toml ]; then
-            (cd rust/sutura-py && ../../venv/bin/maturin build --release --out ../sutura-geom/dist)
+            (cd rust/sutura-py && ../../venv/bin/maturin build --release --out dist)
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "candidate has no sutura-py crate; bridge wheel skipped"
+            echo "present=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/upload-artifact@v4
         with: { name: wheel-cand, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
+        with: { name: sutura-cli-cand, path: rust/target/release/sutura, retention-days: 3 }
+      - uses: actions/upload-artifact@v4
+        if: steps.bridge.outputs.present == 'true'
+        with: { name: wheel-cand-py, path: rust/sutura-py/dist/*.whl, retention-days: 3 }
   # The harness, the shard/board scripts and the geometry kernel they import
   # come from the workflow's own commit (github.sha), never from base/cand:
   # an older base ref (e.g. a release tag) predates these tools entirely.
@@ -186,6 +219,17 @@ jobs:
       - uses: actions/download-artifact@v4
         if: inputs.candidate_ref != ''
         with: { name: wheel-cand, path: wheels-cand }
+      - uses: actions/download-artifact@v4
+        if: inputs.candidate_ref != ''
+        with: { name: sutura-cli-cand, path: cand-bin }
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        if: inputs.candidate_ref == ''
+        with: { name: sutura-cli-base, path: cand-bin }
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        if: inputs.candidate_ref != ''
+        with: { name: wheel-cand-py, path: wheels-cand-py }
       - name: Fresh venvs with their own wheel
         run: |
           python3 -m venv tools-venv
@@ -196,6 +240,10 @@ jobs:
           if [ -d wheels-cand ]; then cp wheels-cand/*.whl cand-wheels/; else cp wheels-base/*.whl cand-wheels/; fi
           python3 -m venv cand-venv
           cand-venv/bin/pip install --quiet -r cand/requirements.txt cand-wheels/*.whl
+          if [ -d wheels-cand-py ]; then
+            cand-venv/bin/pip install --quiet wheels-cand-py/*.whl
+            cand-venv/bin/python -c "import sutura_core_py"
+          fi
       # Large bench115 meshes peak at ~6.3 GB of process-tree RSS (measured
       # locally on fountain-basin); with two venvs and page cache the 16 GB
       # runner has been shut down mid-shard (exit 143).  Extra swap on the
@@ -207,6 +255,15 @@ jobs:
             sudo mkswap /mnt/sutura-swap >/dev/null && sudo swapon /mnt/sutura-swap
           fi
           free -m | awk 'NR>1{print $1, $2, $3}'
+      - name: Mark Rust CLI executable
+        continue-on-error: true
+        if: matrix.mode == 'io_parity'
+        run: |
+          if [ -f cand-bin/sutura ]; then
+            chmod +x cand-bin/sutura
+          else
+            echo "no Rust CLI artifact; io_parity will use the Python path"
+          fi
       - name: Run shard
         run: |
           # Numeric-only memory trace in the live job log (epoch, used MB,
@@ -248,7 +305,7 @@ jobs:
           python3 - <<'PY' > plan.json
           import json, os, re
           counts={'samples40':8,'oracle36':4,'core150':10,'core_clean':6,'determinism':2,'visual5':5,'derived264':20,'bench115':12}
-          modes=('quality_ab','byte','determinism','single_side','bench115')
+          modes=('quality_ab','byte','determinism','single_side','bench115','io_parity')
           override=int(os.environ.get('SHARDS') or 0)
           inc=[]
           # Same validation as preflight: this job runs with if: always(), so a

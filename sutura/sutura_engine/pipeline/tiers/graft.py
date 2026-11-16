@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Sutura Authors
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """graft tier (P1a split). Moved verbatim from sutura/repair.py; no logic change."""
+import json
 import os
 
 import numpy as np
@@ -8,10 +9,14 @@ import numpy as np
 import topology
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
+from sutura_engine import rust_bridge
 from sutura_engine.pipeline.p_weld import (
     _repair_welded_topology, weld_reload_equivalent,
 )
 from sutura_engine.pipeline.presets import GRAFT_MAX_FACES, GRAFT_TIMEOUT
+from sutura_engine.pipeline.tiers.engine import (
+    guard_params, tier_core, tier_engine,
+)
 
 
 from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
@@ -19,6 +24,119 @@ from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
 
 def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
                intensity=None, spec=None):
+    """Graft tier entry point (Python by default, Rust gate when opted in)."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v,
+                         dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
+    if os.environ.get('SUTURA_GRAFT_DEBUG'):
+        h = 0
+        for arr in (v, t):
+            for x in np.ascontiguousarray(arr).ravel().tobytes():
+                h = (h * 131 + x) & 0xFFFFFFFFFFFFFFFF
+        line = ('[graft-tier] engine_env=%r tier_engine=%r graft=%r '
+                'fp=%d faces=%d verts=%d\n' % (
+                    os.environ.get('SUTURA_GRAFT_ENGINE'),
+                    tier_engine('graft'), graft, h, len(t), len(v)))
+        with open('/tmp/graft-debug.log', 'a') as fh:
+            fh.write(line)
+    if not graft:
+        return v, t, after
+    engine = os.environ.get('SUTURA_GRAFT_ENGINE', '').strip().lower()
+    core = tier_core()
+    if core is None and tier_engine('graft') == 'rust':
+        core = rust_bridge.load(
+            'graft', ('SUTURA_GRAFT_ENGINE', 'SUTURA_TIER_ENGINE'), 'python')
+    if engine == 'rust' and (
+            core is None or not hasattr(core, 'graft_shell_wrap')):
+        rust_bridge.unavailable(
+            'SUTURA_GRAFT_ENGINE=rust requires '
+            'sutura_core_py.graft_shell_wrap')
+    if tier_engine('graft') != 'rust' or core is None:
+        return _graft_tier_python(
+            v, t, input_v, input_t, after, stats, tmpdir, graft, intensity,
+            spec)
+    cap = (getattr(spec, 'graft_max_faces', GRAFT_MAX_FACES)
+           if spec is not None else GRAFT_MAX_FACES)
+    if cap is not None and len(input_t) > int(cap):
+        return _graft_tier_python(
+            v, t, input_v, input_t, after, stats, tmpdir, graft, intensity,
+            spec)
+    timeout = (getattr(spec, 'graft_timeout', GRAFT_TIMEOUT)
+               if spec is not None else GRAFT_TIMEOUT)
+    return _graft_tier_rust(
+        v, t, input_v, input_t, after, stats, tmpdir, intensity, spec, cap,
+        timeout, core)
+
+
+def _graft_tier_rust(v, t, input_v, input_t, after, stats, tmpdir, intensity,
+                     spec, cap, timeout, core):
+    """Rust-backed Graft gate around the Python shell-wrap candidate."""
+    stats = stats if stats is not None else {}
+    payload = None
+    grec = {}
+    cand_v = cand_t = None
+    with method_health.tier_guard('graft', 'tier') as _g:
+        if os.environ.get('SUTURA_GRAFT_DEBUG'):
+            import sys, numpy as _np
+            _h = 0
+            for _arr in (input_v, input_t):
+                _a = _np.ascontiguousarray(_arr)
+                for _x in _a.ravel().tobytes():
+                    _h = (_h * 131 + _x) & 0xFFFFFFFFFFFFFFFF
+            print('[graft-tier-py] input fp=%d faces=%d verts=%d' % (
+                _h, len(input_t), len(input_v)), file=sys.stderr, flush=True)
+        engine = os.environ.get('SUTURA_GRAFT_ENGINE', '').strip().lower()
+        if engine == 'rust' and hasattr(core, 'graft_shell_wrap'):
+            cand_v, cand_t, grec_json = core.graft_shell_wrap(
+                np.ascontiguousarray(input_v, dtype=np.float64),
+                np.ascontiguousarray(input_t, dtype=np.int64),
+                intensity, (float(timeout) if timeout else None))
+            grec = json.loads(grec_json)
+        else:
+            try:
+                from sutura_engine import graft as _graft
+            except Exception:  # noqa: BLE001
+                import shell_wrap as _graft
+            cand_v, cand_t, grec = _graft.shell_wrap(
+                input_v, input_t, hybrid=True, intensity=intensity,
+                time_budget=timeout)
+        params = {
+            'max_faces': (int(cap) if cap is not None else None),
+            'time_budget': (float(timeout) if timeout else None),
+            'stage1_holes': (stats.get('stage1') or {}).get('holes_remaining'),
+            'stage1_nm': (stats.get('stage1') or {}).get(
+                'non_manifold_edges_remaining'),
+            'guard': guard_params('graft'),
+        }
+        payload = core.tier_graft_decide(
+            np.ascontiguousarray(v, dtype=np.float64),
+            np.ascontiguousarray(t, dtype=np.int64),
+            np.ascontiguousarray(input_v, dtype=np.float64),
+            np.ascontiguousarray(input_t, dtype=np.int64),
+            np.ascontiguousarray(cand_v, dtype=np.float64),
+            np.ascontiguousarray(cand_t, dtype=np.int64),
+            json.dumps(grec, default=str), json.dumps(params))
+    if _g.error is not None or payload is None:
+        rec = {'tier': 'graft', 'ran': False, 'adopted': False,
+               'reason': 'error: %s: %s' % (type(_g.error).__name__, _g.error)}
+        stats['graft'] = rec
+        return v, t, after
+    out_v, out_t, rec_json = payload
+    rec = json.loads(rec_json)
+    stats['graft'] = rec
+    if not rec.get('adopted'):
+        return v, t, after
+    out_v = np.asarray(out_v, dtype=np.float64)
+    out_t = np.asarray(out_t, dtype=np.int64)
+    return (out_v, out_t,
+            topology.mesh_topology(np.asarray(out_v, dtype=np.float32),
+                                   np.asarray(out_t, dtype=np.int32)))
+
+
+def _graft_tier_python(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
+                       intensity=None, spec=None):
     """Morphology shell-wrap tier for registry method 13 (Graft).
 
     ``v``/``t`` is the result the ladder currently holds and
@@ -46,6 +164,17 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
     t = np.asarray(t, dtype=np.int64)
     input_v = np.asarray(input_v if input_v is not None else v, dtype=np.float64)
     input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
+    if os.environ.get('SUTURA_GRAFT_DEBUG'):
+        h = 0
+        for arr in (v, t):
+            for x in np.ascontiguousarray(arr).ravel().tobytes():
+                h = (h * 131 + x) & 0xFFFFFFFFFFFFFFFF
+        line = ('[graft-tier] engine_env=%r tier_engine=%r graft=%r '
+                'fp=%d faces=%d verts=%d\n' % (
+                    os.environ.get('SUTURA_GRAFT_ENGINE'),
+                    tier_engine('graft'), graft, h, len(t), len(v)))
+        with open('/tmp/graft-debug.log', 'a') as fh:
+            fh.write(line)
     if not graft:
         return v, t, after
     cap = getattr(spec, 'graft_max_faces', GRAFT_MAX_FACES) if spec is not None \

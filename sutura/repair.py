@@ -507,7 +507,13 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     # Central method-health section: availability of every registered method
     # overlaid with this run's recorded failures (the wrapper wrote them into
     # the scope opened above).
-    result['method_health'] = method_health.build_report()
+    _built_health = method_health.build_report()
+    _core_health = result.get('method_health') or {}
+    if not _built_health.get('errors') and _core_health.get('errors'):
+        # Rust pipeline: the core recorded the Stage-1 filter exceptions;
+        # the Python collector is empty on this path, so keep the core section.
+        _built_health['errors'] = _core_health['errors']
+    result['method_health'] = _built_health
     method_health.end()
     trace.finish_trace()
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -592,6 +598,8 @@ def _main(argv=None):
                         help='input mesh file(s)')
     parser.add_argument('-o', '--output', metavar='OUTPUT',
                         help='output file (only valid with a single input)')
+    parser.add_argument('--lang', choices=('en', 'tr'), default='en',
+                        help='human report language (default: en)')
     parser.add_argument('--human', action='store_true',
                         help='print a human-readable report; a progress line is '
                              'shown on stderr when stderr is a TTY')
@@ -939,6 +947,7 @@ def _main(argv=None):
                              '(also SUTURA_DEBUG=1)')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args(argv)
+    os.environ['SUTURA_LANG'] = args.lang
 
     # --list-intensities: print the presets and user profiles, then exit.
     if args.list_intensities:

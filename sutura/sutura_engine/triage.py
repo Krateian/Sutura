@@ -1844,8 +1844,9 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                   'work_budget': (None if work_budget is None
                                   else int(work_budget)),
                   'skipped_budget': False})
-        trial = attempt_fn(src, trial_out, tmpdir, {**ctx, **method.kwargs},
-                           multi)
+        trial = attempt_fn(src, trial_out, tmpdir,
+                           {**ctx, **method.kwargs,
+                            'forced_methods': [method.num]}, multi)
         evaluation = eval_fn(trial, trial_out, multi, in_objs, method)
         tried.append(_record(method, evaluation, 'accepted'
                              if evaluation['watertight'] else 'rejected',
@@ -1994,8 +1995,9 @@ def _explicit(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
             continue
         _t0 = time.monotonic()
         trial_out = os.path.join(tmpdir, 'method_%d%s' % (method.num, ext))
-        trial = attempt_fn(src, trial_out, tmpdir, {**ctx, **method.kwargs},
-                           multi)
+        trial = attempt_fn(src, trial_out, tmpdir,
+                           {**ctx, **method.kwargs,
+                            'forced_methods': [method.num]}, multi)
         evaluation = eval_fn(trial, trial_out, multi, in_objs, method)
         tried.append(_record(method, evaluation, 'accepted'
                              if evaluation['watertight'] else 'rejected',
