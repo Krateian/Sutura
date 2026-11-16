@@ -16,6 +16,8 @@ fn main() -> eframe::Result<()> {
     let mut headless_out: Option<std::path::PathBuf> = None;
     let mut headless_report: Option<std::path::PathBuf> = None;
     let mut headless_cancel_ms: Option<u64> = None;
+    let mut headless_analyze: Option<std::path::PathBuf> = None;
+    let mut headless_objects: Option<std::path::PathBuf> = None;
     let mut heatmap = false;
     let mut about = false;
     let mut updater = false;
@@ -41,6 +43,14 @@ fn main() -> eframe::Result<()> {
             // cooperative-cancel latency can be measured rather than assumed.
             "--headless-cancel-after-ms" => {
                 headless_cancel_ms = args.next().and_then(|s| s.parse::<u64>().ok());
+            }
+            // Hidden test hooks, absent from `--help`: they run the same code the
+            // UI uses, without a window, so the gate can compare against the CLI.
+            "--headless-analyze" => {
+                headless_analyze = args.next().map(std::path::PathBuf::from);
+            }
+            "--headless-objects" => {
+                headless_objects = args.next().map(std::path::PathBuf::from);
             }
             "--heatmap" => heatmap = true,
             "--about" => about = true,
@@ -68,6 +78,22 @@ fn main() -> eframe::Result<()> {
         }
     }
     i18n::apply(language);
+
+    // Hidden headless modes (not in --help): run the UI's own analysis and object
+    // listing without a window so the parity gate can compare them to the CLI.
+    if headless_analyze.is_some() || headless_objects.is_some() {
+        let input = match files.first() {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("a headless mode needs an input file");
+                std::process::exit(2);
+            }
+        };
+        if let Some(path) = headless_analyze {
+            return app::headless_analyze(&input, Some(path));
+        }
+        return app::headless_objects(&input, headless_objects);
+    }
 
     if headless {
         let input = match files.first() {

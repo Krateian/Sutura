@@ -1304,6 +1304,79 @@ pub fn headless_repair(
     }
 }
 
+/// Analyze one file with no window, for the parity gate.
+///
+/// Uses `sutura_core::analysis::analyze_mesh` -- the same call the CLI's
+/// `--analyze` makes -- so the numbers the panel shows cannot come from a
+/// second measurement path.
+pub fn headless_analyze(
+    input: &Path,
+    out: Option<PathBuf>,
+) -> eframe::Result<()> {
+    let mesh = match sutura_core::load_mesh(input) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("analyse failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let analysis = match sutura_core::analysis::analyze_mesh(&mesh, "experimental", true) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("analyse failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let value = analysis.to_json();
+    match out {
+        Some(path) => {
+            let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+            if let Err(e) = std::fs::write(&path, text) {
+                eprintln!("write failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        None => println!("{}", serde_json::to_string(&value).unwrap_or_default()),
+    }
+    Ok(())
+}
+
+/// List a container's objects with no window, for the parity gate.
+///
+/// Reports them in ARCHIVE order, which is what the repair side preserves.
+pub fn headless_objects(input: &Path, out: Option<PathBuf>) -> eframe::Result<()> {
+    let blocks = match sutura_core::parse_3mf_mesh_blocks(input) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("objects failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let list: Vec<Value> = blocks
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "model_name": b.model_name,
+                "block": b.index,
+                "faces": b.mesh.tris.len(),
+                "vertices": b.mesh.verts.len(),
+            })
+        })
+        .collect();
+    let value = Value::Array(list);
+    match out {
+        Some(path) => {
+            let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+            if let Err(e) = std::fs::write(&path, text) {
+                eprintln!("write failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        None => println!("{}", serde_json::to_string(&value).unwrap_or_default()),
+    }
+    Ok(())
+}
+
 pub fn fixed_path(input: &Path) -> PathBuf {
     let stem = input
         .file_stem()
