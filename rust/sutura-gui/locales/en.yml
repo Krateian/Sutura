@@ -1,0 +1,105 @@
+app:
+  title: Sutura
+  add_files: Add files
+  repair: Repair
+  files: Files
+  settings: Settings
+  settings_coming: Settings panel placeholder (coming soon)
+  log: Log
+  language: Language
+  drop_hint: Drop an STL / OBJ / PLY / 3MF file here
+  repair_running: Repairing…
+  triangles: "%{count} triangles"
+  lang_system: System
+  lang_english: English
+  lang_turkish: Turkish
+  before: Before
+  after: After
+  open_result: Open result
+  show_in_folder: Show in folder
+  cancel: Cancel
+  progress: "Step %{step}/%{total}"
+  overwrite_title: Output already exists
+  overwrite_body: "%{path} already exists. Overwrite it?"
+  overwrite: Overwrite
+  report: Report
+  health: Health
+  risk: Risk
+  fidelity: Fidelity
+  verdict: Verdict
+  status: Status
+  confidence: Confidence
+  none: "—"
+  report_empty: Run a repair to see the report.
+  error_prefix: "Error: %{error}"
+  log_loaded: "loaded %{name}: %{count} triangles"
+  log_load_failed: "load failed %{name}: %{error}"
+  log_ignored: "ignored (not a mesh): %{path}"
+  log_repair_started: "repair started: %{path}"
+  log_repair_done: "repair done: %{path} (%{count} triangles)"
+  log_repair_failed: "repair failed: %{error}"
+  log_repair_cancelled: Repair cancelled.
+  log_cancel_requested: "cancel requested; waiting for the current step"
+  status_safe: Safe to inspect
+  status_review: Review recommended
+  status_caution: Caution advised
+  status_failed: Failed / inspect
+  status_unavailable: Scoring unavailable
+  verdict_preserved: Repaired, shape preserved
+  verdict_preserved_notes: Repaired with notes — shape preserved
+  verdict_changed: Repaired, shape changed - check
+  verdict_changed_areas: "Repaired, shape changed in %{count} area(s) - check"
+  verdict_low_confidence: Repaired, shape may be rebuilt - check
+  verdict_low_confidence_areas: "Repaired, shape changed in %{count} guessed area(s) - check"
+  verdict_not_repaired: Not fully repaired
+  verdict_unavailable: Shape check unavailable
+  deep_repair: "Deep repair"
+  tiers: "Tiers"
+  tier_tamponade: "Tamponade"
+  tier_flap: "Flap"
+  tier_coaptation: "Coaptation"
+  tier_splint: "Splint"
+  tier_dressing: "Dressing"
+  dressing_force_adopt: "Dressing: force adopt"
+  si_mode: "SI mode"
+  solid_engine: "Solid engine"
+  methods: "Methods"
+  intensity: Intensity
+  intensity_quick: Quick
+  intensity_balanced: Balanced
+  intensity_thorough: Thorough
+  intensity_extreme: Extreme
+  repair_all: Repair all
+  batch_progress: "Batch %{done}/%{total}"
+  batch_overwrite_title: Some outputs already exist
+  batch_overwrite_body: "%{count} _fixed file(s) already exist. Overwrite them, skip them, or cancel?"
+  overwrite_all: Overwrite all
+  skip_existing: Skip existing
+  log_batch_start: "batch started: %{count} file(s)"
+  log_batch_done: Batch finished.
+  log_batch_skip: "batch skipped existing output: %{path}"
+  heatmap: Heatmap
+  defect_faces: "%{count} defect faces (%{pct}%)"
+  about: About
+  updates: Updates
+  about_body: Sutura repairs broken meshes for 3D printing. This is the Rust/egui GUI; the repair core still runs through the Python CLI in this phase.
+  updater_title: Updates
+  updater_current: "Current version: %{version}"
+  updater_checking: Checking for updates...
+  updater_available: "Sutura %{tag} is available."
+  updater_install: Download and install
+  updater_license: "Sutura %{tag} changes the license terms. Automatic install is disabled; open the releases page to review and install it yourself."
+  updater_open_page: Open the releases page
+  updater_downloading: "Downloading %{tag}..."
+  updater_installing: "Installing %{tag}..."
+  updater_done: "Updated to %{tag}."
+  updater_whats_new: What's new
+  updater_no_notes: No release notes are saved locally.
+  updater_check: Check for updates
+  updater_body: Check for a newer release. Nothing is downloaded or installed until you approve it.
+  repeat_pick: Pick repeat points
+  repeat_pick_title: Repeat Pick
+  repeat_pick_hint: "Click the healthy region first (source), then the damaged one (target). A third click moves the source."
+  repeat_pick_state: "source: %{source}    target: %{target}"
+  repeat_pick_apply: Use these points
+  repeat_pick_cancel: Cancel

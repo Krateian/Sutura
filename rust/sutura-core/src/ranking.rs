@@ -61,6 +61,9 @@ pub struct Analysis {
     pub single_side_score: f64,
     pub relief_score: f64,
     pub repetition_score: f64,
+    /// `diagnosis_v2` block, needed by `_damage_class` and `_has_body_overlap`
+    /// for the suggestion prior. `None` behaves like Python's non-dict case.
+    pub diagnosis_v2: Option<Value>,
 }
 
 impl Analysis {
@@ -597,6 +600,243 @@ pub fn rank_methods(
     });
     out.truncate(limit);
     out
+}
+
+/// `CORE150_PRIOR` — the small per-damage-class prior `suggest_methods` blends
+/// in at 15%.
+fn core150_prior(class: &str) -> &'static [(u8, f64)] {
+    match class {
+        "clean" => &[(1, 0.95), (2, 0.95), (3, 0.95), (9, 0.85)],
+        "holes" => &[(18, 0.80), (3, 0.80), (1, 0.70), (2, 0.70)],
+        "si" => &[(10, 0.70), (7, 0.55), (13, 0.55)],
+        "repeated" => &[(8, 0.80), (1, 0.80), (4, 0.80), (13, 0.70)],
+        "scan" => &[(9, 0.90), (1, 0.70), (3, 0.70)],
+        "duplicate" => &[(8, 0.90), (1, 0.90), (2, 0.80), (4, 0.80)],
+        _ => &[],
+    }
+}
+
+/// `SUGGESTION_REASONS`.
+fn suggestion_reason(class: &str) -> &'static str {
+    match class {
+        "clean" => "safe default for a closed, clean mesh",
+        "holes" => "best for holes and open edges",
+        "si" => "best for overlapping surfaces",
+        "repeated" => "best for repeated parts and copies",
+        "scan" => "best for a single-sided scan",
+        "duplicate" => "best for duplicate or degenerate faces",
+        _ => "safe default for a closed, clean mesh",
+    }
+}
+
+/// `SUGGESTION_METHOD_REASONS`.
+fn suggestion_method_reason(num: u8) -> Option<&'static str> {
+    Some(match num {
+        1 => "quick cleanup of small defects",
+        2 => "local repair around the damage",
+        3 => "rebuilds the surface and closes holes",
+        4 => "merges separate pieces into one part",
+        5 => "refines self-intersections automatically",
+        6 => "exact self-intersection cleanup",
+        7 => "rebuilds a watertight solid",
+        9 => "closes an open scan from the back",
+        10 => "rebuilds a clean proxy surface",
+        11 => "copies a healthy repeated pattern",
+        12 => "copies a healthy pattern from picked points",
+        13 => "wraps the damaged area in a thin shell",
+        18 => "closes holes with an exact patch",
+        19 => "welds overlapping surfaces at the seams",
+        _ => return None,
+    })
+}
+
+/// `SUGGESTION_METHOD_REASONS` reason keys, as `&'static str` so nothing is
+/// allocated per call (`sugg_method_<num>`).
+fn suggestion_method_key(num: u8) -> &'static str {
+    match num {
+        1 => "sugg_method_1",
+        2 => "sugg_method_2",
+        3 => "sugg_method_3",
+        4 => "sugg_method_4",
+        5 => "sugg_method_5",
+        6 => "sugg_method_6",
+        7 => "sugg_method_7",
+        9 => "sugg_method_9",
+        10 => "sugg_method_10",
+        11 => "sugg_method_11",
+        12 => "sugg_method_12",
+        13 => "sugg_method_13",
+        18 => "sugg_method_18",
+        19 => "sugg_method_19",
+        _ => "",
+    }
+}
+
+/// `_damage_class`: coarse class used only to pick the suggestion prior.
+fn damage_class(analysis: &Analysis) -> &'static str {
+    let ch = |name: &str| -> i64 {
+        analysis
+            .diagnosis_v2
+            .as_ref()
+            .and_then(|d| d.get("channels"))
+            .and_then(|c| c.get(name))
+            .and_then(|c| c.get("count"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    };
+    if analysis.self_intersections > 0.0 || ch("self_intersection") > 0 {
+        return "si";
+    }
+    if analysis.non_manifold_edges > 0.0 || analysis.boundary_loops > 0.0 || ch("loops") > 0 {
+        return "holes";
+    }
+    if analysis.repetition_score >= 0.5 {
+        return "repeated";
+    }
+    if analysis.single_side_score >= 0.5 || analysis.relief_score >= 0.5 {
+        return "scan";
+    }
+    if ch("duplicate") > 0 || ch("degenerate") > 0 {
+        return "duplicate";
+    }
+    "clean"
+}
+
+/// `_has_body_overlap`: true only with diagnosis evidence of touching bodies.
+fn has_body_overlap(analysis: &Analysis) -> bool {
+    let d = match analysis.diagnosis_v2.as_ref() {
+        Some(d) => d,
+        None => return false,
+    };
+    if d.get("self_intersections")
+        .and_then(|s| s.get("inter_body"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        > 0
+    {
+        return true;
+    }
+    d.get("parts")
+        .and_then(|p| p.get("overlap_edges"))
+        .and_then(Value::as_array)
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+}
+
+/// `int(round(conf * 100))` — Python rounds half-to-even on the binary value.
+fn py_round_int(value: f64) -> i64 {
+    if !value.is_finite() {
+        return 0;
+    }
+    format!("{:.0}", value).parse::<f64>().unwrap_or(0.0) as i64
+}
+
+/// `suggest_methods(analysis, top_n)` — presentation only.
+///
+/// `rank_methods` stays the source ranking; this blends the core150 prior at
+/// 15% and adds the High/Medium/Low label. Kept in the same module as the
+/// ranking so there is one ordering implementation, not two.
+pub fn suggest_methods(
+    loaded: &LoadedPolicy,
+    analysis: &Analysis,
+    top_n: usize,
+    learning_stats: Option<&serde_json::Map<String, Value>>,
+) -> Value {
+    let class = damage_class(analysis);
+    let priors = core150_prior(class);
+    let mut recs = rank_methods(loaded, analysis, Some(top_n.max(6)), learning_stats);
+    if !has_body_overlap(analysis) {
+        recs.retain(|r| r.num != 4);
+    }
+
+    let mut items: Vec<(u8, i64, f64, &'static str, &'static str, &'static str)> = Vec::new();
+    for rec in &recs {
+        let prior = priors
+            .iter()
+            .find(|(num, _)| *num == rec.num)
+            .map(|(_, p)| *p);
+        let blended = match prior {
+            None => rec.score,
+            Some(p) => 0.85 * rec.score + 0.15 * p,
+        };
+        let conf = min95(clamp01(blended));
+        let (reason, reason_key) = match suggestion_method_reason(rec.num) {
+            Some(r) => (r, suggestion_method_key(rec.num)),
+            None => (suggestion_reason(class), class_reason_key(class)),
+        };
+        let display_name = rec.name;
+        items.push((
+            rec.num,
+            py_round_int(conf * 100.0),
+            round3(conf),
+            display_name,
+            reason,
+            reason_key,
+        ));
+    }
+    // sort by (-confidence_value, num)
+    items.sort_by(|a, b| {
+        b.2.partial_cmp(&a.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    items.truncate(top_n);
+
+    let mut out = Vec::new();
+    for (i, (num, pct, conf_value, name, reason, reason_key)) in items.iter().enumerate() {
+        let nxt = items.get(i + 1).map(|x| x.1);
+        let prev = if i > 0 { Some(items[i - 1].1) } else { None };
+        let next_gap = match nxt {
+            Some(n) => pct - n,
+            None => match prev {
+                Some(p) => pct - p,
+                None => 0,
+            },
+        };
+        let prev_gap = match prev {
+            Some(p) => pct - p,
+            None => 100,
+        };
+        let label = if *pct >= 85 && next_gap >= 10 && prev_gap >= 10 {
+            "high"
+        } else if *pct >= 50 {
+            "medium"
+        } else {
+            "low"
+        };
+        let method = METHODS.iter().find(|m| m.num == *num);
+        out.push(json!({
+            "num": num,
+            "id": method.map(|m| m.id).unwrap_or(""),
+            "name": method.map(|m| m.name).unwrap_or(name),
+            "display_name": method.map(|m| m.name).unwrap_or(name),
+            "confidence": pct,
+            "confidence_value": conf_value,
+            "reason": reason,
+            "reason_key": reason_key,
+            "reason_args": [],
+            "basis": "rank+core150-c26ed2e",
+            "estimate": true,
+            "confidence_label": label,
+        }));
+    }
+    Value::Array(out)
+}
+
+fn class_reason_key(class: &str) -> &'static str {
+    match class {
+        "clean" => "sugg_reason_clean",
+        "holes" => "sugg_reason_holes",
+        "si" => "sugg_reason_si",
+        "repeated" => "sugg_reason_repeated",
+        "scan" => "sugg_reason_scan",
+        "duplicate" => "sugg_reason_duplicate",
+        _ => "sugg_reason_clean",
+    }
+}
+
+fn min95(value: f64) -> f64 {
+    value.min(0.95)
 }
 
 /// `recommendations` JSON block used by `--analyze`.

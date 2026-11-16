@@ -41,6 +41,13 @@ Consequences:
 - Tamponade, Flap, Coaptation and the Graft admission gate no longer need
   exact-SI, subset or Manifold wrappers from pyo3; the pure cores are called
   from `sutura-core/src/tiers/`.
+- **Repeat is now a full producer too**: `tiers::repeat::repair_auto_report`
+  runs the plan (`repeat_repair::plan_repeat_auto`), the Manifold transplant
+  (`manifold::boolean_transplant_core`) and the Hausdorff guard, so the ladder's
+  `opts.repeat` branch no longer reports "producer stays in Python". OBB and
+  decimation were already core (`compute_obb`, `decimate_faces`).
+  Measured: `cargo tree -p sutura-core` has 0 pyo3, and the release CLI links no
+  libpython at all.
 - The `manifold` module is now compiled without the `python` feature (the
   pyo3 helpers inside it are individually gated) so `sutura-core` can use the
   Manifold boolean and watertight cores.

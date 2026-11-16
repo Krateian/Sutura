@@ -190,6 +190,11 @@ pub struct RepairOptions {
     pub dressing_force_adopt: bool,
     pub wall_thicken: bool,
     pub repeat: Option<RepeatMode>,
+    /// Method 12 (`RepeatMode::Manual`): the two 3D points the transplant
+    /// moves between. `--repeat-source` / `--repeat-target`; required together
+    /// when method 12 is selected, as in the Python CLI.
+    pub repeat_source: Option<[f64; 3]>,
+    pub repeat_target: Option<[f64; 3]>,
     pub solid_engine: SolidEngine,
     pub si_mode: SiMode,
     pub ftetwild: Option<Value>,
@@ -224,6 +229,8 @@ impl Default for RepairOptions {
             dressing_force_adopt: false,
             wall_thicken: false,
             repeat: None,
+            repeat_source: None,
+            repeat_target: None,
             solid_engine: SolidEngine::Ftetwild,
             si_mode: SiMode::Report,
             ftetwild: None,
@@ -2333,10 +2340,10 @@ fn unavailable_tiers(ftetwild_reason: Option<&str>) -> Value {
         })
     };
     let mut tiers = json!({
-        "repeat_builder": entry("the Repeat transplant producer stays in Python; only the Rust adoption gate exists"),
+        "repeat_builder": entry("unused: the Repeat producer now runs in sutura-core (tiers::repeat::repair_auto_report)"),
         "wall_builder": entry("the Wall-thicken producer stays in Python; only the Rust adoption gate exists"),
         "cad_likeness": entry("cad_likeness is a Python scoring helper; no sutura-core implementation yet"),
-        "ranking_scores": entry("repetition_score, single_side_score and relief_score are not ported; ranking treats them as 0.0"),
+        "ranking_scores": entry("unused: repetition_score, single_side_score and relief_score are produced by analysis.rs"),
         "method_escalation": entry("ranked multi-method escalation is file-level (src/out); sutura-core selects the baseline method only"),
     })
     .as_object()
@@ -3169,28 +3176,87 @@ fn repair_impl(
         }
     }
 
-    // --- Repeated-element transplant and wall thicken (producers absent) --
+    // --- Repeated-element transplant (#11/#12) -------------------------------
+    //
+    // The whole producer -- pattern detection, template choice, Manifold
+    // transplant and the Hausdorff guard -- is Rust (`tiers::repeat::
+    // repair_auto_report`), so this no longer defers to Python.
     if let Some(mode) = opts.repeat {
-        let rec = tier_error(
-            "repeat",
-            "the Repeat transplant producer stays in Python; the ladder result was kept",
-        );
-        emit_tier(sink, "repeat", 4, &rec);
-        trace.record(
-            "repeat",
-            "tiers.repeat.repeat_tier",
-            &cur_v,
-            &cur_t,
-            &cur_v,
-            &cur_t,
-            rec.clone(),
+        let margin = policy_number(policy.as_ref(), "tiers.repeat", "obb_margin", 0.10);
+        let (rv, rt, report) = match (mode, opts.repeat_source, opts.repeat_target) {
+            // Method 12: the caller named the two points to transplant between.
+            (RepeatMode::Manual, Some(src), Some(dst)) => {
+                let tu: Vec<[usize; 3]> = cur_t
+                    .iter()
+                    .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+                    .collect();
+                let (mv, mt, rep) = sutura_geom::repeat_repair::repair_repeat_manual_core(
+                    &cur_v, &tu, src, dst, margin,
+                );
+                let mt_i: Vec<[i64; 3]> = mt
+                    .iter()
+                    .map(|f| [f[0] as i64, f[1] as i64, f[2] as i64])
+                    .collect();
+                (mv, mt_i, rep)
+            }
+            // Manual without both points is a caller error; report it rather
+            // than silently falling back to the auto route.
+            (RepeatMode::Manual, _, _) => (
+                cur_v.to_vec(),
+                cur_t.to_vec(),
+                crate::tiers::repeat::error_report(
+                    "manual repeat needs both --repeat-source and --repeat-target",
+                ),
+            ),
+            (RepeatMode::Auto, _, _) => crate::tiers::repeat::repair_auto_raw(
+                &cur_v,
+                &cur_t,
+                margin,
+            ),
+        };
+        // `decide` owns the adoption gate (defect counts, reload-honest
+        // watertight, Hausdorff outside, reason), so route through it rather
+        // than re-deriving the verdict here -- that is what the Python tier
+        // does, and it keeps one report shape.
+        let params = json!({
+            "gates": {
+                "max_hausdorff_outside": policy_number(
+                    policy.as_ref(), "tiers.repeat.gates",
+                    "max_hausdorff_outside", 0.02),
+            },
+        });
+        let (rv, rt, rec) = crate::tiers::repeat::decide(
+            &cur_v, &cur_t, &rv, &rt, &crate::tiers::repeat::report_to_value(report),
+            &params,
         );
         let mut rec = rec;
         rec["mode"] = Value::from(match mode {
             RepeatMode::Manual => "manual",
             RepeatMode::Auto => "auto",
         });
-        stats.insert("repeat".into(), rec);
+        // `decide` sets `adopted`; the mesh it returns is already the one to
+        // keep when it did.
+        let ran = rec.get("adopted").and_then(Value::as_bool).unwrap_or(false);
+        rec["ran"] = Value::from(ran);
+        let in_v = cur_v.clone();
+        let in_t = cur_t.clone();
+        if ran {
+            cur_v = rv;
+            cur_t = rt;
+            tiers_run.push(Value::from("repeat"));
+        }
+        let r = rec.clone();
+        emit_tier(sink, "repeat", 4, &r);
+        trace.record(
+            "repeat",
+            "tiers.repeat.repeat_tier",
+            &in_v,
+            &in_t,
+            &cur_v,
+            &cur_t,
+            r.clone(),
+        );
+        stats.insert("repeat".into(), r);
     }
     if opts.wall_thicken {
         let rec = tier_error(
@@ -3636,9 +3702,26 @@ fn repair_impl(
         }),
     );
 
-    let unavailable = unavailable_tiers(ftetwild_bin.is_none().then_some(
+    let mut unavailable = unavailable_tiers(ftetwild_bin.is_none().then_some(
         "fTetWild binary not found; set FTETWILD_BIN/SUTURA_FTETWILD_BIN or install third_party/ftetwild/bin/ftetwild",
     ));
+    // Both sides of this merge added to the method-health block: go records the
+    // Stage-1 method errors, and the engine slice marks the requested external
+    // engines as unavailable. They are independent, so both are kept.
+    if let Some(selected) = opts.engines.as_ref() {
+        if let Some(obj) = unavailable.as_object_mut() {
+            for name in selected {
+                obj.insert(
+                    name.clone(),
+                    json!({
+                        "ran": false,
+                        "unavailable": true,
+                        "reason": "external engine execution is not implemented in the Rust pipeline",
+                    }),
+                );
+            }
+        }
+    }
     let (mut method_health, mut method_errors) = method_health_value(&stats, &unavailable);
     if let Some(arr) = method_errors.as_array_mut() {
         arr.extend(stage1_errors.clone());
@@ -3648,6 +3731,21 @@ fn repair_impl(
         .and_then(Value::as_array_mut)
     {
         arr.extend(stage1_errors);
+    }
+    if let Some(selected) = opts.engines.as_ref() {
+        if let Some(skips) = method_health
+            .get_mut("skips")
+            .and_then(Value::as_array_mut)
+        {
+            for name in selected {
+                skips.push(json!({
+                    "method": name,
+                    "stage": "availability",
+                    "kind": "skipped",
+                    "message": "external engine execution is not implemented in the Rust pipeline",
+                }));
+            }
+        }
     }
     stats.insert("method_health".into(), method_health);
     stats.insert("method_errors".into(), method_errors);

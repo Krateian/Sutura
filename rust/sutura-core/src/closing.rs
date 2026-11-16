@@ -372,7 +372,14 @@ pub fn poisson_close_with_cancel(
     }
 }
 
-pub(crate) fn boundary_loops(tris: &[[i64; 3]]) -> Vec<Vec<i64>> {
+/// Boundary loops as ordered vertex-index lists, from directed half-edges
+/// (triangle winding fixes the orientation), sorted descending by length.
+///
+/// This is the port of Python's `closing.boundary_loops` and the source
+/// `analysis::analyze_mesh` must use for the two Closing scores: the
+/// `defects::detect_holes` walk is undirected and differs on 40 of 226 corpus
+/// meshes in loop count or length.
+pub fn boundary_loops(tris: &[[i64; 3]]) -> Vec<Vec<i64>> {
     if tris.is_empty() {
         return Vec::new();
     }

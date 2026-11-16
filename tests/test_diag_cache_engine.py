@@ -94,5 +94,54 @@ def test_analysis_cache_is_engine_keyed():
     print('ok  test_analysis_cache_is_engine_keyed')
 
 
+def test_warm_cache_returns_the_raw_fields():
+    """A warm cache must hand back exactly what a fresh run produced.
+
+    The cache used to store ``to_dict(analysis)``, which is the PRESENTATION
+    dict and rounds (``repetition_score`` to 3 decimals, ``open_area_ratio`` to
+    4). Rehydrating it changed the object a warm run sees, and the method
+    ranking reads those fields: on a 528-face corpus mesh ``repetition_score``
+    read 0.7411 cold and 0.742 warm, which moved the `transplant`
+    recommendation from 0.741 to 0.742. Any deviation here is a Python bug, not
+    a tolerance to absorb.
+    """
+    mesh = _cylinder()
+    if mesh is None:
+        print('skip: trimesh unavailable')
+        return
+    v, t = mesh
+
+    saved = {k: os.environ.get(k) for k in ('XDG_CACHE_HOME', 'SUTURA_DATA_DIR',
+                                            'SUTURA_NO_CACHE')}
+    fields = ('repetition_score', 'single_side_score', 'relief_score',
+              'open_area_ratio', 'largest_loop_ratio', 'surface_area',
+              'bbox_diagonal', 'type_confidence')
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            os.environ['XDG_CACHE_HOME'] = os.path.join(td, 'cache')
+            os.environ['SUTURA_DATA_DIR'] = os.path.join(td, 'data')
+            os.environ.pop('SUTURA_NO_CACHE', None)
+
+            from sutura_engine import diagnosis as diag
+
+            cold = diag.analyze_mesh(v, t, use_cache=False)
+            diag.analyze_mesh(v, t, use_cache=True)     # fills the cache
+            warm = diag.analyze_mesh(v, t, use_cache=True)
+
+            for f in fields:
+                c, w = getattr(cold, f), getattr(warm, f)
+                assert c == w, 'cold %s=%r != warm %s=%r' % (f, c, f, w)
+            print('ok  cold == warm on', len(fields), 'fields')
+    finally:
+        for k, val in saved.items():
+            if val is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = val
+
+    print('ok  test_warm_cache_returns_the_raw_fields')
+
+
 if __name__ == '__main__':
     test_analysis_cache_is_engine_keyed()
+    test_warm_cache_returns_the_raw_fields()

@@ -24,6 +24,8 @@ pub mod cdt2d;
 pub mod cdt3d;
 pub mod choice;
 pub mod classify;
+pub mod closing_scores;
+pub mod components;
 mod budget;
 pub mod cancel;
 #[cfg(feature = "python")]
@@ -35,6 +37,7 @@ pub mod dressing;
 pub mod dual_contour;
 pub mod eigh3;
 pub mod flap;
+pub mod heatmap;
 pub mod hermite;
 pub mod hole;
 pub mod interval;
@@ -46,17 +49,27 @@ pub mod mincut;
 pub mod morph;
 pub mod octree;
 pub mod point;
+pub mod pick;
 pub mod pointcloud;
 pub mod predicates2d;
 pub mod predicates3d;
 pub mod profile;
+pub mod raster;
 pub mod rbf;
 pub mod raycast;
 pub mod rng;
 pub mod resample;
+pub mod repeat_align;
+pub mod repeat_free;
+pub mod repeat_obb;
+pub mod repeat_patch;
+pub mod repeat_repair;
+pub mod repeat_segment;
 pub mod roi;
+pub mod sample;
 pub mod shell;
 pub mod splint;
+pub mod svd3;
 pub mod tamponade;
 pub mod topology;
 pub mod triangle_intersection;
@@ -2954,6 +2967,686 @@ fn eigh3_py<'py>(
 }
 
 #[cfg(feature = "python")]
+/// Parse the `verts`, `tris` and `loops` arguments shared by the closing scores.
+fn parse_closing_args(
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+    loops: &Bound<'_, PyAny>,
+) -> PyResult<(Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<Vec<usize>>)> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let mut boundary: Vec<Vec<usize>> = Vec::new();
+    for item in loops.try_iter()? {
+        boundary.push(item?.extract()?);
+    }
+    Ok((v, t, boundary))
+}
+
+#[cfg(feature = "python")]
+/// `closing.single_side_score` through the shared kernel.
+///
+/// Returns `(score, n_loops, dominant_loop_len, dominant_ratio,
+/// spanned_area_ratio, dominant_loop, reason)`; `reason` is empty on success.
+#[pyfunction]
+#[pyo3(name = "closing_single_side")]
+fn closing_single_side_py(
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+    loops: &Bound<'_, PyAny>,
+) -> PyResult<(f64, usize, usize, f64, f64, Vec<usize>, String)> {
+    let (v, t, boundary) = parse_closing_args(verts, tris, loops)?;
+    let r = crate::closing_scores::single_side(&v, &t, &boundary);
+    Ok((
+        r.score,
+        r.n_loops,
+        r.dominant_loop_len,
+        r.dominant_ratio,
+        r.spanned_area_ratio,
+        r.dominant_loop,
+        r.reason.to_string(),
+    ))
+}
+
+#[cfg(feature = "python")]
+/// `closing.relief_score` through the shared kernel.
+///
+/// Returns `(score, plane_normal, plane_center, rms_rel, one_sided_ratio,
+/// normal_align_ratio, dominant_loop, reason)`.
+#[pyfunction]
+#[pyo3(name = "closing_relief")]
+fn closing_relief_py(
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+    loops: &Bound<'_, PyAny>,
+) -> PyResult<(
+    f64,
+    [f64; 3],
+    [f64; 3],
+    f64,
+    f64,
+    f64,
+    Vec<usize>,
+    String,
+)> {
+    let (v, t, boundary) = parse_closing_args(verts, tris, loops)?;
+    let r = crate::closing_scores::relief(&v, &t, &boundary);
+    Ok((
+        r.score,
+        r.plane_normal,
+        r.plane_center,
+        r.rms_rel,
+        r.one_sided_ratio,
+        r.normal_align_ratio,
+        r.dominant_loop,
+        r.reason.to_string(),
+    ))
+}
+
+#[cfg(feature = "python")]
+/// 3x3 SVD through the shared kernel (see `svd3`).
+///
+/// Returns `(u, sigma, vt)` with `sigma` descending, matching
+/// `np.linalg.svd`'s shapes: `u` and `vt` are 3x3, `sigma` is length 3.
+#[pyfunction]
+#[pyo3(name = "svd3")]
+fn svd3_py<'py>(
+    py: Python<'py>,
+    a: PyArrayLike2<'py, f64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let arr = a.as_array();
+    if arr.shape() != [3, 3] {
+        return Err(PyValueError::new_err("svd3 expects a 3x3 matrix"));
+    }
+    let mut m = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            m[i][j] = arr[[i, j]];
+        }
+    }
+    let s = crate::svd3::svd3(&m);
+    let rows = |a: &[[f64; 3]; 3]| -> Vec<Vec<f64>> { a.iter().map(|r| r.to_vec()).collect() };
+    let u = numpy::PyArray2::from_vec2(py, &rows(&s.u))?;
+    let sig = numpy::PyArray1::from_vec(py, s.sigma.to_vec());
+    let vt = numpy::PyArray2::from_vec2(py, &rows(&s.vt))?;
+    Ok((u.into_any(), sig.into_any(), vt.into_any()))
+}
+
+#[cfg(feature = "python")]
+/// `np.linalg.lstsq(A, b, rcond=None)` for a tall `(n, 3)` `A` (see `svd3`).
+#[pyfunction]
+#[pyo3(name = "lstsq3")]
+fn lstsq3_py(
+    a: PyArrayLike2<'_, f64, AllowTypeChange>,
+    b: PyArrayLike1<'_, f64, AllowTypeChange>,
+) -> PyResult<[f64; 3]> {
+    let rows: Vec<[f64; 3]> = a
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let rhs: Vec<f64> = b.as_array().iter().copied().collect();
+    if rows.len() != rhs.len() {
+        return Err(PyValueError::new_err("lstsq3: A and b row counts differ"));
+    }
+    Ok(crate::svd3::lstsq3(&rows, &rhs))
+}
+
+#[cfg(feature = "python")]
+/// `(points - center).T @ (points - center) / n` through the shared kernel.
+///
+/// NumPy uses BLAS `dgemm` for that product and no portable accumulation
+/// order reproduces it; `repeat.align` calls this so both languages build the
+/// identical PCA covariance.
+#[pyfunction]
+#[pyo3(name = "covariance")]
+fn covariance_py<'py>(
+    py: Python<'py>,
+    points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    center: PyArrayLike1<'py, f64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let pts: Vec<[f64; 3]> = points
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let c = center.as_array();
+    if c.len() != 3 {
+        return Err(PyValueError::new_err("center must have 3 elements"));
+    }
+    let m = crate::measures::covariance(&pts, [c[0], c[1], c[2]]);
+    let rows: Vec<Vec<f64>> = m.iter().map(|r| r.to_vec()).collect();
+    Ok(numpy::PyArray2::from_vec2(py, &rows)?.into_any())
+}
+
+#[cfg(feature = "python")]
+/// `(a - a_center).T @ (b - b_center)` through the shared kernel.
+///
+/// The Kabsch cross-covariance; same BLAS reasoning as `covariance`.
+#[pyfunction]
+#[pyo3(name = "cross_covariance")]
+fn cross_covariance_py<'py>(
+    py: Python<'py>,
+    a: PyArrayLike2<'py, f64, AllowTypeChange>,
+    a_center: PyArrayLike1<'py, f64, AllowTypeChange>,
+    b: PyArrayLike2<'py, f64, AllowTypeChange>,
+    b_center: PyArrayLike1<'py, f64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let av: Vec<[f64; 3]> = a
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let bv: Vec<[f64; 3]> = b
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let ac = a_center.as_array();
+    let bc = b_center.as_array();
+    if ac.len() != 3 || bc.len() != 3 {
+        return Err(PyValueError::new_err("centers must have 3 elements"));
+    }
+    let m = crate::measures::cross_covariance(
+        &av,
+        [ac[0], ac[1], ac[2]],
+        &bv,
+        [bc[0], bc[1], bc[2]],
+    );
+    let rows: Vec<Vec<f64>> = m.iter().map(|r| r.to_vec()).collect();
+    Ok(numpy::PyArray2::from_vec2(py, &rows)?.into_any())
+}
+
+#[cfg(feature = "python")]
+/// `repeat._compute_obb` through the shared kernel.
+///
+/// Returns `(center, extents, frame)`.
+#[pyfunction]
+#[pyo3(name = "compute_obb")]
+#[pyo3(signature = (points, margin=0.10, epsilon=1e-3))]
+fn compute_obb_py<'py>(
+    py: Python<'py>,
+    points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    margin: f64,
+    epsilon: f64,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let pts: Vec<[f64; 3]> = points
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let obb = crate::repeat_obb::compute_obb(&pts, margin, epsilon);
+    let rows: Vec<Vec<f64>> = obb.frame.iter().map(|r| r.to_vec()).collect();
+    Ok((
+        numpy::PyArray1::from_vec(py, obb.center.to_vec()).into_any(),
+        numpy::PyArray1::from_vec(py, obb.extents.to_vec()).into_any(),
+        numpy::PyArray2::from_vec2(py, &rows)?.into_any(),
+    ))
+}
+
+#[cfg(feature = "python")]
+/// `repeat._is_inside_obb` through the shared kernel.
+#[pyfunction]
+#[pyo3(name = "is_inside_obb")]
+#[pyo3(signature = (points, center, extents, frame, margin_factor=1.0))]
+fn is_inside_obb_py<'py>(
+    py: Python<'py>,
+    points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    center: PyArrayLike1<'py, f64, AllowTypeChange>,
+    extents: PyArrayLike1<'py, f64, AllowTypeChange>,
+    frame: PyArrayLike2<'py, f64, AllowTypeChange>,
+    margin_factor: f64,
+) -> PyResult<Bound<'py, PyAny>> {
+    let pts: Vec<[f64; 3]> = points
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let c = center.as_array();
+    let e = extents.as_array();
+    let f = frame.as_array();
+    if c.len() != 3 || e.len() != 3 || f.shape() != [3, 3] {
+        return Err(PyValueError::new_err("bad OBB geometry"));
+    }
+    let mut fr = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            fr[i][j] = f[[i, j]];
+        }
+    }
+    let mask = crate::repeat_obb::is_inside_obb(
+        &pts,
+        [c[0], c[1], c[2]],
+        [e[0], e[1], e[2]],
+        &fr,
+        margin_factor,
+    );
+    Ok(numpy::PyArray1::from_vec(py, mask).into_any())
+}
+
+#[cfg(feature = "python")]
+/// `repeat._compute_hausdorff_outside` through the shared kernel.
+#[pyfunction]
+#[pyo3(name = "hausdorff_outside")]
+#[pyo3(signature = (orig_v, orig_t, result_v, result_t, boxes, samples=5000))]
+fn hausdorff_outside_py(
+    orig_v: PyArrayLike2<'_, f64, AllowTypeChange>,
+    orig_t: PyArrayLike2<'_, i32, AllowTypeChange>,
+    result_v: PyArrayLike2<'_, f64, AllowTypeChange>,
+    result_t: PyArrayLike2<'_, i32, AllowTypeChange>,
+    boxes: &Bound<'_, PyAny>,
+    samples: usize,
+) -> PyResult<f64> {
+    let to_v = |a: &numpy::ndarray::ArrayView2<'_, f64>| -> Vec<[f64; 3]> {
+        a.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect()
+    };
+    let to_t = |a: &numpy::ndarray::ArrayView2<'_, i32>| -> Vec<[usize; 3]> {
+        a.rows()
+            .into_iter()
+            .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+            .collect()
+    };
+    let ov = orig_v.as_array();
+    let ot = orig_t.as_array();
+    let rv = result_v.as_array();
+    let rt = result_t.as_array();
+    let mut parsed = Vec::new();
+    for item in boxes.try_iter()? {
+        let tup: (Vec<f64>, Vec<f64>, Vec<Vec<f64>>) = item?.extract()?;
+        let mut frame = [[0.0f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                frame[i][j] = tup.2[i][j];
+            }
+        }
+        parsed.push(crate::repeat_obb::Obb {
+            center: [tup.0[0], tup.0[1], tup.0[2]],
+            extents: [tup.1[0], tup.1[1], tup.1[2]],
+            frame,
+        });
+    }
+    Ok(crate::repeat_obb::compute_hausdorff_outside(
+        &to_v(&ov),
+        &to_t(&ot),
+        &to_v(&rv),
+        &to_t(&rt),
+        &parsed,
+        samples,
+    ))
+}
+
+#[cfg(feature = "python")]
+/// `repeat._decimate_faces` through the shared kernel (meshopt QEM).
+#[pyfunction]
+#[pyo3(name = "decimate_faces")]
+fn decimate_faces_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    target: usize,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let (dv, dt) = crate::repeat_obb::decimate_faces(&v, &t, target);
+    let rows: Vec<Vec<f64>> = dv.iter().map(|p| p.to_vec()).collect();
+    let tri_rows: Vec<Vec<i64>> = dt
+        .iter()
+        .map(|f| vec![f[0] as i64, f[1] as i64, f[2] as i64])
+        .collect();
+    Ok((
+        numpy::PyArray2::from_vec2(py, &rows)?.into_any(),
+        numpy::PyArray2::from_vec2(py, &tri_rows)?.into_any(),
+    ))
+}
+
+#[cfg(feature = "python")]
+/// `repeat.align` through the shared kernel.
+///
+/// Returns `(T, rel_rms)` where `T` is a 4x4 matrix.
+#[pyfunction]
+#[pyo3(name = "align")]
+#[pyo3(signature = (src_pts, dst_pts, allow_reflection=false, allow_scale=false, max_iters=20))]
+fn align_py<'py>(
+    py: Python<'py>,
+    src_pts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    dst_pts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    allow_reflection: bool,
+    allow_scale: bool,
+    max_iters: usize,
+) -> PyResult<(Bound<'py, PyAny>, f64)> {
+    let to_vec = |a: &numpy::ndarray::ArrayView2<'_, f64>| -> Vec<[f64; 3]> {
+        a.rows()
+            .into_iter()
+            .map(|r| [r[0], r[1], r[2]])
+            .collect()
+    };
+    let s = src_pts.as_array();
+    let d = dst_pts.as_array();
+    let (t, rms) = crate::repeat_align::align(
+        &to_vec(&s),
+        &to_vec(&d),
+        allow_reflection,
+        allow_scale,
+        max_iters,
+    );
+    let rows: Vec<Vec<f64>> = t.0.iter().map(|r| r.to_vec()).collect();
+    Ok((numpy::PyArray2::from_vec2(py, &rows)?.into_any(), rms))
+}
+
+#[cfg(feature = "python")]
+/// `repeat.detect_repetition` through the shared kernel.
+///
+/// Returns `(score, route, info)` where `route` is `"free"`, `"patch"` or
+/// `"none"` and `info` is the dict for the winning side.
+///
+/// `members` holds the winning cluster's PATCH DICTS, not indices:
+/// `repair_repeat_auto` reads `m['area']`, `m['centroid']`, `m['verts_idx']`
+/// and `m['diag']` off them (line 1146 onwards), so emitting indices would
+/// break the transplant with "invalid index to scalar variable".
+#[pyfunction]
+#[pyo3(name = "detect_repetition")]
+#[pyo3(signature = (verts, tris, n_samples=3000, max_order=64))]
+fn detect_repetition_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    n_samples: usize,
+    max_order: usize,
+) -> PyResult<(f64, String, Bound<'py, PyDict>)> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let _ = (n_samples, max_order); // the route uses Python's defaults
+    let (score, route, free, patch) = crate::repeat_patch::detect_repetition(&v, &t);
+    let info = PyDict::new(py);
+
+    // The patch route's `members` are indices into the full patch list; rebuild
+    // the dicts so downstream repair code keeps its contract.
+    let patch_dicts = if let Some(p) = &patch {
+        let all = crate::repeat_segment::segment_elements(
+            &v, &t, crate::repeat_segment::DEFAULT_FEATURE_ANGLE_DEG);
+        let list = PyList::empty(py);
+        for &idx in &p.members {
+            if let Some(patch) = all.get(idx) {
+                let d = PyDict::new(py);
+                d.set_item("faces", patch.faces.clone())?;
+                d.set_item("verts_idx", patch.verts_idx.clone())?;
+                d.set_item("centroid", patch.centroid.to_vec())?;
+                d.set_item("area", patch.area)?;
+                d.set_item("diag", patch.diag)?;
+                list.append(d)?;
+            }
+        }
+        Some(list)
+    } else {
+        None
+    };
+
+    if route == "free" {
+        if let Some(m) = free {
+            info.set_item("pattern_type", "rotational")?;
+            info.set_item("order", m.order)?;
+            info.set_item("center", m.center.to_vec())?;
+            info.set_item("axis", m.axis.to_vec())?;
+            info.set_item("u_axis", m.u_axis.to_vec())?;
+            info.set_item("v_axis", m.v_axis.to_vec())?;
+            info.set_item("step_angle", m.step_angle)?;
+            info.set_item("score", m.score)?;
+            info.set_item("match_fraction", m.match_fraction)?;
+            info.set_item("mean_distance", m.mean_distance)?;
+            info.set_item("method", "segmentation_free")?;
+        }
+    } else if let Some(p) = patch {
+        if let Some(reason) = &p.reason {
+            info.set_item("reason", reason.clone())?;
+        }
+        if !p.pattern_type.is_empty() {
+            info.set_item("pattern_type", p.pattern_type.clone())?;
+        }
+        if let Some(list) = patch_dicts {
+            info.set_item("members", list)?;
+        }
+        info.set_item("group_size", p.members.len())?;
+        if let Some(o) = p.order {
+            info.set_item("order", o)?;
+        }
+        if let Some(c) = p.center {
+            info.set_item("center", c.to_vec())?;
+        }
+        if let Some(a) = p.axis {
+            info.set_item("axis", a.to_vec())?;
+        }
+        if let Some(r) = p.radius {
+            info.set_item("radius", r)?;
+        }
+        if let Some(s) = p.step_angle {
+            info.set_item("step_angle", s)?;
+        }
+        if let Some(sh) = p.step_h {
+            info.set_item("step_h", sh)?;
+        }
+        if let Some(k) = &p.k_indices {
+            info.set_item("k_indices", k.clone())?;
+        }
+        if let Some(k) = p.k_min {
+            info.set_item("k_min", k)?;
+        }
+        if let Some(k) = p.k_max {
+            info.set_item("k_max", k)?;
+        }
+        if let Some(o) = p.origin {
+            info.set_item("origin", o.to_vec())?;
+        }
+        // Translational patterns use `axis_u`/`axis_v`/`axis_w` (Python's names);
+        // rotational and helical use `u_axis`/`v_axis`. Repair reads both, so
+        // each family emits its own spelling from the same `u_axis` field.
+        if p.pattern_type == "translational" {
+            if let Some(u) = p.u_axis {
+                info.set_item("axis_u", u.to_vec())?;
+            }
+            if let Some(vv) = p.v_axis {
+                info.set_item("axis_v", vv.to_vec())?;
+            }
+            if let Some(w) = p.w_axis {
+                info.set_item("axis_w", w.to_vec())?;
+            }
+        } else if p.pattern_type == "helical" {
+            if let Some(u) = p.u_axis {
+                info.set_item("u_axis", u.to_vec())?;
+            }
+            if let Some(vv) = p.v_axis {
+                info.set_item("v_axis", vv.to_vec())?;
+            }
+        } else {
+            if let Some(u) = p.u_axis {
+                info.set_item("u_axis", u.to_vec())?;
+            }
+            if let Some(vv) = p.v_axis {
+                info.set_item("v_axis", vv.to_vec())?;
+            }
+        }
+        if let Some(s) = p.step_u {
+            info.set_item("step_u", s)?;
+        }
+        if let Some(s) = p.step_v {
+            info.set_item("step_v", s)?;
+        }
+        if let Some(s) = p.step_w {
+            info.set_item("step_w", s)?;
+        }
+        if let Some(i) = &p.p_indices {
+            info.set_item("p_indices", i.clone())?;
+        }
+        if let Some(i) = &p.q_indices {
+            info.set_item("q_indices", i.clone())?;
+        }
+        if let Some(i) = &p.r_indices {
+            info.set_item("r_indices", i.clone())?;
+        }
+    }
+    Ok((score, route.to_string(), info))
+}
+
+#[cfg(feature = "python")]
+/// `repeat.detect_rotational_symmetry_free` through the shared kernel.
+///
+/// Returns `None` when no symmetry clears the threshold, otherwise a dict with
+/// the keys the Python info dict carries.
+#[pyfunction]
+#[pyo3(name = "detect_rotational_symmetry_free")]
+#[pyo3(signature = (verts, tris, n_samples=3000, max_order=64))]
+fn detect_rotational_symmetry_free_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    n_samples: usize,
+    max_order: usize,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let found = crate::repeat_free::detect_rotational_symmetry_free(
+        &v, &t, n_samples, max_order);
+    match found {
+        None => Ok(None),
+        Some(m) => {
+            let d = PyDict::new(py);
+            d.set_item("pattern_type", "rotational")?;
+            d.set_item("order", m.order)?;
+            d.set_item("center", m.center.to_vec())?;
+            d.set_item("axis", m.axis.to_vec())?;
+            d.set_item("u_axis", m.u_axis.to_vec())?;
+            d.set_item("v_axis", m.v_axis.to_vec())?;
+            d.set_item("step_angle", m.step_angle)?;
+            d.set_item("score", m.score)?;
+            d.set_item("match_fraction", m.match_fraction)?;
+            d.set_item("mean_distance", m.mean_distance)?;
+            d.set_item("method", "segmentation_free")?;
+            Ok(Some(d))
+        }
+    }
+}
+
+#[cfg(feature = "python")]
+/// `repeat.segment_elements` through the shared kernel.
+///
+/// Returns a list of dicts, one per candidate patch, with the keys the Python
+/// function builds: `faces`, `verts_idx`, `centroid`, `area`, `diag`.
+#[pyfunction]
+#[pyo3(name = "segment_elements")]
+#[pyo3(signature = (verts, tris, angle_deg=30.0))]
+fn segment_elements_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    angle_deg: f64,
+) -> PyResult<Bound<'py, PyList>> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let patches = crate::repeat_segment::segment_elements(&v, &t, angle_deg);
+    let out = PyList::empty(py);
+    for p in patches {
+        let d = PyDict::new(py);
+        d.set_item("faces", p.faces)?;
+        d.set_item("verts_idx", p.verts_idx)?;
+        d.set_item("centroid", p.centroid.to_vec())?;
+        d.set_item("area", p.area)?;
+        d.set_item("diag", p.diag)?;
+        out.append(d)?;
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "python")]
+/// `wall.sample_surface` through the shared kernel.
+///
+/// Returns `(points, normals)` as float64 arrays. Bit-identical to the NumPy
+/// original, including the RNG stream: `choice(p=...)` then two `random()`
+/// batches, all from one generator.
+#[pyfunction]
+#[pyo3(name = "sample_surface")]
+#[pyo3(signature = (verts, tris, n_samples=5000, seed=0))]
+fn sample_surface_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    n_samples: usize,
+    seed: u64,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let v: Vec<[f64; 3]> = verts
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
+    let t: Vec<[usize; 3]> = tris
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    let (pts, normals) = crate::sample::sample_surface(&v, &t, n_samples, seed);
+    let pv: Vec<Vec<f64>> = pts.iter().map(|p| p.to_vec()).collect();
+    let nv: Vec<Vec<f64>> = normals.iter().map(|n| n.to_vec()).collect();
+    let parr = numpy::PyArray2::from_vec2(py, &pv)?;
+    let narr = numpy::PyArray2::from_vec2(py, &nv)?;
+    Ok((parr.into_any(), narr.into_any()))
+}
+
+#[cfg(feature = "python")]
 /// Signed volume through the shared kernel (see `measures::signed_volume`).
 ///
 /// Python's `np.einsum` inner dot is a BLAS path that no association order or
@@ -3012,8 +3705,25 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(classifier_features, m)?)?;
+    m.add_function(wrap_pyfunction!(covariance_py, m)?)?;
+    m.add_function(wrap_pyfunction!(cross_covariance_py, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_obb_py, m)?)?;
+    m.add_function(wrap_pyfunction!(is_inside_obb_py, m)?)?;
+    m.add_function(wrap_pyfunction!(hausdorff_outside_py, m)?)?;
+    m.add_function(wrap_pyfunction!(decimate_faces_py, m)?)?;
+    m.add_function(wrap_pyfunction!(align_py, m)?)?;
+    m.add_function(wrap_pyfunction!(repeat_repair::py::plan_repeat_auto_py, m)?)?;
+    m.add_function(wrap_pyfunction!(repeat_repair::py::repair_repeat_auto_core_py, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_repetition_py, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_rotational_symmetry_free_py, m)?)?;
+    m.add_function(wrap_pyfunction!(segment_elements_py, m)?)?;
+    m.add_function(wrap_pyfunction!(sample_surface_py, m)?)?;
+    m.add_function(wrap_pyfunction!(svd3_py, m)?)?;
+    m.add_function(wrap_pyfunction!(lstsq3_py, m)?)?;
     m.add_function(wrap_pyfunction!(signed_volume, m)?)?;
     m.add_function(wrap_pyfunction!(eigh3_py, m)?)?;
+    m.add_function(wrap_pyfunction!(closing_single_side_py, m)?)?;
+    m.add_function(wrap_pyfunction!(closing_relief_py, m)?)?;
     m.add_function(wrap_pyfunction!(si_faces_exact, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
