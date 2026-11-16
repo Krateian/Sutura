@@ -1,0 +1,77 @@
+app:
+  title: Sutura
+  add_files: Dosya ekle
+  repair: Onar
+  files: Dosyalar
+  settings: Ayarlar
+  settings_coming: Ayarlar paneli yer tutucusu (yakında)
+  log: Günlük
+  language: Dil
+  drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
+  repair_running: Onarılıyor…
+  triangles: "%{count} üçgen"
+  lang_system: Sistem
+  lang_english: İngilizce
+  lang_turkish: Türkçe
+  before: Önce
+  after: Sonra
+  open_result: Sonucu aç
+  show_in_folder: Klasörde göster
+  cancel: İptal
+  progress: "Adım %{step}/%{total}"
+  overwrite_title: Çıktı zaten var
+  overwrite_body: "%{path} zaten var. Üzerine yazılsın mı?"
+  overwrite: Üzerine yaz
+  report: Rapor
+  health: Sağlık
+  risk: Risk
+  fidelity: Sadakat
+  verdict: Hüküm
+  status: Durum
+  confidence: Güven
+  none: "—"
+  report_empty: Rapor için bir onarım çalıştırın.
+  error_prefix: "Hata: %{error}"
+  log_loaded: "yüklendi %{name}: %{count} üçgen"
+  log_load_failed: "yükleme başarısız %{name}: %{error}"
+  log_ignored: "yok sayıldı (mesh değil): %{path}"
+  log_repair_started: "onarım başladı: %{path}"
+  log_repair_done: "onarım bitti: %{path} (%{count} üçgen)"
+  log_repair_failed: "onarım başarısız: %{error}"
+  log_repair_cancelled: Onarım iptal edildi.
+  log_kill: "onarım süreci durduruluyor %{pid}"
+  status_safe: İncelemek güvenli
+  status_review: İnceleme önerilir
+  status_caution: Dikkatli olun
+  status_failed: Başarısız / inceleyin
+  status_unavailable: Puanlama kullanılamıyor
+  verdict_preserved: Onarıldı, şekil korundu
+  verdict_preserved_notes: Notlarla onarıldı — şekil korundu
+  verdict_changed: Onarıldı, şekil değişti - kontrol edin
+  verdict_changed_areas: "Onarıldı, %{count} bölgede şekil değişti - kontrol edin"
+  verdict_low_confidence: Onarıldı, şekil yeniden kurulmuş olabilir - kontrol edin
+  verdict_low_confidence_areas: "Onarıldı, %{count} tahmini bölgede şekil değişti - kontrol edin"
+  verdict_not_repaired: Tam onarılmadı
+  verdict_unavailable: Şekil kontrolü kullanılamıyor
+  settings_more: Daha fazla ayar, çekirdek profil API'siyle gelecek.
+  intensity: Yoğunluk
+  intensity_quick: Hızlı
+  intensity_balanced: Dengeli
+  intensity_thorough: Kapsamlı
+  intensity_extreme: Ekstrem
+  repair_all: Tümünü onar
+  batch_progress: "Toplu %{done}/%{total}"
+  batch_overwrite_title: Bazı çıktılar zaten var
+  batch_overwrite_body: "%{count} _fixed dosyası zaten var. Üzerine yazılsın mı, atlansın mı, iptal mi?"
+  overwrite_all: Tümünün üzerine yaz
+  skip_existing: Mevcutları atla
+  log_batch_start: "toplu onarım başladı: %{count} dosya"
+  log_batch_done: Toplu onarım bitti.
+  log_batch_skip: "toplu onarım mevcut çıktıyı atladı: %{path}"
+  heatmap: Isı haritası
+  defect_faces: "%{count} kusurlu yüz (%{pct}%)"
+  about: Hakkında
+  updates: Güncellemeler
+  about_body: Sutura, 3D baskı için bozuk mesh'leri onarır. Bu, Rust/egui GUI'sidir; bu fazda onarım çekirdeği hâlâ Python CLI üzerinden çalışır.
+  updater_title: Güncellemeler
+  updater_body: Güncelleyici ayrı sutura-updater crate'iyle gelecek. Henüz ağ erişimi yok.
