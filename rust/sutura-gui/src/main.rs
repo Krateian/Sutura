@@ -12,6 +12,10 @@ fn main() -> eframe::Result<()> {
     let mut exit_after = false;
     let mut auto_repair = false;
     let mut auto_batch = false;
+    let mut headless = false;
+    let mut headless_out: Option<std::path::PathBuf> = None;
+    let mut headless_report: Option<std::path::PathBuf> = None;
+    let mut headless_cancel_ms: Option<u64> = None;
     let mut heatmap = false;
     let mut about = false;
     let mut updater = false;
@@ -23,6 +27,21 @@ fn main() -> eframe::Result<()> {
             "--exit-after" => exit_after = true,
             "--repair" => auto_repair = true,
             "--repair-all" => auto_batch = true,
+            // Hidden test hook: run the repair path with no window, so the parity
+            // gate can compare this binary's output to the CLI's. Deliberately
+            // absent from `--help` -- it is not a user-facing feature.
+            "--headless-repair" => {
+                headless = true;
+                headless_out = args.next().map(std::path::PathBuf::from);
+            }
+            "--headless-report" => {
+                headless_report = args.next().map(std::path::PathBuf::from);
+            }
+            // Hidden measurement hook: cancel the headless run after N ms, so the
+            // cooperative-cancel latency can be measured rather than assumed.
+            "--headless-cancel-after-ms" => {
+                headless_cancel_ms = args.next().and_then(|s| s.parse::<u64>().ok());
+            }
             "--heatmap" => heatmap = true,
             "--about" => about = true,
             "--updates" => updater = true,
@@ -49,6 +68,18 @@ fn main() -> eframe::Result<()> {
         }
     }
     i18n::apply(language);
+
+    if headless {
+        let input = match files.first() {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("--headless-repair needs an input file");
+                std::process::exit(2);
+            }
+        };
+        let out = headless_out.unwrap_or_else(|| app::fixed_path(&input));
+        return app::headless_repair(&input, &out, intensity, headless_report, headless_cancel_ms);
+    }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

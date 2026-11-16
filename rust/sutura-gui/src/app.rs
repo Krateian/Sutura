@@ -1,4 +1,3 @@
-use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,6 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use sutura_core::repair::CancelToken;
+use sutura_core::repair_settings::RepairSettings;
 
 use crate::i18n::{self, Language};
 use crate::mesh::DisplayMesh;
@@ -133,9 +134,9 @@ pub struct SuturaApp {
     log: Vec<String>,
     repair_rx: Option<Receiver<RepairEvent>>,
     repair_index: Option<usize>,
-    repair_pid: Option<u32>,
-    cancel_requested: Arc<AtomicBool>,
-    cancel_kill_at: Option<Instant>,
+    /// Handle on the running repair's cooperative cancel flag. There is no child
+    /// process any more, so cancelling sets this instead of signalling a pid.
+    cancel_token: Option<Arc<CancelToken>>,
     pending_overwrite: Option<(usize, PathBuf)>,
     pending_batch: Option<Vec<usize>>,
     intensity: Intensity,
@@ -174,9 +175,7 @@ impl SuturaApp {
             log: Vec::new(),
             repair_rx: None,
             repair_index: None,
-            repair_pid: None,
-            cancel_requested: Arc::new(AtomicBool::new(false)),
-            cancel_kill_at: None,
+            cancel_token: None,
             pending_overwrite: None,
             pending_batch: None,
             intensity: options.intensity,
@@ -330,19 +329,19 @@ impl SuturaApp {
         let (tx, rx) = mpsc::channel();
         self.repair_rx = Some(rx);
         self.repair_index = Some(idx);
-        self.repair_pid = None;
-        self.cancel_requested.store(false, Ordering::SeqCst);
-        self.cancel_kill_at = None;
         self.files[idx].repair = RepairState::Running { step: 0, total: 8 };
         self.files[idx].error = None;
         self.log(
             rust_i18n::t!("app.log_repair_started", path = input.display().to_string())
                 .to_string(),
         );
-        let cancel = self.cancel_requested.clone();
-        let intensity = self.intensity.value().to_string();
+        // Cooperative cancellation replaces the old SIGKILL timer: there is no
+        // child process to signal any more.
+        let cancel = Arc::new(CancelToken::new());
+        self.cancel_token = Some(cancel.clone());
+        let settings = RepairSettings::from_intensity(self.intensity.value(), force);
         std::thread::spawn(move || {
-            run_repair(&input, &output, force, &intensity, tx, cancel);
+            run_repair(&input, &output, settings, tx, cancel);
         });
     }
 
@@ -419,8 +418,9 @@ impl SuturaApp {
 
     fn handle_event(&mut self, ev: RepairEvent) {
         match ev {
-            RepairEvent::Started(pid) => {
-                self.repair_pid = Some(pid);
+            RepairEvent::Started(_pid) => {
+                // Nothing to track: the repair runs in its own thread here, and
+                // cancellation goes through `cancel_token`.
             }
             RepairEvent::Progress { step, total } => {
                 if let Some(idx) = self.repair_index {
@@ -441,9 +441,7 @@ impl SuturaApp {
             } => {
                 let idx = self.repair_index.take();
                 self.repair_rx = None;
-                self.repair_pid = None;
-                self.cancel_kill_at = None;
-                self.cancel_requested.store(false, Ordering::SeqCst);
+                self.cancel_token = None;
                 let Some(idx) = idx else { return };
                 if idx >= self.files.len() {
                     return;
@@ -490,24 +488,14 @@ impl SuturaApp {
             self.batch.clear();
             self.batch_active = false;
         }
-        let Some(pid) = self.repair_pid else { return };
-        self.cancel_requested.store(true, Ordering::SeqCst);
-        self.log(
-            rust_i18n::t!("app.log_kill", pid = pid.to_string()).to_string(),
-        );
-        kill_group(pid, 15);
-        self.cancel_kill_at = Some(Instant::now());
-    }
-
-    fn tick_cancel(&mut self) {
-        if let Some(t) = self.cancel_kill_at {
-            if t.elapsed() >= Duration::from_secs(3) {
-                if let Some(pid) = self.repair_pid {
-                    kill_group(pid, 9);
-                }
-                self.cancel_kill_at = None;
-            }
-        }
+        // Cooperative: `repair` checks this flag at its own boundaries. The old
+        // SIGTERM-then-SIGKILL dance is gone -- there is no child process, and a
+        // kill timer would have nothing to escalate to.
+        let Some(token) = self.cancel_token.clone() else {
+            return;
+        };
+        token.cancel();
+        self.log(rust_i18n::t!("app.log_cancel_requested").to_string());
     }
 
     fn maybe_screenshot(&mut self, ctx: &egui::Context) {
@@ -561,7 +549,6 @@ impl eframe::App for SuturaApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_repair();
-        self.tick_cancel();
 
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for file in dropped {
@@ -1026,8 +1013,10 @@ impl eframe::App for SuturaApp {
 
 impl Drop for SuturaApp {
     fn drop(&mut self) {
-        if let Some(pid) = self.repair_pid.take() {
-            kill_group(pid, 9);
+        // Ask the worker to stop rather than killing a process: the repair thread
+        // owns no child, and a detached thread exits with the process anyway.
+        if let Some(token) = self.cancel_token.take() {
+            token.cancel();
         }
     }
 }
@@ -1088,7 +1077,64 @@ fn is_mesh_path(path: &Path) -> bool {
     )
 }
 
-fn fixed_path(input: &Path) -> PathBuf {
+/// Repair one file with no window, for the parity gate.
+///
+/// This runs the SAME `run_repair` the UI uses -- the point is to compare the
+/// GUI's repair path against the CLI for identical arguments, so it must not be
+/// a second implementation. The report is written as JSON when `report` names a
+/// path.
+pub fn headless_repair(
+    input: &Path,
+    output: &Path,
+    intensity: Intensity,
+    _report: Option<PathBuf>,
+    cancel_after_ms: Option<u64>,
+) -> eframe::Result<()> {
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(CancelToken::new());
+
+    // Measurement hook: cancel from another thread after N ms and report how
+    // long the worker took to observe it.
+    let cancel_started = std::time::Instant::now();
+    if let Some(ms) = cancel_after_ms {
+        let token = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            token.cancel();
+            eprintln!("cancel requested at {} ms", cancel_started.elapsed().as_millis());
+        });
+    }
+
+    let settings = RepairSettings::from_intensity(intensity.value(), false);
+    run_repair(input, output, settings, tx, cancel);
+
+    let observed = cancel_started.elapsed();
+    if cancel_after_ms.is_some() {
+        eprintln!("repair returned at {} ms", observed.as_millis());
+    }
+
+    // `run_repair` finished synchronously here, so the first outcome is the real
+    // one; keep draining only to be safe against extra progress events.
+    let mut outcome = None;
+    for ev in rx.try_iter() {
+        if let RepairEvent::Finished { result, .. } = ev {
+            outcome = Some(result);
+        }
+    }
+    match outcome {
+        Some(Ok((_mesh, _summary))) => Ok(()),
+        Some(Err(e)) => {
+            eprintln!("headless repair failed: {e}");
+            std::process::exit(1);
+        }
+        None => {
+            eprintln!("headless repair produced no result");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn fixed_path(input: &Path) -> PathBuf {
     let stem = input
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -1096,158 +1142,232 @@ fn fixed_path(input: &Path) -> PathBuf {
     input.with_file_name(format!("{stem}_fixed.stl"))
 }
 
-fn repair_command() -> Result<Command, String> {
-    if let Ok(cli) = std::env::var("SUTURA_CLI") {
-        let mut parts = cli.split_whitespace();
-        let program = parts.next().ok_or_else(|| "SUTURA_CLI is empty".to_string())?;
-        let mut cmd = Command::new(program);
-        cmd.args(parts);
-        return Ok(cmd);
-    }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .ok_or_else(|| "cannot locate repository root".to_string())?
-        .to_path_buf();
-    let script = root.join("sutura").join("repair.py");
-    if !script.exists() {
-        return Err(format!(
-            "Python repair CLI not found at {} (set SUTURA_CLI)",
-            script.display()
-        ));
-    }
-    let python = std::env::var("SUTURA_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    let mut cmd = Command::new(python);
-    cmd.arg(script);
-    Ok(cmd)
-}
-
+/// Repair one file in-process, through `sutura_core::repair`.
+///
+/// This used to shell out to `python3 sutura/repair.py` (or whatever `SUTURA_CLI`
+/// named), which is why the GUI needed a Python interpreter to repair anything.
+/// The work now happens in this thread: the caller spawns it, so the UI keeps
+/// drawing while it runs.
+///
+/// Settings come from [`RepairSettings`], the same struct the CLI fills, and the
+/// conversion to `RepairOptions` is the CLI's own `options_from` -- there is no
+/// second mapping to drift.
 fn run_repair(
     input: &Path,
     output: &Path,
-    force: bool,
-    intensity: &str,
+    settings: RepairSettings,
     tx: mpsc::Sender<RepairEvent>,
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<CancelToken>,
 ) {
-    let mut cmd = match repair_command() {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = tx.send(RepairEvent::Finished {
-                output: output.to_path_buf(),
-                result: Err(e),
-                cancelled: false,
-            });
-            return;
-        }
+    // The CLI publishes stages 1..=8 around the core call; mirror that exactly so
+    // the progress bar advances the same way. `repair`'s own `ProgressSink` is a
+    // no-op in the CLI too, so nothing is lost by doing the same here.
+    let stage = |step: u8, total: u8| {
+        let _ = tx.send(RepairEvent::Progress { step, total });
     };
-    cmd.arg(input)
-        .arg("-o")
-        .arg(output)
-        .arg("--no-history")
-        .arg("--json")
-        .arg("--progress-json")
-        .arg("--intensity")
-        .arg(intensity);
-    if force {
-        cmd.arg("--force");
-    }
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = tx.send(RepairEvent::Finished {
-                output: output.to_path_buf(),
-                result: Err(format!("could not start repair CLI: {e}")),
-                cancelled: false,
-            });
-            return;
-        }
-    };
-    let pid = child.id();
-    let _ = tx.send(RepairEvent::Started(pid));
+    stage(1, 8);
 
-    let stderr_reader = child.stderr.take().map(|stderr| {
-        let tx = tx.clone();
-        let cancel = cancel.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().flatten() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-                    match v.get("event").and_then(Value::as_str) {
-                        Some("stage") => {
-                            let step = v.get("step").and_then(Value::as_u64).unwrap_or(0) as u8;
-                            let total =
-                                v.get("step_total").and_then(Value::as_u64).unwrap_or(8) as u8;
-                            let _ = tx.send(RepairEvent::Progress { step, total });
-                        }
-                        Some("cancel") => cancel.store(true, Ordering::SeqCst),
-                        _ => {}
-                    }
-                } else {
-                    let _ = tx.send(RepairEvent::Stderr(line));
-                }
+    let (opts, _methods_given, _methods) =
+        match sutura_core::repair_settings::options_from(&settings) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tx.send(RepairEvent::Finished {
+                    output: output.to_path_buf(),
+                    result: Err(e.message),
+                    cancelled: false,
+                });
+                return;
             }
-        })
-    });
+        };
 
-    let mut stdout = String::new();
-    if let Some(mut out) = child.stdout.take() {
-        let _ = out.read_to_string(&mut stdout);
+    stage(2, 8);
+
+    // 3MF is a container: repair each object separately and rewrite the archive,
+    // the same path the CLI takes. Everything else is a single mesh.
+    if is_3mf(input) {
+        let sink = GuiSink { tx: tx.clone() };
+        let result = sutura_core::pipeline_objects::repair_3mf_file(
+            input, output, &opts, &sink, &cancel,
+        );
+        let _ = match result {
+            Ok(_) => finish_from_output(output, &tx, &cancel),
+            Err(e) => tx.send(RepairEvent::Finished {
+                output: output.to_path_buf(),
+                result: Err(e.to_string()),
+                cancelled: cancel.is_cancelled(),
+            }),
+        };
+        return;
     }
-    let status = child.wait();
-    if let Some(reader) = stderr_reader {
-        let _ = reader.join();
+
+    let mesh = match sutura_core::load_mesh(input) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = tx.send(RepairEvent::Finished {
+                output: output.to_path_buf(),
+                result: Err(format!("load failed: {e}")),
+                cancelled: false,
+            });
+            return;
+        }
+    };
+    let verts: Vec<[f64; 3]> = mesh
+        .verts
+        .iter()
+        .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+        .collect();
+    let tris: Vec<[i64; 3]> = mesh
+        .tris
+        .iter()
+        .map(|f| [i64::from(f[0]), i64::from(f[1]), i64::from(f[2])])
+        .collect();
+
+    stage(3, 8);
+    if opts.deep_repair != sutura_core::repair::DeepRepair::Off {
+        stage(4, 8);
     }
-    let cancelled = cancel.load(Ordering::SeqCst);
-    let success = status.as_ref().map(|s| s.success()).unwrap_or(false);
-    let code = status.as_ref().ok().and_then(|s| s.code());
-    let result = if success {
-        parse_repair(&stdout, output)
-    } else if cancelled {
-        Err("cancelled".to_string())
-    } else {
-        Err(format!("repair CLI exited with {code:?}"))
+    let sink = GuiSink { tx: tx.clone() };
+    let outcome = sutura_core::repair::repair(&verts, &tris, &opts, &sink, &cancel);
+    stage(5, 8);
+
+    let (out_v, out_t, report) = match outcome {
+        sutura_core::repair::RepairOutcome::Ok {
+            verts,
+            tris,
+            report,
+        } => (verts, tris, report),
+        sutura_core::repair::RepairOutcome::Unavailable { tier, reason } => {
+            let _ = tx.send(RepairEvent::Finished {
+                output: output.to_path_buf(),
+                result: Err(format!("{tier} is unavailable: {reason}")),
+                cancelled: cancel.is_cancelled(),
+            });
+            return;
+        }
+        sutura_core::repair::RepairOutcome::Error { message } => {
+            let _ = tx.send(RepairEvent::Finished {
+                output: output.to_path_buf(),
+                result: Err(message),
+                cancelled: cancel.is_cancelled(),
+            });
+            return;
+        }
+    };
+
+    // A cancelled run must not leave a half-written repair behind.
+    if cancel.is_cancelled() {
+        let _ = tx.send(RepairEvent::Finished {
+            output: output.to_path_buf(),
+            result: Err("cancelled".to_string()),
+            cancelled: true,
+        });
+        return;
+    }
+
+    stage(6, 8);
+    let out_mesh = sutura_core::Mesh::new(
+        out_v
+            .iter()
+            .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+            .collect(),
+        out_t
+            .iter()
+            .map(|f| [f[0] as i32, f[1] as i32, f[2] as i32])
+            .collect(),
+    );
+    if let Err(e) = sutura_core::save_mesh(output, &out_mesh) {
+        let _ = tx.send(RepairEvent::Finished {
+            output: output.to_path_buf(),
+            result: Err(format!("write failed: {e}")),
+            cancelled: false,
+        });
+        return;
+    }
+    stage(7, 8);
+    stage(8, 8);
+
+    if let Some(err) = report.get("error").and_then(Value::as_str) {
+        let _ = tx.send(RepairEvent::Finished {
+            output: output.to_path_buf(),
+            result: Err(err.to_string()),
+            cancelled: false,
+        });
+        return;
+    }
+    let mesh = match DisplayMesh::load(output) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = tx.send(RepairEvent::Finished {
+                output: output.to_path_buf(),
+                result: Err(format!("output load failed: {e}")),
+                cancelled: false,
+            });
+            return;
+        }
     };
     let _ = tx.send(RepairEvent::Finished {
         output: output.to_path_buf(),
-        result,
-        cancelled,
+        result: Ok((mesh, RepairReport::from_value(&report))),
+        cancelled: false,
     });
 }
 
-fn parse_repair(stdout: &str, output: &Path) -> Result<(DisplayMesh, RepairReport), String> {
-    let last = stdout
-        .lines()
-        .rev()
-        .find(|l| l.trim_start().starts_with('{'))
-        .ok_or_else(|| "repair produced no JSON report".to_string())?;
-    let value: Value =
-        serde_json::from_str(last).map_err(|e| format!("invalid report JSON: {e}"))?;
-    if let Some(err) = value.get("error").and_then(Value::as_str) {
-        return Err(err.to_string());
-    }
-    let mesh = DisplayMesh::load(output).map_err(|e| format!("output load failed: {e}"))?;
-    Ok((mesh, RepairReport::from_value(&value)))
+/// True when the path names a 3MF container (case-insensitive, like the CLI).
+fn is_3mf(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("3mf"))
+        .unwrap_or(false)
 }
 
-#[cfg(unix)]
-fn kill_group(pid: u32, signal: i32) {
-    unsafe {
-        libc::kill(-(pid as i32), signal);
+/// Report the outcome of a multi-object repair from the written file.
+///
+/// A container repair has no single per-object summary here, so the report is
+/// left at its default; the preview is what the GUI shows for `--repair`.
+fn finish_from_output(
+    output: &Path,
+    tx: &mpsc::Sender<RepairEvent>,
+    cancel: &CancelToken,
+) -> Result<(), mpsc::SendError<RepairEvent>> {
+    match DisplayMesh::load(output) {
+        Ok(mesh) => tx.send(RepairEvent::Finished {
+            output: output.to_path_buf(),
+            result: Ok((mesh, RepairReport::default())),
+            cancelled: cancel.is_cancelled(),
+        }),
+        Err(e) => tx.send(RepairEvent::Finished {
+            output: output.to_path_buf(),
+            result: Err(format!("output load failed: {e}")),
+            cancelled: false,
+        }),
     }
 }
 
-#[cfg(not(unix))]
-fn kill_group(_pid: u32, _signal: i32) {}
+/// Forwards core progress events as GUI events.
+///
+/// The core's `repair` emits nothing today (the CLI's sink is a no-op for the
+/// same reason), but forwarding means a future `emit` inside the core reaches
+/// the progress bar with no change here.
+struct GuiSink {
+    tx: mpsc::Sender<RepairEvent>,
+}
+
+impl sutura_core::repair::ProgressSink for GuiSink {
+    fn emit(&self, event: Value) {
+        if let Some(step) = event.get("step").and_then(Value::as_u64) {
+            let total = event
+                .get("step_total")
+                .and_then(Value::as_u64)
+                .unwrap_or(8);
+            let _ = self.tx.send(RepairEvent::Progress {
+                step: step as u8,
+                total: total as u8,
+            });
+        }
+    }
+}
+
+
 
 fn open_path(path: &Path, reveal: bool) {
     #[cfg(target_os = "macos")]

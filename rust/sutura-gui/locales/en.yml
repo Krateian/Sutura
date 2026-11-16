@@ -39,7 +39,7 @@ app:
   log_repair_done: "repair done: %{path} (%{count} triangles)"
   log_repair_failed: "repair failed: %{error}"
   log_repair_cancelled: Repair cancelled.
-  log_kill: "stopping repair process %{pid}"
+  log_cancel_requested: "cancel requested; waiting for the current step"
   status_safe: Safe to inspect
   status_review: Review recommended
   status_caution: Caution advised

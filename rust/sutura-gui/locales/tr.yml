@@ -39,7 +39,7 @@ app:
   log_repair_done: "onarım bitti: %{path} (%{count} üçgen)"
   log_repair_failed: "onarım başarısız: %{error}"
   log_repair_cancelled: Onarım iptal edildi.
-  log_kill: "onarım süreci durduruluyor %{pid}"
+  log_cancel_requested: "iptal istendi; geçerli adımın bitmesi bekleniyor"
   status_safe: İncelemek güvenli
   status_review: İnceleme önerilir
   status_caution: Dikkatli olun
