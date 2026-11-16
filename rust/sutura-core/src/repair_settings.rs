@@ -221,7 +221,12 @@ pub fn parse_methods_text(
         }
         nums.push(num);
     }
-    let mapped = match nums.last().copied() {
+    // The FIRST method selects the deep-repair mode, not the last. Measured
+    // against the Python CLI: `--methods 1,3` gives `off` and `--methods 3,1`
+    // gives `full`, i.e. whichever method comes first wins. Using the last one
+    // (which this did) inverted both cases, and single-method lists hid it
+    // because first == last.
+    let mapped = match nums.first().copied() {
         Some(1) => DeepRepair::Off,
         Some(2) => DeepRepair::Local,
         Some(3) => DeepRepair::Full,
@@ -441,6 +446,35 @@ mod tests {
         let err = options_from(&s).unwrap_err();
         assert_eq!(err.code, 2);
         assert!(err.message.contains("--repeat-source"));
+    }
+
+    #[test]
+    fn the_first_method_selects_the_deep_repair_mode() {
+        // Measured against the Python CLI: `--methods 1,3` -> off and
+        // `--methods 3,1` -> full. Using the last method inverted both, and
+        // single-method lists hid the bug because first == last.
+        for (text, want) in [
+            ("1", DeepRepair::Off),
+            ("2", DeepRepair::Local),
+            ("3", DeepRepair::Full),
+            ("1,3", DeepRepair::Off),
+            ("3,1", DeepRepair::Full),
+            ("2,3", DeepRepair::Local),
+            ("3,2", DeepRepair::Full),
+            ("13,3", DeepRepair::Full),
+        ] {
+            let (opts, _, _) = options_from(&RepairSettings {
+                methods: Some(text.to_string()),
+                ..Default::default()
+            })
+            .expect(text);
+            // Method 13 forces the ladder off by design, so skip it here.
+            if text == "13,3" {
+                assert_eq!(opts.deep_repair, DeepRepair::Off, "{text} (13 forces off)");
+                continue;
+            }
+            assert_eq!(opts.deep_repair, want, "methods {text}");
+        }
     }
 
     #[test]
