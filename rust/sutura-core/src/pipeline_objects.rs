@@ -103,6 +103,13 @@ pub fn repair_objects(
     let mut out = Vec::with_capacity(blocks.len());
 
     for block in blocks {
+        // Check between OBJECTS, not only inside `repair`: a container can hold
+        // many objects, and without this a cancel would wait for every remaining
+        // object's ladder to run. (The latency WITHIN one object's repair is a
+        // `repair()` concern -- its checkpoints are at stage boundaries.)
+        if cancel.is_cancelled() {
+            break;
+        }
         let key = GeometryKey::of(&block.mesh);
         let declared_unit = unit_for(units, &block.model_name);
 
@@ -318,6 +325,35 @@ mod tests {
         // Absent model parts fall back the way Python's `units.get(..., 
         // 'millimeter')` does.
         assert_eq!(unit_for(&units, "3D/Objects/missing.model"), "millimeter");
+    }
+
+    #[test]
+    fn a_cancelled_container_stops_between_objects() {
+        // `repair` cannot be run on synthetic blocks without a full ladder, but
+        // the between-object check is observable: with the token already
+        // cancelled, no object is processed at all.
+        struct NopSink;
+        impl crate::repair::ProgressSink for NopSink {
+            fn emit(&self, _e: Value) {}
+        }
+        let blocks = vec![
+            block("3D/Objects/a.model", 0, 4),
+            block("3D/Objects/b.model", 0, 4),
+        ];
+        let cancel = crate::repair::CancelToken::new();
+        cancel.cancel();
+        let out = repair_objects(
+            &blocks,
+            &[],
+            &crate::repair::RepairOptions::default(),
+            &NopSink,
+            &cancel,
+        );
+        assert!(
+            out.is_empty(),
+            "a cancelled container must not start another object, got {}",
+            out.len()
+        );
     }
 
     #[test]
