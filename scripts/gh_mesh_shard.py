@@ -52,31 +52,83 @@ QUALITY_MODES = ('quality_ab', 'single_side', 'bench115')
 
 
 
+# --- Stage fingerprints (opt-in) -------------------------------------------
+#
+# `SUTURA_STAGE_FP=1` in ENV_CAND makes the Rust pipeline print one line per
+# stage on stderr:
+#
+#     [stage-fp] <label> <geometry-hash> <faces> <verts>
+#
+# (labels: after_prepass, after_stage1, after_stage2, after_pweld). The hash is a
+# 64-bit rolling digest of the stage's geometry; faces/verts are counts. No paths,
+# no names, no geometry — safe to publish in a shard summary.
+#
+# The point: `broken_37111` and `broken_38631` diverge from Python only on Linux,
+# and a byte diff alone cannot say which stage introduced it. Comparing these
+# hashes stage by stage turns "the outputs differ" into "the outputs first
+# differ after stage N".
+#
+# The harness (`verify_default_vs_optout.py`) does not forward CLI stderr, so this
+# re-runs the candidate alone with the flag set and parses its stderr. That costs
+# one extra repair per mesh, which is why it is opt-in.
 STAGE_FP_RE = re.compile(r'^\[stage-fp\] (\S+) (\d+) (\d+) (\d+)\s*$')
+STAGE_FP_ENV = 'SUTURA_STAGE_FP'
 
 
-def stage_fingerprints(mesh_path):
-    """Run one mesh through the candidate CLI and return its stage fingerprints.
+def stage_fp_requested(env_c):
+    """True when ENV_CAND asks for stage fingerprints."""
+    for pair in (env_c or '').split(','):
+        k, _, v = pair.partition('=')
+        if k.strip() == STAGE_FP_ENV and v.strip() in ('1', 'true', 'yes'):
+            return True
+    return False
 
-    Only hashes and counts are returned: the `[stage-fp] <label> <hash> <faces>
-    <verts>` lines carry no geometry and no file names, so they are safe to put
-    in a shard summary. Returns None when the fingerprinting path is unavailable,
-    so a missing row means "not requested", never "changed".
 
-    Opt-in via SUTURA_STAGE_FP=1: this runs one extra repair per mesh, which is
-    not something every shard should pay for.
+def _stage_fp_runner():
+    """How to run the candidate, as (argv_prefix, extra_env).
+
+    Two branches need different runners and the merge brought both:
+
+    * On a Rust-port branch the packaged CLI at ``RUST_BIN`` (default
+      ``cand-bin/sutura``) emits the stage lines directly, and ``SUTURA_STAGE_FP``
+      is inherited from the environment.
+    * On main there is no Rust CLI artifact, so the candidate's own Python
+      entry point is used and the flag is set explicitly for that child.
+
+    Preferring the CLI keeps a Rust branch measuring the binary it ships; falling
+    back to Python is what makes the feature work on main at all.
     """
-    if os.environ.get('SUTURA_STAGE_FP', '') not in ('1', 'true', 'yes'):
-        return None
     cli = os.environ.get('RUST_BIN', os.path.abspath('cand-bin/sutura'))
-    if not os.path.exists(cli):
+    if os.path.exists(cli):
+        return ([cli], {})
+    py = os.path.abspath('cand-venv/bin/python')
+    script = os.path.join(os.path.abspath('cand'), 'sutura', 'repair.py')
+    if os.path.exists(py) and os.path.exists(script):
+        return ([py, script], {})
+    return (None, {})
+
+
+def collect_stage_fp(mesh_path, extra_env):
+    """Run the candidate once and return its stage fingerprints, or None.
+
+    Returns a list of ``{label, hash, faces, verts}`` in emission order. Any
+    failure yields None: a missing row must read as "not measured", never as
+    "unchanged".
+    """
+    prefix, _ = _stage_fp_runner()
+    if prefix is None:
         return None
     out = tempfile.mkdtemp(prefix='stagefp-')
     try:
         env = dict(os.environ)
-        env['SUTURA_STAGE_FP'] = '1'
+        for pair in (extra_env or '').split(','):
+            k, _, v = pair.partition('=')
+            if k.strip():
+                env[k.strip()] = v.strip()
+        env[STAGE_FP_ENV] = '1'
         proc = subprocess.run(
-            [cli, mesh_path, '-o', os.path.join(out, 'out.stl'), '--json'],
+            prefix + [mesh_path, '-o', os.path.join(out, 'out.stl'),
+                      '--no-history', '--no-cache', '--json'],
             capture_output=True, text=True, env=env, timeout=1800)
         stages = []
         for line in proc.stderr.splitlines():
@@ -90,7 +142,6 @@ def stage_fingerprints(mesh_path):
         return None
     finally:
         shutil.rmtree(out, ignore_errors=True)
-
 
 def resolve_mesh(corpus, rel):
     """Private-corpus path first, then the public checkout's own copy.
@@ -258,6 +309,9 @@ def main():
     log_lines = []
     err = None
     sp = os.path.join(outdir, 'summary.json')
+    # Opt-in stage fingerprints: only when ENV_CAND names the flag, so a
+    # normal shard pays nothing.
+    want_stage_fp = stage_fp_requested(env_c)
     if os.path.exists(sp):
         summary_items = json.load(open(sp))
         log_lines = numeric_log_lines(summary_items)
@@ -297,11 +351,13 @@ def main():
                              'candidate': strict_watertight(sides['candidate']),
                          } if quality else None,
                          'missing': missing}
-            # Stage-by-stage fingerprints, when requested, so a byte difference
-            # can be localised to the stage that produced it.
-            fp = stage_fingerprints(resolve_mesh(corpus, item.get('name')))
-            if fp:
-                row['stage_fp'] = fp
+            # Opt-in: only when ENV_CAND names the flag, so a normal shard
+            # pays nothing for the extra repair.
+            if want_stage_fp:
+                fp = collect_stage_fp(resolve_mesh(corpus, item.get('name')),
+                                      env_c)
+                if fp:
+                    row['stage_fp'] = fp
             rows.append(row)
     else:
         err = {'rc': r.returncode, 'error_type': 'MissingSummary',
