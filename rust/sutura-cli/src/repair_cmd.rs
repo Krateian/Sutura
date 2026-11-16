@@ -1389,6 +1389,21 @@ fn process_3mf(
             );
             contract_order(obj);
         }
+        // One history record per object, exactly like `history.write` for a
+        // multi-object 3MF: every object report gets its own line, fingerprinted
+        // from that object's own mesh, and the container's format ('3mf') is
+        // passed in because the per-object report carries no input path.
+        if !cli.no_history {
+            sutura_core::report::write_record(
+                &rep,
+                &in_mesh.verts,
+                &in_mesh.tris,
+                crate::PRODUCT_VERSION,
+                (elapsed * 1000.0) as i64,
+                Some("3mf"),
+                &sutura_core::report::now_ts(),
+            );
+        }
         object_reports.push(rep);
     }
 
@@ -1412,7 +1427,6 @@ fn process_3mf(
     if let Some(obj) = report.as_object_mut() {
         contract_order(obj);
     }
-    let _ = cli;
     (report, failed)
 }
 
@@ -1571,7 +1585,23 @@ fn process_one(
     }
     let failed = report.get("category").and_then(Value::as_str) == Some("error")
         || report.get("error").is_some();
-    let _ = cli;
+    // Anonymous usage history, after the report is final: one line per repair,
+    // geometry only, never the file name (`history.write` in Python). Written
+    // from the *input* mesh — `service.py` fingerprints before repairing — and
+    // skipped entirely by `--no-history`. Like Python's `history.write`, a
+    // repair that *errored* still records: the pipeline returned a report and
+    // the fingerprint was already taken. Errors are swallowed inside.
+    if !cli.no_history {
+        sutura_core::report::write_record(
+            &report,
+            &input.verts,
+            &input.tris,
+            crate::PRODUCT_VERSION,
+            (elapsed * 1000.0) as i64,
+            None,
+            &sutura_core::report::now_ts(),
+        );
+    }
     (report, failed)
 }
 

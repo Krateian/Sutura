@@ -22,7 +22,10 @@ pub use debris::{
 pub use defects::{detect_defects, DefectReport, Hole, NonManifoldRegion};
 pub use fidelity::{compute_fidelity_json, compute_fidelity_value};
 pub use health::{build_report_json as build_health_report_json, human_line_json};
-pub use history::{build_record_json, summary_text_json};
+pub use history::{
+    append_record, build_record_json, mesh_fingerprint, now_ts, py_json_dumps, summary_text_json,
+    write_record, HISTORY_FILE,
+};
 pub use print_report::{
     aggregate_print_reports_value, build_print_report_json, build_print_report_value,
 };
