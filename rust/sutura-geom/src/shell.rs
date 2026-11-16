@@ -226,31 +226,42 @@ fn classify_buried_face(
     let unorm = scale3(normal, 1.0 / area2);
     let c = scale3(add3(add3(v0, v1), v2), 1.0 / 3.0);
 
-    let w_front = bvh.winding_at(add3(c, scale3(unorm, eps)));
-    let w_back = bvh.winding_at(sub3(c, scale3(unorm, eps)));
-    let w_min = w_front.min(w_back);
-    let w_max = w_front.max(w_back);
+    let front = add3(c, scale3(unorm, eps));
+    let back = sub3(c, scale3(unorm, eps));
+    let w_front = bvh.winding_at(front);
     let integral = |w: f64| (w - w.round()).abs() <= d;
 
+    // Exact short-circuits.  If the front side is not inside, the face cannot
+    // be buried (w_min <= w_front); debris needs both sides below `d`, so a
+    // clear non-debris front side needs no back query.
+    if w_front < 1.0 - d {
+        if w_front >= d {
+            return (3u8, 0.0);
+        }
+        let w_back = bvh.winding_at(back);
+        let w_max = w_front.max(w_back);
+        return if w_max < d { (1u8, area) } else { (3u8, 0.0) };
+    }
+    let w_back = bvh.winding_at(back);
+    let w_min = w_front.min(w_back);
+    let w_max = w_front.max(w_back);
     if w_min >= 1.0 - d && integral(w_front) && integral(w_back) {
-        let mut buried = true;
+        // Sample 10% away from each vertex toward the centroid so a
+        // triangle that is only partly inside another part is not
+        // mistaken for an interior wall.  Each side is tested before the
+        // other is queried; the classification is unchanged.
         for v in [v0, v1, v2] {
-            // Sample 10% away from each vertex toward the centroid so a
-            // triangle that is only partly inside another part is not
-            // mistaken for an interior wall.
             let p = add3(scale3(v, 0.9), scale3(c, 0.1));
             let w1 = bvh.winding_at(add3(p, scale3(unorm, eps)));
+            if w1 < 1.0 - d || !integral(w1) {
+                return (3u8, 0.0);
+            }
             let w2 = bvh.winding_at(sub3(p, scale3(unorm, eps)));
-            if w1.min(w2) < 1.0 - d || !integral(w1) || !integral(w2) {
-                buried = false;
-                break;
+            if w2 < 1.0 - d || !integral(w2) {
+                return (3u8, 0.0);
             }
         }
-        if buried {
-            (0u8, area)
-        } else {
-            (3u8, 0.0)
-        }
+        (0u8, area)
     } else if w_max < d {
         (1u8, area)
     } else {

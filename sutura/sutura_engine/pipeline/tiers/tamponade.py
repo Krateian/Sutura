@@ -153,10 +153,18 @@ def _solid_area_fraction(v, t):
         if not (eps > 0.0):
             return None
         centers = (a + b + c) / 3.0
-        pts = np.vstack([centers + normals * eps,
-                         centers - normals * eps])
+        plus = centers + normals * eps
+        minus = centers - normals * eps
         bvh = sutura_geom.PyMeshBvh(vv, tt)
-        w = np.asarray(bvh.winding_points(pts), dtype=np.float64)
+        if hasattr(bvh, 'winding_points_paired'):
+            # One shared BVH traversal per face for the two sides; the
+            # per-point values are bit-identical to winding_points.
+            wp, wm = bvh.winding_points_paired(plus, minus)
+            w = np.concatenate([np.asarray(wp, dtype=np.float64),
+                                np.asarray(wm, dtype=np.float64)])
+        else:
+            pts = np.vstack([plus, minus])
+            w = np.asarray(bvh.winding_points(pts), dtype=np.float64)
         n = len(ft)
         mx = np.maximum(np.abs(w[:n]), np.abs(w[n:]))
         return float(areas[mx > TAMP_SHAPE_WINDING].sum() / total)
