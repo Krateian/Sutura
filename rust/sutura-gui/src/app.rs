@@ -309,7 +309,23 @@ impl SuturaApp {
             ViewMode::After => entry.result.clone().or_else(|| entry.input.clone()),
         };
         if let Some(mesh) = mesh {
-            self.preview.set_mesh(mesh);
+            // On the repaired view, compute the deviation ramp against the
+            // ORIGINAL mesh — the same direction Python uses
+            // (`viewer_data_render`: repaired -> original). Without this the
+            // After view could only show the binary defect mask, which is why
+            // the colour ramp never appeared after a repair.
+            let mut mesh = (*mesh).clone();
+            if entry.view == ViewMode::After && entry.result.is_some() {
+                match sutura_core::load_mesh(&entry.path) {
+                    Ok(reference) => {
+                        if let Err(e) = mesh.with_deviation_against(&reference) {
+                            self.log(format!("deviation unavailable: {e}"));
+                        }
+                    }
+                    Err(e) => self.log(format!("deviation reference unreadable: {e}")),
+                }
+            }
+            self.preview.set_mesh(Arc::new(mesh));
         }
         self.loaded = Some(key);
     }
@@ -925,7 +941,6 @@ impl eframe::App for SuturaApp {
                         )
                     };
                 }
-                ui.label(rust_i18n::t!("app.settings_more").to_string());
                 ui.separator();
                 ui.heading(rust_i18n::t!("app.report").to_string());
                 if self.batch_active {
@@ -1526,6 +1541,79 @@ pub fn headless_analyze(
     Ok(())
 }
 
+/// Headless report dump: the exact values the Report panel shows.
+///
+/// Exists so the panel can be compared to the CLI's JSON for the same mesh. The
+/// panel bug was invisible to unit tests but obvious here: every field was null
+/// because the in-process report had never been scored.
+pub fn headless_report(input: &Path, out: Option<PathBuf>) -> eframe::Result<()> {
+    let mesh = match sutura_core::load_mesh(input) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("report failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let in_v: Vec<[f64; 3]> = mesh
+        .verts
+        .iter()
+        .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+        .collect();
+    let in_t: Vec<[i64; 3]> = mesh
+        .tris
+        .iter()
+        .map(|f| [i64::from(f[0]), i64::from(f[1]), i64::from(f[2])])
+        .collect();
+    let opts = sutura_core::repair::RepairOptions::default();
+    let token = sutura_core::repair::CancelToken::new();
+    let outcome =
+        sutura_core::repair::repair(&in_v, &in_t, &opts, &sutura_core::repair::NoopSink, &token);
+    let sutura_core::repair::RepairOutcome::Ok {
+        verts: out_v,
+        tris: out_t,
+        report,
+    } = outcome
+    else {
+        eprintln!("report failed: repair did not succeed");
+        std::process::exit(1);
+    };
+
+    let in_i32: Vec<[i32; 3]> = in_t
+        .iter()
+        .map(|f| [f[0] as i32, f[1] as i32, f[2] as i32])
+        .collect();
+    let out_i32: Vec<[i32; 3]> = out_t
+        .iter()
+        .map(|f| [f[0] as i32, f[1] as i32, f[2] as i32])
+        .collect();
+    let mut scored = report.as_object().cloned().unwrap_or_default();
+    sutura_core::report::add_scores(&mut scored, &in_v, &in_i32, &out_v, &out_i32);
+    let value = Value::Object(scored);
+
+    // Exactly the fields the panel renders, so a mismatch is unmissable.
+    let panel = RepairReport::from_value(&value);
+    let json = serde_json::json!({
+        "health": panel.health,
+        "risk": panel.risk,
+        "fidelity": panel.fidelity,
+        "confidence": panel.confidence,
+        "verdict_code": panel.verdict_code,
+        "verdict_areas": panel.verdict_areas,
+        "status_code": panel.status_code,
+    });
+    let text = serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string());
+    match out {
+        Some(path) => {
+            if let Err(e) = std::fs::write(&path, text.as_bytes()) {
+                eprintln!("report write failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        None => println!("{text}"),
+    }
+    Ok(())
+}
+
 /// Headless heatmap dump, for the parity gate.
 ///
 /// Emits the three **values** the heatmap is built from — the defect face list,
@@ -1724,6 +1812,10 @@ fn run_repair(
         stage(4, 8);
     }
     let sink = GuiSink { tx: tx.clone() };
+    // Keep the inputs: scoring compares the repaired mesh against them, and
+    // `verts`/`tris` are shadowed by the outcome below.
+    let in_v = verts.clone();
+    let in_t = tris.clone();
     let outcome = sutura_core::repair::repair(&verts, &tris, &opts, &sink, &cancel);
     stage(5, 8);
 
@@ -1802,9 +1894,26 @@ fn run_repair(
             return;
         }
     };
+    // The core `repair` report carries the pipeline facts but **no scores** —
+    // only the CLI's report builder adds them, which is why this panel used to
+    // show dashes while the CLI's JSON was full. Add the same block here, from
+    // the one shared recipe, before reading it into the panel.
+    let mut scored = report.as_object().cloned().unwrap_or_default();
+    let in_f64: Vec<[f64; 3]> = in_v;
+    let in_i32: Vec<[i32; 3]> = in_t
+        .iter()
+        .map(|f| [f[0] as i32, f[1] as i32, f[2] as i32])
+        .collect();
+    let out_f64: Vec<[f64; 3]> = out_v.to_vec();
+    let out_i32: Vec<[i32; 3]> = out_t
+        .iter()
+        .map(|f| [f[0] as i32, f[1] as i32, f[2] as i32])
+        .collect();
+    sutura_core::report::add_scores(&mut scored, &in_f64, &in_i32, &out_f64, &out_i32);
+    let scored = Value::Object(scored);
     let _ = tx.send(RepairEvent::Finished {
         output: output.to_path_buf(),
-        result: Ok((mesh, RepairReport::from_value(&report))),
+        result: Ok((mesh, RepairReport::from_value(&scored))),
         cancelled: false,
     });
 }

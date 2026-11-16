@@ -10,6 +10,7 @@ pub mod health;
 pub mod history;
 pub mod print_report;
 pub mod score;
+pub mod scores;
 
 pub use classify::{
     classify_json, classify_value, estimate_confidence_json, repair_confidence_json,
@@ -30,6 +31,7 @@ pub use print_report::{
     aggregate_print_reports_value, build_print_report_json, build_print_report_value,
 };
 pub use score::{compute_scores_json, compute_scores_value};
+pub use scores::{add_scores, score_cfg};
 
 pub(crate) fn round_to(value: f64, decimals: u32) -> f64 {
     let scale = 10f64.powi(decimals as i32);

@@ -614,44 +614,6 @@ fn non_manifold_json(regions: &[sutura_core::report::NonManifoldRegion]) -> Valu
     )
 }
 
-fn score_cfg() -> Value {
-    json!({
-        "health": {"weights": {"watertight": 39, "no_non_manifold": 22,
-                               "no_self_intersections": 22, "no_holes": 17}},
-        "risk": {"weights": {"face_delta": 30, "vertex_delta": 20,
-                             "component_change": 25, "volume_delta": 25},
-                 "delta_scale_percent": 25, "component_loss_penalty": 30},
-        "fidelity": {
-            "weights": {"healthy_distance": 35, "feature_recall": 25,
-                        "healthy_volume": 20, "volume_bbox": 10, "invented_area": 10},
-            "distance_scale_pct": 0.5, "distance_mean_weight": 0.3,
-            "volume_scale_fraction": 0.01, "volume_change_scale_pct": 15.0,
-            "bbox_scale_pct": 5.0, "invented_scale_fraction": 0.05,
-            "invented_tol_pct": 1.0, "change_tol_factor": 3.0,
-            "changed_min_healthy_distance_pct": 1.0,
-            "tiers": {"high": 85, "mid": 60},
-            "low_confidence": {"invented_area_fraction": 0.03,
-                               "area_min_fraction": 0.0005,
-                               "low_area_min_fraction": 0.03, "max_areas": 99},
-            "budgets": {"full_faces": 20000, "max_faces": 150000,
-                        "distance_samples": 4000, "reduced_distance_samples": 1200,
-                        "sharp_samples_per_edge": 4, "reduced_sharp_samples_per_edge": 2,
-                        "recall_max_faces": 50000, "max_sharp_samples": 6000,
-                        "full_lattice_area": 1200, "full_lattice_layers": 6,
-                        "reduced_lattice_area": 400, "reduced_lattice_layers": 4}
-        },
-        "status": {
-            "health_tiers": {"high": 80, "mid": 60},
-            "risk_tiers": {"high": 70, "mid": 40},
-            "labels": {"safe": "Safe to inspect", "review": "Review recommended",
-                       "caution": "Caution advised", "failed": "Failed / inspect",
-                       "unavailable": "Scoring unavailable"},
-            "table": {"high_low": "safe", "high_mid": "review", "high_high": "review",
-                      "mid_low": "review", "mid_mid": "review", "mid_high": "caution",
-                      "low_low": "failed", "low_mid": "failed", "low_high": "failed"}
-        }
-    })
-}
 
 fn cad_likeness(verts: &[[f64; 3]], tris: &[[i32; 3]]) -> Value {
     let faces = tris.len();
@@ -1199,7 +1161,7 @@ fn augment_report(
         obj.insert("print_report".into(), pr);
     }
 
-    let cfg = score_cfg();
+    let cfg = sutura_core::report::score_cfg();
     let fidelity = sutura_core::report::compute_fidelity_value(
         &in_f64,
         &input.tris,

@@ -53,7 +53,6 @@ app:
   verdict_low_confidence_areas: "Repaired, shape changed in %{count} guessed area(s) - check"
   verdict_not_repaired: Not fully repaired
   verdict_unavailable: Shape check unavailable
-  settings_more: "More settings will arrive with the core profiles API."
   deep_repair: "Deep repair"
   tiers: "Tiers"
   tier_tamponade: "Tamponade"

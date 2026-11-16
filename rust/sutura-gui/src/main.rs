@@ -26,6 +26,8 @@ fn main() -> eframe::Result<()> {
     let mut headless_heatmap = false;
     let mut heatmap_ref: Option<std::path::PathBuf> = None;
     let mut heatmap = false;
+    // Headless score dump: the Report panel's values, for CLI comparison.
+    let mut headless_scores = false;
     let mut about = false;
     let mut updater = false;
     let mut intensity = app::Intensity::Balanced;
@@ -61,6 +63,9 @@ fn main() -> eframe::Result<()> {
             }
             // Hidden gate hook: click these pixels through the picker and print
             // the resulting points, so Python's picker can be compared exactly.
+            // Distinct from `--headless-report` (the repair path above): this
+            // one dumps the panel values AFTER scoring, for the parity check.
+            "--headless-scores" => headless_scores = true,
             "--headless-heatmap" => headless_heatmap = true,
             "--reference" => heatmap_ref = args.next().map(std::path::PathBuf::from),
             "--headless-pick" => {
@@ -102,6 +107,16 @@ fn main() -> eframe::Result<()> {
 
     // Hidden headless modes (not in --help): run the UI's own analysis and object
     // listing without a window so the parity gate can compare them to the CLI.
+    if headless_scores {
+        let input = match files.first() {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("--headless-scores needs an input file");
+                std::process::exit(2);
+            }
+        };
+        return app::headless_report(&input, None);
+    }
     if headless_heatmap {
         let input = match files.first() {
             Some(p) => p.clone(),

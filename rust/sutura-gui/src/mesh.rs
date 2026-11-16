@@ -138,6 +138,14 @@ impl DisplayMesh {
     /// `heatmap.prepare_render` works with; the soup is only a display artefact.
     pub fn with_deviation(&mut self, reference_path: &Path) -> Result<(), String> {
         let reference = load_mesh(reference_path).map_err(|e| e.to_string())?;
+        self.with_deviation_against(&reference)
+    }
+
+    /// `with_deviation` against an already-loaded reference mesh.
+    ///
+    /// The GUI holds the original in memory, so this avoids re-reading and
+    /// re-parsing the input file on every Before/After switch.
+    pub fn with_deviation_against(&mut self, reference: &sutura_core::Mesh) -> Result<(), String> {
         let ref_v: Vec<[f64; 3]> = reference
             .verts
             .iter()
@@ -192,6 +200,14 @@ mod tests {
         let m = DisplayMesh::load(&a).expect("load");
         assert_eq!(m.defect.len(), m.positions.len());
         assert!(m.defect_faces > 0, "an open mesh has defect faces");
+        // The weight must be exactly 1.0 on defect faces — a fractional or tiny
+        // value would render as an almost-invisible tint in the shader.
+        let nz: Vec<f32> = m.defect.iter().copied().filter(|d| *d > 0.0).collect();
+        assert!(!nz.is_empty(), "some vertices are defective");
+        for v in &nz {
+            assert_eq!(*v, 1.0, "defect weight must be exactly 1.0, got {v}");
+        }
+        assert_eq!(nz.len(), m.defect_faces * 3, "3 soup vertices per defect face");
         assert_eq!(m.src_tris.len(), m.triangle_count());
         // No reference supplied: no ramp, and the viewer falls back to defect.
         assert!(m.dev_idx.is_empty());

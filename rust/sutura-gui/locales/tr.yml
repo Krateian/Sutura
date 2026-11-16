@@ -53,7 +53,6 @@ app:
   verdict_low_confidence_areas: "Onarıldı, %{count} tahmini bölgede şekil değişti - kontrol edin"
   verdict_not_repaired: Tam onarılmadı
   verdict_unavailable: Şekil kontrolü kullanılamıyor
-  settings_more: "Daha fazla ayar, çekirdek profil API'siyle gelecek."
   deep_repair: "Derin onarım"
   tiers: "Katmanlar"
   tier_tamponade: "Tamponade"
