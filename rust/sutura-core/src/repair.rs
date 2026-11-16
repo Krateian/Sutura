@@ -3303,7 +3303,7 @@ fn repair_impl(
     deep.insert(
         "cad_likeness".into(),
         if opts.deep_repair == DeepRepair::Full {
-            cad_likeness(&s1_in_v, &s1_in_t)
+            cad_likeness(&input_v, &input_t)
         } else {
             Value::Null
         },

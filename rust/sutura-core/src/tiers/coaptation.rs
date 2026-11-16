@@ -33,7 +33,6 @@ fn rec_base(params: &Value) -> Map<String, Value> {
     rec.insert("guard_rejected".into(), Value::Null);
     rec.insert("guard_reason".into(), Value::Null);
     rec.insert("si_policy".into(), Value::Null);
-    rec.insert("source".into(), json!("input"));
     rec.insert("si_checked".into(), json!(false));
     rec.insert("si_flagged".into(), json!(false));
     rec.insert("seconds".into(), Value::Null);
@@ -373,6 +372,7 @@ pub fn run(
         }
     }
     rec.insert("ran".into(), json!(true));
+    rec.insert("source".into(), json!("input"));
     rec.insert("output_faces".into(), json!(acc_t.len()));
     rec.insert(
         "seconds".into(),
