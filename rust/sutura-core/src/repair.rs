@@ -194,6 +194,23 @@ pub struct RepairOptions {
     pub si_mode: SiMode,
     pub ftetwild: Option<Value>,
     pub time_budget_s: Option<f64>,
+    /// Per-run overrides for the intensity spec (None keeps the policy value).
+    #[serde(default)]
+    pub ftetwild_max_faces: Option<i64>,
+    #[serde(default)]
+    pub ftetwild_timeout: Option<f64>,
+    #[serde(default)]
+    pub graft_max_faces: Option<i64>,
+    #[serde(default)]
+    pub graft_timeout: Option<f64>,
+    #[serde(default)]
+    pub dense_ratio: Option<i64>,
+    #[serde(default)]
+    pub dense_min_faces: Option<i64>,
+    #[serde(default)]
+    pub ftetwild_max_hausdorff_rel: Option<f64>,
+    #[serde(default)]
+    pub ftetwild_optimize_retry: Option<bool>,
     pub seed: u64,
     #[serde(default)]
     pub forced_methods: Vec<u8>,
@@ -233,6 +250,14 @@ impl Default for RepairOptions {
             si_mode: SiMode::Report,
             ftetwild: None,
             time_budget_s: None,
+            ftetwild_max_faces: None,
+            ftetwild_timeout: None,
+            graft_max_faces: None,
+            graft_timeout: None,
+            dense_ratio: None,
+            dense_min_faces: None,
+            ftetwild_max_hausdorff_rel: None,
+            ftetwild_optimize_retry: None,
             seed: 0,
             forced_methods: Vec::new(),
             engines: None,
@@ -2409,7 +2434,28 @@ fn repair_impl(
 
     emit_stage(sink, 1, "validate");
     let policy = load_policy(None).ok();
-    let spec = resolve_intensity_spec(opts, policy.as_ref());
+    let mut spec = resolve_intensity_spec(opts, policy.as_ref());
+    if let Some(v) = opts.ftetwild_max_faces {
+        spec.ftetwild_max_faces = Some(v);
+    }
+    if let Some(v) = opts.ftetwild_timeout {
+        spec.ftetwild_timeout = v;
+    }
+    if let Some(v) = opts.graft_max_faces {
+        spec.graft_max_faces = Some(v);
+    }
+    if let Some(v) = opts.graft_timeout {
+        spec.graft_timeout = v;
+    }
+    if let Some(v) = opts.dense_ratio {
+        spec.dense_ratio = v;
+    }
+    if let Some(v) = opts.dense_min_faces {
+        spec.dense_min_faces = v;
+    }
+    if let Some(v) = opts.ftetwild_optimize_retry {
+        spec.ftetwild_optimize_retry_on_dense_fail = v;
+    }
     let intensity_for_tamponade = spec.base.clone().unwrap_or_else(|| spec.name.clone());
     let triage = resolve_triage(opts, policy.as_ref(), verts, tris);
     if cancel.is_cancelled() {
@@ -3120,12 +3166,14 @@ fn repair_impl(
                 let ft_in_t = cur_t.clone();
                 let bin = ftetwild_bin.as_deref().expect("checked above");
                 let tuning = crate::ftetwild::TierTuning {
-                    max_hausdorff_rel: policy_number(
-                        policy.as_ref(),
-                        "gates.tuning",
-                        "ftetwild_max_hausdorff_rel",
-                        0.01,
-                    ),
+                    max_hausdorff_rel: opts.ftetwild_max_hausdorff_rel.unwrap_or_else(|| {
+                        policy_number(
+                            policy.as_ref(),
+                            "gates.tuning",
+                            "ftetwild_max_hausdorff_rel",
+                            0.01,
+                        )
+                    }),
                     decimate_hd_margin: policy_number(
                         policy.as_ref(),
                         "gates.tuning",
