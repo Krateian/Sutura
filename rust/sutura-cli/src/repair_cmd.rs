@@ -1254,6 +1254,8 @@ fn augment_report(
     }
     let mut health = method_health();
     if let Some(core) = obj.get("method_health").and_then(Value::as_object) {
+        // Keep both lists: go's slice adds Stage-1 errors, the engine slice adds
+        // skips. Copying only `errors` would drop the engine entries.
         if let Some(h) = health.as_object_mut() {
             for key in ["errors", "skips"] {
                 if let Some(value) = core.get(key) {

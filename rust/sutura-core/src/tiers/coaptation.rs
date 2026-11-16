@@ -33,6 +33,7 @@ fn rec_base(params: &Value) -> Map<String, Value> {
     rec.insert("guard_rejected".into(), Value::Null);
     rec.insert("guard_reason".into(), Value::Null);
     rec.insert("si_policy".into(), Value::Null);
+    rec.insert("source".into(), json!("input"));
     rec.insert("si_checked".into(), json!(false));
     rec.insert("si_flagged".into(), json!(false));
     rec.insert("seconds".into(), Value::Null);
@@ -450,7 +451,9 @@ pub fn run(
         "reason".into(),
         json!(format!(
             "union result is not strictly better (candidate SI={} wt={} holes={} nm={} parts={} vs baseline SI={} holes={} nm={} parts={}); the ladder result was kept",
-            opt_i_str(cand.3), cand.4, cand.0, cand.1, cand.2,
+            opt_i_str(cand.3),
+            if cand.4 { "True" } else { "False" },
+            cand.0, cand.1, cand.2,
             opt_i_str(base.3), base.0, base.1, base.2
         )),
     );

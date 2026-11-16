@@ -507,7 +507,13 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     # Central method-health section: availability of every registered method
     # overlaid with this run's recorded failures (the wrapper wrote them into
     # the scope opened above).
-    result['method_health'] = method_health.build_report()
+    _built_health = method_health.build_report()
+    _core_health = result.get('method_health') or {}
+    if not _built_health.get('errors') and _core_health.get('errors'):
+        # Rust pipeline: the core recorded the Stage-1 filter exceptions;
+        # the Python collector is empty on this path, so keep the core section.
+        _built_health['errors'] = _core_health['errors']
+    result['method_health'] = _built_health
     method_health.end()
     trace.finish_trace()
     elapsed_ms = int((time.perf_counter() - t0) * 1000)

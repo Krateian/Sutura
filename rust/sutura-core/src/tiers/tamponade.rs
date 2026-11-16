@@ -484,7 +484,6 @@ fn base_record(params: &Value) -> Map<String, Value> {
         rec.insert(key.into(), json!(0));
     }
     rec.insert("si_checked".into(), json!(false));
-    rec.insert("genus".into(), Value::Null);
     for k in [
         "plugs",
         "plug_faces",

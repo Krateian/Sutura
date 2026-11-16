@@ -1914,6 +1914,68 @@ fn finalize_rejected(field: &mut Map<String, Value>, base: &SiMetrics) {
     field.insert("baseline".into(), base.to_value());
 }
 
+fn cad_likeness(v: &[[f64; 3]], t: &[[i64; 3]]) -> Value {
+    let f = t.len();
+    if f == 0 || v.is_empty() {
+        return json!({"score": 0.0, "planar_fraction": 0.0,
+                      "sharp_fraction": 0.0, "cad_like": false});
+    }
+    let mut normals: Vec<[f64; 3]> = Vec::with_capacity(f);
+    for r in t {
+        let a = v[r[0] as usize];
+        let b = v[r[1] as usize];
+        let c = v[r[2] as usize];
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let n = [
+            u[1] * w[2] - u[2] * w[1],
+            u[2] * w[0] - u[0] * w[2],
+            u[0] * w[1] - u[1] * w[0],
+        ];
+        let ln = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        let d = if ln == 0.0 { 1.0 } else { ln };
+        normals.push([n[0] / d, n[1] / d, n[2] / d]);
+    }
+    let mut edges: Vec<((i64, i64), usize)> = Vec::with_capacity(f * 3);
+    for (fi, r) in t.iter().enumerate() {
+        for k in 0..3 {
+            let a = r[k];
+            let b = r[(k + 1) % 3];
+            edges.push(((a.min(b), a.max(b)), fi));
+        }
+    }
+    edges.sort_by_key(|(key, _)| *key);
+    let mut angles: Vec<f64> = Vec::new();
+    let mut i = 0usize;
+    while i < edges.len() {
+        let mut j = i + 1;
+        while j < edges.len() && edges[j].0 == edges[i].0 {
+            j += 1;
+        }
+        if j - i == 2 {
+            let n1 = normals[edges[i].1];
+            let n2 = normals[edges[i + 1].1];
+            let dot = (n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])
+                .abs()
+                .clamp(0.0, 1.0);
+            angles.push(dot.acos().to_degrees());
+        }
+        i = j;
+    }
+    let n = angles.len();
+    let flat = angles.iter().filter(|a| **a < 1.0).count();
+    let sharp = angles.iter().filter(|a| **a > 30.0).count();
+    let planar_fraction = if n == 0 { 0.0 } else { flat as f64 / n as f64 };
+    let sharp_fraction = if n == 0 { 0.0 } else { sharp as f64 / n as f64 };
+    let score = planar_fraction.max(sharp_fraction);
+    json!({
+        "score": score,
+        "planar_fraction": planar_fraction,
+        "sharp_fraction": sharp_fraction,
+        "cad_like": score >= 0.5,
+    })
+}
+
 fn tier_error(tier: &str, message: impl Into<String>) -> Value {
     json!({
         "tier": tier,
@@ -1936,6 +1998,7 @@ fn run_graft_tier(
     spec: &IntensitySpec,
     time_budget: Option<f64>,
     cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+    report_stage1_counts: bool,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     if let Some(cap) = spec.graft_max_faces {
         if input_t.len() > cap as usize {
@@ -1972,8 +2035,8 @@ fn run_graft_tier(
     let params = json!({
         "max_faces": spec.graft_max_faces,
         "time_budget": time_budget.or(Some(spec.graft_timeout)),
-        "stage1_holes": holes,
-        "stage1_nm": nm,
+        "stage1_holes": if report_stage1_counts { json!(holes) } else { Value::Null },
+        "stage1_nm": if report_stage1_counts { json!(nm) } else { Value::Null },
         "guard": json!({"si_policy": "improved_flag"}),
     });
     graft_tier::decide(
@@ -2043,7 +2106,7 @@ fn run_splint_tier(
         "work_limit": work,
         "stage1_holes": holes,
         "stage1_nm": nm,
-        "guard": Value::Null,
+        "guard": json!({"si_policy": "non_rise"}),
     });
     splint::run(cur_v, cur_t, input_v, input_t, &params)
 }
@@ -2068,7 +2131,7 @@ fn run_coaptation_tier(
         "cap": 0,
         "ulp_k": ulp_k,
         "work_limit": work,
-        "guard": Value::Null,
+        "guard": json!({"si_policy": "strict_zero"}),
     });
     coaptation::run(cur_v, cur_t, input_v, input_t, &params)
 }
@@ -2352,7 +2415,6 @@ fn repair_impl(
     );
     stats.insert("experimental_join_components".into(), Value::Bool(false));
     stats.insert("experimental_ftetwild".into(), Value::Bool(false));
-    stats.insert("ftetwild".into(), Value::Bool(false));
     let ftetwild_bin = crate::ftetwild::find_binary();
 
     // The merged read-only analysis feeds the ranking and the report. Its
@@ -2409,6 +2471,7 @@ fn repair_impl(
         );
     }
     let before = common::topology_summary(&cur_v, &cur_t);
+    let input_components = common::topology_summary(&input_v, &input_t).components;
     let holes_before = boundary_loop_stats(&cur_t).0;
     let nm_before = before.non_two_manifold_edges;
     let before_verts = cur_v.len();
@@ -2506,8 +2569,15 @@ fn repair_impl(
         );
     }
     let chain = Value::Array(stage1_chain(max_hole, min_component, false));
-    let (v1, t1, mut applied, mut skipped, removed_small) = apply_chain_with_cancel(
-        &cur_v, &cur_t, &chain, Some(cancel as &dyn sutura_geom::cancel::Cancel));
+    let mut stage1_errors: Vec<Value> = Vec::new();
+    let (v1, t1, mut applied, mut skipped, removed_small) =
+        crate::stage1::chain::apply_chain_with_cancel_errors(
+            &cur_v,
+            &cur_t,
+            &chain,
+            Some(cancel as &dyn sutura_geom::cancel::Cancel),
+            &mut stage1_errors,
+        );
     cur_v = v1;
     cur_t = t1;
     if cancel.is_cancelled() {
@@ -2706,6 +2776,7 @@ fn repair_impl(
                 &cur_v, &cur_t, &s1_in_v, &s1_in_t, holes, nm,
                 &intensity_for_tamponade, &spec, opts.time_budget_s,
                 Some(cancel as &dyn sutura_geom::cancel::Cancel),
+                false,
             );
             if adopted(&rec) {
                 cur_v = quantize(&gv);
@@ -2751,6 +2822,7 @@ fn repair_impl(
                     &spec,
                     opts.time_budget_s,
                     Some(cancel as &dyn sutura_geom::cancel::Cancel),
+                    true,
                 );
                 let cov_failed = rec
                     .get("coverage_ok")
@@ -3197,7 +3269,14 @@ fn repair_impl(
         "coaptation".into(),
         stats.get("coaptation").cloned().unwrap_or(Value::Null),
     );
-    deep.insert("cad_likeness".into(), Value::Null);
+    deep.insert(
+        "cad_likeness".into(),
+        if opts.deep_repair == DeepRepair::Full {
+            cad_likeness(&s1_in_v, &s1_in_t)
+        } else {
+            Value::Null
+        },
+    );
     deep.insert("dressing_damage".into(), Value::Null);
     deep.insert("available".into(), Value::Null);
     stats.insert("deep_repair".into(), Value::Object(deep));
@@ -3278,6 +3357,7 @@ fn repair_impl(
     {
         let vb = geom_volume(&stage1_volume_before_v, &stage1_volume_before_t);
         let va = geom_volume(&cur_v, &cur_t);
+        stage1.insert("volume_change_percent".into(), Value::Null);
         if vb != 0.0 {
             let pct = (va - vb) / vb.abs() * 100.0;
             stage1.insert(
@@ -3286,7 +3366,22 @@ fn repair_impl(
             );
         }
     }
-    stage1.insert("components_before".into(), Value::from(before.components));
+    {
+        let sa_before = common::surface_area(&stage1_volume_before_v, &stage1_volume_before_t);
+        let sa_after = common::surface_area(&cur_v, &cur_t);
+        let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
+        stage1.insert("surface_area_before".into(), Value::from(round3(sa_before)));
+        stage1.insert("surface_area_after".into(), Value::from(round3(sa_after)));
+        stage1.insert("surface_area_change_percent".into(), Value::Null);
+        if sa_before != 0.0 {
+            let pct = (sa_after - sa_before) / sa_before * 100.0;
+            stage1.insert(
+                "surface_area_change_percent".into(),
+                Value::from((pct * 100.0).round() / 100.0),
+            );
+        }
+    }
+    stage1.insert("components_before".into(), Value::from(input_components));
     {
         let ut: Vec<[usize; 3]> = cur_t
             .iter()
@@ -3314,9 +3409,96 @@ fn repair_impl(
     if skipped.as_object().map(|m| !m.is_empty()).unwrap_or(false) {
         stage1.insert("skipped".into(), skipped);
     }
+    let possible = crate::report::possible_debris(
+        &cur_v,
+        &to_i32(&cur_t),
+        min_component as usize,
+        0.005,
+    )
+    .map(|d| {
+        json!({
+            "count": d.count,
+            "capped": d.capped,
+            "parts": d.parts.iter().map(|p| json!({
+                "faces": p.faces,
+                "volume_pct": p.volume_pct,
+                "size_pct": p.size_pct,
+                "distance_mm": p.distance_mm,
+            })).collect::<Vec<_>>(),
+        })
+    });
+    stage1.insert(
+        "possible_debris".into(),
+        possible.unwrap_or(Value::Null),
+    );
     stats.insert("stage1".into(), Value::Object(stage1));
     if allow_si_escalation && si_escalation_allowed(opts) {
         stage1_snapshot = Some((cur_v.clone(), cur_t.clone()));
+    }
+
+    // Python `_deep_repair_offer`: name the final tier and list the tiers a
+    // deeper mode could still run when damage remains.
+    let final_tier = [
+        "ftetwild", "cdt", "graft", "dressing", "splint", "coaptation", "local",
+    ]
+    .iter()
+    .find(|tier| {
+        let rec = match **tier {
+            "ftetwild" => stats.get("experimental_ftetwild"),
+            "local" => stats.get("local_remesh"),
+            other => stats.get(other),
+        };
+        rec.map(adopted).unwrap_or(false)
+    })
+    .copied()
+    .unwrap_or("stage1");
+    if let Some(deep) = stats.get_mut("deep_repair").and_then(Value::as_object_mut) {
+        deep.insert("final_tier".into(), Value::from(final_tier));
+        if holes_after > 0 || nm_after > 0 {
+            let mut tiers: Vec<&str> = Vec::new();
+            if opts.deep_repair == DeepRepair::Off {
+                tiers.push("local");
+            }
+            let within_cap = spec
+                .ftetwild_max_faces
+                .map(|cap| cur_t.len() <= cap as usize)
+                .unwrap_or(true);
+            if (opts.deep_repair == DeepRepair::Off
+                || opts.deep_repair == DeepRepair::Local)
+                && within_cap
+                && crate::ftetwild::find_binary().is_some()
+            {
+                tiers.push("ftetwild");
+            }
+            if !tiers.is_empty() {
+                let n_faces = input_t.len();
+                let n_regions = (holes_after + nm_after) as f64;
+                let mut estimate = Map::new();
+                if tiers.contains(&"local") {
+                    let e = 0.5 + 0.05 * n_regions + 0.02 * n_faces as f64 / 1000.0;
+                    estimate.insert(
+                        "local".into(),
+                        Value::from((e * 10.0).round() / 10.0),
+                    );
+                }
+                if tiers.contains(&"ftetwild") {
+                    let e = (1e-3 * n_faces as f64).min(spec.ftetwild_timeout);
+                    estimate.insert(
+                        "ftetwild".into(),
+                        Value::from((e * 10.0).round() / 10.0),
+                    );
+                }
+                deep.insert(
+                    "available".into(),
+                    json!({
+                        "holes_remaining": holes_after,
+                        "nm_remaining": nm_after,
+                        "tiers": tiers,
+                        "estimate_s": Value::Object(estimate),
+                    }),
+                );
+            }
+        }
     }
 
     // --- Stage 2 -----------------------------------------------------------
@@ -3423,6 +3605,9 @@ fn repair_impl(
     let mut unavailable = unavailable_tiers(ftetwild_bin.is_none().then_some(
         "fTetWild binary not found; set FTETWILD_BIN/SUTURA_FTETWILD_BIN or install third_party/ftetwild/bin/ftetwild",
     ));
+    // Both sides of this merge added to the method-health block: go records the
+    // Stage-1 method errors, and the engine slice marks the requested external
+    // engines as unavailable. They are independent, so both are kept.
     if let Some(selected) = opts.engines.as_ref() {
         if let Some(obj) = unavailable.as_object_mut() {
             for name in selected {
@@ -3437,7 +3622,16 @@ fn repair_impl(
             }
         }
     }
-    let (mut method_health, method_errors) = method_health_value(&stats, &unavailable);
+    let (mut method_health, mut method_errors) = method_health_value(&stats, &unavailable);
+    if let Some(arr) = method_errors.as_array_mut() {
+        arr.extend(stage1_errors.clone());
+    }
+    if let Some(arr) = method_health
+        .get_mut("errors")
+        .and_then(Value::as_array_mut)
+    {
+        arr.extend(stage1_errors);
+    }
     if let Some(selected) = opts.engines.as_ref() {
         if let Some(skips) = method_health
             .get_mut("skips")
@@ -3471,6 +3665,18 @@ fn repair_impl(
         Value::Object(map) => map,
         _ => Map::new(),
     };
+    let geom_change = {
+        let mut worst: Option<f64> = None;
+        if let Some(s1) = out.get("stage1").and_then(Value::as_object) {
+            for key in ["volume_change_percent", "surface_area_change_percent"] {
+                if let Some(v) = s1.get(key).and_then(Value::as_f64) {
+                    let a = v.abs();
+                    worst = Some(worst.map_or(a, |w| w.max(a)));
+                }
+            }
+        }
+        worst
+    };
     let (num, id, name) = baseline_method(opts.deep_repair);
     let outcome = if reachable { "accepted" } else { "rejected" };
     let reason = if reachable {
@@ -3489,7 +3695,7 @@ fn repair_impl(
             "holes": final_holes,
             "non_manifold": final_nm,
             "hausdorff_rel": Value::Null,
-            "geom_change_pct": Value::Null,
+            "geom_change_pct": geom_change.map(Value::from).unwrap_or(Value::Null),
             "guard_rejected": Value::Null,
             "guard_reason": Value::Null,
             "si_flagged": false,
