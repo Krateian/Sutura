@@ -11,9 +11,21 @@ pub struct DisplayMesh {
     pub indices: Vec<u32>,
     pub center: [f32; 3],
     pub radius: f32,
-    /// Per-vertex defect weight (0 = clean, 1 = touches a boundary/non-manifold edge).
+    /// Per-vertex defect weight (0 = clean, 1 = touches a defect *vertex*).
     pub defect: Vec<f32>,
     pub defect_faces: usize,
+    /// Per-face index into the deviation ramp, when a reference was supplied.
+    /// Empty means "no deviation available", and the viewer falls back to the
+    /// defect blend — the same precedence `heatmap.draw_frame` uses.
+    /// Indexed by **original** face id, which is also the soup's face id.
+    pub dev_idx: Vec<u16>,
+    /// Per-vertex deviation over the original vertex array, for the headless dump.
+    pub deviation: Vec<f32>,
+    /// The original indexed topology. The soup drops it, but the heatmap fields
+    /// are defined per *original* vertex/face (`heatmap.prepare_render`), so it is
+    /// kept here rather than reconstructed.
+    pub src_verts: Vec<[f32; 3]>,
+    pub src_tris: Vec<[i32; 3]>,
 }
 
 impl DisplayMesh {
@@ -39,24 +51,27 @@ impl DisplayMesh {
             radius = 1.0;
         }
 
-        let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
-        let tris_u32: Vec<[u32; 3]> = mesh
-            .tris
-            .iter()
-            .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
-            .collect();
-        for tri in &tris_u32 {
-            for (a, b) in [(0, 1), (1, 2), (2, 0)] {
-                let (u, v) = (tri[a], tri[b]);
-                let key = if u < v { (u, v) } else { (v, u) };
-                *edges.entry(key).or_insert(0) += 1;
+        // Defect set, exactly as Python's render path builds it: union every hole
+        // rim and non-manifold region **vertex**, then flag a face when any of its
+        // corners is in that set (`heatmap.prepare_render`). This is NOT "the face
+        // has a bad edge" — the two definitions agree on boundary loops but differ
+        // for isolated non-manifold vertices, and the vertex rule is the one the
+        // heatmap draws.
+        let report = sutura_core::report::detect_defects(&mesh.verts, &mesh.tris, true);
+        let mut defect_vertices: Vec<i64> = Vec::new();
+        for h in &report.holes {
+            if let Some(v) = &h.verts_idx {
+                defect_vertices.extend(v);
             }
         }
-        let bad: HashSet<(u32, u32)> = edges
-            .iter()
-            .filter(|(_, count)| **count != 2)
-            .map(|(edge, _)| *edge)
-            .collect();
+        for nm in &report.non_manifold {
+            if let Some(v) = &nm.verts_idx {
+                defect_vertices.extend(v);
+            }
+        }
+        defect_vertices.sort_unstable();
+        defect_vertices.dedup();
+        let face_is_defect = sutura_geom::heatmap::defect_faces(&defect_vertices, &mesh.tris);
 
         let mut positions = Vec::with_capacity(mesh.tris.len() * 3);
         let mut normals = Vec::with_capacity(mesh.tris.len() * 3);
@@ -80,17 +95,7 @@ impl DisplayMesh {
             } else {
                 [0.0, 0.0, 1.0]
             };
-            let orig = tris_u32[tri_idx];
-            let mut hit = false;
-            for (a, b) in [(0, 1), (1, 2), (2, 0)] {
-                let (u, v) = (orig[a], orig[b]);
-                let key = if u < v { (u, v) } else { (v, u) };
-                if bad.contains(&key) {
-                    hit = true;
-                    break;
-                }
-            }
-            let flag = if hit {
+            let flag = if face_is_defect.get(tri_idx).copied().unwrap_or(false) {
                 defect_faces += 1;
                 1.0f32
             } else {
@@ -115,7 +120,44 @@ impl DisplayMesh {
             radius,
             defect,
             defect_faces,
+            dev_idx: Vec::new(),
+            deviation: Vec::new(),
+            src_verts: mesh.verts.clone(),
+            src_tris: mesh.tris.clone(),
         })
+    }
+
+    /// Compute the deviation ramp against a reference (original) mesh.
+    ///
+    /// Mirrors `viewer_data_render.main`: per-vertex distance from **this**
+    /// (repaired) mesh to the reference surface, then the face means reduced
+    /// through the 1%/99% window. The baseline view has no reference, so it keeps
+    /// the defect-only display — as Python does.
+    ///
+    /// Both fields are indexed by the *original* topology, which is what
+    /// `heatmap.prepare_render` works with; the soup is only a display artefact.
+    pub fn with_deviation(&mut self, reference_path: &Path) -> Result<(), String> {
+        let reference = load_mesh(reference_path).map_err(|e| e.to_string())?;
+        let ref_v: Vec<[f64; 3]> = reference
+            .verts
+            .iter()
+            .map(|p| [p[0] as f64, p[1] as f64, p[2] as f64])
+            .collect();
+        let ref_t: Vec<[usize; 3]> = reference
+            .tris
+            .iter()
+            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+            .collect();
+        let dst_v: Vec<[f64; 3]> = self
+            .src_verts
+            .iter()
+            .map(|p| [p[0] as f64, p[1] as f64, p[2] as f64])
+            .collect();
+
+        let dist = sutura_geom::heatmap::deviation(&dst_v, &ref_v, &ref_t);
+        self.dev_idx = sutura_geom::heatmap::deviation_quantile_index(&dist, &self.src_tris);
+        self.deviation = dist.iter().map(|d| *d as f32).collect();
+        Ok(())
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -128,5 +170,32 @@ impl DisplayMesh {
         } else {
             self.defect_faces as f32 / self.triangle_count() as f32
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The defect mask must follow Python's **vertex** rule, and the deviation
+    /// fields must be indexable by original face id.
+    #[test]
+    fn defect_uses_vertex_rule_and_deviation_is_populated() {
+        let dir = std::env::temp_dir().join(format!("sutura-mesh-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        // A quad with one triangle removed: a boundary loop makes every rim
+        // vertex a defect vertex, so the remaining triangle is flagged.
+        let a = dir.join("open.stl");
+        let verts = [[0.0f32,0.0,0.0],[1.0,0.0,0.0],[1.0,1.0,0.0],[0.0,1.0,0.0]];
+        let tris = [[0i32,1,2],[0,2,3]];
+        sutura_core::save_mesh(&a, &sutura_core::Mesh::new(verts.to_vec(), tris.to_vec())).unwrap();
+        let m = DisplayMesh::load(&a).expect("load");
+        assert_eq!(m.defect.len(), m.positions.len());
+        assert!(m.defect_faces > 0, "an open mesh has defect faces");
+        assert_eq!(m.src_tris.len(), m.triangle_count());
+        // No reference supplied: no ramp, and the viewer falls back to defect.
+        assert!(m.dev_idx.is_empty());
+        assert!(m.deviation.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

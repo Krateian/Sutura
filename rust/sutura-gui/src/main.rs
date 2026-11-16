@@ -22,6 +22,9 @@ fn main() -> eframe::Result<()> {
     let mut headless_objects: Option<std::path::PathBuf> = None;
     // Pixels to pick in headless mode: `--headless-pick X,Y` (repeatable).
     let mut headless_picks: Vec<(i64, i64)> = Vec::new();
+    // Headless heatmap dump: the metric values, for the parity gate.
+    let mut headless_heatmap = false;
+    let mut heatmap_ref: Option<std::path::PathBuf> = None;
     let mut heatmap = false;
     let mut about = false;
     let mut updater = false;
@@ -58,6 +61,8 @@ fn main() -> eframe::Result<()> {
             }
             // Hidden gate hook: click these pixels through the picker and print
             // the resulting points, so Python's picker can be compared exactly.
+            "--headless-heatmap" => headless_heatmap = true,
+            "--reference" => heatmap_ref = args.next().map(std::path::PathBuf::from),
             "--headless-pick" => {
                 if let Some(spec) = args.next() {
                     let mut it = spec.split(',');
@@ -97,6 +102,16 @@ fn main() -> eframe::Result<()> {
 
     // Hidden headless modes (not in --help): run the UI's own analysis and object
     // listing without a window so the parity gate can compare them to the CLI.
+    if headless_heatmap {
+        let input = match files.first() {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("--headless-heatmap needs an input file");
+                std::process::exit(2);
+            }
+        };
+        return app::headless_heatmap(&input, heatmap_ref.as_deref());
+    }
     if !headless_picks.is_empty() {
         let input = match files.first() {
             Some(p) => p.clone(),

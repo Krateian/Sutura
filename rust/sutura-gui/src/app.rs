@@ -1526,6 +1526,46 @@ pub fn headless_analyze(
     Ok(())
 }
 
+/// Headless heatmap dump, for the parity gate.
+///
+/// Emits the three **values** the heatmap is built from — the defect face list,
+/// the per-vertex deviation and the per-face ramp index — not an image. Python's
+/// renderer and the GUI cannot agree on pixels (isometric CPU raster vs
+/// perspective GPU camera), so pixels are not the contract; these are.
+pub fn headless_heatmap(input: &Path, reference: Option<&Path>) -> eframe::Result<()> {
+    let mut mesh = match crate::mesh::DisplayMesh::load(input) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("heatmap failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Some(reference) = reference {
+        if let Err(e) = mesh.with_deviation(reference) {
+            eprintln!("heatmap failed: {e}");
+            std::process::exit(1);
+        }
+    }
+    let defect: Vec<usize> = mesh
+        .defect
+        .chunks_exact(3)
+        .enumerate()
+        .filter(|(_, c)| c[0] > 0.0)
+        .map(|(i, _)| i)
+        .collect();
+    println!(
+        "{}",
+        serde_json::json!({
+            "defect_faces": defect,
+            "deviation": mesh.deviation,
+            "dev_idx": mesh.dev_idx,
+            "faces": mesh.triangle_count(),
+            "vertices": mesh.src_verts.len(),
+        })
+    );
+    Ok(())
+}
+
 /// Headless pick gate: click the given pixels through the same picker the UI
 /// uses and print the resulting points as JSON.
 ///

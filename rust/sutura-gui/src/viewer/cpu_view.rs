@@ -38,8 +38,10 @@ impl CpuViewer {
 
         let stride = (mesh.triangle_count() / MAX_TRIS).max(1);
         let light = Vec3::new(0.45, 0.75, 0.5).normalize();
-        let mut tris: Vec<(f32, [[f32; 2]; 3], f32, f32)> =
+        // (depth, screen, shade, defect weight, deviation-ramp index)
+        let mut tris: Vec<(f32, [[f32; 2]; 3], f32, f32, Option<u16>)> =
             Vec::with_capacity((mesh.triangle_count() / stride).max(1));
+        let dev_lut = sutura_geom::heatmap::deviation_lut();
         for (tri_idx, tri) in mesh.indices.chunks_exact(3).enumerate() {
             if tri_idx % stride != 0 {
                 continue;
@@ -74,11 +76,14 @@ impl CpuViewer {
                 .iter()
                 .map(|&i| mesh.defect.get(i as usize).copied().unwrap_or(0.0))
                 .fold(0.0f32, f32::max);
-            tris.push((depth / 3.0, screen, shade, defect));
+            // The ramp is indexed by the ORIGINAL face id, which is the soup's
+            // face id because the soup is built one triangle at a time in order.
+            let dev = mesh.dev_idx.get(tri_idx).copied();
+            tris.push((depth / 3.0, screen, shade, defect, dev));
         }
         tris.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        for (_, screen, shade, defect) in tris {
+        for (_, screen, shade, defect, dev) in tris {
             let mut pb = PathBuilder::new();
             pb.move_to(screen[0][0], screen[0][1]);
             pb.line_to(screen[1][0], screen[1][1]);
@@ -87,7 +92,16 @@ impl CpuViewer {
             let Some(path) = pb.finish() else { continue };
             let mut paint = Paint::default();
             let (mut r, mut g, mut b) = (61.0 * shade, 158.0 * shade, 148.0 * shade);
-            if heatmap && defect > 0.0 {
+            // Same precedence as `heatmap.draw_frame`: an available deviation
+            // ramp wins over the defect blend, which wins over neutral grey.
+            let ramp = if heatmap { dev } else { None };
+            if let Some(idx) = ramp {
+                let c = dev_lut[idx as usize % dev_lut.len()];
+                let k = 0.35 + 0.65 * shade;
+                r = c[0] as f32 * k;
+                g = c[1] as f32 * k;
+                b = c[2] as f32 * k;
+            } else if heatmap && defect > 0.0 {
                 let k = defect.clamp(0.0, 1.0);
                 let hot = (242.0 * (0.45 + 0.55 * shade), 71.0 * (0.45 + 0.55 * shade), 31.0 * (0.45 + 0.55 * shade));
                 r = r * (1.0 - k) + hot.0 * k;
