@@ -386,6 +386,23 @@ struct Node {
     chord: [f64; 3],
 }
 
+#[inline]
+fn winding_far(node: &Node, p: [f64; 3]) -> bool {
+    let d2 = node.bbox.dist2(p);
+    d2 > 0.0 && node.area_sum / d2 < WINDING_FAR_TOL
+}
+
+#[inline]
+fn winding_dipole(node: &Node, p: [f64; 3]) -> f64 {
+    let r = sub(node.center, p);
+    let r2 = dot(r, r);
+    if r2 > 0.0 {
+        dot(node.vec_area, r) / (r2 * r2.sqrt())
+    } else {
+        0.0
+    }
+}
+
 /// A connected or closed loop of boundary segments.
 #[derive(Clone, Copy, Debug)]
 pub struct BoundaryLoop {
@@ -771,6 +788,83 @@ impl MeshBvh {
         points.par_iter().map(|p| self.winding_at(*p)).collect()
     }
 
+    /// Generalized winding number for two points in one shared BVH traversal.
+    ///
+    /// Each point is accumulated with the same left/right subtree reduction as
+    /// [`Self::winding_at`], so the results are bit-identical to two scalar
+    /// calls; the shared traversal only saves node decoding when both points
+    /// are near the same node.  Used by the Tamponade shape card for the two
+    /// sides of each sampled face.
+    pub fn winding_at_pair(&self, a: [f64; 3], b: [f64; 3]) -> (f64, f64) {
+        if self.nodes.is_empty() {
+            return (0.0, 0.0);
+        }
+        let (sa, sb) = self.winding_node_pair(0, a, b);
+        (
+            sa / (4.0 * std::f64::consts::PI),
+            sb / (4.0 * std::f64::consts::PI),
+        )
+    }
+
+    fn winding_node_pair(&self, idx: usize, a: [f64; 3], b: [f64; 3]) -> (f64, f64) {
+        let node = &self.nodes[idx];
+        if node.left < 0 {
+            let start = node.start as usize;
+            let end = start + node.count as usize;
+            let mut sa = 0.0;
+            let mut sb = 0.0;
+            for i in start..end {
+                let tri = &self.tris[self.order[i] as usize];
+                sa += tri.solid_angle(a);
+                sb += tri.solid_angle(b);
+            }
+            return (sa, sb);
+        }
+        let far_a = winding_far(node, a);
+        let far_b = winding_far(node, b);
+        let mut res = (0.0, 0.0);
+        if far_a {
+            res.0 = winding_dipole(node, a);
+        }
+        if far_b {
+            res.1 = winding_dipole(node, b);
+        }
+        if !far_a || !far_b {
+            let left = self.winding_node_pair(node.left as usize, a, b);
+            let right = self.winding_node_pair(node.right as usize, a, b);
+            if !far_a {
+                res.0 = left.0 + right.0;
+            }
+            if !far_b {
+                res.1 = left.1 + right.1;
+            }
+        }
+        res
+    }
+
+    /// Generalized winding number for two equally sized point sets, pairing
+    /// `a[i]` with `b[i]` in one shared traversal per pair.  Returns
+    /// `(wa, wb)` in input order.  Values are bit-identical to
+    /// [`Self::winding_at_pair`] on each pair.
+    pub fn winding_points_pairs_par(
+        &self,
+        a: &[[f64; 3]],
+        b: &[[f64; 3]],
+    ) -> (Vec<f64>, Vec<f64>) {
+        let n = a.len().min(b.len());
+        let rows: Vec<(f64, f64)> = (0..n)
+            .into_par_iter()
+            .map(|i| self.winding_at_pair(a[i], b[i]))
+            .collect();
+        let mut wa = Vec::with_capacity(n);
+        let mut wb = Vec::with_capacity(n);
+        for (x, y) in rows {
+            wa.push(x);
+            wb.push(y);
+        }
+        (wa, wb)
+    }
+
     /// Fast approximate generalized winding number (Barill et al. 2018,
     /// Algorithm 1).  A BVH node is replaced by the dipole of its aggregated
     /// area vectors when the query lies farther than `beta * radius` from the
@@ -886,6 +980,16 @@ impl MeshBvh {
         let mut best = f64::INFINITY;
         self.dist_node(0, p, &mut best);
         best.sqrt()
+    }
+
+    /// Closest point for many queries, parallel across CPU cores and in input
+    /// order.  One BVH serves all queries; values are identical to calling
+    /// [`Self::closest_point`] per point.
+    pub fn closest_points_par(
+        &self,
+        points: &[[f64; 3]],
+    ) -> Vec<([f64; 3], f64, usize)> {
+        points.par_iter().map(|p| self.closest_point(*p)).collect()
     }
 
     /// Closest point on the triangle soup: `(point, distance, triangle index)`,
@@ -1933,6 +2037,41 @@ mod tests {
         }
         assert!((par[0] - 1.0).abs() < 1e-2);
         assert!(par[1].abs() < 1e-2);
+    }
+
+    #[test]
+    fn winding_pair_is_bit_identical_to_scalar() {
+        let (v, f) = sphere(24, 24);
+        let bvh = MeshBvh::from_arrays(&v, &f);
+        let eps = 1e-4;
+        let mut pts = Vec::new();
+        for &x in &[-1.5, -0.7, -0.2, 0.0, 0.2, 0.7, 1.5] {
+            for &y in &[-1.5, -0.3, 0.0, 0.3, 1.5] {
+                for &z in &[-1.5, -0.4, 0.0, 0.4, 1.5] {
+                    pts.push([x, y, z]);
+                }
+            }
+        }
+        // Two sides of a surface point, the Tamponade shape-card case.
+        let c = [0.3, 0.4, 0.5];
+        pts.push([c[0] + eps, c[1], c[2]]);
+        pts.push([c[0] - eps, c[1], c[2]]);
+        for pair in pts.chunks(2) {
+            if pair.len() == 1 {
+                continue;
+            }
+            let (a, b) = (pair[0], pair[1]);
+            let (wa, wb) = bvh.winding_at_pair(a, b);
+            assert_eq!(bvh.winding_at(a).to_bits(), wa.to_bits(), "a {a:?}");
+            assert_eq!(bvh.winding_at(b).to_bits(), wb.to_bits(), "b {b:?}");
+        }
+        let a: Vec<[f64; 3]> = pts.iter().step_by(2).copied().collect();
+        let b: Vec<[f64; 3]> = pts.iter().skip(1).step_by(2).copied().collect();
+        let (wa, wb) = bvh.winding_points_pairs_par(&a, &b);
+        for i in 0..a.len().min(b.len()) {
+            assert_eq!(bvh.winding_at(a[i]).to_bits(), wa[i].to_bits());
+            assert_eq!(bvh.winding_at(b[i]).to_bits(), wb[i].to_bits());
+        }
     }
 
     #[test]

@@ -656,10 +656,10 @@ pub fn compute_fidelity_value(
         .map(|x| [x[0] as usize, x[1] as usize, x[2] as usize])
         .collect();
     let bvh = MeshBvh::from_arrays(vi, &rt_i);
+    let rows = bvh.closest_points_par(&pts);
     let mut d = Vec::with_capacity(pts.len());
     let mut nf = Vec::with_capacity(pts.len());
-    for p in &pts {
-        let (_, dd, f) = bvh.closest_point(*p);
+    for (_, dd, f) in rows {
         d.push(dd);
         nf.push(if f == usize::MAX { -1 } else { f as i64 });
     }
@@ -921,10 +921,8 @@ pub fn compute_fidelity_value(
                 .map(|x| [x[0] as usize, x[1] as usize, x[2] as usize])
                 .collect();
             let bv = MeshBvh::from_arrays(vo, &rt_o);
-            let mut d_i2o = Vec::with_capacity(vi.len());
-            for p in vi {
-                d_i2o.push(bv.closest_point(*p).1);
-            }
+            let d_i2o: Vec<f64> =
+                bv.closest_points_par(vi).into_iter().map(|(_, dd, _)| dd).collect();
             let mut removed = 0usize;
             let mut rarea = 0.0;
             for (fi, x) in ti.iter().enumerate() {

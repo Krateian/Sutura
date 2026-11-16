@@ -2440,6 +2440,9 @@ fn repair_impl(
     stats.insert("experimental_join_components".into(), Value::Bool(false));
     stats.insert("experimental_ftetwild".into(), Value::Bool(false));
     let ftetwild_bin = crate::ftetwild::find_binary();
+    let (selected_engines, engine_warnings) =
+        crate::engines::selected_engines(opts.engines.as_deref());
+    let mut engine_entries: Vec<Value> = Vec::new();
 
     // The merged read-only analysis feeds the ranking and the report. Its
     // three behavioural scores are not ported yet; the missing list is exposed
@@ -2576,6 +2579,15 @@ fn repair_impl(
     }
 
     stage_fp_log("after_prepass", &cur_v, &cur_t);
+    crate::engines::run_and_replace(
+        &selected_engines,
+        "before_stage1",
+        &mut cur_v,
+        &mut cur_t,
+        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+        0.01,
+        &mut engine_entries,
+    );
     // --- Stage 1 -----------------------------------------------------------
     if cancel.is_cancelled() {
         return cancelled();
@@ -3079,18 +3091,35 @@ fn repair_impl(
                     ),
                     guard: ftetwild_guard_policy(policy.as_ref()),
                 };
-                if let Some(result) = crate::ftetwild::run_tier_with_cancel(
-                    &cur_v,
-                    &cur_t,
-                    &input_v,
-                    &input_t,
-                    &after,
-                    bin,
-                    &spec,
-                    &tuning,
-                    ft_trigger == crate::ftetwild::Trigger::Always,
+                let replace_ftw = crate::engines::run_and_replace(
+                    &selected_engines,
+                    "replace_ftetwild",
+                    &mut cur_v,
+                    &mut cur_t,
                     Some(cancel as &dyn sutura_geom::cancel::Cancel),
-                ) {
+                    0.01,
+                    &mut engine_entries,
+                );
+                if replace_ftw {
+                    after = common::topology_summary(&cur_v, &cur_t);
+                }
+                let ft_result = if replace_ftw {
+                    None
+                } else {
+                    crate::ftetwild::run_tier_with_cancel(
+                        &cur_v,
+                        &cur_t,
+                        &input_v,
+                        &input_t,
+                        &after,
+                        bin,
+                        &spec,
+                        &tuning,
+                        ft_trigger == crate::ftetwild::Trigger::Always,
+                        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+                    )
+                };
+                if let Some(result) = ft_result {
                     if result.adopted {
                         cur_v = result.verts;
                         cur_t = result.tris;
@@ -3282,6 +3311,17 @@ fn repair_impl(
     stats.insert("pinched_vertices_split".into(), pinch_report);
 
     stage_fp_log("after_stage1", &cur_v, &cur_t);
+    if crate::engines::run_and_replace(
+        &selected_engines,
+        "after_stage1",
+        &mut cur_v,
+        &mut cur_t,
+        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+        0.01,
+        &mut engine_entries,
+    ) {
+        after = common::topology_summary(&cur_v, &cur_t);
+    }
     // --- Stage 1 report ----------------------------------------------------
     let holes_after = boundary_loop_stats(&cur_t).0;
     let nm_after = after.non_two_manifold_edges;
@@ -3513,7 +3553,23 @@ fn repair_impl(
     emit_stage(sink, 6, "reload weld");
     let pw_in_v = cur_v.clone();
     let pw_in_t = cur_t.clone();
-    let pw = p_weld_final(&cur_v, &cur_t);
+    crate::engines::run_and_replace(
+        &selected_engines,
+        "after_stage2",
+        &mut cur_v,
+        &mut cur_t,
+        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+        0.01,
+        &mut engine_entries,
+    );
+    let pw = crate::p_weld::p_weld_final_with_cancel(
+        &cur_v,
+        &cur_t,
+        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+    );
+    if cancel.is_cancelled() {
+        return cancelled();
+    }
     cur_v = to_f64(&pw.verts);
     cur_t = to_i64(&pw.tris);
     let pw_gate = pw
@@ -3556,6 +3612,15 @@ fn repair_impl(
         }
     }
 
+    crate::engines::run_and_replace(
+        &selected_engines,
+        "final_fallback",
+        &mut cur_v,
+        &mut cur_t,
+        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+        0.01,
+        &mut engine_entries,
+    );
     let final_holes = boundary_loop_stats(&cur_t).0;
     let final_nm = common::topology_summary(&cur_v, &cur_t).non_two_manifold_edges;
     let reachable = common::is_two_manifold(cur_v.len(), &cur_t) && final_holes == 0;
@@ -3595,6 +3660,21 @@ fn repair_impl(
     }
 
     // P-HONEST: the verdict describes the mesh actually handed back.
+    if !engine_entries.is_empty() {
+        let shape_changed = engine_entries.iter().any(|e| {
+            e.get("shape_changed").and_then(Value::as_bool) == Some(true)
+        });
+        stats.insert("engines".into(), Value::Array(engine_entries));
+        if shape_changed {
+            stats.insert("shape_changed".into(), Value::Bool(true));
+        }
+    }
+    if !engine_warnings.is_empty() {
+        stats.insert(
+            "engine_warnings".into(),
+            Value::Array(engine_warnings.into_iter().map(Value::from).collect()),
+        );
+    }
     let mut report = Value::Object(stats);
     enforce_reload_verdict(&mut report, &cur_v, &cur_t, false);
 
@@ -4148,6 +4228,57 @@ mod tests {
         } else {
             assert!(unavailable.get("ftetwild").is_none());
         }
+    }
+
+    #[test]
+    fn external_copy_engine_is_adopted_and_reported() {
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "sutura-engine-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let engines = dir.join("sutura").join("engines");
+        std::fs::create_dir_all(&engines).unwrap();
+        std::fs::write(
+            engines.join("copy.toml"),
+            "name = \"copy\"\ncommand = [\"/bin/cp\", \"{input}\", \"{output}\"]\nplacement = \"after_stage1\"\n",
+        )
+        .unwrap();
+        let old = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let (verts, tris) = cube();
+        let opts = RepairOptions {
+            engines: Some(vec!["copy".into()]),
+            tamponade: Some(false),
+            flap: Some(false),
+            coaptation: Some(false),
+            deep_repair: DeepRepair::Off,
+            ..RepairOptions::default()
+        };
+        let outcome = repair(&verts, &tris, &opts, &NoopSink, &CancelToken::new());
+        match outcome {
+            RepairOutcome::Ok { report, .. } => {
+                let entries = report
+                    .get("engines")
+                    .and_then(Value::as_array)
+                    .expect("engines report");
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0]["name"], json!("copy"));
+                assert_eq!(entries[0]["adopted"], json!(true));
+            }
+            _ => panic!("unexpected outcome"),
+        }
+        match old {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

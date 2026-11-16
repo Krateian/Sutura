@@ -130,6 +130,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 'solid_engine': solid_engine, 'si_mode': si_mode,
                 'time_budget_s': None, 'seed': 0,
                 'forced_methods': list(forced_methods or []),
+                'engines': (sorted(engines.keys())
+                            if engines is not None else None),
             }
             def _rust_call(flap_value, tamponade_value):
                 call_opts = dict(opts)
