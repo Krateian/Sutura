@@ -2730,6 +2730,23 @@ fn repair_impl(
         }
     }
 
+    // `after_stage1` engines run on the Stage-1 result, before the closing
+    // / Tamponade-post / deep ladder, exactly where Python's pipeline runs
+    // them.  Keeping the placement here (not after the ladder) is what makes
+    // the engine see the same input array on both sides.
+    stage_fp_log("after_stage1", &cur_v, &cur_t);
+    if crate::engines::run_and_replace(
+        &selected_engines,
+        "after_stage1",
+        &mut cur_v,
+        &mut cur_t,
+        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+        0.01,
+        &mut engine_entries,
+    ) {
+        after = common::topology_summary(&cur_v, &cur_t);
+    }
+
     // Tamponade second chance when the pre-pass did not adopt.
     if opts.tamponade == Some(true) && !tamponade_prepass_adopted && !tamponade_gate_skipped {
         let params = tamponade_params(
@@ -3310,18 +3327,6 @@ fn repair_impl(
     );
     stats.insert("pinched_vertices_split".into(), pinch_report);
 
-    stage_fp_log("after_stage1", &cur_v, &cur_t);
-    if crate::engines::run_and_replace(
-        &selected_engines,
-        "after_stage1",
-        &mut cur_v,
-        &mut cur_t,
-        Some(cancel as &dyn sutura_geom::cancel::Cancel),
-        0.01,
-        &mut engine_entries,
-    ) {
-        after = common::topology_summary(&cur_v, &cur_t);
-    }
     // --- Stage 1 report ----------------------------------------------------
     let holes_after = boundary_loop_stats(&cur_t).0;
     let nm_after = after.non_two_manifold_edges;
