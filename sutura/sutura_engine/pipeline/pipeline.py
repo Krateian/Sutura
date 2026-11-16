@@ -9,6 +9,7 @@ never coerce a Stage-1 or tier result to float32 at an array boundary, because
 it changes exact duplicate/weld decisions and cascades into the tiers.
 """
 import os
+import sys
 import tempfile
 import time
 
@@ -53,6 +54,25 @@ from sutura_engine.pipeline.tiers.wall import wall_thicken_tier
 from sutura_engine.pipeline.utils import (
     _count_vertex_components, boundary_loop_stats, surface_area,
 )
+
+
+def _stage_fp(label, v, t):
+    """Debug probe: djb2 over the f64/i64 bit patterns.
+
+    Mirrors ``stage_fp``/``stage_fp_log`` in ``rust/sutura-core/src/repair.rs``
+    so the post-chain stage boundaries can be compared one-to-one.  Enabled
+    only by ``SUTURA_STAGE_FP``; no default behaviour or output change.
+    """
+    if not os.environ.get('SUTURA_STAGE_FP'):
+        return
+    v64 = np.ascontiguousarray(v, dtype=np.float64)
+    t64 = np.ascontiguousarray(t, dtype=np.int64)
+    h = 0
+    for arr, dtype in ((v64, '<f8'), (t64, '<i8')):
+        for byte in arr.astype(dtype, copy=False).tobytes():
+            h = (h * 131 + byte) & 0xFFFFFFFFFFFFFFFF
+    print('[stage-fp] %s %d %d %d' % (label, h, len(t64), len(v64)),
+          file=sys.stderr)
 
 
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
@@ -670,6 +690,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # Gated to deep_repair == 'full' (Quick is 'off'; the library default None
     # is untouched) and skipped for mode == 'extreme', which keeps its legacy
     _shell_adopted_for_si = (stats.get('tamponade_shell_prepass') or {}).get('shell_adopted', False)
+    _stage_fp('before_si_excise', cur_v, cur_t)
     if deep_repair == 'full' and mode != 'extreme' and si_excise_enabled() and not _shell_adopted_for_si:
         _t_si = time.perf_counter()
         _si_in_v, _si_in_t = cur_v, cur_t
@@ -696,6 +717,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             trace.record_stage('si_excise', 'stage1.si_excise_recap',
                                cur_v, cur_t, cur_v, cur_t,
                                gate={'status': 'skipped', 'reason': 'disabled_or_not_full'})
+    _stage_fp('after_si_excise', cur_v, cur_t)
 
     # Extreme-only extra passes (Stage C): self-intersection cleanup + one more
     # run of the main chain to close the holes / drop the debris the removal
@@ -739,6 +761,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # after_stage1 engines run on the current stage-1 result, before the deep
     # ladder; replace_ftetwild engines replace the built-in fTetWild tier
     # inside the ladder.
+    _stage_fp('after_stage1', cur_v, cur_t)
     if engines:
         _entries = []
         if engine_placement_order(engines, engine_chain, 'after_stage1'):
@@ -771,6 +794,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                                      proxy_template=proxy_template)
     cur_v = np.asarray(_cv, dtype=np.float64)
     cur_t = np.asarray(_ct, dtype=np.int64)
+    _stage_fp('after_closing', cur_v, cur_t)
     if trace.is_active():
         trace.record_stage('closing_ladder', 'tiers.closing.closing_ladder',
                            _cl_in_v, _cl_in_t,
@@ -819,6 +843,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                                      'reason': ('shape_gate_skipped'
                                                 if _tamp_gate_skipped
                                                 else 'adopted_in_prepass')})
+    _stage_fp('after_tamponade_post', cur_v, cur_t)
 
     # A watertight Tamponade adoption already closed the mesh: skip the deep
     # tiers (the same "a watertight candidate supersedes" logic Graft adoption
@@ -844,6 +869,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         spec=triage_spec)
     cur_v = np.asarray(_g_v, dtype=np.float64)
     cur_t = np.asarray(_g_t, dtype=np.int64)
+    _stage_fp('after_graft', cur_v, cur_t)
     if trace.is_active():
         trace.record_stage('graft', 'tiers.graft.graft_tier',
                            _gr_cur_v, _gr_cur_t,
@@ -897,6 +923,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         cur_v, cur_t, after = wall_thicken_tier(cur_v, cur_t, after, stats, v, t,
                                                 min_thickness=wall_min_thickness)
     stats['timings']['deep_repair'] = round(time.perf_counter() - _t_tiers, 3)
+    _stage_fp('after_deep', cur_v, cur_t)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
@@ -974,6 +1001,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             cur_t = np.asarray(topology.invert_face_orientation(cur_t),
                                dtype=np.int32)
             geom = topology.mesh_geometric_measures(cur_v, cur_t)
+    _stage_fp('after_pinch', cur_v, cur_t)
     after_volume = geom.get('mesh_volume', 0)
 
     new_verts = cur_v

@@ -2770,6 +2770,7 @@ fn repair_impl(
         .and_then(|r| r.get("shell_adopted"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    stage_fp_log("before_si_excise", &cur_v, &cur_t);
     if opts.deep_repair == DeepRepair::Full
         && opts.mode != RepairMode::Extreme
         && si_excise_enabled()
@@ -2812,6 +2813,7 @@ fn repair_impl(
             rec,
         );
     }
+    stage_fp_log("after_si_excise", &cur_v, &cur_t);
 
     stats.insert("extreme_passes_applied".into(), Value::Bool(false));
     if opts.mode == RepairMode::Extreme {
@@ -2880,6 +2882,7 @@ fn repair_impl(
             return cancelled();
         }
     }
+    stage_fp_log("after_tamponade_post", &cur_v, &cur_t);
 
     // --- Registry methods 8/9/10: closing / proxy-template / mirror -------
     // They run on the ORIGINAL input and replace the current result only with
@@ -2922,6 +2925,7 @@ fn repair_impl(
         );
         stats.insert("closing".into(), rec);
     }
+    stage_fp_log("after_closing", &cur_v, &cur_t);
 
     let mut forced_graft_done = false;
     if opts.forced_methods.contains(&13) && opts.graft != Some(false) {
@@ -2952,6 +2956,7 @@ fn repair_impl(
             forced_graft_done = true;
         }
     }
+    stage_fp_log("after_graft", &cur_v, &cur_t);
 
     // --- Deep-repair ladder ------------------------------------------------
     let ladder_holes_before = boundary_loop_stats(&cur_t).0;
@@ -3335,6 +3340,8 @@ fn repair_impl(
         stats.insert("wall_thicken".into(), rec);
     }
 
+    stage_fp_log("after_deep", &cur_v, &cur_t);
+
     let produced = produced_tier(&stats);
     stats.insert(
         "solid_engine".into(),
@@ -3425,6 +3432,7 @@ fn repair_impl(
             cur_t = sutura_geom::topology::invert_face_orientation_core(&cur_t);
         }
     }
+    stage_fp_log("after_pinch", &cur_v, &cur_t);
     after = common::topology_summary(&cur_v, &cur_t);
     trace.record(
         "pinch_split",
