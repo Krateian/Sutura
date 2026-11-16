@@ -205,12 +205,37 @@ fn parse_methods(
 }
 
 pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>), RepairFailure> {
-    if cli.engines.is_some() {
-        return Err(RepairFailure::new(
-            2,
-            "--engines is not implemented in the Rust CLI",
-        ));
-    }
+    let engines_sel: Option<Vec<String>> = match cli.engines.as_deref() {
+        None | Some("") => None,
+        Some(raw) => {
+            let parts: Vec<String> = raw
+                .split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect();
+            if parts.is_empty() {
+                return Err(RepairFailure::new(2, "argument --engines: empty list"));
+            }
+            let (configured, _warnings) =
+                sutura_core::config::external_engines::load_all_engines(None);
+            let unknown: Vec<&str> = parts
+                .iter()
+                .filter(|n| !configured.contains_key(n.as_str()))
+                .map(String::as_str)
+                .collect();
+            if !unknown.is_empty() {
+                return Err(RepairFailure::new(
+                    2,
+                    format!(
+                        "argument --engines: unknown engine(s): {} (see `sutura engines list`)",
+                        unknown.join(", ")
+                    ),
+                ));
+            }
+            Some(parts)
+        }
+    };
     if cli.repeat_source.is_some() || cli.repeat_target.is_some() {
         return Err(RepairFailure::new(
             2,
@@ -364,7 +389,7 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         time_budget_s: None,
         seed: 0,
         forced_methods: Vec::new(),
-        engines: None,
+        engines: engines_sel,
     };
     if methods.contains(&13) {
         opts.graft = Some(true);
