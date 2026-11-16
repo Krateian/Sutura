@@ -51,7 +51,13 @@ pub fn read_3mf_units(path: impl AsRef<Path>) -> Vec<(String, String)> {
         let Ok(mut entry) = zip.by_index(i) else {
             return Vec::new();
         };
-        let name = entry.name().to_string();
+        // zip 9 returns the name as a Result: the LFH/CDFH discrepancy that
+        // GHSA-m665-v7pm-7grj describes is exactly a malformed name, so a name
+        // error is treated like any other broken entry here (empty list, the
+        // same as a corrupt archive).
+        let Ok(name) = entry.name().map(|n| n.to_string()) else {
+            return Vec::new();
+        };
         if !is_model_part(&name) {
             continue;
         }
@@ -127,7 +133,10 @@ pub fn parse_3mf_mesh_blocks(path: impl AsRef<Path>) -> MeshResult<Vec<MeshBlock
         let mut entry = zip
             .by_index(i)
             .map_err(|e| MeshError::Malformed3mf(e.to_string()))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map(|n| n.to_string())
+            .map_err(|e| MeshError::Malformed3mf(format!("entry name: {e}")))?;
         if !is_model_part(&name) {
             continue;
         }
@@ -198,12 +207,19 @@ pub fn rewrite_3mf_meshes(
         let input = File::open(container_src)?;
         let mut zin = ZipArchive::new(input).map_err(|e| MeshError::Malformed3mf(e.to_string()))?;
         let mut zout = ZipWriter::new(File::create(&tmp)?);
-        zout.set_raw_comment(zin.comment().to_vec().into_boxed_slice());
+        // zip 9 makes this fallible. The archive comment is part of the
+        // container we are rewriting, so a failure to carry it over is a real
+        // error: silently dropping it would change the output bytes.
+        zout.set_raw_comment(zin.comment().to_vec().into_boxed_slice())
+            .map_err(|e| MeshError::Malformed3mf(format!("archive comment: {e}")))?;
         for i in 0..zin.len() {
             let mut entry = zin
                 .by_index(i)
                 .map_err(|e| MeshError::Malformed3mf(e.to_string()))?;
-            let name = entry.name().to_string();
+            let name = entry
+                .name()
+                .map(|n| n.to_string())
+                .map_err(|e| MeshError::Malformed3mf(format!("entry name: {e}")))?;
             let options = entry_options(&entry);
             let is_dir = entry.is_dir();
             let mut data = Vec::new();
