@@ -200,6 +200,11 @@ pub struct RepairOptions {
     /// `--engines`: tag only these configured external engines.
     #[serde(default)]
     pub engines: Option<Vec<String>>,
+    /// An explicit `--engines` selection keeps Python's non-escalated
+    /// baseline.  When false (and no method is forced), the Rust service skips
+    /// the auto deep-repair ladder so it does not force Graft/fTetWild.
+    #[serde(default)]
+    pub auto_escalation: Option<bool>,
 }
 
 impl Default for RepairOptions {
@@ -231,6 +236,7 @@ impl Default for RepairOptions {
             seed: 0,
             forced_methods: Vec::new(),
             engines: None,
+            auto_escalation: None,
         }
     }
 }
@@ -2442,6 +2448,8 @@ fn repair_impl(
     let ftetwild_bin = crate::ftetwild::find_binary();
     let (selected_engines, engine_warnings) =
         crate::engines::selected_engines(opts.engines.as_deref());
+    let auto_escalation = opts.auto_escalation.unwrap_or(true);
+    let skip_auto_ladder = !auto_escalation && opts.forced_methods.is_empty();
     let mut engine_entries: Vec<Value> = Vec::new();
 
     // The merged read-only analysis feeds the ranking and the report. Its
@@ -2851,7 +2859,7 @@ fn repair_impl(
     let ladder_holes_before = boundary_loop_stats(&cur_t).0;
     let ladder_nm_before = after.non_two_manifold_edges;
     let mut tiers_run: Vec<Value> = Vec::new();
-    if opts.deep_repair != DeepRepair::Off {
+    if opts.deep_repair != DeepRepair::Off && !skip_auto_ladder {
         emit_stage(sink, 4, "deep repair");
         if opts.deep_repair == DeepRepair::Full {
             let mut holes = ladder_holes_before;

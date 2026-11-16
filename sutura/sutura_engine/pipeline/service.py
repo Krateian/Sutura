@@ -70,7 +70,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  si_mode=None, dressing_force_adopt=False,
                  splint=False, splint_adaptive=None,
                  solid_engine='ftetwild', coaptation=False,
-                 progress=None, cancel=None, forced_methods=None):
+                 progress=None, cancel=None, forced_methods=None,
+                 auto_escalation=True):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     bad_coords = scan_bad_coordinates(src)
     if bad_coords:
@@ -112,13 +113,28 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                     return value
                 return str(value).strip().lower() in (
                     '1', 'true', 'yes', 'on', 'auto', 'force')
+
+            def _tri(value):
+                if isinstance(value, bool):
+                    return value
+                if value is None:
+                    return None
+                text = str(value).strip().lower()
+                if text == 'auto':
+                    return None
+                return text in ('1', 'true', 'yes', 'on', 'force')
             opts = {
                 'mode': mode,
                 'intensity': getattr(triage_spec, 'intensity', 'balanced'),
                 'profile': profile, 'deep_repair': deep_repair,
                 'closing': closing, 'proxy_template': _fb(proxy_template),
-                'graft': (_fb(graft) if _fb(graft) else None), 'tamponade': _fb(tamponade),
-                'ftetwild': ('always' if _fb(ftetwild) else None),
+                'graft': _tri(graft), 'tamponade': _fb(tamponade),
+                # With --engines Python keeps the non-escalated baseline; only
+                # the no-engine auto escalation forces fTetWild to 'always'.
+                'ftetwild': ('always'
+                             if ftetwild is True
+                             or (_fb(ftetwild) and auto_escalation)
+                             else None),
                 'flap': (_fb(flap) if _fb(flap) else None), 'coaptation': (_fb(coaptation) if _fb(coaptation) else None),
                 'splint': _fb(splint), 'dressing': _fb(dressing),
                 'dressing_drain': dressing_drain,
@@ -132,6 +148,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 'forced_methods': list(forced_methods or []),
                 'engines': (sorted(engines.keys())
                             if engines is not None else None),
+                'auto_escalation': bool(auto_escalation),
             }
             def _rust_call(flap_value, tamponade_value):
                 call_opts = dict(opts)
@@ -531,7 +548,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                tamponade=False, tamponade_force=False,
                si_mode=None, dressing_force_adopt=False,
                splint=False, splint_adaptive=None, coaptation=False,
-                 solid_engine='ftetwild', progress=None, cancel=None):
+                 solid_engine='ftetwild', progress=None, cancel=None,
+                 auto_escalation=True):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no

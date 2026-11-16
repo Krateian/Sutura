@@ -1103,6 +1103,10 @@ def repair_with_methods(src: str, out: str, tmpdir: str, methods: Optional[list]
                         auto_escalation: bool = True, **kwargs) -> dict:
     """Repair a file, optionally through an explicit list of method numbers."""
     ctx = dict(kwargs)
+    # An explicit --engines selection keeps the non-escalated baseline; the
+    # Rust service needs the same policy to skip the auto ladder it would
+    # otherwise force.
+    ctx['auto_escalation'] = bool(auto_escalation)
     ext = os.path.splitext(src)[1].lower()
     multi = (ext == '.3mf'
              and sum(len(v) for v in
