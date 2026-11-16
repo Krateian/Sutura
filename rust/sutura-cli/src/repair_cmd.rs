@@ -152,12 +152,50 @@ fn parse_point(raw: &str, flag: &str) -> Result<[f64; 3], RepairFailure> {
 /// `sutura_core::repair_settings::options_from`, which the GUI also calls, so
 /// the two front ends cannot drift apart.
 pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>), RepairFailure> {
-    if cli.engines.is_some() {
-        return Err(RepairFailure::new(
-            2,
-            "--engines is not implemented in the Rust CLI",
-        ));
-    }
+    // `--engines LIST`: names are validated against the *configured* engines,
+    // after the configs are loaded, exactly as Python does (`repair.py:1277`).
+    // An empty-after-split list and an unknown name are both usage errors with
+    // Python's wording; a broken config is not an error at all (it only warns),
+    // so an empty engine set makes every requested name unknown.
+    let engines_sel: Option<Vec<String>> = match cli.engines.as_deref() {
+        // Python gates on `if args.engines:`, so the **empty string is treated as
+        // absent**, not as an error — `--engines ""` repairs normally. Only a
+        // truthy string that yields no names (`" , "`) is an "empty list" error.
+        None | Some("") => None,
+        Some(raw) => {
+            let parts: Vec<String> = raw
+                .split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect();
+            if parts.is_empty() {
+                return Err(RepairFailure::new(2, "argument --engines: empty list"));
+            }
+            let (configured, _warnings) = sutura_core::config::external_engines::load_all_engines(None);
+            let unknown: Vec<&str> = parts
+                .iter()
+                .filter(|n| !configured.contains_key(n.as_str()))
+                .map(String::as_str)
+                .collect();
+            if !unknown.is_empty() {
+                return Err(RepairFailure::new(
+                    2,
+                    format!(
+                        "argument --engines: unknown engine(s): {} (see `sutura engines list`)",
+                        unknown.join(", ")
+                    ),
+                ));
+            }
+            Some(parts)
+        }
+    };
+    // Validation is all this slice does. Python passes the selection down as
+    // `engine_filter` so only those engines run; wiring that into `repair()` is
+    // go's engine slice, so the selected names are deliberately not consumed
+    // here yet — but a bad name must still be a usage error, not a silent
+    // no-op that pretends to have filtered something.
+    let _selected_engines = engines_sel;
     if cli.wall_min_thickness.is_some() {
         return Err(RepairFailure::new(
             2,
