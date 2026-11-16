@@ -1162,6 +1162,16 @@ fn tier_dressing_py<'py>(
     Ok((arrays_f64(py, &ov)?, arrays_i64(py, &ot)?, rec.to_string()))
 }
 
+#[pyfunction(name = "surface_area")]
+fn surface_area_py<'py>(
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+) -> PyResult<f64> {
+    let v = verts_f32(verts)?;
+    let t = tris_i32(tris)?;
+    Ok(sutura_core::validate::surface_area(&v, &t))
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -1583,6 +1593,7 @@ fn sutura_core_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(aggregate_print_reports_py, m)?)?;
     m.add_function(wrap_pyfunction!(dressing_coat_py, m)?)?;
     m.add_function(wrap_pyfunction!(tier_dressing_py, m)?)?;
+    m.add_function(wrap_pyfunction!(surface_area_py, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

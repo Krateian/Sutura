@@ -2402,6 +2402,21 @@ pub fn repair(
     repair_impl(verts, tris, opts, sink, cancel, true)
 }
 
+/// Python-compatible total surface area: f32 per-face areas, NumPy pairwise
+/// summation (`validate::surface_area`).  The stage-1 report uses this shared
+/// kernel so its value matches `sutura_engine.pipeline.utils.surface_area`.
+fn py_surface_area(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> f64 {
+    let v32: Vec<[f32; 3]> = verts
+        .iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect();
+    let t32: Vec<[i32; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+    crate::validate::surface_area(&v32, &t32)
+}
+
 fn repair_impl(
     verts: &[[f64; 3]],
     tris: &[[i64; 3]],
@@ -3463,8 +3478,8 @@ fn repair_impl(
         }
     }
     {
-        let sa_before = common::surface_area(&stage1_volume_before_v, &stage1_volume_before_t);
-        let sa_after = common::surface_area(&cur_v, &cur_t);
+        let sa_before = py_surface_area(&stage1_volume_before_v, &stage1_volume_before_t);
+        let sa_after = py_surface_area(&cur_v, &cur_t);
         let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
         stage1.insert("surface_area_before".into(), Value::from(round3(sa_before)));
         stage1.insert("surface_area_after".into(), Value::from(round3(sa_after)));
