@@ -1,0 +1,189 @@
+name: Build Rust distribution artifacts
+
+# Packages the Rust binaries (sutura + sutura-gui) for macOS arm64 and Linux
+# x86_64 -- the Python-free counterpart of build-macos.yml / build-appimage.yml.
+# Deliberately a SEPARATE workflow: those two publish to GitHub Releases and are
+# left untouched.
+#
+# This workflow creates NO release, tag or version. It only uploads build
+# artifacts, so `permissions: contents: read` is the whole of its authority.
+#
+# Run it from the Actions tab (workflow_dispatch). No tag or push trigger: a
+# distribution artifact is a deliberate act, not something a commit should start.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    name: macOS arm64 (.app/.dmg)
+    runs-on: macos-14          # Apple Silicon, arm64
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Build release binaries
+        working-directory: rust
+        run: |
+          cargo build --release -p sutura-cli -p sutura-gui
+
+      # fTetWild is built from the SAME pinned source the Python distribution
+      # used (third_party/ftetwild/build.sh pins upstream
+      # 8118f810478e0e65a7bf2d8cecdc5e203a876e97 and applies the determinism
+      # patches). Reusing that script is the point: a differently-built fTetWild
+      # changed the result on thingi10k_100827, so the version must not drift.
+      - name: Install fTetWild build dependencies
+        run: brew install gmp ninja ccache
+
+      - name: Build fTetWild (pinned upstream + determinism patches)
+        run: bash third_party/ftetwild/build.sh
+
+      - name: Verify the fTetWild binary is self-contained
+        run: |
+          set -e
+          ./third_party/ftetwild/bin/ftetwild --help >/dev/null
+          # build.sh already rejects non-system dynamic deps; assert again.
+          if otool -L third_party/ftetwild/bin/ftetwild \
+               | grep -vE "^\S+:$|/usr/lib/lib(c++|System)" | grep -q .; then
+            echo "error: fTetWild links a non-system library" >&2
+            exit 1
+          fi
+
+      - name: Package .app and .dmg
+        env:
+          FTETWILD_BIN: third_party/ftetwild/bin/ftetwild
+        run: bash scripts/package_rust.sh --platform macos-arm64
+
+      - name: Verify the bundle (no Python, ad-hoc signed, runs)
+        run: |
+          set -e
+          APP=$(ls -d dist/*.app 2>/dev/null | head -1)
+          if [ -z "$APP" ]; then
+            # package_rust.sh leaves only the .dmg; mount it to inspect.
+            dmg=$(ls dist/*.dmg | head -1)
+            mkdir -p /tmp/mnt
+            hdiutil attach "$dmg" -mountpoint /tmp/mnt -nobrowse -quiet
+            APP="/tmp/mnt/$(basename "${dmg%.dmg}" | sed 's/-v.*//').app"
+          fi
+          echo "inspecting $APP"
+          # 1. No Python anywhere in the bundle.
+          test "$(find "$APP" -name '*python*' | wc -l | tr -d ' ')" = "0"
+          for bin in "$APP/Contents/MacOS/sutura" "$APP/Contents/MacOS/sutura-gui"; do
+            test "$(otool -L "$bin" | grep -ci python || true)" = "0"
+            test "$(nm -u "$bin" 2>/dev/null | grep -ci 'Py_' || true)" = "0"
+          done
+          # 2. Ad-hoc signature, inside out.
+          codesign -dv --verbose=2 "$APP" 2>&1 | grep -q 'Signature=adhoc'
+          # 3. It actually runs and repairs.
+          "$APP/Contents/MacOS/sutura" --version
+          "$APP/Contents/MacOS/sutura" --list-methods | grep -q quick_clean
+          # 4. The licences ship.
+          test -f "$APP/Contents/Resources/LICENSE"
+          test -f "$APP/Contents/Resources/ATTRIBUTION.md"
+          echo "macOS bundle verified"
+
+      - name: Report artifact sizes
+        run: |
+          for f in dist/*.dmg dist/*.app.tar.gz; do
+            [ -f "$f" ] && echo "$(du -h "$f" | cut -f1)  $(basename "$f")"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sutura-rust-macos-arm64
+          path: |
+            dist/*.dmg
+            dist/*.app.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-x86_64:
+    name: Linux x86_64 (tar.gz)
+    # 22.04 keeps GLIBC at 2.35, so the binary runs on a wider range of
+    # distributions than a 24.04 build (GLIBC 2.39) would.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Install system dependencies
+        # The GUI links X11/wayland; fTetWild needs GMP + ninja.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libgmp-dev ninja-build ccache
+
+      - name: Build release binaries
+        working-directory: rust
+        run: cargo build --release -p sutura-cli -p sutura-gui
+
+      - name: Build fTetWild (pinned upstream + determinism patches)
+        run: bash third_party/ftetwild/build.sh
+
+      - name: Package tar.gz
+        env:
+          FTETWILD_BIN: third_party/ftetwild/bin/ftetwild
+        run: bash scripts/package_rust.sh --platform linux-x86_64
+
+      - name: Verify the package (no Python, runs, licences)
+        run: |
+          set -e
+          tgz=$(ls dist/*.tar.gz | head -1)
+          rm -rf /tmp/verify && mkdir -p /tmp/verify
+          tar -xzf "$tgz" -C /tmp/verify
+          root=/tmp/verify/Sutura
+          # 1. No Python anywhere.
+          test "$(find "$root" -name '*python*' | wc -l | tr -d ' ')" = "0"
+          test "$(ldd "$root/bin/sutura" | grep -ci python || true)" = "0"
+          test "$(ldd "$root/bin/sutura-gui" | grep -ci python || true)" = "0"
+          # 2. The desktop entries call the binaries, not a venv python.
+          ! grep -ri 'python\|venv' "$root/share/applications/" 
+          grep -q '^Exec=sutura %F' "$root/share/applications/sutura.desktop"
+          grep -q '^Exec=sutura-gui' "$root/share/applications/sutura-app.desktop"
+          # 3. It runs and repairs.
+          "$root/bin/sutura" --version
+          "$root/bin/sutura" --list-methods | grep -q quick_clean
+          # 4. Licences ship.
+          test -f "$root/LICENSE"
+          test -f "$root/ATTRIBUTION.md"
+          test "$(find "$root/third_party" -name '*LICENSE*' -o -name '*NOTICE*' | wc -l | tr -d ' ')" -ge 3
+          echo "Linux package verified"
+
+      - name: Report artifact sizes
+        run: |
+          for f in dist/*.tar.gz; do
+            [ -f "$f" ] && echo "$(du -h "$f" | cut -f1)  $(basename "$f")"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sutura-rust-linux-x86_64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
