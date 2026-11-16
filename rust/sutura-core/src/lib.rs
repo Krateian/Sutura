@@ -18,6 +18,7 @@ pub mod mesh_io;
 pub mod p_weld;
 pub mod ranking;
 pub mod reduce;
+pub mod self_check;
 pub mod validate;
 pub mod closing;
 pub mod dressing;

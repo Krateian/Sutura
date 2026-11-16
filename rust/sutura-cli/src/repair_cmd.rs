@@ -218,10 +218,10 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             ));
         }
     }
-    if cli.self_repair || cli.self_check {
+    if cli.self_repair {
         return Err(RepairFailure::new(
             2,
-            "--self-repair/--self-check are not implemented in the Rust CLI",
+            "--self-repair is not implemented in the Rust CLI",
         ));
     }
     if cli.max_geometry_change.is_some() || cli.max_risk.is_some() {

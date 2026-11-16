@@ -247,6 +247,20 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
         );
         return Ok(());
     }
+    if cli.self_check {
+        let report = sutura_core::self_check::run(true);
+        if cli.json {
+            outln!("{}", crate::repair_cmd::py_json(&report));
+        } else {
+            outln!("{}", sutura_core::self_check::human_text(&report));
+        }
+        let code = sutura_core::self_check::exit_code(&report);
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err((code, None))
+        };
+    }
     if let Some(Command::Io { command }) = cli.command {
         return match command {
             IoCommand::Probe { file, json } => {
