@@ -153,6 +153,17 @@ impl Preview {
                 } else {
                     self.error = None;
                 }
+                // A wgpu validation error means the frame is not trustworthy.
+                // Switch to the CPU viewer rather than showing a wrong image,
+                // and keep the reason visible.
+                if let Some(reason) = wgpu_view::take_validation_error() {
+                    log_line(&format!(
+                        "wgpu validation failed ({reason}); switching to the CPU preview"
+                    ));
+                    self.error = Some(format!("GPU preview failed: {reason}"));
+                    self.viewer = Viewer::Cpu(cpu_view::CpuViewer::new());
+                    self.dirty = true;
+                }
                 self.dirty = false;
             }
             let tex = match &self.viewer {

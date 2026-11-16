@@ -26,6 +26,8 @@ fn main() -> eframe::Result<()> {
     let mut headless_heatmap = false;
     let mut heatmap_ref: Option<std::path::PathBuf> = None;
     let mut heatmap = false;
+    // Test hook: force the After view's deviation reference (ramp demo).
+    let mut deviation_reference: Option<std::path::PathBuf> = None;
     // Headless score dump: the Report panel's values, for CLI comparison.
     let mut headless_scores = false;
     let mut about = false;
@@ -68,6 +70,9 @@ fn main() -> eframe::Result<()> {
             "--headless-scores" => headless_scores = true,
             "--headless-heatmap" => headless_heatmap = true,
             "--reference" => heatmap_ref = args.next().map(std::path::PathBuf::from),
+            "--deviation-reference" => {
+                deviation_reference = args.next().map(std::path::PathBuf::from)
+            }
             "--headless-pick" => {
                 if let Some(spec) = args.next() {
                     let mut it = spec.split(',');
@@ -185,6 +190,7 @@ fn main() -> eframe::Result<()> {
                     auto_repair,
                     auto_batch,
                     heatmap,
+        deviation_reference,
                     about,
                     updater,
                     intensity,

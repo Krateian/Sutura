@@ -16,6 +16,9 @@ struct Vertex {
     pos: [f32; 3],
     normal: [f32; 3],
     defect: f32,
+    /// Deviation-ramp index / 256, so 0..1 reaches the shader as a float.
+    /// -1.0 means "no ramp available", which selects the defect path instead.
+    ramp: f32,
 }
 
 #[repr(C)]
@@ -25,6 +28,27 @@ struct Uniforms {
     light: [f32; 4],
     color: [f32; 4],
     heat: [f32; 4],
+}
+
+/// The most recent wgpu validation error, for `Preview` to report.
+///
+/// wgpu reports shader and pipeline validation failures as *uncaptured* errors:
+/// they print to stderr in debug builds and are otherwise dropped. That is how a
+/// broken shader used to render the wrong thing with no visible symptom. This
+/// handler records the last message so the viewer can fall back to the CPU path
+/// and say why.
+pub fn take_validation_error() -> Option<String> {
+    LAST_ERROR.lock().ok().and_then(|mut slot| slot.take())
+}
+
+static LAST_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn record_validation_error(error: wgpu::Error) {
+    let text = error.to_string();
+    eprintln!("wgpu validation error: {text}");
+    if let Ok(mut slot) = LAST_ERROR.lock() {
+        *slot = Some(text);
+    }
 }
 
 pub struct WgpuViewer {
@@ -45,6 +69,9 @@ pub struct WgpuViewer {
 impl WgpuViewer {
     pub fn new(state: egui_wgpu::RenderState) -> Result<Self, String> {
         let device = &state.device;
+        // Record validation failures instead of letting wgpu drop them; see
+        // `ErrorRecorder` for why this matters.
+        device.on_uncaptured_error(std::sync::Arc::new(record_validation_error));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sutura-mesh-shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -68,7 +95,8 @@ impl WgpuViewer {
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
-        let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32];
+        let attrs =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sutura-mesh-pipeline"),
             layout: Some(&layout),
@@ -152,6 +180,13 @@ impl WgpuViewer {
                 pos: *p,
                 normal: *n,
                 defect: mesh.defect.get(i).copied().unwrap_or(0.0),
+                // The ramp is indexed by FACE; the soup stores 3 vertices per
+                // face in order, so `i / 3` is the face id.
+                ramp: mesh
+                    .dev_idx
+                    .get(i / 3)
+                    .map(|idx| *idx as f32 / 256.0)
+                    .unwrap_or(-1.0),
             })
             .collect();
         self.vertex_buffer = Some(self.state.device.create_buffer_init(
@@ -317,11 +352,13 @@ struct VsIn {
     @location(0) pos: vec3<f32>,
     @location(1) nrm: vec3<f32>,
     @location(2) defect: f32,
+    @location(3) ramp: f32,
 };
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) nrm: vec3<f32>,
     @location(1) defect: f32,
+    @location(2) ramp: f32,
 };
 
 @vertex
@@ -330,7 +367,21 @@ fn vs(input: VsIn) -> VsOut {
     out.clip = u.view_proj * vec4<f32>(input.pos, 1.0);
     out.nrm = input.nrm;
     out.defect = input.defect;
+    out.ramp = input.ramp;
     return out;
+}
+
+// The 4-stop deviation ramp from `heatmap._deviation_lut`
+// (navy -> cyan -> yellow -> red), linearly interpolated.
+fn deviation_colour(t: f32) -> vec3<f32> {
+    let x = clamp(t, 0.0, 1.0) * 3.0;
+    let s0 = vec3<f32>(0.0392, 0.0784, 0.3137);
+    let s1 = vec3<f32>(0.0, 0.7059, 0.7843);
+    let s2 = vec3<f32>(0.9412, 0.8627, 0.2353);
+    let s3 = vec3<f32>(0.9020, 0.1569, 0.1569);
+    if x < 1.0 { return mix(s0, s1, x); }
+    if x < 2.0 { return mix(s1, s2, x - 1.0); }
+    return mix(s2, s3, x - 2.0);
 }
 
 @fragment
@@ -341,7 +392,12 @@ fn fs(input: VsOut) -> @location(0) vec4<f32> {
     let back = clamp(dot(n, -l), 0.0, 1.0) * 0.18;
     let base = u.color.rgb * (0.25 + 0.75 * d) + vec3<f32>(back);
     let hot = vec3<f32>(0.95, 0.28, 0.12) * (0.45 + 0.55 * d);
-    let c = mix(base, hot, clamp(input.defect, 0.0, 1.0) * u.heat.x);
+    // Precedence, as `heatmap.draw_frame`: an available deviation ramp wins over
+    // the binary defect blend. `input.ramp < 0` means the ramp was not computed
+    // (the Before view), so the defect tint still applies there.
+    let ramp_rgb = deviation_colour(input.ramp);
+    let defect_c = mix(base, hot, clamp(input.defect, 0.0, 1.0) * u.heat.x);
+    let c = select(defect_c, ramp_rgb * (0.35 + 0.65 * d), input.ramp >= 0.0);
     return vec4<f32>(c, 1.0);
 }
 "#;

@@ -115,6 +115,8 @@ impl Intensity {
 }
 
 pub struct StartupOptions {
+    /// Test hook: force the deviation reference for the After view.
+    pub deviation_reference: Option<PathBuf>,
     pub screenshot_path: Option<PathBuf>,
     pub exit_after_screenshot: bool,
     pub auto_repair: bool,
@@ -155,6 +157,10 @@ pub struct SuturaApp {
     updater_open: bool,
     /// The repeat picker window, created on demand from the selected mesh.
     repeat_picker: Option<crate::repeat_picker::RepeatPicker>,
+    /// Overrides the deviation reference for the After view. A **test hook** so
+    /// the ramp can be demonstrated with a known pair, independent of what the
+    /// repair happened to move.
+    deviation_reference: Option<PathBuf>,
     /// Updater state (check / download / install), driven on a worker thread.
     updater: crate::updater_ui::Updater,
     /// The "what's new" window, reading the snapshot off disk.
@@ -200,6 +206,7 @@ impl SuturaApp {
             about_open: options.about,
             updater_open: options.updater,
             repeat_picker: None,
+            deviation_reference: options.deviation_reference,
             updater: crate::updater_ui::Updater::new(),
             notes_open: false,
             screenshot_path: options.screenshot_path,
@@ -316,7 +323,11 @@ impl SuturaApp {
             // the colour ramp never appeared after a repair.
             let mut mesh = (*mesh).clone();
             if entry.view == ViewMode::After && entry.result.is_some() {
-                match sutura_core::load_mesh(&entry.path) {
+                let reference_path = self
+                    .deviation_reference
+                    .clone()
+                    .unwrap_or_else(|| entry.path.clone());
+                match sutura_core::load_mesh(&reference_path) {
                     Ok(reference) => {
                         if let Err(e) = mesh.with_deviation_against(&reference) {
                             self.log(format!("deviation unavailable: {e}"));
