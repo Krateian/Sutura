@@ -891,11 +891,12 @@ fn method_control(methods: &[u64]) -> Value {
     })
 }
 
-fn si_escalation(stage1: &Value, deep: DeepRepair) -> Value {
-    let si = stage1
+fn si_escalation(stage1: &Value, exact_si: &Value, deep: DeepRepair) -> Value {
+    let stage1_si = stage1
         .get("self_intersections_remaining")
         .and_then(Value::as_i64)
         .unwrap_or(0);
+    let exact = exact_si.as_i64();
     let holes = stage1.get("holes_remaining").and_then(Value::as_i64).unwrap_or(0);
     let nm = stage1
         .get("non_manifold_edges_remaining")
@@ -904,15 +905,22 @@ fn si_escalation(stage1: &Value, deep: DeepRepair) -> Value {
     let parts = stage1.get("components").and_then(Value::as_i64).unwrap_or(1);
     let reason = if deep == DeepRepair::Off {
         "disabled by user settings"
-    } else if si == 0 {
+    } else if exact_si.is_null() {
+        "baseline SI unmeasurable"
+    } else if exact == Some(0) {
         "baseline SI is zero"
     } else {
         "escalation not run in the Rust pipeline"
     };
-    let mut baseline = json!({"si": si, "holes": holes, "nm": nm, "parts": parts,
-                              "dev_pct": 0.0, "vol_pct": 0.0});
+    let baseline_si = if deep == DeepRepair::Off {
+        Value::from(stage1_si)
+    } else {
+        exact_si.clone()
+    };
+    let mut baseline = json!({"si": baseline_si, "holes": holes, "nm": nm,
+                              "parts": parts, "dev_pct": 0.0, "vol_pct": 0.0});
     if deep != DeepRepair::Off {
-        baseline["si_stage1"] = Value::from(si);
+        baseline["si_stage1"] = Value::from(stage1_si);
     }
     let mut out = Map::new();
     out.insert("triggered".into(), Value::Bool(false));
@@ -1259,7 +1267,7 @@ fn augment_report(
     if opts.deep_repair != DeepRepair::Local && !obj.contains_key("si_escalation") {
         obj.insert(
             "si_escalation".into(),
-            si_escalation(obj.get("stage1").unwrap(), opts.deep_repair),
+            si_escalation(obj.get("stage1").unwrap(), &si_value, opts.deep_repair),
         );
     }
 
