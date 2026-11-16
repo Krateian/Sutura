@@ -47,7 +47,7 @@ fn write_mesh(path: &Path, v: &[[f64; 3]], t: &[[i64; 3]], fmt: &str) -> Result<
 }
 
 fn read_mesh(path: &Path, fmt: &str) -> Result<(Vec<[f64; 3]>, Vec<[i64; 3]>), String> {
-    let mesh = crate::mesh_io::read_mesh(path).map_err(|e| e.to_string())?;
+    let mesh = crate::mesh_io::load_mesh(path).map_err(|e| e.to_string())?;
     if fmt != "stl" && fmt != "obj" && fmt != "ply" {
         return Err(format!("unsupported output_format: {fmt}"));
     }
@@ -210,12 +210,49 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn copy_engine_is_adopted_by_the_placement_guard() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("cube2.stl");
+        write_cube_stl(&src).unwrap();
+        let mesh = crate::mesh_io::load_mesh(&src).unwrap();
+        let v: Vec<[f64; 3]> = mesh
+            .verts
+            .iter()
+            .map(|p| [p[0] as f64, p[1] as f64, p[2] as f64])
+            .collect();
+        let t: Vec<[i64; 3]> = mesh
+            .tris
+            .iter()
+            .map(|r| [r[0] as i64, r[1] as i64, r[2] as i64])
+            .collect();
+        let cfg = EngineConfig {
+            name: "copy".into(),
+            command: vec!["/bin/cp".into(), "{input}".into(), "{output}".into()],
+            input_format: "stl".into(),
+            output_format: "stl".into(),
+            timeout: 30.0,
+            placement: "after_stage1".into(),
+            enabled: true,
+            env: BTreeMap::new(),
+            cwd: None,
+            source_path: None,
+        };
+        let mut entries = Vec::new();
+        let adopted = run_placement(&[cfg], "after_stage1", &v, &t, None, 0.01, &mut entries);
+        assert!(adopted.is_some());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["adopted"], json!(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn copy_engine_round_trips_the_mesh() {
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("cube.stl");
         write_cube_stl(&src).unwrap();
-        let mesh = crate::mesh_io::read_mesh(&src).unwrap();
+        let mesh = crate::mesh_io::load_mesh(&src).unwrap();
         let v: Vec<[f64; 3]> = mesh
             .verts
             .iter()
@@ -246,5 +283,129 @@ mod tests {
         assert_eq!(run.verts.len(), v.len());
         assert_eq!(run.tris.len(), t.len());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Load the configured engines, keep only enabled ones and (when given) the
+/// names selected by `--engines`. Returns the configs plus loader warnings.
+pub fn selected_engines(selected: Option<&[String]>) -> (Vec<EngineConfig>, Vec<String>) {
+    let (all, warnings) = crate::config::external_engines::load_all_engines(None);
+    let mut out: Vec<EngineConfig> = match selected {
+        Some(names) => names
+            .iter()
+            .filter_map(|n| all.get(n).cloned())
+            .filter(|e| e.enabled)
+            .collect(),
+        None => all.values().filter(|e| e.enabled).cloned().collect(),
+    };
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    (out, warnings)
+}
+
+/// Run the engines configured for one placement and adopt the first output
+/// that passes the same holes/non-manifold guard as the fTetWild tier.
+/// Returns the adopted arrays; one report entry per attempted engine is
+/// appended to `entries`.
+pub fn run_placement(
+    engines: &[EngineConfig],
+    placement: &str,
+    v: &[[f64; 3]],
+    t: &[[i64; 3]],
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+    max_hausdorff_rel: f64,
+    entries: &mut Vec<Value>,
+) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>)> {
+    let base = crate::tiers::common::topology_summary(v, t);
+    let base_holes = crate::repair::boundary_loop_stats(t).0;
+    for engine in engines.iter().filter(|e| e.placement == placement) {
+        let mut entry = json!({
+            "name": engine.name,
+            "placement": placement,
+            "adopted": false,
+        });
+        match run_engine(engine, v, t, cancel) {
+            Ok(Some(run)) => {
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.insert("rc".into(), json!(0));
+                    obj.insert(
+                        "time".into(),
+                        run.report.get("seconds").cloned().unwrap_or(Value::Null),
+                    );
+                    obj.insert("output_faces".into(), json!(run.tris.len()));
+                }
+                if run.tris.is_empty() {
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.insert("reject_reason".into(), json!("engine output has no faces"));
+                    }
+                    entries.push(entry);
+                    continue;
+                }
+                let cand = crate::tiers::common::topology_summary(&run.verts, &run.tris);
+                let cand_holes = crate::repair::boundary_loop_stats(&run.tris).0;
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.insert("output_holes".into(), json!(cand_holes));
+                    obj.insert(
+                        "output_non_manifold".into(),
+                        json!(cand.non_two_manifold_edges),
+                    );
+                }
+                if cand_holes <= base_holes
+                    && cand.non_two_manifold_edges <= base.non_two_manifold_edges
+                {
+                    let hd = crate::local_remesh::hausdorff_rel(v, t, &run.verts, &run.tris);
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.insert("hausdorff_rel".into(), json!(hd));
+                        obj.insert(
+                            "shape_changed".into(),
+                            json!(hd.map(|x| x > max_hausdorff_rel).unwrap_or(false)),
+                        );
+                        obj.insert("adopted".into(), json!(true));
+                    }
+                    entries.push(entry);
+                    return Some((run.verts, run.tris));
+                }
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.insert("reject_reason".into(), json!("holes_nm"));
+                }
+                entries.push(entry);
+            }
+            Ok(None) => {
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.insert("reject_reason".into(), json!("engine disabled"));
+                }
+                entries.push(entry);
+            }
+            Err(message) => {
+                if message == "cancelled" {
+                    return None;
+                }
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.insert("reject_reason".into(), json!(message));
+                }
+                entries.push(entry);
+            }
+        }
+    }
+    None
+}
+
+/// `run_placement` that replaces `v`/`t` in place on adoption.
+pub fn run_and_replace(
+    engines: &[EngineConfig],
+    placement: &str,
+    v: &mut Vec<[f64; 3]>,
+    t: &mut Vec<[i64; 3]>,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+    max_hausdorff_rel: f64,
+    entries: &mut Vec<Value>,
+) -> bool {
+    if let Some((nv, nt)) =
+        run_placement(engines, placement, v, t, cancel, max_hausdorff_rel, entries)
+    {
+        *v = nv;
+        *t = nt;
+        true
+    } else {
+        false
     }
 }

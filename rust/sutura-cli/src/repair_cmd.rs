@@ -194,6 +194,13 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     // here are the only ones tagged, and any the Rust pipeline cannot run are
     // reported as unavailable instead of silently ignored.
     let selected_engines = engines_sel;
+    // go's guard, kept from the merge: repeat points are still unimplemented.
+    if cli.repeat_source.is_some() || cli.repeat_target.is_some() {
+        return Err(RepairFailure::new(
+            2,
+            "--repeat-source/--repeat-target are not implemented in the Rust CLI",
+        ));
+    }
     if cli.wall_min_thickness.is_some() {
         return Err(RepairFailure::new(
             2,
