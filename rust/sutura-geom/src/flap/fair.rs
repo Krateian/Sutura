@@ -264,6 +264,9 @@ pub fn fair_patch_energy(
         Ok(l) => l,
         Err(_) => return,
     };
+    // The LU factors are independent of the input matrix; release it before
+    // allocating the right-hand-side matrix.
+    drop(a);
     let mut b = Mat::<f64>::zeros(n_unknown, 3);
     for i in 0..n_unknown {
         b[(i, 0)] = rhs[i][0];
