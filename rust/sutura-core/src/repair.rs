@@ -197,6 +197,9 @@ pub struct RepairOptions {
     pub seed: u64,
     #[serde(default)]
     pub forced_methods: Vec<u8>,
+    /// `--engines`: tag only these configured external engines.
+    #[serde(default)]
+    pub engines: Option<Vec<String>>,
 }
 
 impl Default for RepairOptions {
@@ -227,6 +230,7 @@ impl Default for RepairOptions {
             time_budget_s: None,
             seed: 0,
             forced_methods: Vec::new(),
+            engines: None,
         }
     }
 }
