@@ -37,6 +37,7 @@ pub mod dressing;
 pub mod dual_contour;
 pub mod eigh3;
 pub mod flap;
+pub mod heatmap;
 pub mod hermite;
 pub mod hole;
 pub mod interval;
