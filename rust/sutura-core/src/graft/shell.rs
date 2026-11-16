@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
-use sutura_geom::{morph_close_core, MorphCloseOptions};
+use sutura_geom::MorphCloseOptions;
 
 use crate::fmt::{fmt_g, py_repr_f64};
 use sutura_geom::hole::close_holes_core;
@@ -556,6 +556,16 @@ pub fn shell_wrap(
     tris: &[[i64; 3]],
     opts: &ShellWrapOptions,
 ) -> Result<ShellWrapOutput, String> {
+    shell_wrap_with_cancel(verts, tris, opts, None)
+}
+
+/// `shell_wrap` with a cooperative cancellation probe.
+pub fn shell_wrap_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    opts: &ShellWrapOptions,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> Result<ShellWrapOutput, String> {
     let t_start = Instant::now();
     let deadline = opts
         .time_budget
@@ -772,6 +782,9 @@ pub fn shell_wrap(
     let mut spent_work: i64 = 0;
     let mut best: Option<Candidate> = None;
     for (attempt, rval) in ladder.iter().enumerate() {
+        if sutura_geom::cancel::cancelled(cancel) {
+            return Err("cancelled".to_string());
+        }
         let rval = *rval;
         if let Some(deadline) = deadline {
             if Instant::now() >= deadline {
@@ -837,7 +850,7 @@ pub fn shell_wrap(
             .iter()
             .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
             .collect();
-        let closed = match morph_close_core(&v0, &t32, rval, &mopts) {
+        let closed = match sutura_geom::morph_close_core_with_cancel(&v0, &t32, rval, &mopts, cancel) {
             Ok(x) => x,
             Err(_) => continue,
         };
@@ -866,7 +879,7 @@ pub fn shell_wrap(
                     bbox: box_arg,
                     ..mopts
                 };
-                match morph_close_core(&v0, &t32, rval, &mopts) {
+                match sutura_geom::morph_close_core_with_cancel(&v0, &t32, rval, &mopts, cancel) {
                     Ok((nv, nt, _)) => {
                         ev = nv;
                         et = nt

@@ -27,7 +27,12 @@ fn thin_sample_fraction(v: &[[f64; 3]], t: &[[i64; 3]]) -> Option<f64> {
     }
 }
 
-fn solid_area_fraction(v: &[[f64; 3]], t: &[[i64; 3]], p: &Value) -> Option<f64> {
+fn solid_area_fraction(
+    v: &[[f64; 3]],
+    t: &[[i64; 3]],
+    p: &Value,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> Option<f64> {
     let samples = json_u(p, "shape_side_samples", 512);
     let side_eps = json_f(p, "shape_side_eps", 1e-4);
     let winding_thresh = json_f(p, "shape_winding", 0.9);
@@ -100,7 +105,13 @@ fn solid_area_fraction(v: &[[f64; 3]], t: &[[i64; 3]], p: &Value) -> Option<f64>
         let c = centers[i];
         pts.push([c[0] - n[0] * eps, c[1] - n[1] * eps, c[2] - n[2] * eps]);
     }
-    let w = common::winding_points(v, t, &pts);
+    let mut w: Vec<f64> = Vec::with_capacity(pts.len());
+    for chunk in pts.chunks(2048) {
+        if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
+            return None;
+        }
+        w.extend(common::winding_points(v, t, chunk));
+    }
     let n = tt.len();
     if w.len() < 2 * n {
         return None;
@@ -127,7 +138,11 @@ fn shape_card_full(
     holes: &[Vec<i64>],
     genus: Option<i64>,
     p: &Value,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> Value {
+    if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
+        return json!({"skip": true, "reason": "cancelled"});
+    }
     let area = common::surface_area(v, t);
     let vol = common::signed_volume(v, t).abs();
     let compactness = if area > 0.0 {
@@ -169,10 +184,11 @@ fn shape_card_full(
         0.0
     };
     let solid_area = if !thin_shell && !no_volume && perimeter_ratio >= perim_th {
-        solid_area_fraction(v, t, p)
+        solid_area_fraction(v, t, p, cancel)
     } else {
         None
     };
+    let depth = interior_depth_norm(v, t, p);
     let open_shell = perimeter_ratio >= perim_th
         && solid_area.is_some()
         && solid_area.unwrap_or(1.0) <= solid_th;
@@ -191,7 +207,7 @@ fn shape_card_full(
         "open_area_ratio": round6(open_ratio),
         "effective_thickness_norm": round6(thickness),
         "thin_sample_fraction": thin.map(round6),
-        "interior_depth_norm": interior_depth_norm(v, t, p),
+        "interior_depth_norm": depth,
         "boundary_perimeter": round6(perimeter),
         "perimeter_ratio": round6(perimeter_ratio),
         "solid_area_fraction": solid_area.map(round6),
@@ -527,6 +543,16 @@ pub fn run(
     tris: &[[i64; 3]],
     params: &Value,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
+    run_with_cancel(verts, tris, params, None)
+}
+
+/// `run` with a cooperative cancellation probe.
+pub fn run_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    params: &Value,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     let mut rec = base_record(params);
     let v = verts.to_vec();
     let t = tris.to_vec();
@@ -559,6 +585,11 @@ pub fn run(
             return (v, t, Value::Object(rec));
         }
     };
+    if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
+        rec.insert("reason".into(), json!("cancelled"));
+        rec.insert("reject_reason".into(), json!("cancelled"));
+        return (v, t, Value::Object(rec));
+    }
     let wb_f: Vec<[f64; 3]> = common::to_f64_verts(&wb_v);
     let wb_t32: Vec<[i32; 3]> = wb_t
         .iter()
@@ -571,6 +602,11 @@ pub fn run(
     rec.insert("input_holes".into(), json!(base_holes));
     rec.insert("input_non_manifold".into(), json!(base_nm));
     rec.insert("input_parts".into(), json!(base_parts));
+    if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
+        rec.insert("reason".into(), json!("cancelled"));
+        rec.insert("reject_reason".into(), json!("cancelled"));
+        return (v, t, Value::Object(rec));
+    }
 
     let base_si_exact =
         if !prepass && si_mode != "off" && (melt_on || base_holes > 0 || base_nm > 0) {
@@ -605,7 +641,7 @@ pub fn run(
         .map(|h| h.verts_idx.clone().unwrap_or_default())
         .collect();
     let genus = json_opt_i(params, "genus");
-    let shape = shape_card_full(&wb_f, &wb_t, &hole_loops, genus, params);
+    let shape = shape_card_full(&wb_f, &wb_t, &hole_loops, genus, params, cancel);
     rec.insert("shape".into(), shape.clone());
     let shape_skip = shape.get("skip").and_then(Value::as_bool).unwrap_or(false);
     let shape_reason = shape.get("reason").and_then(Value::as_str).unwrap_or("");
@@ -660,7 +696,7 @@ pub fn run(
         .map(|r| [r[0] as u32, r[1] as u32, r[2] as u32])
         .collect();
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        tamponade::tamponade_repair(&v, &t_u32, &config)
+        tamponade::tamponade_repair_with_cancel(&v, &t_u32, &config, cancel)
     }));
     let (out_v, out_t, info) = match outcome {
         Ok(x) => x,
@@ -671,6 +707,13 @@ pub fn run(
             (v.clone(), t_u32.clone(), info)
         }
     };
+    if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
+        // The pipeline discards this tier on cancellation; skip the report
+        // annotation and the reload/SI post-processing so the stop is prompt.
+        rec.insert("reason".into(), json!("cancelled"));
+        rec.insert("reject_reason".into(), json!("cancelled"));
+        return (v, t, Value::Object(rec));
+    }
     for (k, val) in annotation_json(&info) {
         rec.insert(k, val);
     }
@@ -688,6 +731,11 @@ pub fn run(
     rec.insert("candidate_holes".into(), json!(cand_holes));
     rec.insert("candidate_non_manifold".into(), json!(cand_nm));
     rec.insert("candidate_parts".into(), json!(cand_parts));
+    if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
+        rec.insert("reason".into(), json!("cancelled"));
+        rec.insert("reject_reason".into(), json!("cancelled"));
+        return (v, t, Value::Object(rec));
+    }
     if !t.is_empty() {
         rec.insert(
             "healthy_fraction".into(),
@@ -1081,5 +1129,5 @@ pub fn shape_json(
     genus: Option<i64>,
     params: &Value,
 ) -> Value {
-    shape_card_full(v, t, hole_loops, genus, params)
+    shape_card_full(v, t, hole_loops, genus, params, None)
 }

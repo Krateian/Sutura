@@ -7,8 +7,7 @@
 use std::collections::HashMap;
 
 use serde_json::{json, Value};
-use sutura_geom::hole::close_holes_core;
-use sutura_geom::resample::resample_uniform_core;
+use sutura_geom::resample::resample_uniform_core_with_cancel;
 use sutura_geom::topology::{
     compute_normal_per_face_core, re_orient_faces_coherently_core,
 };
@@ -202,6 +201,16 @@ pub fn poisson_close(
     tris: &[[i64; 3]],
     depth: Option<i32>,
 ) -> CloseOutput {
+    poisson_close_with_cancel(verts, tris, depth, None)
+}
+
+/// `poisson_close` with a cooperative cancellation probe.
+pub fn poisson_close_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    depth: Option<i32>,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> CloseOutput {
     if verts.len() < 3 || tris.is_empty() {
         return close_error(verts, tris, "Empty or degenerate input mesh");
     }
@@ -254,7 +263,7 @@ pub fn poisson_close(
         .clamp(POISSON_FACE_BUDGET_MIN, POISSON_FACE_BUDGET_MAX);
 
     let resample = |vx: f64| {
-        resample_uniform_core(
+        resample_uniform_core_with_cancel(
             &in_v,
             &in_t,
             vx,
@@ -263,6 +272,7 @@ pub fn poisson_close(
             false,
             None,
             Some(POISSON_VERTEX_MODE),
+            cancel,
         )
     };
     let mut out = match resample(voxel) {
@@ -597,6 +607,16 @@ pub fn flat_back_close(
     tris: &[[i64; 3]],
     thickness: Option<f64>,
 ) -> CloseOutput {
+    flat_back_close_with_cancel(verts, tris, thickness, None)
+}
+
+/// `flat_back_close` with a cooperative cancellation probe.
+pub fn flat_back_close_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    thickness: Option<f64>,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> CloseOutput {
     if verts.len() < 3 || tris.is_empty() {
         return close_error(verts, tris, "Empty or degenerate input mesh");
     }
@@ -637,7 +657,8 @@ pub fn flat_back_close(
     if !others.is_empty() {
         let max_small = others.iter().map(|l| l.len()).max().unwrap_or(0);
         if max_small < dom_len {
-            if let Ok(rep) = close_holes_core(&in_v, &in_t, max_small as i64 + 1, true) {
+            if let Ok(rep) = sutura_geom::hole::close_holes_core_with_cancel(
+                &in_v, &in_t, max_small as i64 + 1, true, cancel) {
                 in_v = rep.verts;
                 in_t = rep.tris;
             }
@@ -817,7 +838,8 @@ pub fn flat_back_close(
         } else {
             let mut open_t = in_t.clone();
             open_t.extend(side_tris.iter().copied());
-            match close_holes_core(&all_verts, &open_t, n_loop as i64 + 100, true) {
+            match sutura_geom::hole::close_holes_core_with_cancel(
+                &all_verts, &open_t, n_loop as i64 + 100, true, cancel) {
                 Ok(rep) => {
                     all_verts = rep.verts;
                     in_t = rep.tris;

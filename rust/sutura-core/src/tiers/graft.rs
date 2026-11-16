@@ -184,21 +184,6 @@ pub fn decide(
         }
     }
 
-    if rec.get("coverage_ok").and_then(Value::as_bool) == Some(false) {
-        let cov = rec
-            .get("input_coverage")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        rec.insert(
-            "reason".into(),
-            json!(format!(
-                "input coverage {:.3} < {:.2}, kept stage-1 output",
-                cov, crate::graft::shell::GRAFT_MIN_INPUT_COVERAGE
-            )),
-        );
-        return (v.to_vec(), t.to_vec(), Value::Object(rec));
-    }
-
     if cand_t.is_empty() {
         rec.insert("reason".into(), json!("graft returned no geometry"));
         return (v.to_vec(), t.to_vec(), Value::Object(rec));

@@ -8,13 +8,13 @@
 use std::collections::HashMap;
 
 use serde_json::{json, Value};
-use sutura_geom::hole::close_holes_core;
 use sutura_geom::topology::{
-    invert_face_orientation_core, re_orient_faces_coherently_core,
-    remove_connected_components_core, remove_duplicate_faces_core,
-    remove_duplicate_vertices_core, remove_null_faces_core,
+    invert_face_orientation_core, re_orient_faces_coherently_core_with_cancel,
+    remove_connected_components_core_with_cancel, remove_duplicate_faces_core,
+    remove_duplicate_vertices_core_with_cancel, remove_null_faces_core,
     remove_selected_faces_core, remove_unreferenced_vertices_core,
-    repair_non_manifold_edges_core, repair_non_manifold_vertices_core,
+    repair_non_manifold_edges_core_with_cancel,
+    repair_non_manifold_vertices_core_with_cancel,
 };
 
 fn step(name: &str, params: Value) -> Value {
@@ -140,6 +140,18 @@ pub fn apply_chain(
     tris: &[[i64; 3]],
     chain: &Value,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, usize, Value, Option<Value>) {
+    apply_chain_with_cancel(verts, tris, chain, None)
+}
+
+/// `apply_chain` with a cooperative cancellation probe.  On cancellation the
+/// chain stops at the current step and returns the mesh produced so far; the
+/// caller checks the token and reports the cancelled outcome.
+pub fn apply_chain_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    chain: &Value,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, usize, Value, Option<Value>) {
     let mut v = verts.to_vec();
     let mut t = tris.to_vec();
     let mut applied = 0usize;
@@ -148,6 +160,9 @@ pub fn apply_chain(
     let mut selected = vec![false; t.len()];
     let steps = chain.as_array().cloned().unwrap_or_default();
     for entry in steps {
+        if sutura_geom::cancel::cancelled(cancel) {
+            break;
+        }
         let a = match entry.as_array() {
             Some(a) if !a.is_empty() => a,
             _ => continue,
@@ -166,7 +181,8 @@ pub fn apply_chain(
                 }
                 "meshing_remove_duplicate_vertices" => {
                     let v32 = as_f32(&v);
-                    let (nv, nt) = remove_duplicate_vertices_core(&v32, &t);
+                    let (nv, nt) =
+                        remove_duplicate_vertices_core_with_cancel(&v32, &t, cancel);
                     v = f32_to_f64(&nv);
                     t = nt;
                 }
@@ -181,7 +197,8 @@ pub fn apply_chain(
                     let unref = params.get("removeunref").and_then(Value::as_bool).unwrap_or(true);
                     removed_small_parts = small_parts_json(&v, &t, min as usize);
                     let v32 = as_f32(&v);
-                    let (nv, nt) = remove_connected_components_core(&v32, &t, min, unref);
+                    let (nv, nt) = remove_connected_components_core_with_cancel(
+                        &v32, &t, min, unref, cancel);
                     v = f32_to_f64(&nv);
                     t = nt;
                 }
@@ -190,17 +207,18 @@ pub fn apply_chain(
                 }
                 "meshing_repair_non_manifold_edges" => {
                     let v32 = as_f32(&v);
-                    t = repair_non_manifold_edges_core(&v32, &t);
+                    t = repair_non_manifold_edges_core_with_cancel(&v32, &t, cancel);
                 }
                 "meshing_re_orient_faces_coherently" => {
-                    t = re_orient_faces_coherently_core(&t).map_err(|_| {
+                    t = re_orient_faces_coherently_core_with_cancel(&t, cancel).map_err(|_| {
                         "Mesh has some not 2-manifold faces, Orientability requires manifoldness"
                             .to_string()
                     })?;
                 }
                 "meshing_repair_non_manifold_vertices" => {
                     let v32 = as_f32(&v);
-                    let (nv, nt) = repair_non_manifold_vertices_core(&v32, &t);
+                    let (nv, nt) =
+                        repair_non_manifold_vertices_core_with_cancel(&v32, &t, cancel);
                     v = f32_to_f64(&nv);
                     t = nt;
                 }
@@ -224,7 +242,8 @@ pub fn apply_chain(
                         .get("selfintersection")
                         .and_then(Value::as_bool)
                         .unwrap_or(true);
-                    let rep = close_holes_core(&v, &t, max, si)?;
+                    let rep = sutura_geom::hole::close_holes_core_with_cancel(
+                        &v, &t, max, si, cancel)?;
                     v = rep.verts;
                     t = rep.tris;
                 }
@@ -237,6 +256,9 @@ pub fn apply_chain(
             Err(msg) => {
                 skipped.insert(name.to_string(), Value::from(msg));
             }
+        }
+        if sutura_geom::cancel::cancelled(cancel) {
+            break;
         }
     }
     (v, t, applied, Value::Object(skipped), removed_small_parts)

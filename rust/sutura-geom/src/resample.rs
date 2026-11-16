@@ -70,6 +70,23 @@ pub fn resample_core(
     use_tets: bool,
     mass_point: bool,
 ) -> Result<ResampleReport, String> {
+    resample_core_with_cancel(
+        verts, tris, voxel, offset, absdist, raystab_full, use_tets, mass_point, None,
+    )
+}
+
+/// `resample_core` with a cooperative cancellation probe.
+pub fn resample_core_with_cancel(
+    verts: &[V3],
+    tris: &[[i64; 3]],
+    voxel: f64,
+    offset: f64,
+    absdist: bool,
+    raystab_full: bool,
+    use_tets: bool,
+    mass_point: bool,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Result<ResampleReport, String> {
     if !voxel.is_finite() || voxel <= 0.0 {
         return Err("voxel must be a positive finite number".to_string());
     }
@@ -112,7 +129,13 @@ pub fn resample_core(
     let (origin, voxel, dims, coarsened) = plan_grid(bmin, bmax, Some(voxel), 96.0, pad);
 
     let bvh = winding::MeshBvh::from_arrays(verts, &rt);
-    let (_w, u, mut s) = bvh.sdf_grid(origin, voxel, dims);
+    if crate::cancel::cancelled(cancel) {
+        return Err("cancelled".to_string());
+    }
+    let (_w, u, mut s) = bvh.sdf_grid_with_cancel(origin, voxel, dims, cancel);
+    if crate::cancel::cancelled(cancel) {
+        return Err("cancelled".to_string());
+    }
     let use_raystab = raystab_full && !absdist;
     if use_raystab {
         let stabber = crate::raycast::Stabber::new(
@@ -135,6 +158,9 @@ pub fn resample_core(
             f32::INFINITY,
             true,
         );
+    }
+    if crate::cancel::cancelled(cancel) {
+        return Err("cancelled".to_string());
     }
     let off = offset as f32;
     let field: Vec<f32> = if absdist {
@@ -513,6 +539,23 @@ pub fn resample_uniform_core(
     surface: Option<&str>,
     vertex_mode: Option<&str>,
 ) -> Result<ResampleReport, String> {
+    resample_uniform_core_with_cancel(
+        verts, tris, voxel, offset, absdist, raystab_full, surface, vertex_mode, None,
+    )
+}
+
+/// `resample_uniform_core` with a cooperative cancellation probe.
+pub fn resample_uniform_core_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    voxel: f64,
+    offset: f64,
+    absdist: bool,
+    raystab_full: bool,
+    surface: Option<&str>,
+    vertex_mode: Option<&str>,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Result<ResampleReport, String> {
     let use_tets = matches!(
         surface.map(|s| s.to_ascii_lowercase()).as_deref(),
         Some("tets") | Some("tet") | Some("marching_tets")
@@ -521,7 +564,7 @@ pub fn resample_uniform_core(
         vertex_mode.map(|s| s.to_ascii_lowercase()).as_deref(),
         Some("mass") | Some("mass_point") | Some("surface_nets")
     );
-    resample_core(
+    resample_core_with_cancel(
         verts,
         tris,
         voxel,
@@ -530,5 +573,6 @@ pub fn resample_uniform_core(
         raystab_full,
         use_tets,
         mass_point,
+        cancel,
     )
 }

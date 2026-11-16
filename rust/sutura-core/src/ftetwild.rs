@@ -347,6 +347,18 @@ pub fn run_binary_with_timeout(
     params: &Value,
     timeout_override: Option<f64>,
 ) -> Result<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value), String> {
+    run_binary_with_timeout_cancel(verts, tris, bin_path, params, timeout_override, None)
+}
+
+/// `run_binary_with_timeout` with a cooperative cancellation probe.
+pub fn run_binary_with_timeout_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    bin_path: &str,
+    params: &Value,
+    timeout_override: Option<f64>,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> Result<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value), String> {
     let started = Instant::now();
     if bin_path.trim().is_empty() {
         return Err("fTetWild binary unavailable: empty binary path".to_string());
@@ -404,6 +416,13 @@ pub fn run_binary_with_timeout(
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
+                if sutura_geom::cancel::cancelled(cancel) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    report["error"] = Value::from("cancelled");
+                    report["time"] = json!(round2(started.elapsed().as_secs_f64()));
+                    return Ok((Vec::new(), Vec::new(), report));
+                }
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -850,6 +869,7 @@ fn boundary_attempt(
     spec: &IntensitySpec,
     tuning: &TierTuning,
     bin: &str,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> Attempt {
     let started = Instant::now();
     let mut att = Map::new();
@@ -858,7 +878,8 @@ fn boundary_attempt(
         "wall_time".into(),
         Value::from(round2(started.elapsed().as_secs_f64())),
     );
-    let run = run_binary_with_timeout(input_v, input_t, bin, params, Some(timeout.max(0.0)));
+    let run = run_binary_with_timeout_cancel(
+        input_v, input_t, bin, params, Some(timeout.max(0.0)), cancel);
     let (cand_v, cand_t, report) = match run {
         Ok(out) => out,
         Err(err) => {
@@ -949,8 +970,10 @@ fn tier_attempt(
     spec: &IntensitySpec,
     tuning: &TierTuning,
     bin: &str,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> (Map<String, Value>, Option<Candidate>) {
-    let mut attempt = boundary_attempt(tag, params, timeout, input_v, input_t, spec, tuning, bin);
+    let mut attempt = boundary_attempt(
+        tag, params, timeout, input_v, input_t, spec, tuning, bin, cancel);
     if attempt.candidate.is_some()
         && attempt.dense_failed
         && spec.ftetwild_optimize_retry_on_dense_fail
@@ -967,6 +990,7 @@ fn tier_attempt(
             spec,
             tuning,
             bin,
+            cancel,
         );
         let mut retry_report = retry.report.clone();
         retry_report.insert("ran".into(), Value::Bool(true));
@@ -1037,6 +1061,25 @@ pub fn run_tier(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn run_tier_with_cancel(
+    cur_v: &[[f64; 3]],
+    cur_t: &[[i64; 3]],
+    input_v: &[[f64; 3]],
+    input_t: &[[i64; 3]],
+    after: &TopologySummary,
+    bin: &str,
+    spec: &IntensitySpec,
+    tuning: &TierTuning,
+    force_si: bool,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> Option<TierResult> {
+    run_tier_with_params_cancel(
+        cur_v, cur_t, input_v, input_t, after, bin, spec, tuning, force_si,
+        params_from_env(), cancel,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_tier_with_params(
     cur_v: &[[f64; 3]],
     cur_t: &[[i64; 3]],
@@ -1048,6 +1091,26 @@ fn run_tier_with_params(
     tuning: &TierTuning,
     force_si: bool,
     user_params: Value,
+) -> Option<TierResult> {
+    run_tier_with_params_cancel(
+        cur_v, cur_t, input_v, input_t, after, bin, spec, tuning, force_si,
+        user_params, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_tier_with_params_cancel(
+    cur_v: &[[f64; 3]],
+    cur_t: &[[i64; 3]],
+    input_v: &[[f64; 3]],
+    input_t: &[[i64; 3]],
+    after: &TopologySummary,
+    bin: &str,
+    spec: &IntensitySpec,
+    tuning: &TierTuning,
+    force_si: bool,
+    user_params: Value,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> Option<TierResult> {
     if input_t.is_empty() {
         return None;
@@ -1139,6 +1202,7 @@ fn run_tier_with_params(
             spec,
             tuning,
             bin,
+            cancel,
         );
         let timed_out = att.get("error").and_then(Value::as_str) == Some("timeout");
         let candidate = cand;

@@ -592,9 +592,20 @@ pub(crate) fn boundary_topology(
     tris_in: &[[i64; 3]],
     reject_non_manifold: bool,
 ) -> Result<BoundaryTopology, String> {
+    boundary_topology_with_cancel(tris_in, reject_non_manifold, None)
+}
+
+pub(crate) fn boundary_topology_with_cancel(
+    tris_in: &[[i64; 3]],
+    reject_non_manifold: bool,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Result<BoundaryTopology, String> {
     let n_he = tris_in.len() * 3;
     let mut edge_map: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
     for (fi, t) in tris_in.iter().enumerate() {
+        if fi % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return Err("cancelled".into());
+        }
         for j in 0..3 {
             edge_map
                 .entry(canon(t[j], t[(j + 1) % 3]))
@@ -869,11 +880,14 @@ impl<'a> Closer<'a> {
     }
 
     /// Run the ear-closing loop to completion (or until no ear is available).
-    fn run_close(&mut self) -> bool {
+    fn run_close(&mut self, cancel: Option<&dyn crate::cancel::Cancel>) -> bool {
         if self.alive_count == 3 {
             return self.emit_final();
         }
         while self.alive_count > 3 {
+            if crate::cancel::cancelled(cancel) {
+                return false;
+            }
             let mut closed = false;
             while let Some(e) = self.heap.pop() {
                 if !self.fresh(&e) {
@@ -980,6 +994,17 @@ pub fn close_holes_core(
     max_hole_size: i64,
     self_intersection: bool,
 ) -> Result<CloseReport, String> {
+    close_holes_core_with_cancel(verts, tris_in, max_hole_size, self_intersection, None)
+}
+
+/// `close_holes_core` with a cooperative cancellation probe.
+pub fn close_holes_core_with_cancel(
+    verts: &[V3],
+    tris_in: &[[i64; 3]],
+    max_hole_size: i64,
+    self_intersection: bool,
+    cancel: Option<&dyn crate::cancel::Cancel>,
+) -> Result<CloseReport, String> {
     let nv = verts.len();
     for t in tris_in {
         for &v in t {
@@ -988,7 +1013,7 @@ pub fn close_holes_core(
             }
         }
     }
-    let axis = boundary_topology(tris_in, true)?;
+    let axis = boundary_topology_with_cancel(tris_in, true, cancel)?;
     let edges = axis.edges;
     let loops = axis.loops;
 
@@ -1000,6 +1025,9 @@ pub fn close_holes_core(
     let mut new_faces = 0usize;
 
     for seq in loops {
+        if crate::cancel::cancelled(cancel) {
+            return Err("cancelled".into());
+        }
         let k = seq.len();
         if k < 3 || k as i64 > max_hole_size {
             continue;
@@ -1057,7 +1085,7 @@ pub fn close_holes_core(
         for i in 0..k {
             closer.push_ear(i);
         }
-        let mut finished = closer.run_close();
+        let mut finished = closer.run_close(cancel);
         if !finished && self_intersection {
             // Best-effort fallback: VCG never leaves a size-eligible loop
             // open because of the self-intersection guard alone.
@@ -1068,7 +1096,7 @@ pub fn close_holes_core(
                     closer.push_ear(i);
                 }
             }
-            finished = closer.run_close();
+            finished = closer.run_close(cancel);
         }
         if finished {
             closed_holes += 1;

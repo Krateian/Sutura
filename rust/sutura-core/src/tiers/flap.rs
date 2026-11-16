@@ -10,7 +10,7 @@
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
-use sutura_geom::flap::{flap_fill, FlapParams};
+use sutura_geom::flap::FlapParams;
 
 use super::common::{self, json_f, json_i, GuardPolicy};
 
@@ -97,6 +97,16 @@ pub fn run(
     tris: &[[i64; 3]],
     params: &Value,
 ) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
+    run_with_cancel(verts, tris, params, None)
+}
+
+/// `run` with a cooperative cancellation probe.
+pub fn run_with_cancel(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    params: &Value,
+    cancel: Option<&dyn sutura_geom::cancel::Cancel>,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
     let mut rec = base_record(params);
     let v = verts.to_vec();
     let t = tris.to_vec();
@@ -138,7 +148,8 @@ pub fn run(
         work_budget: Some(budget as u64),
         ..Default::default()
     };
-    let (cand_v, cand_t, frep) = flap_fill(&v, &t_u32, &prm);
+    let (cand_v, cand_t, frep) =
+        sutura_geom::flap::flap_fill_with_cancel(&v, &t_u32, &prm, cancel);
     rec.insert("ran".into(), json!(true));
     rec.insert(
         "time_s".into(),
