@@ -162,7 +162,7 @@ fn faces_preserved(
 /// One-sided Hausdorff distance from the candidate to the input, relative to
 /// the input bbox diagonal.  Only the maximum is recorded (the Python tier
 /// takes `[0]`).
-fn hausdorff_rel(
+pub(crate) fn hausdorff_rel(
     in_v: &[[f64; 3]],
     in_t: &[[i64; 3]],
     out_v: &[[f64; 3]],

@@ -364,6 +364,7 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         time_budget_s: None,
         seed: 0,
         forced_methods: Vec::new(),
+        engines: None,
     };
     if methods.contains(&13) {
         opts.graft = Some(true);
