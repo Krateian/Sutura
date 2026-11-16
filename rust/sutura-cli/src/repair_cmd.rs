@@ -1238,19 +1238,23 @@ fn augment_report(
         }),
     );
 
-    obj.insert(
-        "timings".into(),
-        json!({
-            "prepass": 0.0,
-            "stage1": 0.0,
-            "deep_repair": 0.0,
-            "stage2": 0.0,
-            "file_total": (elapsed_s * 1000.0).round() / 1000.0,
-            "flap_off_rerun": false,
-            "flap_off_rerun_s": Value::Null,
-            "tamponade_off_rerun": false,
-        }),
-    );
+    // Keep the core's measured stage timings; the CLI only adds the
+    // fallback-run flags and a total when the core did not provide one.
+    let mut timings = obj
+        .get("timings")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    timings.insert("flap_off_rerun".into(), Value::Bool(false));
+    timings.insert("flap_off_rerun_s".into(), Value::Null);
+    timings.insert("tamponade_off_rerun".into(), Value::Bool(false));
+    if !timings.contains_key("file_total") {
+        timings.insert(
+            "file_total".into(),
+            Value::from((elapsed_s * 1000.0).round() / 1000.0),
+        );
+    }
+    obj.insert("timings".into(), Value::Object(timings));
 
     if opts.deep_repair != DeepRepair::Local && !obj.contains_key("si_escalation") {
         obj.insert(
