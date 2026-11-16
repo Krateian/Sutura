@@ -247,11 +247,15 @@ pub fn fair_patch_energy(
         }
     }
     trips.sort_by(|a, b| a.row.cmp(&b.row).then(a.col.cmp(&b.col)));
+    // The triplet and assembly buffers are dead once the matrix exists; free
+    // them before the LU factorisation so they do not inflate its peak.
+    drop(lower);
 
     let a = match SparseColMat::<usize, f64>::try_new_from_triplets(n_unknown, n_unknown, &trips) {
         Ok(m) => m,
         Err(_) => return,
     };
+    drop(trips);
     let sym = match SymbolicLu::try_new(a.symbolic()) {
         Ok(s) => s,
         Err(_) => return,
@@ -266,6 +270,7 @@ pub fn fair_patch_energy(
         b[(i, 1)] = rhs[i][1];
         b[(i, 2)] = rhs[i][2];
     }
+    drop(rhs);
     lu.solve_in_place(&mut b);
     for i in 0..n_unknown {
         p[n_boundary + i] = [b[(i, 0)], b[(i, 1)], b[(i, 2)]];
