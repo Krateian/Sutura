@@ -1914,6 +1914,37 @@ fn finalize_rejected(field: &mut Map<String, Value>, base: &SiMetrics) {
     field.insert("baseline".into(), base.to_value());
 }
 
+fn stage_fp(v: &[[f64; 3]], t: &[[i64; 3]]) -> u64 {
+    let mut h: u64 = 0;
+    for p in v {
+        for x in p {
+            for b in x.to_le_bytes() {
+                h = h.wrapping_mul(131).wrapping_add(b as u64);
+            }
+        }
+    }
+    for r in t {
+        for x in r {
+            for b in x.to_le_bytes() {
+                h = h.wrapping_mul(131).wrapping_add(b as u64);
+            }
+        }
+    }
+    h
+}
+
+fn stage_fp_log(label: &str, v: &[[f64; 3]], t: &[[i64; 3]]) {
+    if std::env::var_os("SUTURA_STAGE_FP").is_some() {
+        eprintln!(
+            "[stage-fp] {} {} {} {}",
+            label,
+            stage_fp(v, t),
+            t.len(),
+            v.len()
+        );
+    }
+}
+
 fn cad_likeness(v: &[[f64; 3]], t: &[[i64; 3]]) -> Value {
     let f = t.len();
     if f == 0 || v.is_empty() {
@@ -2551,6 +2582,7 @@ fn repair_impl(
         stats.insert("flap".into(), rec);
     }
 
+    stage_fp_log("after_prepass", &cur_v, &cur_t);
     // --- Stage 1 -----------------------------------------------------------
     if cancel.is_cancelled() {
         return cancelled();
@@ -3315,6 +3347,7 @@ fn repair_impl(
     );
     stats.insert("pinched_vertices_split".into(), pinch_report);
 
+    stage_fp_log("after_stage1", &cur_v, &cur_t);
     // --- Stage 1 report ----------------------------------------------------
     let holes_after = boundary_loop_stats(&cur_t).0;
     let nm_after = after.non_two_manifold_edges;
@@ -3515,6 +3548,7 @@ fn repair_impl(
             cur_v = to_f64(&s2_v);
             cur_t = to_i64(&s2_t);
         }
+        stage_fp_log("after_stage2", &cur_v, &cur_t);
         let s2_json = stage2_report_json(&s2_rep);
         trace.record(
             "stage2",
@@ -3566,6 +3600,7 @@ fn repair_impl(
     }
 
     cur_v = quantize(&cur_v);
+    stage_fp_log("after_pweld", &cur_v, &cur_t);
 
     // Flap debris cleanup: the Python path applies `drop_flap_debris` after
     // P-WELD when Flap was adopted. Mirror it here so the native CLI saves the

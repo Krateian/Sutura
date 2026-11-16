@@ -570,8 +570,17 @@ def drop_flap_debris(in_verts, in_tris, out_verts, out_tris):
     error. Returns ``(verts, tris, info)``; ``info['dropped']`` logs every removed
     component (faces, volume, thickness, diag, centroid).
     """
-    core = tier_core()
-    if tier_engine('flap') == 'rust' and core is not None:
+    # Shared core: use the Rust debris implementation even in Python mode, so
+    # the volume/area/thickness sums are computed exactly once on every
+    # platform. Load the bridge directly (not via `tier_core()`, whose default
+    # is the Python engine); the numpy path below stays as the no-bridge
+    # fallback.
+    core = None
+    try:
+        import sutura_core_py as core  # noqa: F401
+    except Exception:  # noqa: BLE001 - no bridge is a supported fallback
+        core = None
+    if core is not None and hasattr(core, 'tier_flap_debris'):
         return _drop_flap_debris_rust(in_verts, in_tris, out_verts, out_tris,
                                       core)
     with method_health.tier_guard('flap_debris', 'cleanup') as _g:
