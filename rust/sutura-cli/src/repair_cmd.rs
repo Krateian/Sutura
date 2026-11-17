@@ -253,22 +253,24 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             Some(parts)
         }
     };
-    if cli.repeat_source.is_some() || cli.repeat_target.is_some() {
-        return Err(RepairFailure::new(
-            2,
-            "--repeat-source/--repeat-target are not implemented in the Rust CLI",
-        ));
-    }
+    // Only flags with no Rust implementation are refused. Everything that IS
+    // implemented is handled below and must not be rejected here: this block
+    // used to reject `--repeat-source/-target`, `--ftetwild-optimize` and all
+    // five dressing options, which the rest of this function implements and
+    // `repair.rs` consumes. A merge resolution restored the stale rejections
+    // and made implemented features unreachable from the CLI.
+    //
+    // `--wall-min-thickness` is refused for a different reason: the SDF /
+    // ray-march / marching-tetrahedra *builder* stays in Python by an approved
+    // scope decision (`tiers/wall.rs` header); Rust ships only the adoption
+    // gate, so accepting the flag would produce a repair that silently does
+    // nothing.
     if cli.wall_min_thickness.is_some() {
         return Err(RepairFailure::new(
             2,
-            "--wall-min-thickness is not implemented in the Rust CLI",
-        ));
-    }
-    if cli.auto_reorder {
-        return Err(RepairFailure::new(
-            2,
-            "--auto-reorder is not implemented in the Rust CLI",
+            "--wall-min-thickness needs the wall builder, which is Python-only in \
+             this build (the Rust port ships the adoption gate); use the Python \
+             backend for wall thickening",
         ));
     }
     for (flag, set) in [
@@ -289,19 +291,9 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             ));
         }
     }
-    if cli.experimental_dressing {
-        return Err(RepairFailure::new(
-            2,
-            "--experimental-dressing is not implemented in the Rust CLI",
-        ));
-    }
+    // History, learning-triage and anticipation flags are accepted and wired or
+    // honoured elsewhere; the ones below have no consumer yet.
     for (flag, set) in [
-        ("--dressing-drain", cli.dressing_drain.is_some()),
-        ("--dressing-defects", cli.dressing_defects.is_some()),
-        ("--dressing-rmax-scale", cli.dressing_rmax_scale.is_some()),
-        ("--dressing-sigma-scale", cli.dressing_sigma_scale.is_some()),
-        ("--dressing-force-adopt", cli.dressing_force_adopt),
-        ("--ftetwild-optimize", cli.ftetwild_optimize),
         ("--diagnostics", cli.diagnostics.is_some()),
         ("--trace", cli.trace.is_some()),
         ("--last", cli.last.is_some()),
@@ -315,10 +307,10 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             ));
         }
     }
-    if cli.self_repair || cli.self_check {
+    if cli.self_repair {
         return Err(RepairFailure::new(
             2,
-            "--self-repair/--self-check are not implemented in the Rust CLI",
+            "--self-repair is not implemented in the Rust CLI",
         ));
     }
     if let Some(v) = cli.max_geometry_change {
@@ -432,18 +424,40 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         ftetwild_max_faces: cli.ftetwild_max_faces,
         ftetwild_timeout: cli.ftetwild_timeout,
         ftetwild_max_hausdorff_rel: cli.ftetwild_max_hausdorff,
-        ftetwild_optimize_retry: if cli.ftetwild_optimize_retry { Some(true) } else { None },
+        // Two flags, one field: `--ftetwild-optimize` is Python's user-facing
+        // switch (it sets `SUTURA_FTETWILD_OPTIMIZE`, which the tier reads), and
+        // `--ftetwild-optimize-retry` is the retry-after-a-rejected-candidate
+        // variant. Both mean "let fTetWild optimise", so either one turns it on.
+        ftetwild_optimize_retry: if cli.ftetwild_optimize_retry || cli.ftetwild_optimize {
+            Some(true)
+        } else {
+            None
+        },
         graft_max_faces: cli.graft_max_faces,
         graft_timeout: cli.graft_timeout,
         dense_ratio: cli.dense_ratio,
         dense_min_faces: cli.dense_min_faces,
         auto_escalation: None,
-        dressing: false,
-        dressing_drain: None,
-        dressing_defects: None,
-        dressing_rmax_scale: None,
-        dressing_sigma_scale: None,
-        dressing_force_adopt: false,
+        // Dressing: the producer is ported (`dressing.rs`, `coat`/`run` with its
+        // own adoption gate), so these now come from the CLI instead of being
+        // hardcoded off. `--experimental-dressing` is the switch; the five
+        // sub-options only mean anything with it on (Python's precedence).
+        dressing: cli.experimental_dressing,
+        // `--dressing-drain` accepts a mode name (`none`/`half`/`full`/`deep`)
+        // or a bare number, and `dressing::resolve_drain` handles both shapes
+        // (`Value::String` vs a number). Parse a numeric argument as a number so
+        // the report says "1.25" rather than "1.25 is not a mode".
+        dressing_drain: cli.dressing_drain.as_deref().map(|raw| {
+            let t = raw.trim();
+            match t.parse::<f64>() {
+                Ok(n) => serde_json::json!(n),
+                Err(_) => serde_json::Value::String(t.to_lowercase()),
+            }
+        }),
+        dressing_defects: cli.dressing_defects.clone(),
+        dressing_rmax_scale: cli.dressing_rmax_scale,
+        dressing_sigma_scale: cli.dressing_sigma_scale,
+        dressing_force_adopt: cli.dressing_force_adopt,
         wall_thicken: false,
     };
     let (opts, _strict, _nums) = sutura_core::repair_settings::options_from(&settings)
@@ -1875,5 +1889,90 @@ mod equivalence_tests {
             "None (keep the tier's value) must not equal Some(0.0): a zero \
              timeout would give the tier no time at all"
         );
+    }
+
+    /// One table for flag reachability, rather than a test per flag.
+    ///
+    /// Two properties per row: the CLI must **accept** the flag (a stale
+    /// rejection block made several implemented flags unreachable), and the flag
+    /// must **change** the resulting options. A flag that parses but reaches
+    /// nothing is the same bug in a quieter form.
+    ///
+    /// `refused` rows are the opposite assertion: flags with no Rust
+    /// implementation must fail with exit code 2 and name the flag, so the
+    /// refusal is visible rather than silent.
+    #[test]
+    fn every_flag_is_either_reachable_or_explicitly_refused() {
+        use clap::Parser;
+
+        // (argv, JSON pointer that must differ from the no-flag run)
+        let reachable: &[(&[&str], &str)] = &[
+            (&["--repeat-source", "0,0,0", "--repeat-target", "1,1,1", "--methods", "12"], "/repeat"),
+            (&["--ftetwild-optimize"], "/ftetwild_optimize_retry"),
+            (&["--experimental-dressing"], "/dressing"),
+            (&["--dressing-drain", "half"], "/dressing_drain"),
+            (&["--dressing-defects", "holes_nm"], "/dressing_defects"),
+            (&["--dressing-rmax-scale", "1.5"], "/dressing_rmax_scale"),
+            (&["--dressing-sigma-scale", "0.75"], "/dressing_sigma_scale"),
+            (&["--dressing-force-adopt"], "/dressing_force_adopt"),
+            (&["--graft-timeout", "31.5"], "/graft_timeout"),
+            (&["--dense-ratio", "4"], "/dense_ratio"),
+        ];
+        // `--max-risk` / `--max-geometry-change` are deliberately absent from
+        // this table: they are budgets enforced in the CLI layer
+        // (`budget_check_value`), not `RepairOptions` fields, so there is no
+        // option to point at. Their reachability is covered by the budget tests.
+
+        let baseline = {
+            let cli = <crate::Cli as Parser>::try_parse_from(["sutura", "in.stl"])
+                .expect("baseline parses");
+            serde_json::to_value(
+                super::build_options(&cli).expect("baseline converts").0,
+            )
+            .expect("serialises")
+        };
+
+        for (args, pointer) in reachable {
+            let mut argv = vec!["sutura", "in.stl"];
+            argv.extend_from_slice(args);
+            let cli = <crate::Cli as Parser>::try_parse_from(&argv)
+                .unwrap_or_else(|e| panic!("{args:?} must parse: {e}"));
+            let opts = super::build_options(&cli)
+                .unwrap_or_else(|e| {
+                    panic!("{args:?} must be accepted, not refused: {:?}", e.message)
+                })
+                .0;
+            let value = serde_json::to_value(&opts).expect("serialises");
+            let got = value.pointer(pointer);
+            let had = baseline.pointer(pointer);
+            assert_ne!(
+                got, had,
+                "{args:?} parsed but did not reach {pointer}: got {got:?}, \
+                 baseline {had:?}"
+            );
+        }
+
+        // Flags with no Rust implementation must be refused, loudly.
+        let refused: &[&[&str]] = &[
+            &["--experimental-autorefine"],
+            &["--experimental-indirect-autorefine"],
+            &["--experimental-edge-tiebreak"],
+            &["--wall-min-thickness", "0.5"],
+        ];
+        for args in refused {
+            let mut argv = vec!["sutura", "in.stl"];
+            argv.extend_from_slice(args);
+            let cli = <crate::Cli as Parser>::try_parse_from(&argv)
+                .unwrap_or_else(|e| panic!("{args:?} must parse: {e}"));
+            let err = super::build_options(&cli)
+                .err()
+                .unwrap_or_else(|| panic!("{args:?} must be refused"));
+            assert_eq!(err.code, 2, "{args:?} must be a usage error");
+            let msg = err.message.unwrap_or_default();
+            assert!(
+                args.iter().any(|a| msg.contains(a)),
+                "{args:?}: the message must name the flag, got {msg:?}"
+            );
+        }
     }
 }
