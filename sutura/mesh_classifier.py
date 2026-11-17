@@ -39,7 +39,6 @@ reading mechanical: their dihedrals are ~2-5 deg, i.e. `gentle`, not `flat`.
 """
 import numpy as np
 
-from sutura_engine import rust_bridge
 
 # Classifier identity for cache/learning keying. Part of the analysis cache key
 # (see sutura_engine.diagnosis.analyze_mesh) so a cached analysis is never
@@ -158,6 +157,10 @@ def classify_mesh(verts, tris):
     metrics: {'near90', 'flat', 'gentle', 'mechanical_score',
               'organic_score', 'leaning' (unknown only)}
     """
+    # Imported here, not at module load: repair.py imports this module while
+    # the repo-root sutura_engine shim may still be initialising, and a
+    # top-level import closes that cycle (sutura -> repair -> here).
+    from sutura_engine import rust_bridge
     features, feature_engine = rust_bridge.classifier_features(verts, tris)
     if features is not None:
         near90 = float(features['near90'])

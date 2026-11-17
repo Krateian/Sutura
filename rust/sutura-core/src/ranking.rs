@@ -8,6 +8,8 @@
 //! bonus. Method availability and `needs_user_input` are static here; the
 //! Python registry can be extended at runtime, so this is the built-in set.
 
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
 use crate::config::learning::{learning_bonus, LearningKnobs};
@@ -61,8 +63,9 @@ pub struct Analysis {
     pub single_side_score: f64,
     pub relief_score: f64,
     pub repetition_score: f64,
-    /// `diagnosis_v2` block, needed by `_damage_class` and `_has_body_overlap`
-    /// for the suggestion prior. `None` behaves like Python's non-dict case.
+    /// diagnosis-v2 JSON (channels/regions): needed by `_damage_class` /
+    /// `_has_body_overlap` for the suggestion prior and by the avoid-prune.
+    /// `None` behaves like Python's non-dict case.
     pub diagnosis_v2: Option<Value>,
 }
 
@@ -857,4 +860,231 @@ pub fn recommendations_json(recs: &[Recommendation]) -> Value {
             })
             .collect(),
     )
+}
+
+
+/// Registry numbers used by the Graft/fTetWild ordering and tie-break.
+pub const GRAFT_METHOD_NUM: u8 = 13;
+pub const FTETWILD_METHOD_NUM: u8 = 7;
+
+/// Python `pipeline.order.order_graft_before_ftetwild`: keep the set, move
+/// Graft in front of fTetWild when both are present.
+pub fn order_graft_before_ftetwild(recs: Vec<Recommendation>) -> Vec<Recommendation> {
+    let graft = recs.iter().position(|r| r.num == GRAFT_METHOD_NUM);
+    let ft = recs.iter().position(|r| r.num == FTETWILD_METHOD_NUM);
+    match (graft, ft) {
+        (Some(g), Some(f)) if g > f => {
+            let mut out = recs;
+            let item = out.remove(g);
+            out.insert(f, item);
+            out
+        }
+        _ => recs,
+    }
+}
+
+/// Python `pipeline.order.ftetwild_supersedes_graft`.
+pub fn ftetwild_supersedes_graft(
+    ft_dev: Option<f64>,
+    graft_dev: Option<f64>,
+    coverage_failed: bool,
+) -> bool {
+    if coverage_failed {
+        return true;
+    }
+    match (ft_dev, graft_dev) {
+        (Some(ft), Some(g)) => ft < g,
+        _ => false,
+    }
+}
+
+/// Python `triage._prune_avoid_nums`: duplicate damage makes Join futile and
+/// interior damage makes Transplant/Wall futile (the latter are already
+/// filtered out by `needs_user_input`).
+pub fn prune_avoid_nums(analysis: &Analysis) -> HashSet<u8> {
+    let mut avoid = HashSet::new();
+    let Some(d2) = analysis.diagnosis_v2.as_ref() else {
+        return avoid;
+    };
+    let count = |name: &str| -> f64 {
+        d2.get("channels")
+            .and_then(|c| c.get(name))
+            .and_then(|e| e.get("count"))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+    };
+    if count("duplicate") > 0.0 {
+        avoid.insert(4);
+    }
+    let interior_region = d2
+        .get("regions")
+        .and_then(Value::as_array)
+        .map(|regions| {
+            regions.iter().any(|r| {
+                r.get("channel").and_then(Value::as_str) == Some("interior")
+            })
+        })
+        .unwrap_or(false);
+    if count("interior") > 0.0 || interior_region {
+        avoid.insert(11);
+        avoid.insert(15);
+    }
+    avoid
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    fn rec(num: u8) -> Recommendation {
+        Recommendation {
+            num,
+            id: "",
+            name: "",
+            score: 0.0,
+            reason: String::new(),
+            template: None,
+            reason_key: "",
+            reason_args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn graft_moves_before_ftetwild() {
+        let out = order_graft_before_ftetwild(vec![rec(7), rec(3), rec(13)]);
+        let nums: Vec<u8> = out.iter().map(|r| r.num).collect();
+        assert_eq!(nums, vec![13, 7, 3]);
+    }
+
+    #[test]
+    fn tie_break_matches_python() {
+        assert!(ftetwild_supersedes_graft(Some(0.1), Some(0.2), false));
+        assert!(!ftetwild_supersedes_graft(Some(0.2), Some(0.1), false));
+        assert!(!ftetwild_supersedes_graft(None, Some(0.1), false));
+        assert!(ftetwild_supersedes_graft(None, None, true));
+    }
+
+    #[test]
+    fn avoid_prune_reads_channels() {
+        let mut a = Analysis::default();
+        a.diagnosis_v2 = Some(json!({"channels": {"duplicate": {"count": 2}}}));
+        assert!(prune_avoid_nums(&a).contains(&4));
+        a.diagnosis_v2 = Some(json!({"channels": {"interior": {"count": 1}}}));
+        let avoid = prune_avoid_nums(&a);
+        assert!(avoid.contains(&11) && avoid.contains(&15));
+    }
+}
+
+
+// --- Suggestions / auto-reorder -------------------------------------------
+
+const CORE150_PRIOR_CLEAN: &[(u8, f64)] = &[(1, 0.95), (2, 0.95), (3, 0.95), (9, 0.85)];
+const CORE150_PRIOR_HOLES: &[(u8, f64)] = &[(18, 0.80), (3, 0.80), (1, 0.70), (2, 0.70)];
+const CORE150_PRIOR_SI: &[(u8, f64)] = &[(10, 0.70), (7, 0.55), (13, 0.55)];
+const CORE150_PRIOR_REPEATED: &[(u8, f64)] = &[(8, 0.80), (1, 0.80), (4, 0.80), (13, 0.70)];
+const CORE150_PRIOR_SCAN: &[(u8, f64)] = &[(9, 0.90), (1, 0.70), (3, 0.70)];
+const CORE150_PRIOR_DUPLICATE: &[(u8, f64)] = &[(8, 0.90), (1, 0.90), (2, 0.80), (4, 0.80)];
+
+fn diag_count(a: &Analysis, name: &str) -> f64 {
+    a.diagnosis_v2
+        .as_ref()
+        .and_then(|d| d.get("channels"))
+        .and_then(|c| c.get(name))
+        .and_then(|e| e.get("count"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+}
+
+fn damage_class(a: &Analysis) -> &'static str {
+    if a.self_intersections > 0.0 || diag_count(a, "self_intersection") > 0.0 {
+        return "si";
+    }
+    if a.non_manifold_edges > 0.0 || a.boundary_loops > 0.0 || diag_count(a, "loops") > 0.0 {
+        return "holes";
+    }
+    if a.repetition_score >= 0.5 {
+        return "repeated";
+    }
+    if a.single_side_score >= 0.5 || a.relief_score >= 0.5 {
+        return "scan";
+    }
+    if diag_count(a, "duplicate") > 0.0 || diag_count(a, "degenerate") > 0.0 {
+        return "duplicate";
+    }
+    "clean"
+}
+
+fn prior_for(class: &str) -> &'static [(u8, f64)] {
+    match class {
+        "holes" => CORE150_PRIOR_HOLES,
+        "si" => CORE150_PRIOR_SI,
+        "repeated" => CORE150_PRIOR_REPEATED,
+        "scan" => CORE150_PRIOR_SCAN,
+        "duplicate" => CORE150_PRIOR_DUPLICATE,
+        _ => CORE150_PRIOR_CLEAN,
+    }
+}
+
+fn has_body_overlap(a: &Analysis) -> bool {
+    let Some(d) = a.diagnosis_v2.as_ref() else {
+        return false;
+    };
+    let inter = d
+        .get("self_intersections")
+        .and_then(|s| s.get("inter_body"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if inter > 0 {
+        return true;
+    }
+    d.get("parts")
+        .and_then(|p| p.get("overlap_edges"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        > 0
+}
+
+/// Python `methods.suggest_methods` ordering only (numbers, confidence-ranked).
+pub fn suggest_order(loaded: &LoadedPolicy, analysis: &Analysis, top_n: usize) -> Vec<u8> {
+    let mut recs = rank_methods(loaded, analysis, Some(top_n.max(6)), None);
+    if !has_body_overlap(analysis) {
+        recs.retain(|r| r.num != 4);
+    }
+    let priors = prior_for(damage_class(analysis));
+    let mut scored: Vec<(u8, f64)> = recs
+        .iter()
+        .map(|r| {
+            let prior = priors.iter().find(|(n, _)| *n == r.num).map(|(_, p)| *p);
+            let conf = match prior {
+                Some(p) => 0.85 * r.score + 0.15 * p,
+                None => r.score,
+            };
+            (r.num, crate::classify::py_round(conf.min(0.95).clamp(0.0, 1.0), 3))
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    scored.into_iter().take(top_n).map(|(n, _)| n).collect()
+}
+
+/// Python `triage._apply_auto_reorder`: suggestion order, then the Graft-before-
+/// fTetWild invariant.  Opt-in (`--auto-reorder`).
+pub fn apply_auto_reorder(
+    recs: Vec<Recommendation>,
+    loaded: &LoadedPolicy,
+    analysis: &Analysis,
+) -> Vec<Recommendation> {
+    let order = suggest_order(loaded, analysis, recs.len().max(3));
+    let rank: std::collections::HashMap<u8, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (*n, i))
+        .collect();
+    let tail = rank.len();
+    let mut out = recs;
+    out.sort_by_key(|r| rank.get(&r.num).copied().unwrap_or(tail));
+    order_graft_before_ftetwild(out)
 }

@@ -7,9 +7,9 @@
 
 use super::V3;
 use faer::linalg::solvers::Solve;
-use faer::sparse::linalg::solvers::{Lu, SymbolicLu};
+use faer::sparse::linalg::solvers::{Llt, Lu, SymbolicLlt, SymbolicLu};
 use faer::sparse::{SparseColMat, Triplet};
-use faer::Mat;
+use faer::{Mat, Side};
 
 /// Accumulate `val` into the lower-triangular system entry `(row_local, col)`
 /// when `col` is an unknown interior column, or into the right-hand side when
@@ -256,6 +256,28 @@ pub fn fair_patch_energy(
         Err(_) => return,
     };
     drop(trips);
+    // The normal equations are symmetric positive definite.  Prefer sparse
+    // LLT with AMD (smaller factor, no pivot search); if the numeric
+    // factorisation rejects the matrix, fall through to the historical LU so
+    // a numerically difficult patch keeps the old behaviour.
+    let llt = SymbolicLlt::try_new(a.symbolic(), Side::Lower)
+        .ok()
+        .and_then(|sym| Llt::try_new_with_symbolic(sym, a.as_ref(), Side::Lower).ok());
+    if let Some(llt) = llt {
+        drop(a);
+        let mut b = Mat::<f64>::zeros(n_unknown, 3);
+        for i in 0..n_unknown {
+            b[(i, 0)] = rhs[i][0];
+            b[(i, 1)] = rhs[i][1];
+            b[(i, 2)] = rhs[i][2];
+        }
+        drop(rhs);
+        llt.solve_in_place(&mut b);
+        for i in 0..n_unknown {
+            p[n_boundary + i] = [b[(i, 0)], b[(i, 1)], b[(i, 2)]];
+        }
+        return;
+    }
     let sym = match SymbolicLu::try_new(a.symbolic()) {
         Ok(s) => s,
         Err(_) => return,

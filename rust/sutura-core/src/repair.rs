@@ -12,7 +12,7 @@
 //! dropped silently. No Python is called and no per-tier callback exists: the
 //! `ProgressSink` only sees stage and tier boundaries.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -23,7 +23,7 @@ use sutura_geom::manifold::{outer_shell_union_core, stage2_rebuild_core, Stage2R
 use sutura_geom::shell::{shell_analyze_and_filter, ShellAnalysisResult, ShellConfig};
 
 use crate::analysis::{analyze_mesh, Analysis as MeshAnalysis};
-use crate::classify::classify_mesh;
+use crate::classify::classify_mesh_with;
 use crate::closing::{flat_back_close_with_cancel, poisson_close_with_cancel};
 use crate::config::intensity::{resolve_intensity, IntensitySpec};
 use crate::config::policy::{load_policy, LoadedPolicy, PolicyValue};
@@ -33,7 +33,10 @@ use crate::mesh::Mesh;
 use crate::mirror::mirror_close;
 use crate::p_weld::{enforce_reload_verdict, p_weld_final, reload_strict_holes_nm};
 use crate::proxy::proxy_template_repair;
-use crate::ranking::{rank_methods, recommendations_json, Analysis as RankingAnalysis};
+use crate::ranking::{
+    order_graft_before_ftetwild, prune_avoid_nums, rank_methods, recommendations_json,
+    Analysis as RankingAnalysis, Recommendation,
+};
 use crate::report::defects::detect_defects;
 use crate::report::health::build_report_value;
 use crate::stage1::chain::{
@@ -235,6 +238,27 @@ pub struct RepairOptions {
     /// the auto deep-repair ladder so it does not force Graft/fTetWild.
     #[serde(default)]
     pub auto_escalation: Option<bool>,
+    /// Opt-in `--experimental-edge-tiebreak` classifier head.
+    #[serde(default)]
+    pub extra_features: bool,
+    /// Opt-in `--experimental-autorefine` snap-rounding pass.
+    #[serde(default)]
+    pub autorefine: bool,
+    /// Opt-in `--experimental-indirect-autorefine` exact arrangement split.
+    #[serde(default)]
+    pub indirect_autorefine: bool,
+    /// Opt-in `--auto-reorder`: reorder the ranked fallback by the suggestion
+    /// order before the first attempt.
+    #[serde(default)]
+    pub auto_reorder: bool,
+    /// Opt-in `--ftetwild-optimize`: run the fTetWild optimizing attempt first
+    /// (Python `ftetwild_params()`), including when the SI trigger forces it.
+    #[serde(default)]
+    pub ftetwild_optimize: bool,
+    /// Internal guard: depth of a nested auto-ladder attempt.  Not part of the
+    /// Python-facing option JSON.
+    #[serde(skip)]
+    pub ladder_depth: u8,
 }
 
 impl Default for RepairOptions {
@@ -279,6 +303,12 @@ impl Default for RepairOptions {
             forced_methods: Vec::new(),
             engines: None,
             auto_escalation: None,
+            extra_features: false,
+            autorefine: false,
+            indirect_autorefine: false,
+            auto_reorder: false,
+            ftetwild_optimize: false,
+            ladder_depth: 0,
         }
     }
 }
@@ -874,7 +904,7 @@ fn resolve_triage(
         .iter()
         .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
         .collect();
-    let cls = classify_mesh(verts, &tri_usize, "experimental");
+    let cls = classify_mesh_with(verts, &tri_usize, "experimental", opts.extra_features);
     let mesh_type = cls
         .get("type")
         .and_then(Value::as_str)
@@ -1473,6 +1503,104 @@ fn graft_grid_budget() -> Option<i64> {
     }
 }
 
+const DEFAULT_FALLBACK_WORK_BUDGET: i64 = 6_000_000;
+const PIPELINE_FACE_COST: i64 = 8;
+
+#[allow(dead_code)]
+fn resolve_budget_env(key: &str, default: i64) -> Option<i64> {
+    let Ok(raw) = std::env::var(key) else {
+        return Some(default);
+    };
+    let text = raw.trim().to_ascii_lowercase();
+    if text.is_empty() {
+        return Some(default);
+    }
+    if matches!(text.as_str(), "0" | "false" | "no" | "off") {
+        return None;
+    }
+    match text.parse::<i64>() {
+        Ok(value) if value > 0 => Some(value),
+        Ok(_) => None,
+        Err(_) => Some(default),
+    }
+}
+
+#[allow(dead_code)]
+fn fallback_work_budget() -> Option<i64> {
+    resolve_budget_env("SUTURA_FALLBACK_BUDGET", DEFAULT_FALLBACK_WORK_BUDGET)
+}
+
+#[allow(dead_code)]
+fn work_class(method_id: &str) -> &'static str {
+    match method_id {
+        "quick_clean" | "local_mend" | "join" | "transplant" | "transplant_plus" => "faces",
+        "graft" | "dressing" => "grid",
+        _ => "damage",
+    }
+}
+
+#[allow(dead_code)]
+fn candidate_work(method_id: &str, damage: i64, grid: i64, faces: i64) -> i64 {
+    match work_class(method_id) {
+        "grid" if grid > 0 => grid,
+        "faces" if faces > 0 => faces * PIPELINE_FACE_COST,
+        _ => damage,
+    }
+}
+
+#[allow(dead_code)]
+fn fits_budget(work: i64, budget: Option<i64>) -> bool {
+    budget.map(|b| work <= b).unwrap_or(true)
+}
+
+#[allow(dead_code)]
+fn grid_work_units(faces: i64, cells: i64) -> i64 {
+    (faces.max(0) * cells.max(0) + 999) / 1000
+}
+
+#[allow(dead_code)]
+fn grid_work_with_holes(faces: i64, cells: i64, holes: i64) -> i64 {
+    grid_work_units(faces, cells) * (1 + holes.max(0) / 100)
+}
+
+/// Python `triage._fallback_grid_work` for one mesh: the morphology grid
+/// estimate at the resolved intensity budget, with the hole multiplier.
+#[allow(dead_code)]
+fn fallback_grid_work(v: &[[f64; 3]], t: &[[i64; 3]], intensity: &str) -> i64 {
+    if t.is_empty() {
+        return 0;
+    }
+    let budget = crate::graft::shell::resolve_grid_budget(Some(intensity));
+    let voxel = crate::graft::helpers::auto_voxel(v, t, Some(budget));
+    let cells = crate::graft::helpers::grid_cell_count(v, voxel);
+    let holes = boundary_loop_stats(t).0 as i64;
+    grid_work_with_holes(t.len() as i64, cells, holes)
+}
+
+#[cfg(test)]
+mod work_estimate_tests {
+    use super::*;
+
+    #[test]
+    fn work_classes_match_python() {
+        assert_eq!(work_class("quick_clean"), "faces");
+        assert_eq!(work_class("autorefine"), "damage");
+        assert_eq!(work_class("graft"), "grid");
+        assert_eq!(candidate_work("quick_clean", 7, 0, 10), 80);
+        assert_eq!(candidate_work("autorefine", 7, 0, 10), 7);
+        assert_eq!(candidate_work("graft", 7, 99, 10), 99);
+    }
+
+    #[test]
+    fn budget_and_grid_math() {
+        assert!(fits_budget(6_000_000, None));
+        assert!(fits_budget(6_000_000, Some(6_000_000)));
+        assert!(!fits_budget(6_000_001, Some(6_000_000)));
+        assert_eq!(grid_work_units(10, 1), 1);
+        assert_eq!(grid_work_with_holes(10, 1000, 250), 20);
+    }
+}
+
 fn input_damage_work(v: &[[f64; 3]], t: &[[i64; 3]]) -> i64 {
     let topo = common::topology_summary(v, t);
     let holes = boundary_loop_stats(t).0 as i64;
@@ -1809,17 +1937,11 @@ fn apply_si_escalation(
     cand_field["candidate_sha256"] = cand_sha.map(Value::from).unwrap_or(Value::Null);
     cand_field["elapsed_ms"] = Value::from(elapsed_ms.round() as i64);
 
-    let watertight = cand_report
-        .get("method_reached_watertight")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let eval_holes = cand.holes.unwrap_or(0);
-    let eval_nm = cand.nm.unwrap_or(0);
-    let eval_reason = if watertight {
-        "strict-watertight".to_string()
-    } else {
-        format!("holes={eval_holes} non-manifold={eval_nm} remain")
-    };
+    // Evaluate the SI candidate with the same reload-strict holes/nm rule as
+    // the Python ladder (`_evaluate`); the raw `method_reached_watertight` flag
+    // is pre-reload and rejected an accepted scaffold on broken_40261.
+    let (watertight, eval_holes, eval_nm, eval_reason) =
+        ladder_eval(&cand_v, &cand_t, &cand_report);
     let geom_change = geom_change_pct(input_v, input_t, &cand_v, &cand_t);
     let tried_entry = json!({
         "num": method_num,
@@ -2392,7 +2514,7 @@ fn unavailable_tiers(ftetwild_reason: Option<&str>) -> Value {
         "wall_builder": entry("the Wall-thicken producer stays in Python; only the Rust adoption gate exists"),
         "cad_likeness": entry("cad_likeness is a Python scoring helper; no sutura-core implementation yet"),
         "ranking_scores": entry("unused: repetition_score, single_side_score and relief_score are produced by analysis.rs"),
-        "method_escalation": entry("ranked multi-method escalation is file-level (src/out); sutura-core selects the baseline method only"),
+        "method_escalation_multi": entry("multi-object 3MF/OBJ escalation stays in the Python service; sutura-core runs the ranked ladder for single meshes"),
     })
     .as_object()
     .cloned()
@@ -2401,6 +2523,524 @@ fn unavailable_tiers(ftetwild_reason: Option<&str>) -> Value {
         tiers.insert("ftetwild".to_string(), entry(reason));
     }
     Value::Object(tiers)
+}
+
+/// Re-run the Stage-1 chain on an opt-in pre-processed candidate.
+fn stage1_variant(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    max_hole: i64,
+    min_component: i64,
+    join_components: bool,
+    cancel: &CancelToken,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
+    let chain = Value::Array(stage1_chain(max_hole, min_component, join_components));
+    let (out_v, out_t, _applied, _skipped, _small) = apply_chain_with_cancel(
+        verts,
+        tris,
+        &chain,
+        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+    );
+    (out_v, out_t)
+}
+
+/// Python's candidate guard: holes and non-manifold edges no worse than the
+/// baseline chain output.
+fn candidate_no_worse(
+    cand_v: &[[f64; 3]],
+    cand_t: &[[i64; 3]],
+    base_v: &[[f64; 3]],
+    base_t: &[[i64; 3]],
+) -> bool {
+    let cand_holes = boundary_loop_stats(cand_t).0;
+    let cand_nm = common::topology_summary(cand_v, cand_t).non_two_manifold_edges;
+    let base_holes = boundary_loop_stats(base_t).0;
+    let base_nm = common::topology_summary(base_v, base_t).non_two_manifold_edges;
+    cand_holes <= base_holes && cand_nm <= base_nm
+}
+
+/// Map one registry method number to the option overrides Python passes via
+/// `method.kwargs`, and mark the attempt as non-escalating.  Returns `None`
+/// for methods whose producer still lives only in Python (Repeat #11/#12,
+/// Wall #15, Dressing #16, Tamponade #17, Splint #18) or unknown numbers.
+pub(crate) fn method_options(base: &RepairOptions, num: u8) -> Option<RepairOptions> {
+    if !matches!(num, 1..=10 | 13 | 14 | 19) {
+        return None;
+    }
+    let mut opts = base.clone();
+    opts.forced_methods = vec![num];
+    opts.auto_escalation = Some(false);
+    opts.ladder_depth = base.ladder_depth.saturating_add(1);
+    match num {
+        1 => {
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        2 => {
+            opts.deep_repair = DeepRepair::Local;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        3 => {
+            opts.deep_repair = DeepRepair::Full;
+            opts.ftetwild = Some(Value::from("auto"));
+        }
+        4 => opts.join_components = true,
+        5 => opts.autorefine = true,
+        6 => opts.indirect_autorefine = true,
+        7 => {
+            opts.deep_repair = DeepRepair::Full;
+            opts.ftetwild = Some(Value::Bool(true));
+        }
+        8 => {
+            opts.closing = Some(ClosingMode::Poisson);
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        9 => {
+            opts.closing = Some(ClosingMode::FlatBack);
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        10 => {
+            opts.proxy_template = true;
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        13 => {
+            opts.graft = Some(true);
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        14 => {
+            opts.closing = Some(ClosingMode::Mirror);
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        19 => {
+            opts.coaptation = Some(true);
+            opts.deep_repair = DeepRepair::Full;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        _ => return None,
+    }
+    Some(opts)
+}
+
+/// Run one ranked-fallback attempt as a nested repair with the method's option
+/// overrides.  The attempt never re-enters the auto ladder
+/// (`auto_escalation=false`) and shares the caller's cancellation token.
+#[allow(dead_code)]
+pub(crate) fn attempt_with_method(
+    input_v: &[[f64; 3]],
+    input_t: &[[i64; 3]],
+    base: &RepairOptions,
+    method_num: u8,
+    cancel: &CancelToken,
+) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value)> {
+    let opts = method_options(base, method_num)?;
+    if cancel.is_cancelled() {
+        return None;
+    }
+    match repair_impl(input_v, input_t, &opts, &NoopSink, cancel, false) {
+        RepairOutcome::Ok {
+            verts,
+            tris,
+            report,
+        } => Some((verts, tris, report)),
+        _ => None,
+    }
+}
+
+/// Python `_auto_escalation_allowed`: the ranked ladder is only enabled for
+/// the full preset and while fTetWild is not explicitly off.
+fn auto_ladder_allowed(opts: &RepairOptions) -> bool {
+    opts.auto_escalation.unwrap_or(true)
+        && opts.ladder_depth == 0
+        && opts.forced_methods.is_empty()
+        && matches!(opts.deep_repair, DeepRepair::Full)
+        && !matches!(opts.ftetwild, Some(Value::Bool(false)))
+}
+
+fn method_invents_geometry(num: u8) -> bool {
+    matches!(num, 7 | 10 | 13 | 15 | 16)
+}
+
+/// Python `_evaluate` for a nested attempt: strict-watertight + reloaded
+/// holes/non-manifold edges.
+fn ladder_eval(v: &[[f64; 3]], t: &[[i64; 3]], report: &Value) -> (bool, usize, usize, String) {
+    let s1 = report.get("stage1");
+    let two = s1
+        .and_then(|s| s.get("two_manifold"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let holes_remaining = s1
+        .and_then(|s| s.get("holes_remaining"))
+        .and_then(Value::as_i64)
+        .unwrap_or(-1);
+    let stage2_ok = report
+        .get("stage2")
+        .and_then(|s| s.get("ok"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let watertight = two && holes_remaining == 0 && stage2_ok;
+    let (holes, nm) = if watertight {
+        (0usize, 0usize)
+    } else {
+        reload_strict_holes_nm(v, t)
+    };
+    let reason = if watertight {
+        "strict-watertight".to_string()
+    } else if holes > 0 || nm > 0 {
+        format!("holes={holes} non-manifold={nm} remain")
+    } else {
+        "stage 1 closed but stage 2 did not confirm the solid".to_string()
+    };
+    (watertight, holes, nm, reason)
+}
+
+fn ladder_guard_policy(policy: Option<&LoadedPolicy>, method_id: &str) -> common::GuardPolicy {
+    let read = |key: &str, default: f64| policy_number(policy, "gates.adoption", key, default);
+    let si_policy = match method_id {
+        "graft" | "ftetwild" => "improved_flag",
+        "splint" | "transplant" | "transplant_plus" | "wall_thicken" => "non_rise",
+        "coaptation" | "dressing" => "strict_zero",
+        "flap" | "tamponade" => "flag",
+        _ => "flag",
+    };
+    common::GuardPolicy {
+        face_ratio: read("face_ratio", 4.0),
+        vertex_ratio: read("vertex_ratio", 4.0),
+        min_slack: read("min_slack", 256.0) as i64,
+        loop_face_slack: read("loop_face_slack", 16.0) as i64,
+        loop_vertex_slack: read("loop_vertex_slack", 16.0) as i64,
+        si_policy: si_policy.to_string(),
+        si_rel_tol: 0.0,
+        si_abs_tol: 0,
+        face_abs_floor: if method_id == "ftetwild" {
+            read("ftetwild_abs_floor", 50_000.0) as i64
+        } else {
+            0
+        },
+        vertex_abs_floor: if method_id == "ftetwild" {
+            read("ftetwild_abs_floor", 50_000.0) as i64
+        } else {
+            0
+        },
+        allow_growth_if_improved: method_id == "ftetwild",
+    }
+}
+
+fn ladder_record(
+    num: u8,
+    id: &str,
+    name: &str,
+    outcome: &str,
+    watertight: bool,
+    holes: usize,
+    nm: usize,
+    reason: &str,
+    work_units: Option<i64>,
+    work_budget: Option<i64>,
+    budget_scope: Option<&str>,
+) -> Value {
+    let mut rec = json!({
+        "num": num,
+        "id": id,
+        "name": name,
+        "outcome": outcome,
+        "watertight": watertight,
+        "holes": holes,
+        "non_manifold": nm,
+        "hausdorff_rel": Value::Null,
+        "geom_change_pct": Value::Null,
+        "guard_rejected": Value::Null,
+        "guard_reason": Value::Null,
+        "si_flagged": false,
+        "adopt_guard": Value::Null,
+        "reason": reason,
+        "template": Value::Null,
+        "elapsed_ms": 0,
+    });
+    if let Some(units) = work_units {
+        rec["work_units"] = Value::from(units);
+    }
+    if let Some(budget) = work_budget {
+        rec["work_budget"] = Value::from(budget);
+    }
+    if let Some(scope) = budget_scope {
+        rec["budget_scope"] = Value::from(scope);
+    }
+    rec
+}
+
+fn ladder_attach_budgets(
+    report: &mut Map<String, Value>,
+    work_budget: Option<i64>,
+    grid_budget: Option<i64>,
+    damage: i64,
+    grid: i64,
+    counts: &(i64, i64, i64, i64),
+) {
+    report.insert(
+        "fallback_work_budget".into(),
+        work_budget.map(Value::from).unwrap_or(Value::Null),
+    );
+    report.insert(
+        "fallback_grid_work_budget".into(),
+        grid_budget.map(Value::from).unwrap_or(Value::Null),
+    );
+    report.insert(
+        "fallback_work_input".into(),
+        json!({
+            "faces": counts.0,
+            "nm_edges": counts.1,
+            "nm_vertices": counts.2,
+            "holes": counts.3,
+        }),
+    );
+    report.insert(
+        "fallback_work_estimate".into(),
+        json!({"damage_units": damage, "grid_units": grid}),
+    );
+}
+
+/// Run the ranked fallback ladder on a non-watertight baseline.  Returns the
+/// adopted candidate when one wins; otherwise annotates the baseline report
+/// and returns `None` (the baseline output is kept).
+#[allow(clippy::too_many_arguments)]
+fn run_auto_ladder(
+    input_v: &[[f64; 3]],
+    input_t: &[[i64; 3]],
+    opts: &RepairOptions,
+    policy: Option<&LoadedPolicy>,
+    ranking: &(Vec<Recommendation>, HashSet<u8>),
+    base_report: &mut Map<String, Value>,
+    cancel: &CancelToken,
+) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Map<String, Value>)> {
+    let (base_num, _, _) = baseline_method(opts.deep_repair);
+    let faces = input_t.len() as i64;
+    let topo = common::topology_summary(input_v, input_t);
+    let holes = boundary_loop_stats(input_t).0 as i64;
+    let counts = (
+        faces,
+        topo.non_two_manifold_edges as i64,
+        topo.non_two_manifold_vertices as i64,
+        holes,
+    );
+    let damage = input_damage_work(input_v, input_t);
+    let grid = fallback_grid_work(input_v, input_t, &opts.intensity);
+    let work_budget = fallback_work_budget();
+    let grid_budget = graft_grid_budget();
+    let max_attempts = policy_number(policy, "auto", "max_attempts", 3.0).max(0.0) as usize;
+    let invent_min = policy_number(policy, "auto", "invent_min_score", 0.8);
+    let baseline_entry = base_report
+        .get("methods_tried")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut tried: Vec<Value> = Vec::new();
+    let mut attempts = 0usize;
+    let mut deferred_graft: Option<(
+        Recommendation,
+        Vec<[f64; 3]>,
+        Vec<[i64; 3]>,
+        Map<String, Value>,
+        bool,
+    )> = None;
+
+    let mut adopt = |rec: &Recommendation,
+                     v: Vec<[f64; 3]>,
+                     t: Vec<[i64; 3]>,
+                     cand_report: Value,
+                     tried: &[Value]|
+     -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Map<String, Value>)> {
+        let mut m = cand_report.as_object().cloned().unwrap_or_default();
+        let mut all = Vec::with_capacity(tried.len() + 1);
+        all.push(baseline_entry.clone());
+        all.extend(tried.iter().cloned());
+        m.insert("methods_tried".into(), Value::Array(all));
+        m.insert(
+            "method_used".into(),
+            json!({
+                "num": rec.num,
+                "id": rec.id,
+                "name": rec.name,
+                "source": "auto_escalated",
+                "note": null,
+            }),
+        );
+        m.insert("method_reached_watertight".into(), Value::Bool(true));
+        ladder_attach_budgets(&mut m, work_budget, grid_budget, damage, grid, &counts);
+        Some((v, t, m))
+    };
+
+    for rec in &ranking.0 {
+        if rec.num == base_num || ranking.1.contains(&rec.num) {
+            continue;
+        }
+        let Some(_) = method_options(opts, rec.num) else {
+            continue;
+        };
+        let work = candidate_work(rec.id, damage, grid, faces);
+        let cls = work_class(rec.id);
+        let budget = if cls == "grid" { grid_budget } else { work_budget };
+        let scope = if cls == "grid" { "grid" } else { "fallback" };
+        if !fits_budget(work, budget) {
+            tried.push(ladder_record(
+                rec.num,
+                rec.id,
+                rec.name,
+                "skipped_budget",
+                false,
+                0,
+                0,
+                &format!(
+                    "estimated {cls} work {work} (budget {}) is above the cap; method not started, stage-1 result kept",
+                    budget.map(|b| b.to_string()).unwrap_or_else(|| "none".into())
+                ),
+                Some(work),
+                budget,
+                Some(scope),
+            ));
+            continue;
+        }
+        if method_invents_geometry(rec.num) && rec.score < invent_min {
+            continue;
+        }
+        if attempts >= max_attempts {
+            break;
+        }
+        attempts += 1;
+        let Some((cv, ct, crep)) = attempt_with_method(input_v, input_t, opts, rec.num, cancel) else {
+            continue;
+        };
+        let (mut watertight, holes, nm, reason) = ladder_eval(&cv, &ct, &crep);
+        if watertight {
+            let guard_policy = ladder_guard_policy(policy, rec.id);
+            if let Some(g) = common::blowup_reason(
+                input_t.len(),
+                input_v.len(),
+                ct.len(),
+                cv.len(),
+                0,
+                &guard_policy,
+            ) {
+                watertight = false;
+                tried.push(ladder_record(
+                    rec.num,
+                    rec.id,
+                    rec.name,
+                    "rejected",
+                    false,
+                    holes,
+                    nm,
+                    &format!("adopt guard: {g}"),
+                    None,
+                    None,
+                    None,
+                ));
+                continue;
+            }
+        }
+        tried.push(ladder_record(
+            rec.num,
+            rec.id,
+            rec.name,
+            if watertight { "accepted" } else { "rejected" },
+            watertight,
+            holes,
+            nm,
+            &reason,
+            None,
+            None,
+            None,
+        ));
+        if !watertight {
+            continue;
+        }
+        // Python `_evaluate`: generative methods and Join get a one-sided
+        // input->output Hausdorff gate (Graft is self-guarded by its own
+        // fidelity/coverage gate below).
+        let shape_gated = method_invents_geometry(rec.num) || rec.id == "join";
+        if shape_gated && rec.num != 13 {
+            let gen_max = policy_number(
+                policy,
+                "auto",
+                "generative_max_hausdorff_rel",
+                0.01,
+            );
+            let hd = crate::proxy::one_sided_hausdorff_rel(
+                input_v, input_t, &cv, &ct,
+            )
+            .0;
+            if let Some(hd) = hd {
+                if hd > gen_max {
+                    tried.push(ladder_record(
+                        rec.num,
+                        rec.id,
+                        rec.name,
+                        "rejected",
+                        false,
+                        holes,
+                        nm,
+                        &format!(
+                            "shape changed (one-sided Hausdorff {hd:.3} > {gen_max:.3})"
+                        ),
+                        None,
+                        None,
+                        None,
+                    ));
+                    continue;
+                }
+            }
+        }
+        if rec.num == 13 {
+            let g = crep.get("graft");
+            let fidelity_failed = g
+                .and_then(|g| g.get("fidelity_ok"))
+                .and_then(Value::as_bool)
+                == Some(false);
+            let coverage_failed = g
+                .and_then(|g| g.get("coverage_ok"))
+                .and_then(Value::as_bool)
+                == Some(false);
+            if fidelity_failed || coverage_failed {
+                deferred_graft = Some((
+                    rec.clone(),
+                    cv,
+                    ct,
+                    crep.as_object().cloned().unwrap_or_default(),
+                    coverage_failed,
+                ));
+                continue;
+            }
+        }
+        return adopt(rec, cv, ct, crep, &tried);
+    }
+
+    if let Some((rec, cv, ct, mut cand, coverage_failed)) = deferred_graft {
+        if !coverage_failed {
+            return adopt(&rec, cv, ct, Value::Object(cand), &tried);
+        }
+        // Coverage failure: never adopt this Graft; surface it on the baseline.
+        let g = cand.remove("graft").unwrap_or(Value::Null);
+        if let Some(gm) = g.as_object() {
+            let mut surf = gm.clone();
+            surf.insert("ran".into(), Value::Bool(true));
+            surf.insert("adopted".into(), Value::Bool(false));
+            surf.insert("reject_reason".into(), Value::from("coverage"));
+            base_report.insert("graft".into(), Value::Object(surf));
+        }
+    }
+
+    // No candidate won: keep the baseline bytes but record the attempts.
+    let mut all = Vec::with_capacity(tried.len() + 1);
+    all.push(baseline_entry);
+    all.extend(tried.iter().cloned());
+    base_report.insert("methods_tried".into(), Value::Array(all));
+    ladder_attach_budgets(base_report, work_budget, grid_budget, damage, grid, &counts);
+    None
 }
 
 /// Repair one mesh given as float64/int64 arrays.
@@ -2570,7 +3210,8 @@ fn repair_impl(
     if cancel.is_cancelled() {
         return cancelled();
     }
-    let recommendations = match (policy.as_ref(), mesh_analysis.as_ref()) {
+    let ranking: Option<(Vec<Recommendation>, HashSet<u8>)> =
+        match (policy.as_ref(), mesh_analysis.as_ref()) {
         (Some(loaded), Some(analysis)) => {
             let rank_analysis = RankingAnalysis {
                 mesh_type: Some(analysis.mesh_type.clone()),
@@ -2581,13 +3222,22 @@ fn repair_impl(
                 components: analysis.components as f64,
                 largest_loop_ratio: analysis.largest_loop_ratio,
                 open_area_ratio: analysis.open_area_ratio,
+                diagnosis_v2: analysis.diagnosis_v2.clone(),
                 ..RankingAnalysis::default()
             };
-            let recs = rank_methods(loaded, &rank_analysis, None, None);
-            Some(recommendations_json(&recs))
+            let mut recs = rank_methods(loaded, &rank_analysis, None, None);
+            if opts.auto_reorder {
+                recs = crate::ranking::apply_auto_reorder(recs, loaded, &rank_analysis);
+            }
+            let recs = order_graft_before_ftetwild(recs);
+            let avoid = prune_avoid_nums(&rank_analysis);
+            Some((recs, avoid))
         }
         _ => None,
     };
+    let recommendations = ranking
+        .as_ref()
+        .map(|(recs, _)| recommendations_json(recs));
 
     if cancel.is_cancelled() {
         return cancelled();
@@ -2761,9 +3411,103 @@ fn repair_impl(
         );
     }
 
+    // Opt-in autorefine prototypes: re-run the SAME Stage-1 chain on the
+    // pre-processed input and adopt the candidate only when holes and
+    // non-manifold edges are no worse. Python order is autorefine, then the
+    // exact indirect arrangement, then delete-fallback/join.
+    if opts.autorefine {
+        let (ar_v, ar_t, rec) = crate::autorefine::autorefine(&s1_in_v, &s1_in_t);
+        let mut rep = rec;
+        if ar_t.is_empty() {
+            rep["skipped"] = Value::Bool(true);
+        } else {
+            let (av, at) = stage1_variant(
+                &ar_v, &ar_t, max_hole, min_component, opts.join_components, cancel,
+            );
+            let adopted = candidate_no_worse(&av, &at, &cur_v, &cur_t);
+            rep["adopted"] = Value::Bool(adopted);
+            rep["skipped"] = Value::Bool(false);
+            if adopted {
+                cur_v = av;
+                cur_t = at;
+            }
+        }
+        stats.insert("experimental_autorefine".into(), rep);
+        if cancel.is_cancelled() {
+            return cancelled();
+        }
+    }
+    if opts.indirect_autorefine {
+        let mut rep = Map::new();
+        rep.insert("skipped".into(), Value::Bool(false));
+        let source_t: Vec<[usize; 3]> = s1_in_t
+            .iter()
+            .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+            .collect();
+        match sutura_geom::arrangement::arrangement_lite_core(&s1_in_v, &source_t) {
+            Ok((pool, out_t, report)) => {
+                let av: Vec<[f64; 3]> = pool
+                    .iter()
+                    .map(|p| {
+                        let p = sutura_geom::arrangement::rat3_to_f64(p);
+                        [p[0] as f32 as f64, p[1] as f32 as f64, p[2] as f32 as f64]
+                    })
+                    .collect();
+                let at: Vec<[i64; 3]> = out_t
+                    .iter()
+                    .map(|t| [t[0] as i64, t[1] as i64, t[2] as i64])
+                    .collect();
+                rep.insert("ran".into(), Value::Bool(true));
+                rep.insert(
+                    "si_before".into(),
+                    Value::from(report.si_pairs_detected as i64),
+                );
+                rep.insert("si_after".into(), Value::from(0i64));
+                rep.insert("faces_before".into(), Value::from(report.input_faces as i64));
+                rep.insert("faces_after".into(), Value::from(report.output_faces as i64));
+                let mut degen = Map::new();
+                for (key, value) in report.degenerate_cases {
+                    degen.insert(key, Value::from(value as i64));
+                }
+                rep.insert("degenerate_cases".into(), Value::Object(degen));
+                rep.insert("error".into(), Value::Null);
+                if !at.is_empty() {
+                    let (cv, ct) = stage1_variant(
+                        &av, &at, max_hole, min_component, opts.join_components, cancel,
+                    );
+                    let adopted = candidate_no_worse(&cv, &ct, &cur_v, &cur_t);
+                    rep.insert("adopted".into(), Value::Bool(adopted));
+                    if adopted {
+                        cur_v = cv;
+                        cur_t = ct;
+                    }
+                }
+            }
+            Err(err) => {
+                rep.insert(
+                    "error".into(),
+                    Value::from(format!(
+                        "indirect arrangement-lite failed: {err}"
+                    )),
+                );
+            }
+        }
+        stats.insert(
+            "experimental_indirect_autorefine".into(),
+            Value::Object(rep),
+        );
+        if cancel.is_cancelled() {
+            return cancelled();
+        }
+    }
+
     let mut after = common::topology_summary(&cur_v, &cur_t);
     if after.non_two_manifold_edges > 0 || after.non_two_manifold_vertices > 0 {
-        let fallback = Value::Array(delete_fallback_chain(max_hole, min_component, false));
+        let fallback = Value::Array(delete_fallback_chain(
+            max_hole,
+            min_component,
+            opts.join_components,
+        ));
         let (fv, ft, f_applied, f_skipped, _) = apply_chain_with_cancel(
             &cur_v, &cur_t, &fallback, Some(cancel as &dyn sutura_geom::cancel::Cancel));
         if cancel.is_cancelled() {
@@ -2779,6 +3523,22 @@ fn repair_impl(
             applied = f_applied;
             skipped = f_skipped;
         }
+    }
+
+    if opts.join_components {
+        let (vj, tj, moved, remaining) = crate::stage1::chain::join_small_components(
+            &cur_v,
+            &cur_t,
+            min_component,
+            max_hole,
+        );
+        cur_v = vj;
+        cur_t = tj;
+        after = common::topology_summary(&cur_v, &cur_t);
+        stats.insert(
+            "experimental_join_components".into(),
+            json!({"moved": moved, "remaining_small": remaining}),
+        );
     }
 
     trace.record(
@@ -2806,6 +3566,7 @@ fn repair_impl(
         .and_then(|r| r.get("shell_adopted"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    stage_fp_log("before_si_excise", &cur_v, &cur_t);
     if opts.deep_repair == DeepRepair::Full
         && opts.mode != RepairMode::Extreme
         && si_excise_enabled()
@@ -2848,6 +3609,7 @@ fn repair_impl(
             rec,
         );
     }
+    stage_fp_log("after_si_excise", &cur_v, &cur_t);
 
     stats.insert("extreme_passes_applied".into(), Value::Bool(false));
     if opts.mode == RepairMode::Extreme {
@@ -2916,6 +3678,7 @@ fn repair_impl(
             return cancelled();
         }
     }
+    stage_fp_log("after_tamponade_post", &cur_v, &cur_t);
 
     // --- Registry methods 8/9/10: closing / proxy-template / mirror -------
     // They run on the ORIGINAL input and replace the current result only with
@@ -2925,15 +3688,15 @@ fn repair_impl(
         let cl_in_t = cur_t.clone();
         let (cv, ct, rec) = if opts.proxy_template {
             run_proxy_tier(
-                &cur_v, &cur_t, &input_v, &input_t,
+                &cur_v, &cur_t, &s1_in_v, &s1_in_t,
                 Some(cancel as &dyn sutura_geom::cancel::Cancel),
             )
         } else {
             run_closing_tier(
                 &cur_v,
                 &cur_t,
-                &input_v,
-                &input_t,
+                &s1_in_v,
+                &s1_in_t,
                 opts.closing.expect("closing mode present"),
                 Some(cancel as &dyn sutura_geom::cancel::Cancel),
             )
@@ -2958,6 +3721,7 @@ fn repair_impl(
         );
         stats.insert("closing".into(), rec);
     }
+    stage_fp_log("after_closing", &cur_v, &cur_t);
 
     let mut forced_graft_done = false;
     if opts.forced_methods.contains(&13) && opts.graft != Some(false) {
@@ -2988,6 +3752,7 @@ fn repair_impl(
             forced_graft_done = true;
         }
     }
+    stage_fp_log("after_graft", &cur_v, &cur_t);
 
     // --- Deep-repair ladder ------------------------------------------------
     let ladder_holes_before = boundary_loop_stats(&cur_t).0;
@@ -3277,6 +4042,7 @@ fn repair_impl(
                         &spec,
                         &tuning,
                         ft_trigger == crate::ftetwild::Trigger::Always,
+                        crate::ftetwild::params_for_optimize(opts.ftetwild_optimize),
                         Some(cancel as &dyn sutura_geom::cancel::Cancel),
                     )
                 };
@@ -3457,6 +4223,8 @@ fn repair_impl(
         stats.insert("wall_thicken".into(), rec);
     }
 
+    stage_fp_log("after_deep", &cur_v, &cur_t);
+
     let produced = produced_tier(&stats);
     stats.insert(
         "solid_engine".into(),
@@ -3547,6 +4315,7 @@ fn repair_impl(
             cur_t = sutura_geom::topology::invert_face_orientation_core(&cur_t);
         }
     }
+    stage_fp_log("after_pinch", &cur_v, &cur_t);
     after = common::topology_summary(&cur_v, &cur_t);
     trace.record(
         "pinch_split",
@@ -4000,6 +4769,27 @@ fn repair_impl(
     out.insert("method_used".into(), method_used_value(opts.deep_repair));
     out.insert("unavailable".into(), unavailable);
 
+    // Ranked fallback ladder (Python `triage._auto`), before the final SI
+    // escalation.  Nested attempts disable auto_escalation, so this cannot
+    // recurse; an adopted candidate replaces the whole baseline result.
+    if let Some(ranking) = ranking.as_ref() {
+        if !reachable && auto_ladder_allowed(opts) && !cancel.is_cancelled() {
+            if let Some((adopted_v, adopted_t, adopted_report)) = run_auto_ladder(
+                &input_v,
+                &input_t,
+                opts,
+                policy.as_ref(),
+                ranking,
+                &mut out,
+                cancel,
+            ) {
+                cur_v = adopted_v;
+                cur_t = adopted_t;
+                out = adopted_report;
+            }
+        }
+    }
+
     if allow_si_escalation && si_escalation_allowed(opts) {
         if let Some((adopted_v, adopted_t, adopted_report)) = apply_si_escalation(
             &mut out,
@@ -4030,6 +4820,26 @@ fn repair_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_ladder_gate_matches_python() {
+        let mut o = RepairOptions::default();
+        assert!(auto_ladder_allowed(&o));
+        o.deep_repair = DeepRepair::Off;
+        assert!(!auto_ladder_allowed(&o));
+        o = RepairOptions::default();
+        o.ftetwild = Some(Value::Bool(false));
+        assert!(!auto_ladder_allowed(&o));
+        o = RepairOptions::default();
+        o.forced_methods = vec![3];
+        assert!(!auto_ladder_allowed(&o));
+        o = RepairOptions::default();
+        o.ladder_depth = 1;
+        assert!(!auto_ladder_allowed(&o));
+        o = RepairOptions::default();
+        o.auto_escalation = Some(false);
+        assert!(!auto_ladder_allowed(&o));
+    }
 
     fn cube() -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
         let verts = vec![

@@ -60,7 +60,7 @@ fn base_record(params: &Value) -> Map<String, Value> {
     rec.insert("candidate_self_intersections".into(), Value::Null);
     rec.insert("si_flagged".into(), json!(false));
     rec.insert("si_checked".into(), json!(false));
-    rec.insert("si_policy".into(), json!("flag"));
+    rec.insert("si_policy".into(), Value::Null);
     rec.insert("guard_rejected".into(), Value::Null);
     rec.insert("guard_reason".into(), Value::Null);
     rec

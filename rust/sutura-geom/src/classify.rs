@@ -352,3 +352,188 @@ pub fn features(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Features {
         developable_fraction,
     }
 }
+
+/// The five opt-in edge-tiebreak signals (`mesh_classifier_v2._edge_extra_features`):
+/// `[oppmax_std, don_mean, dihed_mean, rmin_mean, gc_mean]`.
+///
+/// Mirrors the NumPy implementation: MeshCNN per-edge apex ratio statistics,
+/// the Difference-of-Normals 1-ring mean and the Gaussian-curvature angle
+/// deficit. Returns zeros for degenerate input.
+pub fn edge_extra_features(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> [f64; 5] {
+    let v_count = verts.len();
+    let f_count = tris.len();
+    if f_count == 0 || v_count == 0 {
+        return [0.0; 5];
+    }
+    let geom = face_geometry(verts, tris);
+    let v_span = (v_count + 1) as i64;
+
+    // Python builds edges as [t[:,0,1], t[:,1,2], t[:,2,0]] concatenated; the
+    // stable sort below keeps that order for the (at most two) faces per key.
+    let mut edges: Vec<(i64, usize)> = Vec::with_capacity(f_count * 3);
+    for k in 0..3 {
+        for (face, tri) in tris.iter().enumerate() {
+            let (a, b) = (tri[k], tri[(k + 1) % 3]);
+            let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+            edges.push((lo as i64 * v_span + hi as i64, face));
+        }
+    }
+    edges.sort_by_key(|(key, _)| *key);
+
+    let mut dihed_sum = 0.0f64;
+    let mut rmin_sum = 0.0f64;
+    let mut rmax_values: Vec<f64> = Vec::new();
+    let mut pairs = 0usize;
+    let mut i = 0usize;
+    while i < edges.len() {
+        let mut j = i + 1;
+        while j < edges.len() && edges[j].0 == edges[i].0 {
+            j += 1;
+        }
+        if j - i == 2 {
+            let f1 = edges[i].1;
+            let f2 = edges[i + 1].1;
+            let ei = (edges[i].0 / v_span) as usize;
+            let ej = (edges[i].0 % v_span) as usize;
+            let cos = geom.normals[f1]
+                .dot(geom.normals[f2])
+                .clamp(-1.0, 1.0);
+            dihed_sum += std::f64::consts::PI - cos.acos();
+            let r1 = apex_ratio(verts, tris, &geom.areas, f1, ei, ej);
+            let r2 = apex_ratio(verts, tris, &geom.areas, f2, ei, ej);
+            let (lo, hi) = if r1 < r2 { (r1, r2) } else { (r2, r1) };
+            rmin_sum += lo;
+            rmax_values.push(hi);
+            pairs += 1;
+        }
+        i = j;
+    }
+    let (dihed_mean, rmin_mean, oppmax_std) = if pairs == 0 {
+        (0.0, 0.0, 0.0)
+    } else {
+        let n = pairs as f64;
+        let mean = rmax_values.iter().sum::<f64>() / n;
+        let var = rmax_values
+            .iter()
+            .map(|x| (x - mean) * (x - mean))
+            .sum::<f64>()
+            / n;
+        (dihed_sum / n, rmin_sum / n, var.sqrt())
+    };
+
+    // Vertex normals: sum of unit face normals over the incident faces.
+    let mut vn = vec![Vec3::default(); v_count];
+    let mut vcnt = vec![0.0f64; v_count];
+    for (face, tri) in tris.iter().enumerate() {
+        for &vi in tri {
+            vn[vi] = vn[vi].add(geom.normals[face]);
+            vcnt[vi] += 1.0;
+        }
+    }
+    for i in 0..v_count {
+        let c = if vcnt[i] == 0.0 { 1.0 } else { vcnt[i] };
+        let p = vn[i].scale(1.0 / c);
+        let mag = p.norm();
+        vn[i] = if mag == 0.0 {
+            Vec3::default()
+        } else {
+            p.scale(1.0 / mag)
+        };
+    }
+
+    // 1-ring adjacency with the same multiplicities as the Python lists.
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); v_count];
+    for tri in tris {
+        for (p, q) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+            adj[p].push(q);
+            adj[q].push(p);
+        }
+    }
+    let mut don_sum = 0.0f64;
+    for i in 0..v_count {
+        if !adj[i].is_empty() {
+            let mut mean = Vec3::default();
+            for &nb in &adj[i] {
+                mean = mean.add(vn[nb]);
+            }
+            mean = mean.scale(1.0 / adj[i].len() as f64);
+            don_sum += vn[i].sub(mean).norm();
+        }
+    }
+    let don_mean = if v_count == 0 {
+        0.0
+    } else {
+        don_sum / v_count as f64
+    };
+
+    // Gaussian curvature roughness from the per-vertex angle deficit.
+    let mut asum = vec![0.0f64; v_count];
+    for tri in tris {
+        let (x, y, z) = (tri[0], tri[1], tri[2]);
+        for (p, q, r) in [(x, y, z), (y, z, x), (z, x, y)] {
+            let e1 = vertex(verts, q).sub(vertex(verts, p));
+            let e2 = vertex(verts, r).sub(vertex(verts, p));
+            let n1 = e1.norm();
+            let n2 = e2.norm();
+            if n1 != 0.0 && n2 != 0.0 {
+                asum[p] += (e1.dot(e2) / (n1 * n2)).clamp(-1.0, 1.0).acos();
+            }
+        }
+    }
+    let mut gc_sum = 0.0f64;
+    for value in &asum {
+        gc_sum += (2.0 * std::f64::consts::PI - value).abs();
+    }
+    let gc_mean = if v_count == 0 {
+        0.0
+    } else {
+        gc_sum / v_count as f64
+    };
+
+    [oppmax_std, don_mean, dihed_mean, rmin_mean, gc_mean]
+}
+
+fn apex_ratio(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    areas: &[f64],
+    face: usize,
+    i: usize,
+    j: usize,
+) -> f64 {
+    let tri = &tris[face];
+    let mut col = 0usize;
+    for (idx, &v) in tri.iter().enumerate() {
+        if v != i && v != j {
+            col = idx;
+            break;
+        }
+    }
+    let _ = col;
+    let base = vertex(verts, j).sub(vertex(verts, i)).norm();
+    let hgt = 2.0 * areas[face] / (base + 1e-12);
+    hgt / (base + 1e-12)
+}
+
+
+#[cfg(test)]
+mod edge_extra_tests {
+    use super::edge_extra_features;
+
+    #[test]
+    fn edge_extra_features_is_deterministic_and_finite() {
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ];
+        let tris = vec![[0, 1, 2], [1, 3, 2], [2, 3, 4]];
+        let a = edge_extra_features(&verts, &tris);
+        let b = edge_extra_features(&verts, &tris);
+        assert_eq!(a, b);
+        assert!(a.iter().all(|x| x.is_finite()));
+        assert_eq!(edge_extra_features(&[], &[]), [0.0; 5]);
+    }
+}

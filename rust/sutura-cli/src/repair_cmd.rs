@@ -172,24 +172,9 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     // `--wall-min-thickness` was refused for the same reason and is now wired:
     // the builder is ported (`sutura_geom::wall`, byte-identical to `wall.py`),
     // so the flag sets the target and turns the tier on.
-    for (flag, set) in [
-        ("--experimental-autorefine", cli.experimental_autorefine),
-        (
-            "--experimental-indirect-autorefine",
-            cli.experimental_indirect_autorefine,
-        ),
-        (
-            "--experimental-edge-tiebreak",
-            cli.experimental_edge_tiebreak,
-        ),
-    ] {
-        if set {
-            return Err(RepairFailure::new(
-                2,
-                format!("{flag} is not implemented in the Rust CLI"),
-            ));
-        }
-    }
+    //
+    // p10/core's opt-in ports (edge-tiebreak, autorefine, indirect autorefine)
+    // are wired after `options_from` below, so they are not refused here.
     // History, learning-triage and anticipation flags are accepted and wired or
     // honoured elsewhere; the ones below have no consumer yet.
     for (flag, set) in [
@@ -329,8 +314,16 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     };
     // `options_from` returns `(options, methods_given, methods)` -- the same
     // triple this function returns, computed once from the shared table.
-    let (opts, methods_given, methods) = sutura_core::repair_settings::options_from(&settings)
+    let (mut opts, methods_given, methods) = sutura_core::repair_settings::options_from(&settings)
         .map_err(|e| RepairFailure::new(e.code, e.message))?;
+    // p10/core opt-in ports that are not columns in the shared settings table
+    // (they are CLI-only today). `options_from` owns everything else.
+    opts.extra_features = cli.experimental_edge_tiebreak;
+    opts.autorefine = cli.experimental_autorefine;
+    opts.indirect_autorefine = cli.experimental_indirect_autorefine;
+    opts.auto_reorder = cli.auto_reorder;
+    opts.ftetwild_optimize = cli.ftetwild_optimize;
+    opts.ladder_depth = 0;
     Ok((opts, methods_given, methods))
 }
 
@@ -1039,8 +1032,12 @@ fn augment_report(
         if s1.get("volume_after").is_none() {
             s1.insert("volume_after".into(), Value::from(after_volume));
         }
-        s1.insert("surface_area_before".into(), Value::from((before_area * 1000.0).round() / 1000.0));
-        s1.insert("surface_area_after".into(), Value::from((after_area * 1000.0).round() / 1000.0));
+        if s1.get("surface_area_before").is_none() {
+            s1.insert("surface_area_before".into(), Value::from((before_area * 1000.0).round() / 1000.0));
+        }
+        if s1.get("surface_area_after").is_none() {
+            s1.insert("surface_area_after".into(), Value::from((after_area * 1000.0).round() / 1000.0));
+        }
         let pct = match (
             s1.get("volume_before").and_then(Value::as_f64),
             s1.get("volume_after").and_then(Value::as_f64),
@@ -1054,10 +1051,12 @@ fn augment_report(
             "volume_change_percent".into(),
             pct.map(|v| Value::from(round2(v))).unwrap_or(Value::Null),
         );
-        s1.insert(
-            "surface_area_change_percent".into(),
-            surface_change.map(|v| Value::from(round2(v))).unwrap_or(Value::Null),
-        );
+        if s1.get("surface_area_change_percent").is_none() {
+            s1.insert(
+                "surface_area_change_percent".into(),
+                surface_change.map(|v| Value::from(round2(v))).unwrap_or(Value::Null),
+            );
+        }
         if s1.get("self_intersections_remaining").is_none() {
             s1.insert("self_intersections_remaining".into(), si_value.clone());
             s1.insert("si_work_units".into(), Value::from(si_work));

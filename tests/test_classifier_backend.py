@@ -5,10 +5,8 @@
 
 The backend must be a drop-in for `diagnose.classify_with_engine`:
   * default is `python`; `rust` selects `sutura_core_py.classify_mesh`,
-  * both backends return the same type/confidence/metrics,
-  * the opt-in extra-feature head (not ported) reports itself unavailable and
-    raises under `SUTURA_REQUIRE_RUST=1` instead of silently returning the
-    6-feature verdict.
+  * both backends return the same type/confidence/metrics, including the
+    opt-in 11-feature edge-tiebreak head.
 
 Usage: python3 tests/test_classifier_backend.py
 """
@@ -62,20 +60,31 @@ def test_backends_agree():
     assert available, 'no mesh compared'
 
 
-def test_extra_features_is_not_silently_downgraded():
-    _backend('rust')
+def test_extra_features_head_matches_python():
     if not classifier_rust.available():
         return
-    assert not classifier_rust.available(extra_features=True)
+    for m in iter_meshes():
+        os.environ.pop('SUTURA_REQUIRE_RUST', None)
+        _backend('python')
+        py = classify_with_engine(
+            m['verts'], m['tris'], 'experimental', extra_features=True)[0]
+        _backend('rust')
+        rs = classify_with_engine(
+            m['verts'], m['tris'], 'experimental', extra_features=True)[0]
+        assert rs['type'] == py['type'], (m['name'], rs, py)
+        assert rs['confidence'] == py['confidence'], (m['name'], rs, py)
+        for key in ('edge_oppmax_std', 'edge_don_mean', 'edge_dihed_mean',
+                    'edge_rmin_mean', 'edge_gc_mean'):
+            assert rs['metrics'][key] == py['metrics'][key], (
+                m['name'], key, rs['metrics'][key], py['metrics'][key])
+    # Strict mode must serve the head, never silently downgrade to 6 features.
     os.environ['SUTURA_REQUIRE_RUST'] = '1'
     try:
         rust_bridge.reset()
-        try:
-            classifier_rust.available(extra_features=True)
-        except RuntimeError as exc:
-            assert 'extra_features' in str(exc), exc
-            return
-        raise AssertionError('strict mode accepted extra_features')
+        _backend('rust')
+        result = classifier_rust.classify_mesh(
+            m['verts'], m['tris'], 'experimental', extra_features=True)[0]
+        assert 'edge_don_mean' in result['metrics'], result
     finally:
         os.environ.pop('SUTURA_REQUIRE_RUST', None)
         rust_bridge.reset()

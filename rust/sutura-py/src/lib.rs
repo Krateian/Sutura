@@ -546,11 +546,13 @@ fn classify_py(data_json: &str) -> PyResult<(String, Vec<String>, String)> {
 }
 
 #[pyfunction(name = "classify_mesh")]
+#[pyo3(signature = (verts, tris, engine, extra_features=false))]
 fn classify_mesh_py<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
     tris: PyArrayLike2<'py, i64, AllowTypeChange>,
     engine: &str,
+    extra_features: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
     let v = verts_f64(verts)?;
     let t = tris_i64(tris)?;
@@ -558,7 +560,7 @@ fn classify_mesh_py<'py>(
         .iter()
         .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
         .collect();
-    let value = sutura_core::classify::classify_mesh(&v, &tris, engine);
+    let value = sutura_core::classify::classify_mesh_with(&v, &tris, engine, extra_features);
     let text = value.to_string();
     let json = py.import("json")?;
     json.call_method1("loads", (text,))

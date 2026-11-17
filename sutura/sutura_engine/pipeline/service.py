@@ -71,7 +71,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  splint=False, splint_adaptive=None,
                  solid_engine='ftetwild', coaptation=False,
                  progress=None, cancel=None, forced_methods=None,
-                 auto_escalation=True):
+                 auto_escalation=True, auto_reorder=False,
+                 ftetwild_optimize=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     bad_coords = scan_bad_coordinates(src)
     if bad_coords:
@@ -143,12 +144,21 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 'dressing_sigma_scale': dressing_sigma_scale,
                 'dressing_force_adopt': bool(dressing_force_adopt),
                 'wall_thicken': _fb(wall_thicken), 'repeat': repeat,
-                'solid_engine': solid_engine, 'si_mode': si_mode,
+                'solid_engine': solid_engine,
+                # Rust RepairOptions.si_mode is a strict enum (not Option);
+                # Python passes None for the policy default.
+                'si_mode': (si_mode or 'report'),
                 'time_budget_s': None, 'seed': 0,
                 'forced_methods': list(forced_methods or []),
                 'engines': (sorted(engines.keys())
                             if engines is not None else None),
                 'auto_escalation': bool(auto_escalation),
+                'join_components': bool(join_components),
+                'extra_features': bool(extra_features),
+                'autorefine': bool(autorefine),
+                'indirect_autorefine': bool(indirect_autorefine),
+                'auto_reorder': bool(auto_reorder),
+                'ftetwild_optimize': bool(ftetwild_optimize),
             }
             def _rust_call(flap_value, tamponade_value):
                 call_opts = dict(opts)
@@ -295,6 +305,12 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                     'wall_thicken': _pb(wall_thicken), 'repeat': repeat,
                     'solid_engine': solid_engine, 'si_mode': si_mode,
                     'time_budget_s': None, 'seed': 0,
+                    'join_components': bool(join_components),
+                    'extra_features': bool(extra_features),
+                    'autorefine': bool(autorefine),
+                    'indirect_autorefine': bool(indirect_autorefine),
+                    'auto_reorder': bool(auto_reorder),
+                    'ftetwild_optimize': bool(ftetwild_optimize),
                 }
                 rv, rt, rj = core.pipeline_repair(
                     np.ascontiguousarray(verts, dtype=np.float64),
@@ -562,6 +578,11 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
     blocks = parse_3mf_mesh_blocks(src)
     if not blocks:
         return {'error': 'no mesh objects found in 3MF'}
+    # Multi-object escalation is orchestrated HERE (Python `triage._auto_multi`):
+    # `repair_mesh_from_arrays` below is the Python pipeline and
+    # SUTURA_PIPELINE_ENGINE=rust only routes single-mesh array repairs.  The
+    # opt-in `--auto-reorder` likewise stays in `triage._auto` and is not
+    # forwarded to sutura-core.
 
     _owns_trace = False
     if not trace.is_active() and os.environ.get('SUTURA_TRACE'):

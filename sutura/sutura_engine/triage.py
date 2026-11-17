@@ -905,6 +905,35 @@ def _apply_auto_reorder(recs, analysis):
     return order_graft_before_ftetwild(_auto_reorder_recs(recs, analysis))
 
 
+def _rust_object_escalation(in_v, in_t, tmpdir, ctx, idx):
+    """Run one non-watertight 3MF object through the Rust single-mesh pipeline.
+
+    The Rust core owns the per-object ranked ladder when
+    SUTURA_PIPELINE_ENGINE=rust; this helper only stages the arrays and returns
+    the report + output arrays.  Returns None on any setup/repair error so the
+    caller falls back to the Python per-object logic.
+    """
+    if os.environ.get('SUTURA_PIPELINE_ENGINE', '').strip().lower() != 'rust':
+        return None
+    try:
+        import inspect
+        from sutura_engine.pipeline import service as _svc
+        from sutura_engine.pipeline.mesh_io import load_mesh, save_mesh
+        src = os.path.join(tmpdir, 'rust_object_%d_in.stl' % idx)
+        dst = os.path.join(tmpdir, 'rust_object_%d_out.stl' % idx)
+        save_mesh(src, in_v, in_t)
+        allowed = set(inspect.signature(_svc.repair_file).parameters)
+        kwargs = {k: v for k, v in ctx.items()
+                  if k in allowed and k not in ('src', 'out', 'tmpdir')}
+        rep = _svc.repair_file(src, dst, tmpdir, **kwargs)
+        if not isinstance(rep, dict) or rep.get('error'):
+            return None
+        ov, ot = load_mesh(dst)
+        return rep, ov, ot
+    except Exception:
+        return None
+
+
 def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
     repair = _repair_mod()
     in_objs = _safe_load(src) if os.path.exists(src) else []
@@ -936,6 +965,26 @@ def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
         in_name = in_objs[idx][0] if idx < len(in_objs) else None
 
         if in_v is None or in_t is None or len(in_t) == 0:
+            rep['method_used'] = {
+                'num': base_method.num,
+                'id': base_method.id,
+                'name': base_method.name,
+                'source': 'auto_baseline',
+            }
+            if idx < len(out_objs):
+                final_meshes.append((out_objs[idx][1], out_objs[idx][2]))
+            continue
+
+        rust_trial = _rust_object_escalation(in_v, in_t, tmpdir, ctx, idx)
+        if rust_trial is not None:
+            trial_rep, trial_v, trial_t = rust_trial
+            mu = trial_rep.get('method_used') or {}
+            if mu.get('source') == 'auto_escalated':
+                object_reports[idx] = trial_rep
+                final_meshes.append((trial_v, trial_t))
+                adopted = True
+                any_escalated = True
+                continue
             rep['method_used'] = {
                 'num': base_method.num,
                 'id': base_method.id,
