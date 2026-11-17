@@ -264,12 +264,13 @@ jobs:
           free -m | awk 'NR>1{print $1, $2, $3}'
       - name: Mark Rust CLI executable
         continue-on-error: true
-        if: matrix.mode == 'io_parity'
+        # Every mode needs this, not only io_parity: download-artifact drops the
+        # exec bit, and the stage-fingerprint runner prefers cand-bin/sutura.
         run: |
           if [ -f cand-bin/sutura ]; then
             chmod +x cand-bin/sutura
           else
-            echo "no Rust CLI artifact; io_parity will use the Python path"
+            echo "no Rust CLI artifact; the Python path will be used"
           fi
       - name: Run shard
         run: |
