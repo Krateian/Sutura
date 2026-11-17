@@ -68,7 +68,13 @@ fn distances(cand_v: &[[f64; 3]], cand_t: &[[i64; 3]], pts: &[[f64; 3]]) -> Opti
         .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
         .collect();
     let bvh = MeshBvh::from_arrays(cand_v, &ut);
-    Some(pts.iter().map(|p| bvh.closest_point(*p).1).collect())
+    // Parallel closest-point queries (same values/order as the scalar loop).
+    Some(
+        bvh.closest_points_par(pts)
+            .into_iter()
+            .map(|(_, d, _)| d)
+            .collect(),
+    )
 }
 
 fn visible_from_distance(d: &[f64], buried: Option<&[bool]>) -> Option<(f64, f64)> {
