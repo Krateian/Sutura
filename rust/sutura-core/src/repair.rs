@@ -3633,15 +3633,15 @@ fn repair_impl(
         let cl_in_t = cur_t.clone();
         let (cv, ct, rec) = if opts.proxy_template {
             run_proxy_tier(
-                &cur_v, &cur_t, &input_v, &input_t,
+                &cur_v, &cur_t, &s1_in_v, &s1_in_t,
                 Some(cancel as &dyn sutura_geom::cancel::Cancel),
             )
         } else {
             run_closing_tier(
                 &cur_v,
                 &cur_t,
-                &input_v,
-                &input_t,
+                &s1_in_v,
+                &s1_in_t,
                 opts.closing.expect("closing mode present"),
                 Some(cancel as &dyn sutura_geom::cancel::Cancel),
             )
