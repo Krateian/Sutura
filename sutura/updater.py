@@ -841,9 +841,31 @@ def _rust_layout_installed():
     ``APP_DIR`` is read at call time so tests can point it at a temp tree.
     """
     app = APP_DIR
-    return (os.path.isfile(os.path.join(app, 'bin', 'sutura'))
-            or os.path.isfile(os.path.join(
-                app, 'Contents', 'MacOS', 'sutura')))
+    # Exact names only: APFS is case-insensitive, so ``Contents/MacOS/sutura``
+    # resolves to the Python bundle's ``Contents/MacOS/Sutura`` GUI launcher.
+    # A false positive here would make the Python updater refuse to update a
+    # perfectly ordinary Python install. ``listdir`` gives the stored spelling.
+    return _exact_file(os.path.join(app, 'bin', 'sutura')) or _exact_file(
+        os.path.join(app, 'Contents', 'MacOS', 'sutura'))
+
+
+def _exact_file(path):
+    """``os.path.isfile`` plus an exact-name check, for case-insensitive APFS.
+
+    ``os.path.isfile('Contents/MacOS/sutura')`` is true when only the Python
+    bundle's ``Sutura`` launcher exists. Compare the directory listing's own
+    spelling instead. Matches ``install::is_exact_file`` on the Rust side.
+    """
+    if not os.path.isfile(path):
+        return False
+    directory, name = os.path.split(path)
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        # Unreadable directory: keep the plain answer rather than reporting
+        # "missing", so a permission problem is not read as an absent file.
+        return True
+    return name in entries
 
 
 def perform_rust_handoff(tag, progress=None, released=None):

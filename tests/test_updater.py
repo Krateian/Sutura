@@ -524,6 +524,21 @@ def test_rust_layout_refuses_to_update():
                 f.write('')
             updater.APP_DIR = tmp
             assert updater._rust_layout_installed() is True
+
+        # The APFS case trap: the Python .app's launcher is
+        # `Contents/MacOS/Sutura`, and a plain isfile('.../sutura') finds it on
+        # a case-insensitive filesystem. Treating that as a Rust layout would
+        # make this updater refuse to update an ordinary Python install.
+        with tempfile.TemporaryDirectory() as tmp:
+            macos = os.path.join(tmp, 'Contents', 'MacOS')
+            os.makedirs(macos)
+            with open(os.path.join(macos, 'Sutura'), 'w') as f:
+                f.write('python launcher')
+            # Only meaningful where the filesystem really is case-insensitive.
+            if os.path.isfile(os.path.join(macos, 'sutura')):
+                updater.APP_DIR = tmp
+                assert updater._rust_layout_installed() is False, (
+                    'a `Sutura` GUI launcher must not read as the Rust CLI')
     finally:
         updater.APP_DIR = orig
 
