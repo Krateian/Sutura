@@ -102,6 +102,12 @@ copy_payload() { # $1 = destination root
     if [ -f "$REPO_ROOT/docs/ATTRIBUTION.md" ]; then
         install -m 0644 "$REPO_ROOT/docs/ATTRIBUTION.md" "$root/ATTRIBUTION.md"
     fi
+    # The migration note must travel with the package: a user upgrading from the
+    # Python build needs to know where the old install went and how to get back,
+    # and they may not have the repository checked out at that moment.
+    if [ -f "$REPO_ROOT/MIGRATE.md" ]; then
+        install -m 0644 "$REPO_ROOT/MIGRATE.md" "$root/MIGRATE.md"
+    fi
     # Vendored third-party licences. These are the obligations ATTRIBUTION.md
     # points at, so they ship next to it rather than only in the repo.
     local lic

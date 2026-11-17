@@ -212,6 +212,9 @@ jobs:
           # 4. Licences ship.
           test -f "$root/LICENSE"
           test -f "$root/ATTRIBUTION.md"
+          # 5. The migration note ships. A user upgrading from the Python build
+          # needs to know where the old install went, and may have no checkout.
+          test -f "$root/MIGRATE.md"
           test "$(find "$root/third_party" -name '*LICENSE*' -o -name '*NOTICE*' | wc -l | tr -d ' ')" -ge 3
           echo "Linux package verified"
 
