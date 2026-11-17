@@ -1070,6 +1070,7 @@ fn augment_report(
     opts: &RepairOptions,
     methods: &[u64],
     elapsed_s: f64,
+    no_fidelity: bool,
 ) -> Value {
     let out_mesh = to_mesh(out_v, out_t);
     let in_f64 = f64_verts(&input.verts);
@@ -1398,14 +1399,23 @@ fn augment_report(
     let cfg = sutura_core::report::score_cfg();
     // Fidelity only reads the pipeline fields; feeding it the pre-print
     // snapshot avoids serialising/traversing the large print_report.
-    let fidelity = sutura_core::report::compute_fidelity_value(
-        &in_f64,
-        &input.tris,
-        &out_f64,
-        &out_i32,
-        &report_snapshot,
-        &cfg,
-    );
+    //
+    // `--no-fidelity` skips it entirely, exactly as Python does
+    // (`repair.py:389`: the block is not entered, so the keys are absent rather
+    // than null). It is report-only and never changes the mesh, so skipping it
+    // cannot alter the saved output.
+    let fidelity = if no_fidelity {
+        Value::Null
+    } else {
+        sutura_core::report::compute_fidelity_value(
+            &in_f64,
+            &input.tris,
+            &out_f64,
+            &out_i32,
+            &report_snapshot,
+            &cfg,
+        )
+    };
     if let Some(fmap) = fidelity.as_object() {
         for (key, value) in fmap {
             let value = match value {
@@ -1627,7 +1637,16 @@ fn process_one(
 
     let elapsed = started.elapsed().as_secs_f64();
     let mut report =
-        augment_report(&input, &out_v, &out_t, core_report, opts, methods, elapsed);
+        augment_report(
+            &input,
+            &out_v,
+            &out_t,
+            core_report,
+            opts,
+            methods,
+            elapsed,
+            cli.no_fidelity,
+        );
     if let Some(obj) = report.as_object_mut() {
         obj.insert("input".into(), Value::from(input_display));
         obj.insert("output".into(), Value::from(output.display().to_string()));
@@ -1679,6 +1698,19 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
     if cli.files.is_empty() {
         return Err((2, Some("no input files".to_string())));
     }
+
+    // `--no-learning-triage` / `--no-cache` are flags whose consumers read the
+    // environment, not an argument. Python sets the variable at the same point
+    // (`repair.py:1063-1067`), and `config::learning::learning_enabled` reads
+    // it. Setting it here is what makes the flag mean something; before this it
+    // was parsed and dropped.
+    if cli.no_learning_triage {
+        std::env::set_var("SUTURA_LEARNING_TRIAGE", "0");
+    }
+    if cli.no_cache {
+        std::env::set_var("SUTURA_NO_CACHE", "1");
+    }
+
     install_sigint();
     INTERRUPTED.store(false, Ordering::SeqCst);
 
@@ -1974,5 +2006,39 @@ mod equivalence_tests {
                 "{args:?}: the message must name the flag, got {msg:?}"
             );
         }
+    }
+
+    /// Flags whose consumer reads the environment rather than an argument.
+    ///
+    /// `--no-learning-triage` and `--no-cache` are read by
+    /// `config::learning::learning_enabled` / `cache::enabled`, so `run()` sets
+    /// the variable exactly where Python does (`repair.py:1063-1067`). Before
+    /// they were wired the flags parsed and were dropped, which is the quietest
+    /// possible way to be wrong.
+    #[test]
+    fn env_backed_flags_parse_to_a_switch() {
+        use clap::Parser;
+
+        let on = <crate::Cli as Parser>::try_parse_from([
+            "sutura",
+            "--no-learning-triage",
+            "--no-cache",
+            "--no-history",
+            "--no-fidelity",
+            "in.stl",
+        ])
+        .expect("parses");
+        assert!(on.no_learning_triage);
+        assert!(on.no_cache);
+        assert!(on.no_history);
+        assert!(on.no_fidelity);
+
+        // The inverse: absent flags stay false, so a default run is untouched.
+        let off = <crate::Cli as Parser>::try_parse_from(["sutura", "in.stl"])
+            .expect("parses");
+        assert!(!off.no_learning_triage);
+        assert!(!off.no_cache);
+        assert!(!off.no_history);
+        assert!(!off.no_fidelity);
     }
 }
