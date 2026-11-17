@@ -137,6 +137,12 @@ def collect_stage_fp(mesh_path, extra_env):
                 stages.append({'label': m.group(1), 'hash': m.group(2),
                                'faces': int(m.group(3)),
                                'verts': int(m.group(4))})
+        # Optional finer trace: SUTURA_STAGE1_FP=1 adds one line per Stage-1
+        # filter.  Kept verbatim (filter name, counts, hash; no mesh names).
+        sub = [l.strip() for l in proc.stderr.splitlines()
+               if l.startswith('[stage1-fp] ')]
+        if stages and sub:
+            stages.append({'label': 'stage1_trace', 'lines': sub})
         return stages or None
     except Exception:
         return None
