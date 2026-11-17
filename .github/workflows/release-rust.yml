@@ -1,0 +1,122 @@
+name: Publish Rust distribution assets
+
+# Attaches `Sutura-rust-v<ver>-<arch>.<ext>` and its `.sha256` to a GitHub
+# Release that a human already published.
+#
+# This workflow creates **no** release, tag or version — the maintainer cuts the
+# release with `gh` (a user token), exactly as build-sutura-geom.yml,
+# build-appimage.yml and build-macos.yml assume. A `GITHUB_TOKEN`-authored
+# release would not fire `release: published` anyway. The single line that keeps
+# that promise is the absence of any release-creating call: `tag_name` is always
+# an **existing** tag, and softprops is given no `name`/`body`, so a manually
+# written release body is never clobbered.
+#
+# The four target jobs are NOT duplicated here: `build-rust.yml` is reused via
+# `workflow_call`, so publishing and CI build from the same steps and cannot
+# drift apart. `permissions: contents: write` exists only on the last job.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to publish under (e.g. v0.9.9). Nothing is created; the assets are attached to that release.'
+        required: true
+
+permissions:
+  contents: read   # the publish job raises this to write
+
+jobs:
+  build:
+    name: Build distribution assets
+    uses: ./.github/workflows/build-rust.yml
+
+  publish:
+    name: Attach assets to the release
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Refuse a draft or an unexpected release
+        # A draft is not visible and not ready; publishing into it would upload
+        # assets nobody can fetch. `benchmark-corpus-v1` is a separate corpus
+        # release that the Rust packages must never be mixed into.
+        #
+        # `release: published` does not fire for drafts (GitHub only fires it on
+        # the transition to published), so this is a second, explicit guard on
+        # the dispatch path where a human types the tag by hand.
+        env:
+          EVENT: ${{ github.event_name }}
+          IS_DRAFT: ${{ github.event.release.draft }}
+          TAG: ${{ github.event.release.tag_name }}
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${TAG:-${DISPATCH_TAG:-}}"
+          if [ "$EVENT" = "release" ] && [ "$IS_DRAFT" = "true" ]; then
+            echo "error: this is a draft release; publish it first" >&2
+            exit 1
+          fi
+          if [ -z "$tag" ]; then
+            echo "error: no release tag (expected a published release or a tag input)" >&2
+            exit 1
+          fi
+          case "$tag" in
+            benchmark-corpus*)
+              echo "error: $tag is the benchmark corpus release; the Rust packages must not be attached to it" >&2
+              exit 1
+              ;;
+          esac
+          echo "publishing assets to $tag"
+
+      - name: Download the built assets
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: sutura-rust-*
+          merge-multiple: true
+
+      - name: Check the asset names match install::asset_name
+        # The updater looks each file up by name (`install.rs::find_asset`) and
+        # refuses to proceed without its `<asset>.sha256`. A renamed or missing
+        # asset does not fail loudly at release time — it disables
+        # `--check-update` and `--repair-install` on that platform, which is why
+        # the four expected names are asserted here and not discovered later.
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+          fi
+          ver="${tag#v}"
+          cd dist
+          echo "assets:"; ls -l
+          expected="
+          Sutura-rust-v${ver}-arm64.dmg
+          Sutura-rust-v${ver}-x86_64.dmg
+          Sutura-rust-v${ver}-x86_64.tar.gz
+          Sutura-rust-v${ver}-aarch64.tar.gz
+          "
+          missing=0
+          for a in $expected; do
+            if [ ! -f "$a" ]; then echo "error: missing $a" >&2; missing=1; fi
+            if [ ! -f "$a.sha256" ]; then echo "error: missing $a.sha256" >&2; missing=1; fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Upload assets and checksums to the existing release
+        # v3 (v2 is EOL). Deliberately NO name/body/tag creation: softprops
+        # retains the original release info when the tag already has a release,
+        # so a manually written body is never clobbered and no release is made.
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+          files: |
+            dist/Sutura-rust-v*-*.dmg
+            dist/Sutura-rust-v*-*.dmg.sha256
+            dist/Sutura-rust-v*-*.tar.gz
+            dist/Sutura-rust-v*-*.tar.gz.sha256
+          fail_on_unmatched_files: true
