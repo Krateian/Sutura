@@ -897,6 +897,15 @@ fn merge_known(
     out
 }
 
+fn read_policy_file(source: &Path) -> Result<String, PolicyError> {
+    std::fs::read_to_string(source).map_err(|e| {
+        PolicyError(format!(
+            "policy file {} unreadable: {e}",
+            source.display()
+        ))
+    })
+}
+
 /// Load the packaged policy and (once) merge the user override.
 ///
 /// An explicit `path` loads only that file (tests/tooling; no user merge).
@@ -905,19 +914,20 @@ fn merge_known(
 /// `policy_error`.
 pub fn load_policy(path: Option<&Path>) -> Result<LoadedPolicy, PolicyError> {
     let explicit = path.map(|p| p.to_path_buf());
-    let source = match &explicit {
-        Some(p) => p.to_path_buf(),
-        None => std::env::var_os(POLICY_ENV)
+    // The packaged policy is embedded in the binary.  An explicit path and
+    // $SUTURA_POLICY still read a file (tests/tooling), but a normal run never
+    // depends on an installed asset: falling back to DEFAULT_POLICY_TOML keeps
+    // the core usable from wheels, AppImages and the Orca plugin alike.
+    let text = match &explicit {
+        Some(source) => read_policy_file(source)?,
+        None => match std::env::var_os(POLICY_ENV)
             .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(default_policy_path),
+        {
+            Some(source) => read_policy_file(&source)?,
+            None => DEFAULT_POLICY_TOML.to_string(),
+        },
     };
-    let text = std::fs::read_to_string(&source).map_err(|e| {
-        PolicyError(format!(
-            "policy file {} unreadable: {e}",
-            source.display()
-        ))
-    })?;
     let base = parse_toml(&text)?;
     validate(&base)?;
     if explicit.is_some() {
