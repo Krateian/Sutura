@@ -1475,10 +1475,16 @@ fn process_3mf(
     for r in &repairs {
         let mut rep = r.report.clone();
         if let Some(obj) = rep.as_object_mut() {
-            obj.insert("model".into(), Value::from(r.model_name.clone()));
+            // Python does not put `model` at the top level of an object report;
+            // it lives inside `triangle_attributes`, which is also where the
+            // io-gate reads the per-object archive order from. Emitting it at
+            // the top level made the order unreadable and the shape wrong.
             obj.insert("declared_unit".into(), Value::from(r.declared_unit.clone()));
             obj.insert("block_index".into(), Value::from(r.block_index));
             obj.insert("output".into(), Value::from(output.display().to_string()));
+            if let Some(stats) = &r.triangle_attrs {
+                obj.insert("triangle_attributes".into(), stats.to_json());
+            }
             contract_order(obj);
         }
         // One history record per object, exactly like `history.write` for a

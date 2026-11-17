@@ -31,6 +31,26 @@ pub struct TriangleAttrStats {
     pub block: usize,
 }
 
+impl TriangleAttrStats {
+    /// The `triangle_attributes` block as Python emits it.
+    ///
+    /// Python nests this inside each `object_reports` entry and derives the
+    /// per-object order from `triangle_attributes.model`, so the key order here
+    /// (`model`, `block`, ...) is what the io-gate reads to check archive order.
+    /// Emitting `model` at the report's top level instead -- which is what the
+    /// CLI did -- made the order unverifiable and diverged from Python's shape.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "model": self.model.clone(),
+            "block": self.block,
+            "original_attributed": self.original_attributed,
+            "kept": self.kept,
+            "dropped": self.dropped,
+            "output_triangles": self.output_triangles,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnitWarning {
     pub unit_warning: bool,
