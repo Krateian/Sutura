@@ -67,6 +67,7 @@ pub mod repeat_repair;
 pub mod repeat_segment;
 pub mod roi;
 pub mod sample;
+pub mod wall;
 pub mod shell;
 pub mod splint;
 pub mod svd3;
