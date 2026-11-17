@@ -1788,3 +1788,92 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod equivalence_tests {
+    use sutura_core::repair_settings::RepairSettings;
+
+    /// The GUI and the CLI must produce identical `RepairOptions` from the same
+    /// user intent. Both already call `options_from`, so what this pins is the
+    /// *wiring*: a GUI control bound to the wrong settings field, or a CLI flag
+    /// that parses but never copies across, fails here.
+    ///
+    /// `RepairOptions` has no `PartialEq`, so values are compared through serde;
+    /// field order is fixed by the struct, so equal JSON means equal options.
+    fn json_of(cli_args: &[&str]) -> String {
+        let cli = <crate::Cli as clap::Parser>::try_parse_from(cli_args)
+            .expect("CLI args must parse");
+        let (opts, _, _) = super::build_options(&cli).expect("must convert");
+        serde_json::to_string(&opts).expect("options must serialise")
+    }
+
+    fn json_of_settings(s: &RepairSettings) -> String {
+        let (opts, _, _) =
+            sutura_core::repair_settings::options_from(s).expect("must convert");
+        serde_json::to_string(&opts).expect("options must serialise")
+    }
+
+    #[test]
+    fn cli_flags_and_gui_settings_agree_on_every_limit() {
+        // The CLI spelling of the same intent the GUI panel expresses.
+        let from_cli = json_of(&[
+            "sutura",
+            "in.stl",
+            "--max-risk", "0.25",
+            "--max-geometry-change", "0.0125",
+            "--graft-max-faces", "5001",
+            "--graft-timeout", "31.5",
+            "--dense-ratio", "4",
+            "--dense-min-faces", "2002",
+            "--ftetwild-max-faces", "9003",
+            "--ftetwild-timeout", "32.5",
+            "--ftetwild-max-hausdorff", "0.0075",
+            "--ftetwild-optimize-retry",
+            "--experimental-join-components",
+        ]);
+
+        // What the GUI builds when the user types those numbers into the panel.
+        let gui = RepairSettings {
+            max_risk: Some(0.25),
+            max_geometry_change: Some(0.0125),
+            graft_max_faces: Some(5001),
+            graft_timeout: Some(31.5),
+            dense_ratio: Some(4),
+            dense_min_faces: Some(2002),
+            ftetwild_max_faces: Some(9003),
+            ftetwild_timeout: Some(32.5),
+            ftetwild_max_hausdorff_rel: Some(0.0075),
+            ftetwild_optimize_retry: Some(true),
+            join_components: true,
+            ..RepairSettings::default()
+        };
+        assert_eq!(
+            from_cli,
+            json_of_settings(&gui),
+            "CLI flags and GUI settings must produce the same RepairOptions"
+        );
+    }
+
+    #[test]
+    fn gui_defaults_match_a_no_flag_cli_run() {
+        let from_cli = json_of(&["sutura", "in.stl"]);
+        assert_eq!(
+            from_cli,
+            json_of_settings(&RepairSettings::from_intensity("balanced", false)),
+            "an untouched GUI must match the CLI's no-flag run"
+        );
+    }
+
+    #[test]
+    fn a_cleared_box_is_not_a_zero_budget() {
+        let mut s = RepairSettings::from_intensity("balanced", false);
+        let cleared = json_of_settings(&s);
+        s.ftetwild_timeout = Some(0.0);
+        assert_ne!(
+            cleared,
+            json_of_settings(&s),
+            "None (keep the tier's value) must not equal Some(0.0): a zero \
+             timeout would give the tier no time at all"
+        );
+    }
+}

@@ -902,6 +902,72 @@ impl eframe::App for SuturaApp {
                 });
 
                 ui.separator();
+                // Open by default: these replace the old "More settings will
+                // arrive with the core profiles API" placeholder, and a
+                // collapsed group nobody opens is the same as no group.
+                egui::CollapsingHeader::new(rust_i18n::t!("app.bounds").to_string())
+                    .default_open(true)
+                    .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(rust_i18n::t!("app.bounds_hint").to_string())
+                            .small()
+                            .weak(),
+                    );
+                    // Every field here is an `Option`, and blank means "keep the
+                    // intensity's value" -- so a cleared box must write `None`,
+                    // not zero. A zero timeout would cap the tier at no time.
+                    opt_f64(ui, "gui_max_risk", &mut self.settings.max_risk,
+                            &rust_i18n::t!("app.max_risk"));
+                    opt_f64(ui, "gui_max_geom", &mut self.settings.max_geometry_change,
+                            &rust_i18n::t!("app.max_geometry_change"));
+                    opt_i64(ui, "gui_graft_faces", &mut self.settings.graft_max_faces,
+                            &rust_i18n::t!("app.graft_max_faces"));
+                    opt_f64(ui, "gui_graft_to", &mut self.settings.graft_timeout,
+                            &rust_i18n::t!("app.graft_timeout"));
+                    opt_i64(ui, "gui_dense_ratio", &mut self.settings.dense_ratio,
+                            &rust_i18n::t!("app.dense_ratio"));
+                    opt_i64(ui, "gui_dense_min", &mut self.settings.dense_min_faces,
+                            &rust_i18n::t!("app.dense_min_faces"));
+                    opt_i64(ui, "gui_ft_faces", &mut self.settings.ftetwild_max_faces,
+                            &rust_i18n::t!("app.ftetwild_max_faces"));
+                    opt_f64(ui, "gui_ft_to", &mut self.settings.ftetwild_timeout,
+                            &rust_i18n::t!("app.ftetwild_timeout"));
+                    opt_f64(ui, "gui_ft_haus", &mut self.settings.ftetwild_max_hausdorff_rel,
+                            &rust_i18n::t!("app.ftetwild_max_hausdorff"));
+                    ui.separator();
+                    ui.checkbox(
+                        &mut self.settings.join_components,
+                        rust_i18n::t!("app.join_components").to_string(),
+                    );
+                    // Bind a local, not `&mut option.unwrap_or(false)`: a
+                    // temporary has no place to write back to, so the checkbox
+                    // would accept the click and discard it.
+                    let mut optimize_retry =
+                        self.settings.ftetwild_optimize_retry.unwrap_or(false);
+                    if ui
+                        .checkbox(
+                            &mut optimize_retry,
+                            rust_i18n::t!("app.ftetwild_optimize_retry").to_string(),
+                        )
+                        .changed()
+                    {
+                        self.settings.ftetwild_optimize_retry =
+                            if optimize_retry { Some(true) } else { None };
+                    }
+                    let mut escalation = self.settings.auto_escalation.is_some();
+                    if ui
+                        .checkbox(
+                            &mut escalation,
+                            rust_i18n::t!("app.auto_escalation").to_string(),
+                        )
+                        .changed()
+                    {
+                        self.settings.auto_escalation =
+                            if escalation { Some(true) } else { None };
+                    }
+                });
+
+                ui.separator();
                 ui.label(rust_i18n::t!("app.methods").to_string());
                 // Multiple selection, not a sequence: `forced_methods` is a set
                 // in the core (membership only), so offering reordering would
@@ -1736,6 +1802,44 @@ pub fn fixed_path(input: &Path) -> PathBuf {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "mesh".to_string());
     input.with_file_name(format!("{stem}_fixed.stl"))
+}
+
+/// A numeric box that distinguishes "blank" (`None`, keep the tier's value) from
+/// zero. Required by the per-run limits: `Some(0.0)` on a timeout means the run
+/// gets no time at all, which is not what an empty field means.
+fn opt_f64(ui: &mut egui::Ui, id: &str, value: &mut Option<f64>, label: &str) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
+        if ui
+            .add(egui::TextEdit::singleline(&mut text).id_salt(id).desired_width(90.0))
+            .changed()
+        {
+            *value = if text.trim().is_empty() {
+                None
+            } else {
+                text.trim().parse::<f64>().ok()
+            };
+        }
+    });
+}
+
+/// The integer twin of [`opt_f64`].
+fn opt_i64(ui: &mut egui::Ui, id: &str, value: &mut Option<i64>, label: &str) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
+        if ui
+            .add(egui::TextEdit::singleline(&mut text).id_salt(id).desired_width(90.0))
+            .changed()
+        {
+            *value = if text.trim().is_empty() {
+                None
+            } else {
+                text.trim().parse::<i64>().ok()
+            };
+        }
+    });
 }
 
 /// Repair one file in-process, through `sutura_core::repair`.
