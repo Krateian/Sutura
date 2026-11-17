@@ -59,8 +59,51 @@ onarım/doğrulama/analiz hatası, bozuk girdi, reddedilen bütçe kaydı veya e
 `130` kesinti (Ctrl-C). Beklenmeyen hatalar kısa bir `error:` mesajı ve
 `--debug` ipucu yazdırır — izi görmek için `--debug` (veya `SUTURA_DEBUG=1`)
 ekleyin. `--human` ile hatalar stderr'e gider; varsayılan JSON modu stdout'ta
-`{"error": ...}` biçimini korur. `--self-check` ve `--self-repair` mevcut 0/1
-sözleşmesini korur.
+`{"error": ...}` biçimini korur. `--self-check` 0/1 sözleşmesini korur (tüm
+yöntemler yüklenirse 0, herhangi biri başarısızsa 1). `--update`, `--rollback`
+ve `--repair-install` istemde reddettiğinizde 0 ile çıkar, çünkü yanlış giden
+bir şey olmadı.
+
+**Kurulum ve güncelleme komutları.** Bunlar hiçbir şeyi onarmaz; kurulu programı
+yönetir. `--update`, `--rollback` ve `--repair-install` dosyaları değiştirmeden
+önce sorar ve yanıt **varsayılan olarak hayırdır** — boş Enter reddeder. `--yes`
+sizin adınıza cevap verir; terminali olmayan bir çalıştırma (betik, CI) da
+reddeder ve bunu söyler.
+
+| Komut | Ne yapar |
+|---|---|
+| `sutura --version` | sürümü yazdırır (`sutura <version>`) ve çıkar |
+| `sutura --check-update` | daha yeni bir sürüm olup olmadığını bildirir. **Hiçbir şey kurmaz.** `update available: <tag>`, `no update available` veya sürüm lisans sınırını geçtiğinde lisans bildirimi yazdırır; bu durumda reddeder ve sürümler sayfasına yönlendirir |
+| `sutura --update` | en yeni sürümü indirir, doğrular, kurar, sağlık kontrolünden geçirir ve başlamazsa geri alır |
+| `sutura --rollback` | **en yeni** yedeği kurulu dosyaların üzerine geri yükler. İki yedek saklanır; daha eskisini seçecek komut yoktur |
+| `sutura --repair-install` | **çalıştırdığınız** sürümü kendi üzerine yeniden kurar; asla güncellemez veya sürüm düşürmez |
+| `sutura --whats-new` | son başarılı kurulumun kaydettiği sürüm notlarını çevrimdışı yazdırır |
+| `sutura --migrate-from-python --from-artifact PATH --yes` | mevcut bir Python kurulumunu bu sürüme taşır; bkz. [MIGRATE.md](../../../MIGRATE.tr.md) |
+
+`--repair-install` ayrıca `--self-repair` ve `--repair-installation` adlarına da
+yanıt verir. `--check-update` kontrol zamanını
+`~/.config/sutura/config.json` dosyasına yazar; bunlardan yapılandırmanıza
+dokunan tek komut odur.
+
+`--whats-new`, bir kurulum başarılı olduğunda yazılan bir anlık görüntüyü okur.
+Yeni bir kurulumda henüz bir tane olmayabilir; komut bunu söyler ve sürümler
+sayfasını işaret eder.
+
+**İnce duvar kalınlaştırma (`--wall-min-thickness`).** Duvar Kalınlaştır (yöntem
+#15) isteğe bağlıdır ve asla otomatik çalışmaz. Milimetre cinsinden değer hem
+hedef hem de anahtardır: verilmesi katmanı açar; katman her köşenin duvar
+kalınlığını bir SDF ızgarasından ölçer ve hedefin altındaki her yeri
+kalınlaştırır.
+
+```sh
+sutura model.stl --wall-min-thickness 1.5
+```
+
+Bayrak olmadan katman hiç çalışmaz. Onunla birlikte rapora bir `wall_thicken`
+bloğu eklenir (`min_before`, `thin_before`, `faces`, `delta` ve sonucun kabul
+edilip edilmediği). Katman geometri üretebildiği için diğerleri gibi kapıdan
+geçer: aday yalnızca topolojiyi kötüleştirmiyorsa kabul edilir; bu da birçok
+mesh'te ölçtüğünü bildirip mesh'i olduğu gibi bırakması anlamına gelir.
 
 OBJ notu: malzemeler/dokular (`mtllib`/`usemtl`) onarılmış çıktıda **korunmaz** —
 mesh yeniden kurulur (yalnızca köşeler + üçgenler), bu yüzden doku koordinatları

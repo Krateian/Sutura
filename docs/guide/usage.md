@@ -6,14 +6,13 @@
 Runs fully offline after installation — no telemetry, no network calls
 during repair, works without internet once installed.
 
-Sutura checks GitHub for updates only if you opt in (disabled by default).
-Updates back up the previous install automatically and roll back if the new
-version fails a self-check — no data beyond the update check itself is sent.
-Auto-update stops at v0.2.0: starting with v0.2 the license changes to the
-PolyForm Noncommercial 1.0.0 (commercial use requires a separate agreement),
-so a v0.1.x install is never silently upgraded across that boundary — the new
-terms are shown first and the release must be installed manually from the
-releases page.
+Sutura checks GitHub for updates only when you ask it to. Updates back up the
+previous install automatically and roll back if the new version fails a
+self-check — no data beyond the update check itself is sent. Auto-update stops
+at v0.2.0: starting with v0.2 the license changes to the PolyForm Noncommercial
+1.0.0 (commercial use requires a separate agreement), so a v0.1.x install is
+never silently upgraded across that boundary — the new terms are shown first and
+the release must be installed manually from the releases page.
 
 CLI:
 
@@ -60,8 +59,49 @@ analyze error, malformed input, a declined budget save, or a missing
 interrupted (Ctrl-C). Unexpected errors print a short `error:` message and a
 `--debug` hint — add `--debug` (or `SUTURA_DEBUG=1`) to see the traceback.
 With `--human`, errors go to stderr; the default JSON mode keeps
-`{"error": ...}` on stdout. `--self-check` and `--self-repair` keep their
-existing 0/1 contract.
+`{"error": ...}` on stdout. `--self-check` keeps its 0/1 contract (0 when every
+method loads, 1 when any fails). `--update`, `--rollback` and `--repair-install`
+exit 0 when you decline at the prompt, since nothing went wrong.
+
+**Install and update commands.** These do not repair anything; they manage the
+installed program. `--update`, `--rollback` and `--repair-install` all ask
+before replacing files, and the answer **defaults to no** — a bare Enter
+declines. `--yes` answers for you, and a run with no terminal (a script, CI)
+also declines and says so.
+
+| Command | What it does |
+|---|---|
+| `sutura --version` | print the version (`sutura <version>`) and exit |
+| `sutura --check-update` | report whether a newer release exists. **Never installs.** Prints `update available: <tag>`, `no update available`, or a licence notice when the release crosses a licence boundary, in which case it refuses and points at the releases page |
+| `sutura --update` | download, verify, install the newest release, health-check it, and roll back if it does not start |
+| `sutura --rollback` | restore the **newest** backup over the installed files. Two are kept; there is no command to choose an older one |
+| `sutura --repair-install` | reinstall the version you are **running** over itself; never upgrades or downgrades |
+| `sutura --whats-new` | print the release notes saved by the last successful install, offline |
+| `sutura --migrate-from-python --from-artifact PATH --yes` | move an existing Python install to this build; see [MIGRATE.md](../../MIGRATE.md) |
+
+`--repair-install` also answers to `--self-repair` and `--repair-installation`.
+`--check-update` writes the check time to `~/.config/sutura/config.json`; it is
+the only one of these that touches your config.
+
+`--whats-new` reads a snapshot written when an install succeeds. On a fresh
+install there may not be one yet, and the command says so and points at the
+releases page.
+
+**Thin-wall thickening (`--wall-min-thickness`).** Wall Thicken (method #15) is
+opt-in and never runs automatically. The value in millimetres is both the target
+and the switch: passing it turns the tier on, and it measures every vertex's wall
+thickness from an SDF grid and thickens anything below the target.
+
+```sh
+sutura model.stl --wall-min-thickness 1.5
+```
+
+Without the flag the tier does not run at all. With it, the report gains a
+`wall_thicken` block (`min_before`, `thin_before`, `faces`, `delta`, and whether
+the result was adopted). The tier can create geometry, so it is gated like every
+other: the candidate is adopted only if it does not make the topology worse,
+which on many meshes means it reports what it measured and leaves the mesh
+alone.
 
 OBJ note: materials/textures (`mtllib`/`usemtl`) are **not preserved** in the
 repaired output — the mesh is rebuilt (vertices + triangles only), so texture

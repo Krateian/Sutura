@@ -3,81 +3,43 @@
 [← README'ye dön](../../../README.tr.md) · [English](../troubleshooting.md)
 
 
-* **Kaldırma `sutura-env`'i korudu.** Sutura kurulumcusu oluşturmadıysa bu
-  bilinçlidir. Kaldırıcı tam yolu, boyutu ve elle kaldırma komutunu yazdırır.
-  Sahip olunan ortam için `./uninstall.sh --remove-env` (veya `--purge`)
-  kullanın; `SUTURA_UNINSTALL_SKIP_CONDA=1` her zaman korur. `conda` `PATH`
-  dışındaysa kaldırıcı için `SUTURA_CONDA_BIN=/conda/yolu` ayarlayın.
-* **`python3.11` bulunamadı (yalnızca fTetWild yedek çalışma zamanı).**
-  Aralık içinde bir `python3` ile normal kurulum Python 3.11 gerektirmez. Ana
-  yorumlayıcı 3.10–3.14 aralığının dışındaysa `install.sh` bir yedek çalışma
-  zamanını tamamen kullanıcı alanında bulur — `PATH`'te kullanılabilir bir
-  `python3.11`, `~/.local/share/sutura/python311` dizinine indirdiği bağımsız
-  bir CPython 3.11 (~27 MB, `SUTURA_NO_PYTHON_DOWNLOAD=1` ile kapatılır) veya
-  `uv` ile yönetilen bir 3.11 — ve asla `sudo apt`/`dnf` komutu yazmaz.
-  Hiç çalışma zamanı yoksa katmanı tamamen atlamak için `SUTURA_WITH_FTETWILD=0` verin.
-* **`sutura_geom` kaynak derlemesi başarısız.** Kurulum artık Rust'ı (rustup +
-  minimal bir kararlı araç zinciri) ve cmake'i kendisi, kullanıcı alanında,
-  `~/.local/share/sutura/tools` altında indirir — kurulum kılavuzuna bakın.
-  Kuramadığı tek şey bir C++20 derleyicisidir (g++/clang++): macOS'ta
-  `xcode-select --install`; Linux'ta dağıtımınızın derleyicisini kurun. Rust >=
-  1.89 gerekir. Sürüm kurulumları normalde hazır wheel kullanır ve bunların
-  hiçbirine ihtiyaç duymaz. `SUTURA_NO_TOOLCHAIN_FETCH=1` araç zinciri indirmeyi
-  reddeder.
-* **PySide6 kurulumu başarısız.** GUI, `venv`'e PyPI'dan kurulan
-  `PySide6-Essentials` gerektirir. Sürüm yorumlayıcıya göre seçilir:
-  Python 3.12+ için `6.12.0`, Python 3.11 için `6.11.2`.
-  `pip install PySide6-Essentials`'ın
-  başarısız olduğu dağıtımlarda (eksik derleme araçları veya engellenen PyPI),
-  sistem Qt Python bağlamalarını kurun ve giriş noktasını onlara yönlendirin:
-  * Debian/Ubuntu: `sudo apt install python3-pyside6`
-  * Fedora: `sudo dnf install python3-pyside6`
-  * Arch: `sudo pacman -S pyside6` (resmi `extra` deposunda)
-* **GUI'de KDE dosya diyaloğu yok.** Yerel diyalog, `plasma-integration` ve
-  PySide6'nın Qt'siyle eşleşen bir sistem Qt sürümü gerektirir. Lastik bant
-  seçimi yoksa Qt, gömülü diyaloğuna geri döner — çoklu seçim için Ctrl/Shift+tık
-  yine de çalışır.
-* **Yükseltilmiş kurulumda PyMeshLab kalır.** Yerel Aşama 1 motorundan bu yana
-  PyMeshLab çalışma zamanında ne kurulur ne de içe aktarılır (yalnızca
-  `requirements-dev.txt` içindeki isteğe bağlı test eşliği oracle'ı olarak kalır).
-  Daha eski bir sürümden yükseltilen bir kurulumda yetim bir paket olarak
-  kalabilir; `pip uninstall pymeshlab` (veya
-  `conda remove -n sutura-env pymeshlab`) ile kaldırın. Sutura onu kullanmaz.
-* **Headless GUI "açılışta takılıyor".** İlk çalıştırmada (config yok,
-  `~/.config/sutura/config.json`) **modal** güncelleme/kullanım-geçmişi
-  diyaloğu açılır ve yanıtlanana kadar engeller. 0.4.1'den sonraki sürümden
-  itibaren bu diyalog Qt'nin pencere sistemi olmayan platformlarında
-  (`QT_QPA_PLATFORM=offscreen` veya `minimal`) atlanır ve hiçbir şey
-  yazılmaz; böylece ilk gerçek (ekranlı) açılışta yine sorulur. Kullanıcısı
-  olmayan başka bir ekranda (ör. bir betikte yönlendirilmiş X oturumu)
-  config'i önceden oluşturun, ör. `{"check_for_updates": false,
-  "history_enabled": true}`. Güncelleme sorusu AppImage build'lerinde
-  atlanır; geçmiş sorusu ilk çalıştırmada her zaman sorulur.
-* **macOS: her `git push`'ta `grep: empty (sub)expression`.** Pre-push
-  güvenlik hook'unun secret deseni, BSD grep'in reddettiği boş bir alternation
-  dalı içeriyordu; secret taraması sessizce hiç çalışmıyordu.
-  `scripts/pre-push-security-check.sh`'te düzeltildi (opsiyonel grup) — hook'u
-  `./install.sh` / `./install-macos.sh` ile yeniden kurun.
-* **Standalone .app: stage 2 atlandı / düşük güven.** Aşama 2 bundle içindeki
-  `sutura_geom` eklentisinde çalışır. Eklenti bundle'da yoksa Aşama 2
-  atlanmış olarak raporlanır ve güven ~25 puan düşer; `install-macos.sh` ile
-  yeniden kurun.
-* **Antipodal sarım sayısı regresyonu / devre dışı bırakma (opt-out).** Sutura;
-  Graft, Tamponad, Dressing ve SDF üretiminde varsayılan olarak hızlandırılmış
-  antipodal genelleştirilmiş sarım sayısını kullanır. Olağandışı bir modelde
-  istenmeyen bir davranış görülürse veya klasik sarım sayısı orakılı ile tam
-  uyum gerekirse, ortamda `SUTURA_ANTIPODAL=0` tanımlayarak tüm katmanlarda klasik
-  sarım yoluna dönebilirsiniz.
+* **macOS uygulamanın tanımlanamayan bir geliştiriciden geldiğini söylüyor.**
+  Beklenen durum: paket ad-hoc imzalıdır, notarize edilmemiştir. Bir kez **sağ
+  tık → Aç** ile açın veya karantina özniteliğini temizleyin:
+  `xattr -dr com.apple.quarantine ~/Applications/Sutura.app`.
+* **`--check-update` veya `--repair-install` indirilecek bir şey olmadığını
+  söylüyor.** Bu ikisi platformunuz için yayımlanmış bir derleme gerektirir.
+  Yalnızca dört tane var: Linux x86_64, Linux aarch64, macOS arm64 ve macOS
+  Intel. Bunların dışında tahmin etmek yerine reddeder ve sürümler sayfasını
+  işaret eder.
+* **Bir güncelleme sonrası program başlamadı.** Önceki sürümü kendisi geri
+  koymuş ve nereden geri yüklediğini söylemiş olmalıydı. Geri alma işleminin de
+  başarısız olduğunu söylüyorsa önceki sürümünüz hâlâ
+  `~/.local/share/sutura.backup/` içindedir; `sutura --rollback` ile geri
+  yükleyin veya `data/` dizinini koruyarak `~/.local/share/sutura` üzerine
+  kopyalayın.
+* **`sutura --rollback` çok geriye gitti veya yeterince geriye gitmedi.**
+  Yalnızca **en yeni** yedeği geri yükler ve yalnızca iki yedek saklanır — her
+  yeni güncellemede üçüncü en yeni silinir. Daha eskisini seçecek bir komut
+  yoktur.
+* **Güncelleme sorusu görünmedi.** Yalnızca bir terminal varken sorar. Terminali
+  olmayan bir çalıştırma tasarım gereği reddeder ve şunu yazdırır:
+  `(no terminal to ask on; pass --yes to confirm)`. Betiklerde `--yes` ekleyin.
+* **GUI'de KDE dosya diyaloğu yok.** Yerel diyalog, masaüstünüzde
+  `plasma-integration` kurulu olmasını gerektirir. Yoksa araç takımı kendi
+  diyaloğuna geri döner — çoklu seçim için Ctrl/Shift+tık yine de çalışır.
 * **Sert bir çökme mesaj bırakmadı ama bir çökme kaydı var.** Sutura (CLI veya
-  GUI) çöktüğünde — yerel geometri ya da Qt katmanında bir segfault veya
-  yakalanmamış bir Python hatası — Sutura'nın kullanıcı verisi klasörüne bir
-  `crash.log` yazar; GUI ayrıca Tanılama'ya işaret eden kısa bir diyalog gösterir.
-  Kayıt yalnızca en son bölümünü (~200 KB) tutar. İşletim sistemine göre konum:
-  Linux ve macOS'ta `~/.local/share/sutura/data/crash.log`; `SUTURA_DATA_DIR`
-  ortam değişkeni ayarlıysa bunun yerine `$SUTURA_DATA_DIR/crash.log`. (Sutura'nın
-  Windows derlemesi yoktur.) Dosya kendiliğinden makinenizden çıkmaz — hiçbir
-  şey yüklenmez; `sutura --diagnostics out.zip` temizlenmiş bir kopyasını pakete
-  ekler, onu kendiniz bir hata bildirimine ekleyebilirsiniz.
+  GUI) çöktüğünde Sutura'nın kullanıcı verisi klasörüne bir `crash.log` yazar;
+  GUI ayrıca Tanılama'ya işaret eden kısa bir diyalog gösterir. Kayıt yalnızca en
+  son bölümünü (~200 KB) tutar. İşletim sistemine göre konum: Linux ve macOS'ta
+  `~/.local/share/sutura/data/crash.log`; `SUTURA_DATA_DIR` ortam değişkeni
+  ayarlıysa bunun yerine `$SUTURA_DATA_DIR/crash.log`. Windows derlemesi yoktur.
+  Dosya kendiliğinden makinenizden çıkmaz — hiçbir şey yüklenmez;
+  `sutura --diagnostics out.zip` temizlenmiş bir kopyasını pakete ekler, onu
+  kendiniz bir hata bildirimine ekleyebilirsiniz.
+* **`--whats-new` kayıtlı not olmadığını söylüyor.** Notlar bir kurulum başarılı
+  olduğunda yazılır, bu yüzden yeni bir kurulumda ilk güncelleme veya onarıma
+  kadar hiç yoktur. Komut bunun yerine sürümler sayfasını işaret eder.
 
 Bir onarım başarısız olursa veya bir yöntem kullanılamıyor görünürse, üç komut
 kurulumu tanılamaya ve kurtarmaya yardımcı olur:
@@ -90,18 +52,23 @@ kurulumu tanılamaya ve kurtarmaya yardımcı olur:
   herhangi bir yöntem başarısız olursa sıfırdan farklı bir kodla çıkar. GUI,
   açılışta aynı kullanılabilirlik kontrolünü çalıştırır ve bir yöntem
   kullanılamıyorsa kapatılabilir bir uyarı şeridi gösterir.
-* **`sutura --diagnostics out.zip`** sistem ve Python çalışma zamanı
-  bilgilerini, `sutura_geom` uzantısının durumunu, on dokuz yöntemin tümünün
-  kullanılabilirliğini, kullanıcı ayarlarını, en son onarım kaydını ve çökme
-  kaydının temizlenmiş bir kopyasını (`crash_log.txt`; yalnızca bir çökme kaydı
-  varsa) içeren tek bir ZIP arşivi yazar. Kişisel yollar ve kullanıcı adları
-  arşivden temizlenir ve arşive hiçbir dosya adı konmaz; böylece bir hata
-  raporuna eklenebilir.
-* **`sutura --self-repair`** kurulu uygulama dosyalarını, kurulu sürüme ait
-  sürüm bildirimine (manifest) göre denetler ve eksik ya da değişmiş bir
-  dosyayı onarır. Her zaman değiştirmeden önce sorar, değiştirdiği dosyaları
-  yedekler ve doğrulama başarısız olursa geri alır; kullanıcı verilerine
-  (geçmiş, öğrenme, ayarlar) asla dokunmaz. AppImage ve macOS `.app`
-  kurulumları salt-okunurdur, bu yüzden yerinde onarım yerine sürümler
-  sayfasına bir işaret yazdırırlar. `sutura --self-repair --yes` onay istemini
-  atlar.
+* **`sutura --diagnostics out.zip`** sistem bilgilerini, geometri çekirdeğinin
+  durumunu, on dokuz yöntemin tümünün kullanılabilirliğini, kullanıcı
+  ayarlarını, en son onarım kaydını ve çökme kaydının temizlenmiş bir kopyasını
+  (`crash_log.txt`; yalnızca bir çökme kaydı varsa) içeren tek bir ZIP arşivi
+  yazar. Kişisel yollar ve kullanıcı adları arşivden temizlenir ve arşive hiçbir
+  dosya adı konmaz; böylece bir hata raporuna eklenebilir.
+* **`sutura --repair-install`** **çalıştırdığınız** sürümün paketini yeniden
+  indirir (asla en yenisini, yani kazara güncelleyemez veya sürüm düşüremez),
+  `sha256` değerini doğrular ve yerine koyar. Önce mevcut kurulumu yedekler ve
+  yeni ağaç başlamazsa geri alır. Kullanıcı verilerine (geçmiş, öğrenme, ayarlar)
+  asla dokunmaz.
+
+  Değiştirmeden önce **sorar ve yanıt varsayılan olarak hayırdır** — Enter'a
+  basın, hiçbir şey olmaz. `sutura --repair-install --yes` sizin adınıza cevap
+  verir; terminali olmayan bir çalıştırma onay varsaymak yerine reddeder.
+  `--self-repair` aynı komutun Python'daki eski adıdır. GUI'deki **Kurulumu
+  onar** düğmesi de aynı şeyi yapar.
+
+  Bunun tersini istiyorsanız — bu sürümü yeniden kurmak yerine önceki sürüme
+  dönmek — o komut `sutura --rollback`.
