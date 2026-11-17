@@ -1384,6 +1384,14 @@ fn is_3mf(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// True when the path names an OBJ file (case-insensitive, like Python).
+fn is_obj(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("obj"))
+        .unwrap_or(false)
+}
+
 /// The `method_used` block for a container, matching the single-file shape.
 fn methods_used_value(methods: &[u64]) -> Value {
     if methods.is_empty() {
@@ -1682,6 +1690,17 @@ fn process_one(
     if let Some(obj) = report.as_object_mut() {
         obj.insert("input".into(), Value::from(input_display));
         obj.insert("output".into(), Value::from(output.display().to_string()));
+        // OBJ can carry `usemtl`/`mtllib` references, and the repaired OBJ is
+        // written without them, so the report says whether anything was
+        // dropped. Python sets this for `.obj` inputs only, unconditionally
+        // (`service.py`: `if ext == '.obj': report['material_discarded'] = ...`).
+        // The field was read by `human.rs` but never written after the merge.
+        if is_obj(path) {
+            obj.insert(
+                "material_discarded".into(),
+                Value::Bool(sutura_core::obj_has_material_refs(path)),
+            );
+        }
         contract_order(obj);
     }
     if budgeted {
