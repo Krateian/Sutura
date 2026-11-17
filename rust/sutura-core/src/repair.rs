@@ -2498,7 +2498,7 @@ fn unavailable_tiers(ftetwild_reason: Option<&str>) -> Value {
         "wall_builder": entry("the Wall-thicken producer stays in Python; only the Rust adoption gate exists"),
         "cad_likeness": entry("cad_likeness is a Python scoring helper; no sutura-core implementation yet"),
         "ranking_scores": entry("repetition_score, single_side_score and relief_score are not ported; ranking treats them as 0.0"),
-        "method_escalation": entry("ranked multi-method escalation is file-level (src/out); sutura-core selects the baseline method only"),
+        "method_escalation_multi": entry("multi-object 3MF/OBJ escalation stays in the Python service; sutura-core runs the ranked ladder for single meshes"),
     })
     .as_object()
     .cloned()
@@ -4612,6 +4612,26 @@ fn repair_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_ladder_gate_matches_python() {
+        let mut o = RepairOptions::default();
+        assert!(auto_ladder_allowed(&o));
+        o.deep_repair = DeepRepair::Off;
+        assert!(!auto_ladder_allowed(&o));
+        o = RepairOptions::default();
+        o.ftetwild = Some(Value::Bool(false));
+        assert!(!auto_ladder_allowed(&o));
+        o = RepairOptions::default();
+        o.forced_methods = vec![3];
+        assert!(!auto_ladder_allowed(&o));
+        o = RepairOptions::default();
+        o.ladder_depth = 1;
+        assert!(!auto_ladder_allowed(&o));
+        o = RepairOptions::default();
+        o.auto_escalation = Some(false);
+        assert!(!auto_ladder_allowed(&o));
+    }
 
     fn cube() -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
         let verts = vec![
