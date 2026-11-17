@@ -25,6 +25,9 @@ import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# `repair.main()` enables crash logging and creates `<data>/crash.log`
+# before doing any work, so every child must get a throwaway HOME.
+from _cli import cli_env  # noqa: E402
 SUTURA = os.path.join(REPO, 'sutura')
 for p in (SUTURA,):
     if p not in sys.path:
@@ -157,7 +160,7 @@ def test_integrated_flag_report_and_never_worse():
 def test_cli_flag_wired():
     r = subprocess.run(
         [sys.executable, os.path.join(SUTURA, 'repair.py'), '--help'],
-        capture_output=True, text=True)
+        capture_output=True, text=True, env=cli_env())
     assert r.returncode == 0
     assert '--experimental-autorefine' in r.stdout
 
@@ -183,7 +186,7 @@ def test_gui_checkbox_wires_flag():
         "print('GUI-OK')\n" % SUTURA
     )
     r = subprocess.run([sys.executable, '-c', code], capture_output=True,
-                       text=True, timeout=120)
+                       text=True, timeout=120, env=cli_env())
     assert r.returncode == 0, r.stderr[-500:]
     assert 'GUI-OK' in r.stdout, r.stdout[-500:]
 

@@ -35,6 +35,7 @@ import sys
 import tempfile
 
 import _cli
+from _cli import cli_env  # noqa: E402
 
 REPO = _cli.REPO
 SAMPLES = os.path.join(REPO, 'tests', 'real-world-samples')
@@ -45,7 +46,10 @@ def run(args, path, out=None):
     cmd = _cli.cli_command(args + [path])
     if out is not None:
         cmd += ['-o', out]
-    env = dict(os.environ)
+    # cli_env pins HOME and SUTURA_DATA_DIR: `paths.DEFAULT_DATA_DIR` is
+    # computed at import time, so HOME alone does not keep crash.log,
+    # history.jsonl and triage_learning.json out of the real install.
+    env = cli_env()
     env.setdefault('PYTHONFAULTHANDLER', '1')
     r = subprocess.run(cmd, capture_output=True, text=True,
                        timeout=PER_MESH_TIMEOUT, env=env)

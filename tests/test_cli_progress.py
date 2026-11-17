@@ -6,6 +6,9 @@ import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# `repair.main()` enables crash logging and creates `<data>/crash.log`
+# before doing any work, so every child must get a throwaway HOME.
+from _cli import cli_env  # noqa: E402
 SUTURA = os.path.join(REPO, 'sutura')
 if SUTURA not in sys.path:
     sys.path.insert(0, SUTURA)
@@ -80,7 +83,7 @@ def test_cancel_token():
 def test_progress_json_requires_json():
     r = subprocess.run([sys.executable, os.path.join(SUTURA, 'repair.py'),
                         '--progress-json', 'fake.stl'],
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=30, env=cli_env())
     assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
     assert '--progress-json requires --json' in r.stderr, r.stderr
     assert r.stdout.strip() == '', r.stdout

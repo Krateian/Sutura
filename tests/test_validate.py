@@ -24,12 +24,15 @@ import sys
 import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# `repair.main()` enables crash logging and creates `<data>/crash.log`
+# before doing any work, so every child must get a throwaway HOME.
+from _cli import cli_env  # noqa: E402
 REPAIR_PY = os.path.join(REPO, 'sutura', 'repair.py')
 
 
 def _run(args):
     r = subprocess.run([sys.executable, REPAIR_PY] + args,
-                       capture_output=True, text=True, timeout=600)
+                       capture_output=True, text=True, timeout=600, env=cli_env())
     return r
 
 
@@ -47,7 +50,7 @@ def _sha(path):
 def _make_broken(path):
     subprocess.run([sys.executable,
                     os.path.join(REPO, 'tests', 'make_broken_stl.py'), path],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=cli_env())
 
 
 def _icosphere(subdivisions=2):
@@ -112,7 +115,7 @@ def _make_sphere(path):
 def _make_multi_3mf(path):
     subprocess.run([sys.executable,
                     os.path.join(REPO, 'tests', 'make_layered_multiobject_3mf.py'),
-                    path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=cli_env())
 
 
 def test_validate_clean_sphere(tmp):

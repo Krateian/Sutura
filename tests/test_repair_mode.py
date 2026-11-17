@@ -19,6 +19,8 @@ import subprocess
 import sys
 import tempfile
 
+from _cli import cli_env  # noqa: E402
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPAIR_PY = os.path.join(REPO, 'sutura', 'repair.py')
 
@@ -53,8 +55,12 @@ def _sphere_stl(path):
 
 
 def _run(args, env=None):
+    # `env=None` would inherit the tester's real HOME, and `repair.main()`
+    # enables crash logging there before doing any work. Default to the
+    # isolated environment; callers that want something specific pass it.
     r = subprocess.run([sys.executable, REPAIR_PY] + args,
-                       capture_output=True, text=True, timeout=600, env=env)
+                       capture_output=True, text=True, timeout=600,
+                       env=env if env is not None else cli_env())
     return r
 
 
@@ -118,7 +124,14 @@ INTENSITIES = ('quick', 'balanced', 'thorough', 'extreme')
 def _clean_env(tmp):
     """A run environment with no ambient SUTURA_INTENSITY and a private HOME
     (no config.json), so the intensity resolves to the explicit flag only."""
-    env = dict(os.environ, HOME=tmp)
+    # SUTURA_DATA_DIR as well as HOME: `paths.DEFAULT_DATA_DIR` is computed at
+    # import time, so HOME alone does not move the data dir when another suite
+    # has already imported it. Without this, `crash.log`, `history.jsonl` and
+    # `triage_learning.json` were written into the tester's real
+    # `~/.local/share/sutura`.
+    env = dict(os.environ, HOME=tmp,
+               SUTURA_DATA_DIR=os.path.join(tmp, 'data'),
+               SUTURA_NO_CACHE='1')
     env.pop('SUTURA_INTENSITY', None)
     return env
 

@@ -26,6 +26,9 @@ import tempfile
 import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# `repair.main()` enables crash logging and creates `<data>/crash.log`
+# before doing any work, so every child must get a throwaway HOME.
+from _cli import cli_env  # noqa: E402
 SUTURA = os.path.join(REPO, 'sutura')
 REPAIR_PY = os.path.join(SUTURA, 'repair.py')
 
@@ -70,14 +73,14 @@ def _cube_missing_face(path):
 def _make_obj(path):
     """A cube with a removed face written as OBJ (via the repo generator)."""
     r = subprocess.run([sys.executable, os.path.join(REPO, 'tests', 'make_broken_obj.py'),
-                        path], capture_output=True, text=True)
+                        path], capture_output=True, text=True, env=cli_env())
     assert r.returncode == 0, r.stderr
 
 
 def _make_3mf(path):
     r = subprocess.run([sys.executable, os.path.join(REPO, 'tests',
                         'make_layered_multiobject_3mf.py'), path],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=cli_env())
     assert r.returncode == 0, r.stderr
 
 
@@ -116,7 +119,7 @@ ARGS = ['--no-fallback-ftetwild', '--no-graft']  # keep the run deterministic
 
 
 def _run_collect(src, out, env_extra):
-    env = dict(os.environ, SUTURA_DIR=SUTURA)
+    env = cli_env({'SUTURA_DIR': SUTURA})
     env.update(env_extra)
     r = subprocess.run([sys.executable, REPAIR_PY] + ARGS + ['-o', out, src],
                        capture_output=True, text=True, timeout=600, env=env)
@@ -188,7 +191,7 @@ def test_parity_layered_3mf_with_rust_extension_blocked(tmp):
     src = os.path.join(tmp, 'layered_nog.3mf')
     _make_3mf(src)
     out = os.path.join(tmp, 'nog.3mf')
-    env = dict(os.environ, SUTURA_DIR=SUTURA)
+    env = cli_env({'SUTURA_DIR': SUTURA})
     launcher = (
         "import sys; sys.path.insert(0, %r); sys.modules['sutura_geom'] = None; "
         "sys.argv = %r; "

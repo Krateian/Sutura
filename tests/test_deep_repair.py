@@ -34,6 +34,7 @@ import topology  # noqa: E402
 import sutura_engine.pipeline.tiers.ftetwild as ft_mod  # noqa: E402
 import sutura_engine.pipeline.tiers.local_remesh as local_remesh_mod  # noqa: E402
 from sutura_engine.pipeline.mesh_io import load_mesh  # noqa: E402
+from _cli import cli_env  # noqa: E402
 
 OPEN_SAMPLE = os.path.join(REPO, 'tests', 'real-world-samples', 'thingi10k_100827.stl')
 CUBE_V = [(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)]
@@ -591,13 +592,15 @@ def test_cli_flag_and_human_line():
     py = sys.executable
     cli = os.path.join(SUTURA, 'repair.py')
     with tempfile.TemporaryDirectory(prefix='sutura-deepcli-') as tmp:
+        # `repair.main()` enables crash logging before any work, so the child
+        # needs an isolated HOME or it writes into the real install.
         bad = subprocess.run([py, cli, OPEN_SAMPLE, '--deep-repair', 'bogus'],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, env=cli_env())
         assert bad.returncode != 0 and 'invalid choice' in bad.stderr
         out = subprocess.run([py, cli, OPEN_SAMPLE, '--deep-repair', 'off',
                               '--no-history', '--human',
                               '-o', os.path.join(tmp, 'o.stl')],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, env=cli_env())
         assert out.returncode == 0, out.stderr
         assert 'Deep repair available' in out.stdout, out.stdout
 

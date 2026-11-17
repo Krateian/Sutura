@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from _cli import cli_env  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPAIR = os.path.join(REPO, 'sutura', 'repair.py')
@@ -37,7 +38,10 @@ def _run(src, out, progress):
     args = [sys.executable, REPAIR, src, '-o', out] + FLAGS
     if progress:
         args.append('--progress-json')
-    r = subprocess.run(args, capture_output=True, text=True, timeout=900)
+    # Isolated HOME: the child enables crash logging and writes history, and
+    # both belong in the temp tree, not the tester's ~/.local/share/sutura.
+    r = subprocess.run(args, capture_output=True, text=True, timeout=900,
+                       env=cli_env())
     assert r.returncode == 0, (r.returncode, r.stdout[-2000:], r.stderr[-2000:])
     return json.loads(r.stdout), r.stderr
 

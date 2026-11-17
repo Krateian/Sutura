@@ -19,6 +19,9 @@ import sys
 import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# `repair.main()` enables crash logging and creates `<data>/crash.log`
+# before doing any work, so every child must get a throwaway HOME.
+from _cli import cli_env  # noqa: E402
 SUTURA = os.path.join(REPO, 'sutura')
 SAMPLES = os.path.join(REPO, 'tests', 'real-world-samples')
 if SUTURA not in sys.path:
@@ -118,7 +121,7 @@ def test_flag_resolution():
 
 def test_cli_flags_wired():
     r = subprocess.run([sys.executable, os.path.join(SUTURA, 'repair.py'), '--help'],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=cli_env())
     assert r.returncode == 0
     assert '--no-fallback-ftetwild' in r.stdout
     assert '--experimental-fallback-ftetwild' in r.stdout
@@ -176,7 +179,7 @@ def test_cli_default_leaves_no_file_in_cwd():
         out = os.path.join(cwd, 'out_fixed.stl')
         r = subprocess.run([sys.executable, os.path.join(SUTURA, 'repair.py'),
                             OPEN_AFTER_STAGE1, '-o', out, '--no-history'],
-                           cwd=cwd, capture_output=True, text=True, timeout=600)
+                           cwd=cwd, capture_output=True, text=True, timeout=600, env=cli_env())
         assert r.returncode == 0, r.stderr[-500:]
         assert '"experimental_ftetwild"' in r.stdout, r.stdout[-500:]
         assert sorted(os.listdir(cwd)) == ['out_fixed.stl'], os.listdir(cwd)
@@ -242,7 +245,7 @@ def test_gui_checkboxes_map_to_cli_flags():
         "print('GUI-OK')\n" % SUTURA
     )
     r = subprocess.run([sys.executable, '-c', code], capture_output=True,
-                       text=True, timeout=120)
+                       text=True, timeout=120, env=cli_env())
     assert r.returncode == 0, r.stderr[-800:]
     assert 'GUI-OK' in r.stdout, r.stdout[-500:]
 
@@ -457,7 +460,7 @@ def test_gui_ftetwild_optimize_flag():
         "print('GUI-OK')\n" % SUTURA
     )
     r = subprocess.run([sys.executable, '-c', code], capture_output=True,
-                       text=True, timeout=120)
+                       text=True, timeout=120, env=cli_env())
     assert r.returncode == 0, r.stderr[-800:]
     assert 'GUI-OK' in r.stdout, r.stdout[-500:]
 
