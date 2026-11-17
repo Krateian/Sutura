@@ -2103,7 +2103,7 @@ fn stage_fp(v: &[[f64; 3]], t: &[[i64; 3]]) -> u64 {
     h
 }
 
-fn stage_fp_log(label: &str, v: &[[f64; 3]], t: &[[i64; 3]]) {
+pub fn stage_fp_log(label: &str, v: &[[f64; 3]], t: &[[i64; 3]]) {
     if std::env::var_os("SUTURA_STAGE_FP").is_some() {
         eprintln!(
             "[stage-fp] {} {} {} {}",
@@ -4622,6 +4622,7 @@ fn repair_impl(
             }
         }
     }
+    stage_fp_log("after_flap_debris", &cur_v, &cur_t);
 
     crate::engines::run_and_replace(
         &selected_engines,
@@ -4632,6 +4633,7 @@ fn repair_impl(
         0.01,
         &mut engine_entries,
     );
+    stage_fp_log("after_final_fallback", &cur_v, &cur_t);
     let final_holes = boundary_loop_stats(&cur_t).0;
     let final_nm = common::topology_summary(&cur_v, &cur_t).non_two_manifold_edges;
     let reachable = common::is_two_manifold(cur_v.len(), &cur_t) && final_holes == 0;
@@ -4789,6 +4791,7 @@ fn repair_impl(
             }
         }
     }
+    stage_fp_log("after_auto_ladder", &cur_v, &cur_t);
 
     if allow_si_escalation && si_escalation_allowed(opts) {
         if let Some((adopted_v, adopted_t, adopted_report)) = apply_si_escalation(
@@ -4802,6 +4805,7 @@ fn repair_impl(
             stage1_snapshot.as_ref(),
             cancel,
         ) {
+            stage_fp_log("after_si_final", &adopted_v, &adopted_t);
             return RepairOutcome::Ok {
                 verts: adopted_v,
                 tris: adopted_t,
@@ -4809,6 +4813,7 @@ fn repair_impl(
             };
         }
     }
+    stage_fp_log("after_si_final", &cur_v, &cur_t);
 
     RepairOutcome::Ok {
         verts: cur_v,
