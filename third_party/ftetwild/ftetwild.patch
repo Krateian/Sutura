@@ -371,3 +371,24 @@ index 0000000..e5cf5cc
 +        using namespace ::tbb;
 +    }
 +}
+
+--- a/cmake/geogram.cmake
++++ b/cmake/geogram.cmake
+@@ -23,7 +23,16 @@
+ 		set(VORPALINE_PLATFORM Win-vs-generic CACHE STRING "" FORCE)
+ 		set(VORPALINE_BUILD_DYNAMIC false CACHE STRING "" FORCE)
+ 	elseif(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
+-		set(VORPALINE_PLATFORM Linux64-gcc CACHE STRING "" FORCE)
++		# Arch-aware platform selection. The x86_64 configs inject -m64,
++		# which GCC rejects on arm64 ("unrecognized command-line option"),
++		# so a hard-coded Linux64-gcc breaks every non-x86 Linux build.
++		if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
++			set(VORPALINE_PLATFORM Linux64-gcc CACHE STRING "" FORCE)
++		elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
++			set(VORPALINE_PLATFORM Linux64-nonx86-clang-dynamic CACHE STRING "" FORCE)
++		else()
++			set(VORPALINE_PLATFORM Linux64-nonx86-gcc-dynamic CACHE STRING "" FORCE)
++		endif()
+ 		set(VORPALINE_BUILD_DYNAMIC false CACHE STRING "" FORCE)
+ 	elseif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+ 		set(VORPALINE_PLATFORM Darwin-clang CACHE STRING "" FORCE)
