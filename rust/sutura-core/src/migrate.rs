@@ -78,10 +78,17 @@ pub struct Report {
 /// This is the negative signal: a machine that already has `bin/sutura`
 /// (macOS: `Sutura.app/Contents/MacOS/sutura`) has been migrated or installed
 /// fresh, so there is nothing to do.
+///
+/// **Exact names only.** On case-insensitive APFS, `is_file()` on
+/// `Contents/MacOS/sutura` matches the Python bundle's `Contents/MacOS/Sutura`
+/// GUI launcher. A false positive here is the worst kind: the migration would
+/// conclude "already Rust" and skip itself, leaving the Python install in place
+/// while reporting success. `install::is_exact_file` compares the directory
+/// entry's stored spelling, which is case-sensitive.
 pub fn has_rust_layout(app: &Path) -> bool {
-    app.join("bin/sutura").is_file()
-        || app.join("Contents/MacOS/sutura").is_file()
-        || app.join("Sutura.app/Contents/MacOS/sutura").is_file()
+    crate::install::is_exact_file(&app.join("bin/sutura"))
+        || crate::install::is_exact_file(&app.join("Contents/MacOS/sutura"))
+        || crate::install::is_exact_file(&app.join("Sutura.app/Contents/MacOS/sutura"))
 }
 
 /// Read the install-owner marker written by `scripts/install_owner.sh`.

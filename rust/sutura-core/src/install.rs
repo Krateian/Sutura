@@ -282,6 +282,44 @@ pub fn rollback() -> Result<PathBuf, String> {
     Ok(backup)
 }
 
+/// True when `path` is a file **whose name matches exactly**.
+///
+/// `Path::is_file` alone is not enough on macOS: APFS is case-insensitive, so
+/// `Contents/MacOS/sutura` resolves to the Python bundle's `Contents/MacOS/Sutura`
+/// GUI launcher. A plain `is_file()` check therefore reports the Python launcher
+/// as "the Rust CLI", and `health_check` would run it -- which is the same trap
+/// that kept macOS install E2E red on main (`share/macos-quick-action.sh`,
+/// fixed there by requiring an exact name).
+///
+/// Confirmed on APFS: with only `Sutura` present, `is_file(".../sutura")` is
+/// true and the file reads as the launcher. Compare the directory entry's own
+/// name to get a case-sensitive answer.
+pub fn is_exact_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    let Some(want) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some(dir) = path.parent() else {
+        return false;
+    };
+    // Read the directory and compare the *stored* name. `read_dir` returns the
+    // on-disk spelling, so a case-insensitive lookup that matched `Sutura`
+    // yields "Sutura" here and the comparison fails, as it should.
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // Fall back to the plain answer rather than reporting "missing": a
+        // permission problem must not look like an absent binary.
+        return true;
+    };
+    entries.filter_map(Result::ok).any(|e| {
+        e.file_name()
+            .to_str()
+            .map(|n| n == want)
+            .unwrap_or(false)
+    })
+}
+
 /// Where the CLI lands inside the installed app tree.
 ///
 /// The *artifact* decides the layout, not the OS: `apply_artifact` detects a
@@ -290,6 +328,10 @@ pub fn rollback() -> Result<PathBuf, String> {
 /// than trusting `cfg!(target_os)`, which would name the wrong file whenever
 /// those two disagree -- as they do on a macOS machine that installed the
 /// tarball.
+///
+/// Each candidate is matched by **exact name** ([`is_exact_file`]): on
+/// case-insensitive APFS `Contents/MacOS/sutura` otherwise resolves to the
+/// Python bundle's `Sutura` GUI launcher.
 pub fn installed_binary() -> PathBuf {
     let app = app_dir();
     let candidates: [PathBuf; 3] = [
@@ -301,7 +343,7 @@ pub fn installed_binary() -> PathBuf {
         app.join("Sutura.app/Contents/MacOS/sutura"),
     ];
     for path in &candidates {
-        if path.is_file() {
+        if is_exact_file(path) {
             return path.clone();
         }
     }
@@ -325,6 +367,14 @@ pub fn health_check(
     binary: &Path,
 ) -> Result<(), String> {
     let want = expected_tag.strip_prefix('v').unwrap_or(expected_tag);
+    // Refuse to probe a path that only matches case-insensitively. On APFS,
+    // `Contents/MacOS/sutura` resolves to the Python bundle's `Sutura` GUI
+    // launcher, so without this the gate would test the *old* application and
+    // roll back a good migration (or, if the launcher answered `--version`,
+    // pass the wrong binary). Absent is the honest answer.
+    if !is_exact_file(binary) {
+        return Err(format!("{} is missing", binary.display()));
+    }
     let (code, out) = run(binary, &["--version"]);
     if code != 0 {
         return Err(format!("version check failed (exit {code})"));
@@ -559,7 +609,17 @@ mod tests {
     /// fails. This is the gate between "installed" and "adopted".
     #[test]
     fn health_check_verifies_version_and_exit() {
-        let bin = Path::new("/nonexistent/sutura");
+        // A real file: `health_check` refuses to probe a path that does not
+        // exist by exact name (see `exact_name_ignores_a_differently_cased_file`),
+        // so a made-up path would test the guard rather than the version match.
+        // Deliberately not `scratch()`: this test needs no `SUTURA_APP_DIR` and
+        // should not take the env lock for a directory it only reads back.
+        let base = std::env::temp_dir().join(format!("sutura-health-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let bin_path = base.join("sutura");
+        std::fs::write(&bin_path, "").unwrap();
+        let bin = bin_path.as_path();
         let ok = |_: &Path, _: &[&str]| (0, "sutura 0.10.0".to_string());
         assert!(health_check("v0.10.0", &ok, bin).is_ok());
         // A tag without 'v' still matches the printed version.
@@ -570,6 +630,7 @@ mod tests {
 
         let nonzero = |_: &Path, _: &[&str]| (1, "boom".to_string());
         assert!(health_check("v0.10.0", &nonzero, bin).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The licence boundary blocks an automatic install, with Python's wording.
@@ -684,6 +745,70 @@ mod tests {
         std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
         std::fs::write(app.join("Contents/MacOS/sutura"), "").unwrap();
         assert_eq!(installed_binary(), app.join("Contents/MacOS/sutura"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The APFS case trap: `Contents/MacOS/Sutura` must not satisfy `sutura`.
+    ///
+    /// The Python `.app` ships a GUI launcher named `Sutura`; APFS is
+    /// case-insensitive, so `Path::is_file("Contents/MacOS/sutura")` finds it.
+    /// Before the exact-name check, `installed_binary()` would return that path
+    /// and `health_check` would run the GUI launcher as the CLI -- and
+    /// `migrate::has_rust_layout` would call a Python install "already Rust"
+    /// and skip the migration entirely.
+    ///
+    /// Only meaningful on a case-insensitive filesystem; skipped elsewhere
+    /// rather than asserted vacuously.
+    #[test]
+    fn exact_name_ignores_a_differently_cased_file() {
+        let _guard = lock_env();
+        let base = scratch("apfs");
+        let app = base.join("app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::write(app.join("Contents/MacOS/Sutura"), "python launcher").unwrap();
+
+        // Confirm this filesystem actually is case-insensitive before asserting;
+        // on a case-sensitive one the trap cannot occur and the test would be
+        // testing nothing.
+        let probe = app.join("Contents/MacOS/sutura");
+        if !probe.is_file() {
+            eprintln!("case-sensitive filesystem: APFS trap not applicable");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        // The plain check is fooled...
+        assert!(probe.is_file(), "case-insensitive lookup does find it");
+        // ...the exact-name check is not.
+        assert!(
+            !is_exact_file(&probe),
+            "a file spelled `Sutura` must not count as `sutura`"
+        );
+        // The consumers must not be fooled either. `installed_binary` still
+        // returns its platform default (so the caller gets a useful "not
+        // found"), but the health gate must refuse to run it: otherwise the
+        // migration would probe the Python GUI launcher, and roll back a good
+        // install when it fails to answer `--version`.
+        let picked = installed_binary();
+        let ran = std::cell::Cell::new(false);
+        let probe_run = |_p: &Path, _a: &[&str]| {
+            ran.set(true);
+            (0, "sutura 0.58.0".to_string())
+        };
+        let verdict = health_check("v0.58.0", &probe_run, &picked);
+        assert!(
+            verdict.is_err(),
+            "health_check must refuse the case-insensitive match"
+        );
+        assert!(
+            !ran.get(),
+            "the launcher must never be executed as the CLI"
+        );
+        assert!(
+            !crate::migrate::has_rust_layout(&app),
+            "a Python .app launcher must not read as an existing Rust layout"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
