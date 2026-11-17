@@ -107,12 +107,57 @@ pub fn rewrite_images(body: &str) -> RewriteResult {
     RewriteResult { body: out, images }
 }
 
-/// Write a snapshot for `tag`, replacing `current/` atomically.
+/// Release notes fetched and rendered, but **not yet written**.
 ///
-/// `fetch` resolves a URL to bytes; injectable so a gate can run offline. A
-/// failed image download is skipped — the snapshot is still written, because the
-/// text is the important part.
-pub fn write_snapshot(tag: &str, release_body: &str, fetch: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<(), String> {
+/// The two steps are split so an installer can do the network work before it
+/// swaps any files — the "what's new" view must not sit waiting for a download —
+/// and only replace the one stored copy once the install has actually succeeded.
+/// A failed install therefore leaves the previous snapshot exactly as it was.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pending {
+    /// The tag these notes belong to.
+    pub tag: String,
+    /// Markdown with image links already rewritten to `img-N.png`.
+    pub body: String,
+    /// Image payloads to write beside the body, as `(img-N, bytes)`.
+    pub images: Vec<(usize, Vec<u8>)>,
+}
+
+impl Pending {
+    /// Fetch the images referenced by `release_body` and hold everything in
+    /// memory. Touches no files, so calling it before an install is safe.
+    pub fn fetch(
+        tag: &str,
+        release_body: &str,
+        fetch: &dyn Fn(&str) -> Option<Vec<u8>>,
+    ) -> Pending {
+        let rewritten = rewrite_images(release_body);
+        let images = rewritten
+            .images
+            .iter()
+            .enumerate()
+            // Best effort: one unreachable image must not cost the whole
+            // snapshot, because the text is the important part.
+            .filter_map(|(i, url)| fetch(url).map(|bytes| (i + 1, bytes)))
+            .collect();
+        Pending {
+            tag: tag.to_string(),
+            body: rewritten.body,
+            images,
+        }
+    }
+}
+
+/// Fetch the notes for `tag` without writing them. See [`Pending`].
+pub fn prepare(tag: &str, release_body: &str, fetch: &dyn Fn(&str) -> Option<Vec<u8>>) -> Pending {
+    Pending::fetch(tag, release_body, fetch)
+}
+
+/// Write [`Pending`] notes over the single `current/` snapshot, atomically.
+///
+/// Only called once the new version is installed and has passed its health
+/// check: until then the previous notes stay in place.
+pub fn commit(pending: &Pending) -> Result<(), String> {
     let root = whatsnew_root();
     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let staging = root.join(format!(".staging-{}", std::process::id()));
@@ -121,19 +166,31 @@ pub fn write_snapshot(tag: &str, release_body: &str, fetch: &dyn Fn(&str) -> Opt
     }
     std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
 
-    let rewritten = rewrite_images(release_body);
-    std::fs::write(staging.join("tag"), tag.as_bytes()).map_err(|e| e.to_string())?;
-    std::fs::write(staging.join("body.md"), rewritten.body.as_bytes())
+    std::fs::write(staging.join("tag"), pending.tag.as_bytes()).map_err(|e| e.to_string())?;
+    std::fs::write(staging.join("body.md"), pending.body.as_bytes())
         .map_err(|e| e.to_string())?;
-    for (i, url) in rewritten.images.iter().enumerate() {
-        // Best effort: one unreachable image must not cost the whole snapshot.
-        if let Some(bytes) = fetch(url) {
-            std::fs::write(staging.join(format!("img-{}.png", i + 1)), bytes)
-                .map_err(|e| e.to_string())?;
-        }
+    for (n, bytes) in &pending.images {
+        std::fs::write(staging.join(format!("img-{n}.png")), bytes)
+            .map_err(|e| e.to_string())?;
     }
+    swap_in(&root, &staging)
+}
 
-    // Swap: move the old `current/` aside, move staging in, then drop the old.
+/// Write a snapshot for `tag`, replacing `current/` atomically.
+///
+/// `fetch` resolves a URL to bytes; injectable so a gate can run offline. A
+/// failed image download is skipped — the snapshot is still written, because the
+/// text is the important part.
+pub fn write_snapshot(
+    tag: &str,
+    release_body: &str,
+    fetch: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> Result<(), String> {
+    commit(&prepare(tag, release_body, fetch))
+}
+
+/// Move `staging` into place as `current/`, restoring the old one on failure.
+fn swap_in(root: &Path, staging: &Path) -> Result<(), String> {
     let current = root.join(CURRENT);
     let old = root.join(format!(".old-{}", std::process::id()));
     if old.exists() {
@@ -142,7 +199,7 @@ pub fn write_snapshot(tag: &str, release_body: &str, fetch: &dyn Fn(&str) -> Opt
     if current.exists() {
         std::fs::rename(&current, &old).map_err(|e| e.to_string())?;
     }
-    match std::fs::rename(&staging, &current) {
+    match std::fs::rename(staging, &current) {
         Ok(()) => {
             let _ = std::fs::remove_dir_all(&old);
             Ok(())
@@ -152,25 +209,31 @@ pub fn write_snapshot(tag: &str, release_body: &str, fetch: &dyn Fn(&str) -> Opt
             if old.exists() {
                 let _ = std::fs::rename(&old, &current);
             }
-            let _ = std::fs::remove_dir_all(&staging);
+            let _ = std::fs::remove_dir_all(staging);
             Err(e.to_string())
         }
     }
 }
 
-/// Snapshot the notes for `tag` from the GitHub release, ignoring every failure.
+/// Fetch the notes for `tag` from the GitHub release, writing nothing.
 ///
-/// Called *before* installing, so a rolled-back update still leaves the notes
-/// (harmless: they describe a version that is not installed, and the next
-/// attempt overwrites them).
+/// Used by the install paths that must not wait on a download: the notes are
+/// fetched into memory first, and only [`commit`]ted once the new version is in
+/// place and has passed its health check.
+///
+/// Fetches the release **for `tag`**, not `/releases/latest`. This used to read
+/// latest and file it under whatever tag it was given, so a repair or a
+/// migration could record another version's notes as its own.
+pub fn fetch_for_tag(tag: &str) -> Option<Pending> {
+    let release = crate::updater::fetch_release_by_tag(tag)?;
+    let body = release.get("body").and_then(Value::as_str).unwrap_or("");
+    Some(prepare(tag, body, &http::get_bytes))
+}
+
+/// Snapshot the notes for `tag` from the GitHub release, ignoring every failure.
 pub fn snapshot_release_notes(tag: &str) -> Result<(), String> {
-    let release = crate::updater::fetch_latest_release_full().ok_or("no release data")?;
-    let body = release
-        .get("body")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    write_snapshot(tag, &body, &http::get_bytes)
+    let pending = fetch_for_tag(tag).ok_or("no release data")?;
+    commit(&pending)
 }
 
 /// Render the snapshot for a terminal: markdown reduced to plain text.
@@ -256,6 +319,7 @@ mod tests {
     #[test]
     fn second_snapshot_replaces_the_first_in_place() {
         let dir = std::env::temp_dir().join(format!("sutura-wn-{}", std::process::id()));
+        let _guard = crate::install::tests_env_lock();
         safe_remove(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // Point the data dir at the temp location for this test only.
@@ -272,6 +336,43 @@ mod tests {
             .filter(|e| e.path().is_dir())
             .collect();
         assert_eq!(dirs.len(), 1, "expected only current/, got {dirs:?}");
+        std::env::remove_var("SUTURA_DATA_DIR");
+        safe_remove(&dir);
+    }
+
+    /// Prepare must touch no files: fetching notes before an install is how a
+    /// "what's new" view avoids waiting on a download, and a failed install has
+    /// to leave the previous snapshot untouched.
+    #[test]
+    fn prepare_writes_nothing_and_commit_replaces_the_snapshot() {
+        let dir = std::env::temp_dir().join(format!("sutura-wn-prep-{}", std::process::id()));
+        // `SUTURA_DATA_DIR` is process-global, so every test that sets it must
+        // hold the same lock -- otherwise these two interleave and each sees the
+        // other's snapshot.
+        let _guard = crate::install::tests_env_lock();
+        safe_remove(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SUTURA_DATA_DIR", dir.join("data"));
+
+        let fetch = |_u: &str| Some(b"png".to_vec());
+        write_snapshot("v0.9.9", "old notes", &fetch).unwrap();
+        assert_eq!(current_body().as_deref(), Some("old notes"));
+
+        // Fetching new notes changes nothing on disk...
+        let pending = prepare("v0.10.0", "new notes ![x](https://e/1.png)", &fetch);
+        assert_eq!(
+            current_body().as_deref(),
+            Some("old notes"),
+            "prepare must not write"
+        );
+        assert_eq!(current_tag().as_deref(), Some("v0.9.9"));
+
+        // ...until the install succeeds and commits them.
+        commit(&pending).unwrap();
+        assert_eq!(current_tag().as_deref(), Some("v0.10.0"));
+        assert_eq!(current_body().as_deref(), Some("new notes ![x](img-1.png)"));
+        assert!(current_dir().join("img-1.png").is_file());
+
         std::env::remove_var("SUTURA_DATA_DIR");
         safe_remove(&dir);
     }

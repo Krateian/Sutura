@@ -168,15 +168,14 @@ fn run_install(tx: Sender<UpdateEvent>, tag: String, current: String) {
         return;
     };
 
-    // Notes first: they must survive a failed install, and they are what the
-    // user sees next launch.
-    if let Some(body) = release.get("body").and_then(|b| b.as_str()) {
-        if let Err(e) = whatsnew::write_snapshot(&tag, body, &sutura_core::http::get_bytes) {
-            // Not fatal: the update still proceeds, without notes.
-            eprintln!("whats-new snapshot failed: {e}");
-        }
-    }
-    let has_notes = whatsnew::current_tag().is_some();
+    // Notes are fetched first, so the "what's new" view never waits on a
+    // download — but they are written only after the health check below. A
+    // failed or rolled-back install must leave the previous notes in place
+    // rather than describing a version that is not installed.
+    let notes = release
+        .get("body")
+        .and_then(|b| b.as_str())
+        .map(|body| whatsnew::prepare(&tag, body, &sutura_core::http::get_bytes));
 
     // Verified bytes, or nothing happens at all.
     let bytes = match install::download_verified(&url, &sha_url) {
@@ -226,6 +225,15 @@ fn run_install(tx: Sender<UpdateEvent>, tag: String, current: String) {
         }
         return;
     }
+
+    // Installed and running: now the notes may replace the stored copy. Not
+    // fatal — the update itself already succeeded.
+    if let Some(pending) = &notes {
+        if let Err(e) = whatsnew::commit(pending) {
+            eprintln!("what's-new snapshot failed: {e}");
+        }
+    }
+    let has_notes = whatsnew::current_tag().is_some();
 
     let _ = tx.send(UpdateEvent::Ready { tag, has_notes });
 }

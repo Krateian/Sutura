@@ -20,7 +20,7 @@
 
 use std::path::Path;
 
-use crate::{install, updater};
+use crate::{install, updater, whatsnew};
 
 /// What a repair attempt did, for the caller to report.
 #[derive(Clone, Debug)]
@@ -103,6 +103,13 @@ pub fn repair_install(
         .map_err(|e| RepairError::Install(format!("backup failed: {e}")))?;
     report.backup = Some(backup);
 
+    // Notes are fetched here, before anything on disk changes, so a "what's new"
+    // view never waits on this download -- but they are only *written* below,
+    // after the health check. A failed repair therefore leaves the previous
+    // snapshot in place instead of overwriting it with notes for a version that
+    // never got installed.
+    let notes = whatsnew::fetch_for_tag(&tag);
+
     install::apply_artifact(&bytes, &tag)
         .map_err(|e| RepairError::Install(format!("reinstall failed: {e}")))?;
 
@@ -123,6 +130,14 @@ pub fn repair_install(
                  also failed ({e})"
             ),
         }));
+    }
+
+    // Installed and running: now the notes may replace the stored copy.
+    // Best effort -- a notes failure must never fail a successful repair.
+    if let Some(pending) = &notes {
+        if let Err(e) = whatsnew::commit(pending) {
+            report.notes.push(format!("release notes not saved: {e}"));
+        }
     }
 
     report.notes.push(format!("reinstalled {tag}"));
