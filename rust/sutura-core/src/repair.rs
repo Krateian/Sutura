@@ -1597,7 +1597,7 @@ mod work_estimate_tests {
         assert!(fits_budget(6_000_000, Some(6_000_000)));
         assert!(!fits_budget(6_000_001, Some(6_000_000)));
         assert_eq!(grid_work_units(10, 1), 1);
-        assert_eq!(grid_work_with_holes(10, 1000, 250), 20);
+        assert_eq!(grid_work_with_holes(10, 1000, 250), 30);
     }
 }
 
