@@ -312,6 +312,9 @@ def main():
     # Opt-in stage fingerprints: only when ENV_CAND names the flag, so a
     # normal shard pays nothing.
     want_stage_fp = stage_fp_requested(env_c)
+    # Summary rows carry the mesh stem, not the manifest path; map it back so
+    # the fingerprint run opens the real file instead of a missing one.
+    by_stem = {os.path.splitext(os.path.basename(f))[0]: f for f in files}
     if os.path.exists(sp):
         summary_items = json.load(open(sp))
         log_lines = numeric_log_lines(summary_items)
@@ -354,7 +357,7 @@ def main():
             # Opt-in: only when ENV_CAND names the flag, so a normal shard
             # pays nothing for the extra repair.
             if want_stage_fp:
-                fp = collect_stage_fp(resolve_mesh(corpus, item.get('name')),
+                fp = collect_stage_fp(resolve_mesh(corpus, by_stem.get(item.get('name'), item.get('name'))),
                                       env_c)
                 if fp:
                     row['stage_fp'] = fp
