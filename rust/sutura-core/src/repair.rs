@@ -235,6 +235,10 @@ pub struct RepairOptions {
     /// Opt-in `--experimental-indirect-autorefine` exact arrangement split.
     #[serde(default)]
     pub indirect_autorefine: bool,
+    /// Internal guard: depth of a nested auto-ladder attempt.  Not part of the
+    /// Python-facing option JSON.
+    #[serde(skip)]
+    pub ladder_depth: u8,
 }
 
 impl Default for RepairOptions {
@@ -279,6 +283,7 @@ impl Default for RepairOptions {
             extra_features: false,
             autorefine: false,
             indirect_autorefine: false,
+            ladder_depth: 0,
         }
     }
 }
@@ -2435,6 +2440,98 @@ fn candidate_no_worse(
     let base_holes = boundary_loop_stats(base_t).0;
     let base_nm = common::topology_summary(base_v, base_t).non_two_manifold_edges;
     cand_holes <= base_holes && cand_nm <= base_nm
+}
+
+/// Map one registry method number to the option overrides Python passes via
+/// `method.kwargs`, and mark the attempt as non-escalating.  Returns `None`
+/// for methods whose producer still lives only in Python (Repeat #11/#12,
+/// Wall #15, Dressing #16, Tamponade #17, Splint #18) or unknown numbers.
+pub(crate) fn method_options(base: &RepairOptions, num: u8) -> Option<RepairOptions> {
+    if !matches!(num, 1..=10 | 13 | 14 | 19) {
+        return None;
+    }
+    let mut opts = base.clone();
+    opts.forced_methods = vec![num];
+    opts.auto_escalation = Some(false);
+    opts.ladder_depth = base.ladder_depth.saturating_add(1);
+    match num {
+        1 => {
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        2 => {
+            opts.deep_repair = DeepRepair::Local;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        3 => {
+            opts.deep_repair = DeepRepair::Full;
+            opts.ftetwild = Some(Value::from("auto"));
+        }
+        4 => opts.join_components = true,
+        5 => opts.autorefine = true,
+        6 => opts.indirect_autorefine = true,
+        7 => {
+            opts.deep_repair = DeepRepair::Full;
+            opts.ftetwild = Some(Value::Bool(true));
+        }
+        8 => {
+            opts.closing = Some(ClosingMode::Poisson);
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        9 => {
+            opts.closing = Some(ClosingMode::FlatBack);
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        10 => {
+            opts.proxy_template = true;
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        13 => {
+            opts.graft = Some(true);
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        14 => {
+            opts.closing = Some(ClosingMode::Mirror);
+            opts.deep_repair = DeepRepair::Off;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        19 => {
+            opts.coaptation = Some(true);
+            opts.deep_repair = DeepRepair::Full;
+            opts.ftetwild = Some(Value::Bool(false));
+        }
+        _ => return None,
+    }
+    Some(opts)
+}
+
+/// Run one ranked-fallback attempt as a nested repair with the method's option
+/// overrides.  The attempt never re-enters the auto ladder
+/// (`auto_escalation=false`) and shares the caller's cancellation token.
+#[allow(dead_code)]
+pub(crate) fn attempt_with_method(
+    input_v: &[[f64; 3]],
+    input_t: &[[i64; 3]],
+    base: &RepairOptions,
+    method_num: u8,
+    cancel: &CancelToken,
+) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value)> {
+    let opts = method_options(base, method_num)?;
+    if cancel.is_cancelled() {
+        return None;
+    }
+    match repair_impl(input_v, input_t, &opts, &NoopSink, cancel, false) {
+        RepairOutcome::Ok {
+            verts,
+            tris,
+            report,
+        } => Some((verts, tris, report)),
+        _ => None,
+    }
 }
 
 /// Repair one mesh given as float64/int64 arrays.
