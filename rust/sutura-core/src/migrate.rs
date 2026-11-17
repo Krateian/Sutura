@@ -301,6 +301,11 @@ pub fn run(
     // the new build has proved it works.
     let backup = install::backup_install(tag)?;
     report.notes.push(format!("backup at {}", backup.display()));
+    // Release notes are fetched before the swap and written only after the
+    // health gate, the same ordering every other install path uses: the "what's
+    // new" view never waits on a download, and a migration that rolls back
+    // leaves the previous snapshot alone.
+    let release_notes = crate::whatsnew::fetch_for_tag(tag);
     install::apply_artifact(payload, tag)?;
     report.installed = true;
 
@@ -316,6 +321,14 @@ pub fn run(
                 Err(e) => format!("rollback also failed ({e})"),
             }
         ));
+    }
+
+    // Installed and running: now the notes may replace the stored copy. Best
+    // effort -- a notes failure must never fail a successful migration.
+    if let Some(pending) = &release_notes {
+        if let Err(e) = crate::whatsnew::commit(pending) {
+            report.notes.push(format!("release notes not saved: {e}"));
+        }
     }
 
     // 5. Only now is the removal permanent: drop anything the payload did not
