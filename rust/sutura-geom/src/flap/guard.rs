@@ -263,7 +263,10 @@ pub fn coplanar_collides(
         grid.entry(key(rcj)).or_default().push(j as u32);
     }
 
-    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    // Stream the candidate pairs and test them immediately.  Materialising
+    // every pair inside the radius first produced a multi-hundred-MB spike on
+    // dense refined patches (10k faces), even though the function only needs
+    // to know whether ONE positive-area coplanar overlap exists.
     for i in 0..f {
         let r = radius[i].max(1e-12);
         let k0 = key([c[i][0] - r, c[i][1] - r, c[i][2] - r]);
@@ -271,43 +274,36 @@ pub fn coplanar_collides(
         for gx in k0.0..=k1.0 {
             for gy in k0.1..=k1.1 {
                 for gz in k0.2..=k1.2 {
-                    if let Some(js) = grid.get(&(gx, gy, gz)) {
-                        for &j in js {
-                            let j = j as usize;
-                            if intra[j] && j == off + i {
-                                continue;
-                            }
-                            let d = sub(c[i], rc[j]);
-                            if norm(d) <= r {
-                                pairs.push((i, j));
-                            }
+                    let Some(js) = grid.get(&(gx, gy, gz)) else {
+                        continue;
+                    };
+                    for &j in js {
+                        let j = j as usize;
+                        if intra[j] && j == off + i {
+                            continue;
+                        }
+                        let d = sub(c[i], rc[j]);
+                        if norm(d) > r {
+                            continue;
+                        }
+                        if dot(n[i], rn[j]).abs() < cos_tol {
+                            continue;
+                        }
+                        let base = rt[j][0];
+                        let mut m = 0.0f64;
+                        for v in tri[i] {
+                            m = m.max(dot(sub(v, base), rn[j]).abs());
+                        }
+                        if m > 1e-3 * ml[i].max(1e-9) {
+                            continue;
+                        }
+                        if pairs_overlap_one(&tri[i], &rt[j], rn[j]) {
+                            return true;
                         }
                     }
                 }
             }
         }
     }
-    if pairs.is_empty() {
-        return false;
-    }
-    // normal alignment
-    pairs.retain(|&(i, j)| dot(n[i], rn[j]).abs() >= cos_tol);
-    if pairs.is_empty() {
-        return false;
-    }
-    // coplanarity
-    pairs.retain(|&(i, j)| {
-        let base = rt[j][0];
-        let mut m = 0.0f64;
-        for v in tri[i] {
-            m = m.max(dot(sub(v, base), rn[j]).abs());
-        }
-        m <= 1e-3 * ml[i].max(1e-9)
-    });
-    if pairs.is_empty() {
-        return false;
-    }
-    pairs
-        .iter()
-        .any(|&(i, j)| pairs_overlap_one(&tri[i], &rt[j], rn[j]))
+    false
 }
