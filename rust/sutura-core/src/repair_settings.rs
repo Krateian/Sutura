@@ -98,6 +98,9 @@ pub struct RepairSettings {
     pub solid_engine: Option<String>,
     pub classifier_engine: Option<String>,
     pub methods: Option<String>,
+    /// External engines to place in the pipeline (`--engines a,b`). `None` means
+    /// "use every configured engine"; the empty list is rejected by the caller.
+    pub engines: Option<Vec<String>>,
     pub max_geometry_change: Option<f64>,
     pub max_risk: Option<f64>,
     pub force: bool,
@@ -367,6 +370,10 @@ pub fn options_from(
         dense_ratio: settings.dense_ratio,
         dense_min_faces: settings.dense_min_faces,
         auto_escalation: settings.auto_escalation,
+        // `--engines`: the caller validates the names against the configured
+        // engine list; this table only carries the selection. Dropping it here
+        // made the flag validate and then do nothing.
+        engines: settings.engines.clone(),
         seed: 0,
         forced_methods: methods
             .iter()

@@ -13,8 +13,7 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 use sutura_core::repair::{
-    repair, CancelToken, DeepRepair, ProgressSink, RepairMode, RepairOptions, RepairOutcome,
-    SiMode, SolidEngine,
+    repair, CancelToken, DeepRepair, ProgressSink, RepairOptions, RepairOutcome,
 };
 use sutura_core::{check_units, load_mesh, save_mesh, Mesh};
 
@@ -112,96 +111,6 @@ struct CoreSink;
 
 impl ProgressSink for CoreSink {
     fn emit(&self, _event: Value) {}
-}
-
-fn parse_mode(value: Option<&str>) -> Result<RepairMode, RepairFailure> {
-    match value.unwrap_or("auto") {
-        "auto" => Ok(RepairMode::Auto),
-        "low" => Ok(RepairMode::Low),
-        "medium" => Ok(RepairMode::Medium),
-        "aggressive" => Ok(RepairMode::Aggressive),
-        "extreme" => Ok(RepairMode::Extreme),
-        other => Err(RepairFailure::new(
-            2,
-            format!("invalid --mode value: {other}"),
-        )),
-    }
-}
-
-fn parse_deep(value: Option<&str>, intensity: &str) -> Result<DeepRepair, RepairFailure> {
-    match value {
-        Some("off") => Ok(DeepRepair::Off),
-        Some("local") => Ok(DeepRepair::Local),
-        Some("full") => Ok(DeepRepair::Full),
-        Some(other) => Err(RepairFailure::new(
-            2,
-            format!("invalid --deep-repair value: {other}"),
-        )),
-        None => Ok(match intensity {
-            "quick" => DeepRepair::Off,
-            _ => DeepRepair::Full,
-        }),
-    }
-}
-
-fn parse_si(value: Option<&str>) -> Result<SiMode, RepairFailure> {
-    match value.unwrap_or("report") {
-        "repair" | "on" | "auto" => Ok(SiMode::Repair),
-        "report" => Ok(SiMode::Report),
-        "off" => Ok(SiMode::Off),
-        other => Err(RepairFailure::new(
-            2,
-            format!("invalid --si-mode value: {other}"),
-        )),
-    }
-}
-
-fn parse_solid(value: Option<&str>) -> Result<SolidEngine, RepairFailure> {
-    match value.unwrap_or("ftetwild") {
-        "ftetwild" => Ok(SolidEngine::Ftetwild),
-        "cdt" => Ok(SolidEngine::Cdt),
-        other => Err(RepairFailure::new(
-            2,
-            format!("invalid --solid-engine value: {other}"),
-        )),
-    }
-}
-
-/// Parse `--methods` into the baseline deep-repair mode. Only the three ported
-/// baseline methods (1 Quick Clean, 2 Local Mend, 3 Full Mend) are accepted.
-fn parse_methods(
-    value: Option<&str>,
-    deep: DeepRepair,
-) -> Result<(DeepRepair, bool, Vec<u64>), RepairFailure> {
-    let Some(raw) = value else {
-        return Ok((deep, false, Vec::new()));
-    };
-    let mut nums = Vec::new();
-    for token in raw.split(',') {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
-        }
-        let num = token
-            .parse::<u64>()
-            .map_err(|_| RepairFailure::new(2, format!("unknown method: {token}")))?;
-        match num {
-            1..=19 => nums.push(num),
-            _ => {
-                return Err(RepairFailure::new(
-                    2,
-                    format!("unknown method: {num}"),
-                ))
-            }
-        }
-    }
-    let mapped = match nums.last().copied() {
-        Some(1) => DeepRepair::Off,
-        Some(2) => DeepRepair::Local,
-        Some(3) => DeepRepair::Full,
-        _ => deep,
-    };
-    Ok((mapped, true, nums))
 }
 
 fn parse_point(raw: &str, flag: &str) -> Result<[f64; 3], RepairFailure> {
@@ -332,50 +241,16 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         ));
     }
 
-    let intensity = cli.intensity.clone().unwrap_or_else(|| "balanced".into());
-    let mode = parse_mode(cli.mode.as_deref())?;
-    let mut deep_repair = parse_deep(cli.deep_repair.as_deref(), &intensity)?;
-    if cli.deep_repair.is_none() {
-        if cli.no_fallback_ftetwild {
-            deep_repair = DeepRepair::Off;
-        } else if cli.experimental_fallback_ftetwild {
-            deep_repair = DeepRepair::Full;
-        }
-    }
-    let ftetwild = if cli.no_fallback_ftetwild {
-        Some(Value::Bool(false))
-    } else if cli.experimental_fallback_ftetwild {
-        Some(Value::Bool(true))
-    } else {
-        None
-    };
-    let (deep_repair, methods_given, methods) =
-        parse_methods(cli.methods.as_deref(), deep_repair)?;
-    let si_mode = parse_si(cli.si_mode.as_deref())?;
-    let solid_engine = parse_solid(cli.solid_engine.as_deref())?;
-
-    let graft = if cli.no_graft {
-        Some(false)
-    } else if cli.experimental_graft {
-        Some(true)
-    } else {
-        Some(true)
-    };
-    let tamponade = if cli.no_tamponade {
-        Some(false)
-    } else {
-        Some(true)
-    };
-    let flap = if cli.no_flap { Some(false) } else { Some(true) };
-    let coaptation = if cli.no_coaptation {
-        Some(false)
-    } else {
-        Some(true)
-    };
-    let splint = !cli.no_splint && cli.experimental_splint;
-
-    // The two points are CLI-shaped text here; everything else is a plain copy,
-    // and the single shared conversion does the rest.
+    // Everything below is resolved by `options_from` from the settings table --
+    // including validation, with the same messages and the same exit code
+    // (`repair_settings.rs:173,187,203,214`). The CLI therefore does NOT
+    // pre-parse mode/intensity/deep/tiers here: duplicated parsing is what left
+    // eleven dead locals behind after the p10/core merge, and it would drift
+    // from the shared table the GUI also goes through.
+    //
+    // The two repeat points are the exception: they arrive as `X,Y,Z` text, and
+    // `RepairSettings` stores `[f64; 3]`, so the conversion (and its
+    // error message) belongs on the CLI side where the flag is spelled.
     let repeat_source = match cli.repeat_source.as_deref() {
         Some(raw) => Some(parse_point(raw, "--repeat-source")?),
         None => None,
@@ -398,6 +273,7 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         solid_engine: cli.solid_engine.clone(),
         classifier_engine: cli.classifier_engine.clone(),
         methods: cli.methods.clone(),
+        engines: engines_sel,
         max_geometry_change: cli.max_geometry_change,
         max_risk: cli.max_risk,
         force: cli.force,
@@ -456,7 +332,9 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         dressing_force_adopt: cli.dressing_force_adopt,
         wall_thicken: false,
     };
-    let (opts, _strict, _nums) = sutura_core::repair_settings::options_from(&settings)
+    // `options_from` returns `(options, methods_given, methods)` -- the same
+    // triple this function returns, computed once from the shared table.
+    let (opts, methods_given, methods) = sutura_core::repair_settings::options_from(&settings)
         .map_err(|e| RepairFailure::new(e.code, e.message))?;
     Ok((opts, methods_given, methods))
 }
@@ -1498,6 +1376,152 @@ fn augment_report(
     Value::Object(obj.clone())
 }
 
+/// True when the path names a 3MF container (case-insensitive, like Python).
+fn is_3mf(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("3mf"))
+        .unwrap_or(false)
+}
+
+/// The `method_used` block for a container, matching the single-file shape.
+fn methods_used_value(methods: &[u64]) -> Value {
+    if methods.is_empty() {
+        return Value::Null;
+    }
+    json!({
+        "num": methods.last().copied(),
+        "source": "tagged",
+    })
+}
+
+/// Repair a multi-object 3MF the way Python does: every object separately, then
+/// one archive rewrite.
+///
+/// Two behaviours are deliberately copied rather than invented:
+///
+/// * The output is always a rewritten 3MF container, **whatever the requested
+///   extension**. Measured on a 3-object container: `-o out.stl` and
+///   `-o out.3mf` produced byte-identical ZIP files, because Python's
+///   `repair_3mf_objects` rewrites the archive and never consults the output
+///   suffix.
+/// * The report carries `objects`, `object_reports` (one per object, in archive
+///   order), `objects_watertight` and `objects_stage2_ok`. (Measured; the key is
+///   `object_reports`, not `object_analyses` -- the latter belongs to
+///   `--analyze`.)
+///
+/// This was lost in the p10/core merge (`9debf8b`): the CLI stopped calling
+/// `pipeline_objects::repair_3mf_file`, so a multi-object container was loaded
+/// as a single mesh and only object 0 was repaired. The io-gate caught it.
+fn process_3mf(
+    cli: &crate::Cli,
+    path: &Path,
+    out_override: Option<&Path>,
+    opts: &RepairOptions,
+    methods: &[u64],
+    progress: Option<&JsonProgress>,
+) -> (Value, bool) {
+    let input_display = path.display().to_string();
+    let output = match out_override {
+        Some(out) => out.to_path_buf(),
+        None => unique_output(path),
+    };
+
+    let token = Arc::new(CancelToken::new());
+    let stop = Arc::new(AtomicBool::new(false));
+    let monitor_token = Arc::clone(&token);
+    let monitor_stop = Arc::clone(&stop);
+    let monitor = std::thread::spawn(move || {
+        while !monitor_stop.load(Ordering::SeqCst) {
+            if INTERRUPTED.load(Ordering::SeqCst) {
+                monitor_token.cancel();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    });
+
+    let started = Instant::now();
+    let repairs = sutura_core::pipeline_objects::repair_3mf_file(
+        path, &output, opts, &CoreSink, &token,
+    );
+    stop.store(true, Ordering::SeqCst);
+    let _ = monitor.join();
+
+    let repairs = match repairs {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(progress) = progress {
+                progress.end();
+            }
+            return (
+                json!({"input": input_display, "error": e.to_string()}),
+                true,
+            );
+        }
+    };
+
+    if let Some(progress) = progress {
+        progress.stage(8, "save");
+        progress.end();
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    let (objects, watertight_count, stage2_ok_count) =
+        sutura_core::pipeline_objects::aggregate_flags(&repairs);
+
+    // Each object's report is the single-mesh report for that object, so the
+    // per-object shape matches Python's `object_reports` entries.
+    let mut object_reports: Vec<Value> = Vec::with_capacity(repairs.len());
+    for r in &repairs {
+        let mut rep = r.report.clone();
+        if let Some(obj) = rep.as_object_mut() {
+            obj.insert("model".into(), Value::from(r.model_name.clone()));
+            obj.insert("declared_unit".into(), Value::from(r.declared_unit.clone()));
+            obj.insert("block_index".into(), Value::from(r.block_index));
+            obj.insert("output".into(), Value::from(output.display().to_string()));
+            contract_order(obj);
+        }
+        // One history record per object, exactly like `history.write` for a
+        // multi-object 3MF: every object report gets its own line, fingerprinted
+        // from that object's own mesh, and the container's format ('3mf') is
+        // passed in because the per-object report carries no input path.
+        if !cli.no_history {
+            sutura_core::report::history::write_record(
+                &rep,
+                &r.mesh.verts,
+                &r.mesh.tris,
+                env!("SUTURA_PRODUCT_VERSION"),
+                (elapsed * 1000.0).round() as i64,
+                Some("3mf"),
+                &sutura_core::report::history::now_ts(),
+            );
+        }
+        object_reports.push(rep);
+    }
+
+    let failed = object_reports.iter().any(|r| {
+        r.get("error").is_some() || r.get("category").and_then(Value::as_str) == Some("error")
+    });
+
+    let mut report = json!({
+        "input": input_display,
+        "output": output.display().to_string(),
+        "objects": objects,
+        "objects_watertight": watertight_count,
+        "objects_stage2_ok": stage2_ok_count,
+        "object_reports": object_reports,
+        "repair_mode": opts.mode.as_str(),
+        "si_mode": opts.si_mode.as_str(),
+        "triage_intensity": opts.intensity,
+        "timings": {"file_total": elapsed},
+        "method_used": methods_used_value(methods),
+    });
+    if let Some(obj) = report.as_object_mut() {
+        contract_order(obj);
+    }
+    (report, failed)
+}
+
 fn process_one(
     cli: &crate::Cli,
     path: &Path,
@@ -1521,6 +1545,12 @@ fn process_one(
     }
     if let Some(progress) = progress {
         progress.stage(1, "load");
+    }
+    // A 3MF container holds one mesh per object; Python repairs each object
+    // separately and rewrites the archive once (`service.repair_3mf_objects`).
+    // `load_mesh` refuses 3MF for exactly this reason, so branch before it.
+    if is_3mf(path) {
+        return process_3mf(cli, path, out_override, opts, methods, progress);
     }
     let input = match load_mesh(path) {
         Ok(mesh) => mesh,
