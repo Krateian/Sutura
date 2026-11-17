@@ -2217,6 +2217,11 @@ mod equivalence_tests {
             // The wall builder is ported, so the target thickness now reaches
             // the options and turns the tier on.
             (&["--wall-min-thickness", "0.8"], "/wall_min_thickness"),
+            // p10/core opt-in ports are wired after `options_from`.
+            (&["--experimental-edge-tiebreak"], "/extra_features"),
+            (&["--experimental-autorefine"], "/autorefine"),
+            (&["--experimental-indirect-autorefine"], "/indirect_autorefine"),
+            (&["--auto-reorder"], "/auto_reorder"),
         ];
         // `--max-risk` / `--max-geometry-change` are deliberately absent from
         // this table: they are budgets enforced in the CLI layer
@@ -2253,11 +2258,9 @@ mod equivalence_tests {
         }
 
         // Flags with no Rust implementation must be refused, loudly.
-        let refused: &[&[&str]] = &[
-            &["--experimental-autorefine"],
-            &["--experimental-indirect-autorefine"],
-            &["--experimental-edge-tiebreak"],
-        ];
+        // The three p10/core opt-in ports used to live here; they are now
+        // reachable rows above, so the refusal table is intentionally empty.
+        let refused: &[&[&str]] = &[];
         for args in refused {
             let mut argv = vec!["sutura", "in.stl"];
             argv.extend_from_slice(args);
