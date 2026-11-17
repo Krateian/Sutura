@@ -71,7 +71,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  splint=False, splint_adaptive=None,
                  solid_engine='ftetwild', coaptation=False,
                  progress=None, cancel=None, forced_methods=None,
-                 auto_escalation=True, auto_reorder=False):
+                 auto_escalation=True, auto_reorder=False,
+                 ftetwild_optimize=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     bad_coords = scan_bad_coordinates(src)
     if bad_coords:
@@ -157,6 +158,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 'autorefine': bool(autorefine),
                 'indirect_autorefine': bool(indirect_autorefine),
                 'auto_reorder': bool(auto_reorder),
+                'ftetwild_optimize': bool(ftetwild_optimize),
             }
             def _rust_call(flap_value, tamponade_value):
                 call_opts = dict(opts)
@@ -308,6 +310,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                     'autorefine': bool(autorefine),
                     'indirect_autorefine': bool(indirect_autorefine),
                     'auto_reorder': bool(auto_reorder),
+                    'ftetwild_optimize': bool(ftetwild_optimize),
                 }
                 rv, rt, rj = core.pipeline_repair(
                     np.ascontiguousarray(verts, dtype=np.float64),

@@ -119,6 +119,16 @@ pub fn params_from_env() -> Value {
     }
 }
 
+/// User parameters for one tier run: `--ftetwild-optimize` forces the
+/// optimizing attempt; otherwise the env/config value is used (Python
+/// `ftetwild_params()`).
+pub fn params_for_optimize(flag: bool) -> Value {
+    if flag {
+        return json!({"optimize": true});
+    }
+    params_from_env()
+}
+
 fn resolve_optimize() -> bool {
     if let Ok(raw) = std::env::var("SUTURA_FTETWILD_OPTIMIZE") {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -1071,11 +1081,12 @@ pub fn run_tier_with_cancel(
     spec: &IntensitySpec,
     tuning: &TierTuning,
     force_si: bool,
+    user_params: Value,
     cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> Option<TierResult> {
     run_tier_with_params_cancel(
         cur_v, cur_t, input_v, input_t, after, bin, spec, tuning, force_si,
-        params_from_env(), cancel,
+        user_params, cancel,
     )
 }
 

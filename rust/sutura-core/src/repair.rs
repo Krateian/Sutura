@@ -242,6 +242,10 @@ pub struct RepairOptions {
     /// order before the first attempt.
     #[serde(default)]
     pub auto_reorder: bool,
+    /// Opt-in `--ftetwild-optimize`: run the fTetWild optimizing attempt first
+    /// (Python `ftetwild_params()`), including when the SI trigger forces it.
+    #[serde(default)]
+    pub ftetwild_optimize: bool,
     /// Internal guard: depth of a nested auto-ladder attempt.  Not part of the
     /// Python-facing option JSON.
     #[serde(skip)]
@@ -291,6 +295,7 @@ impl Default for RepairOptions {
             autorefine: false,
             indirect_autorefine: false,
             auto_reorder: false,
+            ftetwild_optimize: false,
             ladder_depth: 0,
         }
     }
@@ -3987,6 +3992,7 @@ fn repair_impl(
                         &spec,
                         &tuning,
                         ft_trigger == crate::ftetwild::Trigger::Always,
+                        crate::ftetwild::params_for_optimize(opts.ftetwild_optimize),
                         Some(cancel as &dyn sutura_geom::cancel::Cancel),
                     )
                 };
