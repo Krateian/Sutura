@@ -4,199 +4,227 @@
 
 ## Requirements
 
-Linux:
+Sutura is a native program. It does **not** need Python, a virtualenv, conda,
+Homebrew, Rust or a C++ compiler — on any supported platform.
 
-* `python3` (>= 3.11) with venv support, for the repair venv. If the system
-  Python cannot create a venv, the installer downloads a standalone Python
-  3.11 automatically.
-* `sutura_geom` is installed from a verified prebuilt wheel, so no Rust,
-  cmake or C++ compiler is needed on supported platforms. When no wheel exists
-  for the platform, the installer fetches what the source build needs on its
-  own, in user space: rustup + a minimal Rust toolchain and cmake
-  (~11 MB + ~90 MB download, ~460 MB + ~137 MB on disk; opt out with
-  `SUTURA_NO_TOOLCHAIN_FETCH=1`). The one prerequisite it cannot install is a
-  C++20 compiler; on macOS `xcode-select --install` shows the system dialog.
-* KDE Plasma for the Dolphin service menu (optional; CLI and GUI work anywhere)
+Supported platforms, which are exactly the ones the Python version covered, so
+nothing is lost in the move:
 
-macOS (Apple Silicon / Intel):
+* **Linux x86_64**
+* **Linux aarch64**
+* **macOS on Apple Silicon** (arm64)
+* **macOS on Intel** (x86_64)
 
-* Miniforge/conda. If conda is missing, `install-macos.sh` downloads and
-  installs Miniforge (~80 MB) automatically, in the same run; an existing
-  conda installation is reused. Homebrew is not required.
-* Python 3.11 is created in the `sutura-env` conda environment automatically.
+Anything else has no published package. On such a machine `--check-update` and
+`--repair-install` cannot fetch anything, and the GUI says so rather than
+failing silently.
 
-Python 3.11 is used as a fallback runtime for the fTetWild tier only when the
-main interpreter is outside 3.10–3.14; a normal install with a recent
-`python3` does not need it. When it is needed, `install.sh` finds one entirely
-in user space — an existing usable `python3.11`, a standalone build it downloads
-itself (~27 MB), or a Python 3.11 already managed by `uv` — and never prints a
-`sudo apt`/`dnf` command. `SUTURA_NO_PYTHON_DOWNLOAD=1` disables the download.
+* Linux needs a typical desktop for the GUI (X11 or Wayland, plus OpenGL) and
+  the usual `tar`. KDE Plasma is optional: the installer adds the Dolphin
+  service menu when it can, and the CLI and GUI work without it.
+* macOS needs 12 or later. The app is not notarized, so the first open shows
+  the *unidentified developer* warning — see below.
 
 ## Install
 
-### Linux
+### From a downloaded package
 
-One line (fetches the latest `main` and installs):
+Download the package for your machine from the
+[releases page](https://github.com/Krateian/Sutura/releases/latest) and put the
+installer next to it:
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/Krateian/Sutura/main/install.sh | bash
-```
+| Platform | Package |
+|---|---|
+| Linux x86_64 | `Sutura-rust-v<version>-x86_64.tar.gz` |
+| Linux aarch64 | `Sutura-rust-v<version>-aarch64.tar.gz` |
+| macOS arm64 | `Sutura-rust-v<version>-arm64.dmg` |
+| macOS Intel | `Sutura-rust-v<version>-x86_64.dmg` |
 
-Or from a clone:
-
-```sh
-git clone https://github.com/Krateian/Sutura.git
-cd Sutura
-./install.sh
-```
-
-This creates the main virtualenv under `~/.local/share/sutura` (plus a
-`venv311` fallback only when the main interpreter is outside 3.10–3.14),
-installs the CLI wrapper at `~/.local/bin/sutura`, installs the hicolor app
-icons, and registers the Dolphin service menu. Re-running is safe. The
-installer adds `~/.local/bin` to the startup file your shell reads (`.zshrc`
-for zsh, `.bashrc`/`.bash_profile` for bash) and prints the absolute
-`~/.local/bin/sutura` path for the current terminal.
-
-`./uninstall.sh` removes the installed files and PATH line; user data
-(`~/.local/share/sutura/data`), configs (`~/.config/sutura`) and the
-`sutura-env` conda environment are kept. Sutura removes `sutura-env` only when
-its installer created it: interactive runs print the exact path and size and
-ask first; non-interactive runs keep it unless `--remove-env` (or `--purge`) is
-given. `SUTURA_UNINSTALL_SKIP_CONDA=1` always keeps it. `--purge` (with
-confirmation when interactive) also removes user data, configs and the
-Sutura-created env. Older installs without the ownership marker keep the env;
-the uninstaller prints the manual removal command.
-
-**AppImage (optional).** A self-contained AppImage with a single Python 3.14
-runtime bundled for Stage 1, Stage 2 and the GUI — no virtualenvs and no
-system `python3.11` needed. Each tagged release ships a prebuilt
-`Sutura-x86_64.AppImage` on the
-[GitHub releases page](https://github.com/Krateian/Sutura/releases); you can
-also build it yourself with `scripts/build_appimage.sh` (produces
-`dist/Sutura-x86_64.AppImage`). Make it executable and run:
+Linux:
 
 ```sh
-chmod +x Sutura-x86_64.AppImage
-./Sutura-x86_64.AppImage            # GUI
-./Sutura-x86_64.AppImage model.stl  # CLI (writes model_fixed.stl)
+bash install-rust.sh --from Sutura-rust-v<version>-x86_64.tar.gz
 ```
 
-Unlike the `install.sh` flow, the AppImage build cannot update itself in
-place; grab a new AppImage from the releases page above. The Dolphin
-right-click service menu is still installed by `install.sh`.
-
-Installation uses pip inside isolated virtualenvs — no AUR, no yay/paru
-required, nothing touches your system package manager. The GUI needs
-PySide6 (~79 MB download, part of the `venv`); total installed size for
-the main virtualenv is roughly 800 MB (the fTetWild tier adds about 6 MB,
-see below).
-
-**Rust extension (`sutura_geom`).** The Rust extension `sutura_geom` (~1 MB)
-is installed automatically by `install.sh` and `install-macos.sh` from a
-verified prebuilt abi3 wheel. The installer retries the release asset briefly
-and then uses the latest compatible abi3 wheel; no Rust or cmake is needed on
-supported platforms. When no wheel is available (a new architecture, a failed
-or offline release asset, or a branch checkout), the installer builds it from
-`rust/sutura-geom` and fetches what the build needs itself, in user space only,
-printing the sizes first: rustup + a minimal Rust toolchain (~11 MB + ~90 MB
-download, ~460 MB on disk) and cmake from its PyPI wheel (~54 MB download,
-~137 MB on disk). They live under `~/.local/share/sutura/tools` — never
-`~/.cargo` — and `uninstall.sh` removes them; `SUTURA_NO_TOOLCHAIN_FETCH=1`
-refuses the download. cmake is installed into a throwaway tools directory and is
-not shipped in the runtime environment. The one prerequisite the installer
-cannot provide is a C++20 compiler: if none is present it prints a single line
-(on macOS `xcode-select --install`, which shows the system dialog) and stops.
-AppImage and macOS .app/.dmg bundles include the extension. It accelerates Method #13 Graft (morphology shell wrap),
-the Flap surface-hole fill (`flap_fill`), the Dressing coat
-(`dressing_coat`) and the Tamponade interior plug (`tamponade`), and carries the
-exact indirect predicates. **The extension is required.** Use
-`SUTURA_GEOM_WHEEL=<path>` for a local wheel, or
-`SUTURA_GEOM_FROM_SOURCE=1` to force compilation.
-Source builds require Rust >= 1.89 (the `kiddo` 6.3 MSRV).
-The former `SUTURA_NO_GEOM=1` opt-out has been removed.
-
-**fTetWild fallback tier (installed by default).** The fTetWild fallback
-needs only `pytetwild` — no PyVista or VTK — so it is about **6 MB installed**.
-`install.sh` installs it into the main virtualenv by default (it is also
-bundled in the AppImage and the macOS `.dmg`). Once installed, the tier is on
-by default for meshes stage 1 cannot close (see *Optional tiers* above). To
-skip it:
+macOS:
 
 ```sh
-SUTURA_WITH_FTETWILD=0 ./install.sh
+bash install-macos-rust.sh --from Sutura-rust-v<version>-arm64.dmg
 ```
 
-Without it the default changes nothing (and the GUI checkbox has no
-effect); only `--experimental-fallback-ftetwild` reports an explicit skip.
+Both installers read `uname -m`, so they expect the package for *your*
+architecture and refuse rather than guess. Leave out `--from` and the installer
+uses the newest package sitting beside it, choosing the right architecture on
+its own. `--dry-run` (or `SUTURA_DRY_RUN=1`) prints what would be written and
+changes nothing.
 
-The tier can also be managed after install, without re-running the installer:
-`sutura ftetwild install` / `sutura ftetwild uninstall` (with `--dry-run`,
-`--yes`) or the GUI's Options → **Engines** tab install/remove it in the
-Sutura environment only, showing the download and on-disk sizes first. Both
-refuse to change a bundled or system layout (AppImage, `.dmg`, system Python)
-and report why.
+> **Downloading from Releases is not live yet.** The Rust packages are built by
+> the *Build Rust distribution artifacts* workflow, which uploads them as
+> workflow artifacts and deliberately creates no release. Until the first Rust
+> release is published, the installers work only with a package you supply
+> yourself. This section is written for the flow that will be in place, and no
+> step here depends on a link that does not exist yet.
 
-When the fTetWild fallback needs a Python 3.11 and none is available, `install.sh` gets one in user space (an existing `python3.11`, a standalone build it downloads itself ~27 MB, or a `uv`-managed 3.11 if `uv` is already installed) — never a `sudo apt`/`dnf` command. `SUTURA_NO_PYTHON_DOWNLOAD=1` disables the download.
+### Integrity check
 
-### macOS
+Every package ships a `<package>.sha256` next to it, and the updater **requires**
+it: an update whose digest does not match is rejected before anything on disk is
+touched (`sha256 mismatch (expected …, got …); not installed`).
+
+The shell installers are more permissive, which is worth knowing:
+
+| | With `.sha256` present | Without it |
+|---|---|---|
+| `install-rust.sh`, `install-macos-rust.sh` | verified, and a mismatch **stops** the install | prints `note: no …sha256 beside the package; skipping integrity check` and **continues** |
+| Updater and `--repair-install` | verified, a mismatch is fatal | cannot proceed at all |
+
+So if you downloaded a package by hand, keep its `.sha256` beside it. Verify it
+yourself first if you prefer:
 
 ```sh
-git clone https://github.com/Krateian/Sutura.git
-cd Sutura
-./install-macos.sh
+sha256sum -c Sutura-rust-v<version>-x86_64.tar.gz.sha256   # Linux
+shasum -a 256 -c Sutura-rust-v<version>-arm64.dmg.sha256   # macOS
 ```
 
-`install-macos.sh` reuses an existing conda installation, or downloads and
-installs Miniforge (~80 MB) automatically when conda is missing; it then
-creates a `sutura-env` conda environment (Python 3.11),
-installs PySide6/sutura_geom from pip
-(PySide6 6.11.2 on the Python 3.11 environment; Linux/Python 3.12+ installs use 6.12.0, and this pin keeps macOS 13 support),
-verifies the imports, copies the app files to `~/.local/share/sutura/`, and
-creates `~/.local/bin/sutura` (CLI) and `~/.local/bin/sutura-gui` launchers.
-It also creates a native **`~/Applications/Sutura.app`** so you can launch the
-GUI straight from **Spotlight** (press `Cmd+Space`, type *Sutura*, Enter) —
-no terminal needed. It is macOS-only and re-runnable. The fTetWild fallback
-tier (~6 MB installed, see the Linux section) is installed by default;
-`SUTURA_WITH_FTETWILD=0 ./install-macos.sh` skips it.
+### What gets installed
 
-The installer also adds a Finder **Quick Action** ("Sutura — Repair"). It
-appears for any selected file; select one or more STL/3MF files, right-click →
-*Quick Actions* → *Sutura — Repair*. Each file is repaired with the installed
-CLI (the `.dmg` app can use its bundled CLI) and a native macOS
-notification reports the result — a single file shows `Health: X/100  Risk:
-Y/100  Status: <label>`, a batch shows one summary (`N/M repaired, K failed —
-see log`). The log for each run is written to
-`~/Library/Logs/Sutura/sutura-<timestamp>.log`. Non-STL/3MF files are skipped
-and reported. For a `.dmg` app the Quick Action uses the bundled
-`sutura-cli`; on a conda install it uses the installed `~/.local/bin/sutura`
-(or the conda environment) directly. If the app is a downloaded
-(quarantined) copy, the notification tells you to right-click → Open
-`Sutura.app` once first.
+Linux — everything under your home directory, nothing system-wide:
 
-**Removing a macOS install:** `./uninstall.sh` now handles macOS too. It removes
-the app, launchers, Quick Action, logs and icons. `sutura-env` is kept unless
-Sutura's installer created it and you confirm interactively (or pass
-`--remove-env`/`--purge`); the exact env path and size are printed before
-asking, and non-interactive runs keep it by default. User data
-(`~/.local/share/sutura/data`) and configs (`~/.config/sutura`) are kept by
-default; `--purge` (with confirmation when interactive) also removes them and
-the owned env. Older installs without the ownership marker keep the env and
-the uninstaller prints the manual removal command. The same script removes the
-PATH line it added to `.zshrc`/`.zprofile`/`.bashrc`/`.bash_profile`.
+| Path | What |
+|---|---|
+| `~/.local/share/sutura/bin/sutura` | the CLI |
+| `~/.local/share/sutura/bin/sutura-gui` | the GUI |
+| `~/.local/share/sutura/bin/ftetwild` | the fTetWild binary, when bundled |
+| `~/.local/bin/sutura`, `~/.local/bin/sutura-gui` | symlinks on `PATH` |
+| `~/.local/share/applications/sutura-app.desktop` | desktop entry |
+| `~/.local/share/kio/servicemenus/sutura.desktop` | Dolphin right-click entry |
+| `~/.local/share/icons/hicolor/*/apps/sutura.png` | icons |
 
-The installer also writes `~/.local/bin` to the startup file your shell reads
-(`.zshrc` for zsh, `.bashrc`/`.bash_profile` for bash), and prints the absolute
-working path (`~/.local/bin/sutura`) for the current terminal.
+macOS:
 
-Each tagged release also ships a **macOS .dmg** (`Sutura-vX.Y.Z.dmg`, built
-by the `Build macOS .app/.dmg` workflow) — a self-contained
-`Sutura.app`. Drag it to `/Applications` (or double-click to open) and launch
-from Spotlight the same way. The .dmg is **unsigned** (no Apple Developer
-Program / notarization applied yet), so the first open shows macOS's
-*"unidentified developer"* warning. Open it with **right-click → Open**, or clear the
-quarantine attribute first:
+| Path | What |
+|---|---|
+| `~/Applications/Sutura.app` | the whole application bundle |
+| `~/.local/bin/sutura`, `~/.local/bin/sutura-gui` | symlinks into the bundle |
+| `~/Library/Services/Sutura Quick Action.workflow` | Finder Quick Action |
+| `~/.local/share/sutura/macos-quick-action.sh` | the Quick Action's helper |
+
+The installer adds `~/.local/bin` to the startup file your shell reads
+(`.zshrc`/`.zprofile` for zsh, `.bashrc`/`.bash_profile` for bash, else
+`.profile`) with a `# added by Sutura installer` marker, so uninstalling can
+remove exactly that line.
+
+**An existing `data/` directory is preserved** across a reinstall: it is set
+aside, the program files are replaced, and the data is put back.
+
+There is **no licence acceptance prompt**. `LICENSE` and `ATTRIBUTION.md` ship
+inside the package, and the PolyForm Noncommercial terms apply as before; a
+commercial licence still needs a separate agreement.
+
+The macOS app is ad-hoc signed, not notarized, so the first launch shows the
+*unidentified developer* warning. Open it with **right-click → Open** once, or:
 
 ```sh
-xattr -dr com.apple.quarantine Sutura.app
+xattr -dr com.apple.quarantine ~/Applications/Sutura.app
 ```
+
+### Speed and size
+
+| | Linux x86_64 | Linux aarch64 | macOS arm64 | macOS Intel |
+|---|---|---|---|---|
+| Download size | — | — | — | — |
+| Installed size | — | — | — | — |
+| Repair time, typical mesh | — | — | — | — |
+
+These figures are deliberately blank: they will be filled from measurements
+against the release package, and are not estimated here.
+
+## Updating
+
+Updates are installed by **`sutura --update`**, or by the GUI's update panel.
+
+```sh
+sutura --check-update   # report only: is there a newer release?
+sutura --update         # install it, after asking
+```
+
+`--check-update` never installs anything. It prints `update available: <tag>`,
+`no update available`, or a licence notice when the release crosses a licence
+boundary — in that last case it deliberately refuses and points you at the
+releases page.
+
+`--update` **asks before doing anything**, and the answer defaults to **no**: a
+bare Enter, `n`, or anything not recognised leaves your install alone. `--yes`
+answers for you. A non-interactive run (a script, CI) also declines and says so,
+because there is nobody to ask.
+
+What an update does:
+
+1. Downloads the package and verifies its `sha256`. Nothing is written until the
+   digest matches.
+2. Copies the current install to a backup.
+3. Unpacks and swaps in the new version, keeping `data/` untouched.
+4. Runs the new binary with `--version` and checks it answers with the expected
+   version.
+5. If that check fails, **puts the previous version back** and tells you where
+   from.
+
+### Backups and rolling back
+
+Two backups are kept, in `~/.local/share/sutura.backup/<version>/`. `data/` is
+never copied into a backup, so no backup can ever restore over your history.
+
+```sh
+sutura --rollback   # restore the newest backup, after asking
+```
+
+`--rollback` restores the **newest** backup only. There is no command to pick an
+older one: the third-newest is evicted when a third update happens. That is also
+why a Python-era backup is kept elsewhere — see
+[MIGRATE.md](../../MIGRATE.md).
+
+## Repairing a damaged install
+
+```sh
+sutura --repair-install   # reinstall this version over itself
+```
+
+It re-downloads the package for the version you are **running** — never the
+newest one, so it cannot silently update or downgrade — verifies it, swaps it in
+with the same backup and rollback as an update, and asks first (default: no).
+The GUI has the same thing as **Repair installation**.
+
+## Release notes
+
+```sh
+sutura --whats-new   # the notes saved by the last install, offline
+```
+
+The notes are written once a new version has installed successfully, so a failed
+update cannot leave you reading notes for a version you do not have. On a fresh
+install there may be nothing saved yet, in which case the command points at the
+releases page.
+
+## Uninstalling
+
+```sh
+bash uninstall-rust.sh           # remove the program, keep your data
+bash uninstall-rust.sh --purge   # also remove data, settings and backups
+SUTURA_DRY_RUN=1 bash uninstall-rust.sh   # show what would be removed
+```
+
+Without `--purge` it removes the program, the launchers, the desktop entries,
+the icons, the macOS bundle and Quick Action, and the `PATH` line the installer
+added. It **keeps** `~/.local/share/sutura/data` and the update backups, and
+says where they are.
+
+`--purge` additionally removes `~/.local/share/sutura` (data included),
+`~/.config/sutura`, and `~/.local/share/sutura.backup*` — both the update
+backups and a quarantined Python-era backup, if one exists.
+
+## Upgrading from the Python version
+
+A Python install is migrated, not reinstalled: history and learning data are
+carried over, the previous install is saved where you can get back to it, and
+nothing is removed until the new build has passed its health check. See
+[Moving from the Python version](../../MIGRATE.md).
