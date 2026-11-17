@@ -143,7 +143,10 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 'dressing_sigma_scale': dressing_sigma_scale,
                 'dressing_force_adopt': bool(dressing_force_adopt),
                 'wall_thicken': _fb(wall_thicken), 'repeat': repeat,
-                'solid_engine': solid_engine, 'si_mode': si_mode,
+                'solid_engine': solid_engine,
+                # Rust RepairOptions.si_mode is a strict enum (not Option);
+                # Python passes None for the policy default.
+                'si_mode': (si_mode or 'report'),
                 'time_budget_s': None, 'seed': 0,
                 'forced_methods': list(forced_methods or []),
                 'engines': (sorted(engines.keys())
