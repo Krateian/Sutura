@@ -64,20 +64,17 @@ const AVAILABILITY_ONLY: [&str; 5] = [
 /// the external fTetWild binary is compiled in.
 fn availability(m: &MethodInfo) -> Option<(&'static str, String)> {
     if m.id == "ftetwild" {
-        let ok = std::env::var_os("SUTURA_FTETWILD_BIN")
-            .map(|p| !p.is_empty() && std::path::Path::new(&p).exists())
-            .unwrap_or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| {
-                        std::path::Path::new(&h)
-                            .join(".local/share/sutura/ftetwild/bin/ftetwild")
-                            .exists()
-                    })
-                    .unwrap_or(false)
-            });
-        if !ok {
-            return Some(("skip", "fTetWild (pytetwild) is not installed".into()));
+        // `MethodInfo::available` is a **static** table value and is `false` for
+        // fTetWild (`ranking.rs:37`), because the binary is not compiled in.
+        // Trusting it here made `--self-check` report "optional addon not
+        // installed" on a packaged install whose sidecar was sitting right
+        // there, while `--list-methods` -- which asks the resolver -- said the
+        // method was available. Ask the resolver here too, so one question has
+        // one answer.
+        if crate::ftetwild::find_binary().is_none() {
+            return Some(("skip", "fTetWild binary not found".into()));
         }
+        return None;
     }
     if !m.available {
         return Some(("skip", "optional addon not installed".into()));
