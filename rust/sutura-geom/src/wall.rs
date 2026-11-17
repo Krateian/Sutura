@@ -513,6 +513,362 @@ fn median_of(values: &[f64]) -> f64 {
     }
 }
 
+/// `wall._TETS`: the six-tetrahedron decomposition of a cube, corner index =
+/// `x + 2y + 4z`.
+const TETS: [[usize; 4]; 6] = [
+    [0, 1, 3, 7],
+    [0, 1, 5, 7],
+    [0, 4, 5, 7],
+    [0, 4, 6, 7],
+    [0, 2, 6, 7],
+    [0, 2, 3, 7],
+];
+
+/// `wall._tet_triangles`: triangulate the iso-surface inside one tetrahedron.
+///
+/// Two cases: three crossings give one triangle; four give two, ordered around
+/// the crossing centroid by angle so the winding is consistent. Python sorts by
+/// `arctan2` in the plane of the crossing normal, and the order matters for the
+/// face indices, so it is reproduced rather than approximated.
+fn tet_triangles(
+    pts: &[[f64; 3]; 4],
+    vals: &[f64; 4],
+    iso: f64,
+) -> Vec<[[f64; 3]; 3]> {
+    let inside: [bool; 4] = [
+        vals[0] >= iso,
+        vals[1] >= iso,
+        vals[2] >= iso,
+        vals[3] >= iso,
+    ];
+    let n_in = inside.iter().filter(|b| **b).count();
+    if n_in == 0 || n_in == 4 {
+        return Vec::new();
+    }
+    const EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    let mut crossings: Vec<[f64; 3]> = Vec::with_capacity(4);
+    for (a, b) in EDGES {
+        if inside[a] != inside[b] {
+            crossings.push(interp(pts[a], pts[b], vals[a], vals[b], iso));
+        }
+    }
+    match crossings.len() {
+        3 => vec![[crossings[0], crossings[1], crossings[2]]],
+        4 => {
+            let c = [
+                (crossings[0][0] + crossings[1][0] + crossings[2][0] + crossings[3][0]) / 4.0,
+                (crossings[0][1] + crossings[1][1] + crossings[2][1] + crossings[3][1]) / 4.0,
+                (crossings[0][2] + crossings[1][2] + crossings[2][2] + crossings[3][2]) / 4.0,
+            ];
+            let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+            let cross = |a: [f64; 3], b: [f64; 3]| {
+                [
+                    a[1] * b[2] - a[2] * b[1],
+                    a[2] * b[0] - a[0] * b[2],
+                    a[0] * b[1] - a[1] * b[0],
+                ]
+            };
+            let norm = |a: [f64; 3]| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+            let mut normal = cross(
+                sub(crossings[1], crossings[0]),
+                sub(crossings[2], crossings[0]),
+            );
+            if norm(normal) < 1e-12 {
+                normal = cross(
+                    sub(crossings[2], crossings[0]),
+                    sub(crossings[3], crossings[0]),
+                );
+            }
+            let nrm = norm(normal);
+            let normal = if nrm > 1e-12 {
+                [normal[0] / nrm, normal[1] / nrm, normal[2] / nrm]
+            } else {
+                [0.0, 0.0, 1.0]
+            };
+            // Project the reference vector into the plane, then normalise.
+            let mut reference = sub(crossings[0], c);
+            let dotp = reference[0] * normal[0]
+                + reference[1] * normal[1]
+                + reference[2] * normal[2];
+            reference = [
+                reference[0] - dotp * normal[0],
+                reference[1] - dotp * normal[1],
+                reference[2] - dotp * normal[2],
+            ];
+            let mut rn = norm(reference);
+            if rn < 1e-12 {
+                reference = cross(normal, [1.0, 0.0, 0.0]);
+                rn = norm(reference);
+            }
+            let reference = if rn > 1e-12 {
+                [reference[0] / rn, reference[1] / rn, reference[2] / rn]
+            } else {
+                [1.0, 0.0, 0.0]
+            };
+            let bitangent = cross(normal, reference);
+            let mut order: Vec<usize> = (0..4).collect();
+            let angle = |p: [f64; 3]| {
+                let d = sub(p, c);
+                let b = d[0] * bitangent[0] + d[1] * bitangent[1] + d[2] * bitangent[2];
+                let r = d[0] * reference[0] + d[1] * reference[1] + d[2] * reference[2];
+                b.atan2(r)
+            };
+            // `np.argsort` is stable, so sort by (angle, index).
+            order.sort_by(|&a, &b| {
+                angle(crossings[a])
+                    .total_cmp(&angle(crossings[b]))
+                    .then(a.cmp(&b))
+            });
+            let cr: Vec<[f64; 3]> = order.iter().map(|&i| crossings[i]).collect();
+            vec![
+                [cr[0], cr[1], cr[2]],
+                [cr[0], cr[2], cr[3]],
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// `wall._interp`: linear crossing position, clipped to the segment.
+fn interp(p0: [f64; 3], p1: [f64; 3], v0: f64, v1: f64, iso: f64) -> [f64; 3] {
+    let denom = v1 - v0;
+    let mut t = if denom.abs() < 1e-30 {
+        0.0
+    } else {
+        (iso - v0) / denom
+    };
+    if t < 0.0 {
+        t = 0.0;
+    }
+    if t > 1.0 {
+        t = 1.0;
+    }
+    [
+        p0[0] + t * (p1[0] - p0[0]),
+        p0[1] + t * (p1[1] - p0[1]),
+        p0[2] + t * (p1[2] - p0[2]),
+    ]
+}
+
+/// `wall._marching_tetrahedra`: dependency-free iso-surface extraction.
+///
+/// Deliberately **not** `dual_contour::marching_tets_mesh`, which is a different
+/// extractor: it takes `f32`, orders nodes `i`-fastest, and QEF-smooths. This
+/// one reproduces Python's, including its vertex dedup key
+/// `round(v / (spacing * 1e-4))` and its `unique` ordering (`first_pos` keeps
+/// the first occurrence, which is what fixes the vertex order).
+pub fn marching_tetrahedra(
+    grid: &SdfGrid,
+    iso: f64,
+) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+    let dims = grid.dims;
+    let mut verts: Vec<[f64; 3]> = Vec::new();
+    let mut faces: Vec<[usize; 3]> = Vec::new();
+    if dims[0] < 2 || dims[1] < 2 || dims[2] < 2 {
+        return (verts, faces);
+    }
+    for i in 0..dims[0] - 1 {
+        for j in 0..dims[1] - 1 {
+            for k in 0..dims[2] - 1 {
+                let mut corner_vals = [0.0f64; 8];
+                let mut corner_pts = [[0.0f64; 3]; 8];
+                for b in 0..8 {
+                    let dx = (b & 1) as usize;
+                    let dy = ((b >> 1) & 1) as usize;
+                    let dz = ((b >> 2) & 1) as usize;
+                    let (xi, yi, zi) = (i + dx, j + dy, k + dz);
+                    corner_vals[b] = grid.index(xi, yi, zi);
+                    corner_pts[b] = [
+                        grid.origin[0] + grid.spacing * xi as f64,
+                        grid.origin[1] + grid.spacing * yi as f64,
+                        grid.origin[2] + grid.spacing * zi as f64,
+                    ];
+                }
+                for tet in TETS {
+                    let tv = [
+                        corner_vals[tet[0]],
+                        corner_vals[tet[1]],
+                        corner_vals[tet[2]],
+                        corner_vals[tet[3]],
+                    ];
+                    let tp = [
+                        corner_pts[tet[0]],
+                        corner_pts[tet[1]],
+                        corner_pts[tet[2]],
+                        corner_pts[tet[3]],
+                    ];
+                    for tri in tet_triangles(&tp, &tv, iso) {
+                        let base = verts.len();
+                        verts.extend_from_slice(&tri);
+                        faces.push([base, base + 1, base + 2]);
+                    }
+                }
+            }
+        }
+    }
+    if verts.is_empty() {
+        return (verts, faces);
+    }
+
+    // Dedup: `keys = round(verts / (spacing * 1e-4)).astype(int64)`, then
+    // `np.unique(keys, axis=0, return_index=True, return_inverse=True)`.
+    //
+    // `np.unique` sorts the keys lexicographically and `first_pos` is the index
+    // of the first original occurrence of each unique key, so the surviving
+    // vertex order is the *sorted key* order. Reproducing that ordering is what
+    // makes the output byte-identical rather than merely geometrically equal.
+    let scale = grid.spacing * 1e-4;
+    let key_of = |p: [f64; 3]| -> [i64; 3] {
+        // NumPy's `round` is half-to-even.
+        let r = |v: f64| (v / scale).round_ties_even() as i64;
+        [r(p[0]), r(p[1]), r(p[2])]
+    };
+    let mut order: Vec<usize> = (0..verts.len()).collect();
+    let keys: Vec<[i64; 3]> = verts.iter().map(|p| key_of(*p)).collect();
+    order.sort_by(|&a, &b| keys[a].cmp(&keys[b]).then(a.cmp(&b)));
+
+    let mut unique_keys: Vec<[i64; 3]> = Vec::new();
+    let mut first_pos: Vec<usize> = Vec::new();
+    for &idx in &order {
+        if unique_keys.last() != Some(&keys[idx]) {
+            unique_keys.push(keys[idx]);
+            first_pos.push(idx);
+        }
+    }
+    // `inverse`: original index -> position in the unique key order, where the
+    // unique order is the sorted-key order (`np.unique` sorts, and `first_pos`
+    // is the first original occurrence of each key).
+    let mut slot_of_key: std::collections::HashMap<[i64; 3], usize> =
+        std::collections::HashMap::with_capacity(unique_keys.len());
+    for (slot, k) in unique_keys.iter().enumerate() {
+        slot_of_key.insert(*k, slot);
+    }
+    let mut inverse = vec![0usize; verts.len()];
+    for (orig, k) in keys.iter().enumerate() {
+        inverse[orig] = slot_of_key[k];
+    }
+
+    let out_verts: Vec<[f64; 3]> = first_pos.iter().map(|&i| verts[i]).collect();
+    let out_faces: Vec<[usize; 3]> = faces
+        .iter()
+        .map(|f| [inverse[f[0]], inverse[f[1]], inverse[f[2]]])
+        .collect();
+    (out_verts, out_faces)
+}
+
+/// The report `wall.thicken_to_min` builds. Field order and names match Python's
+/// dict so the tier record serialises identically.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThickenReport {
+    pub min_thickness: f64,
+    pub min_before: f64,
+    pub thin_before: usize,
+    pub delta: f64,
+    pub method: String,
+    pub notes: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// `wall.thicken_to_min`: thicken walls below `min_thickness` by morphological
+/// dilation.
+///
+/// Offsets the solid outward by `delta = (target - min_measured) / 2`, capped at
+/// 25% of the bbox diagonal, which adds `2 * delta` to every local wall
+/// thickness. A solid already at or above the target comes back unchanged.
+pub fn thicken_to_min(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    min_thickness: Option<f64>,
+    resolution: usize,
+    samples: usize,
+    seed: u64,
+) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, ThickenReport) {
+    let d = diag(verts);
+    let target = min_thickness.unwrap_or(DEFAULT_MIN_THICKNESS_REL * d);
+    let before = estimate_wall_thickness(verts, tris, resolution, samples, seed, Some(target));
+    let mut report = ThickenReport {
+        min_thickness: target,
+        min_before: before.as_ref().map(|b| b.min).unwrap_or(0.0),
+        thin_before: before.as_ref().map(|b| b.thin_count).unwrap_or(0),
+        delta: 0.0,
+        method: "morphological-dilation".to_string(),
+        notes: Vec::new(),
+        error: None,
+    };
+
+    if target <= 0.0 || tris.is_empty() {
+        report.error = Some("no positive target thickness".to_string());
+        return (verts.to_vec(), tris.to_vec(), report);
+    }
+    let before_min = before.map(|b| b.min).unwrap_or(0.0);
+    let mut delta = (target - before_min) / 2.0;
+    if delta < 0.0 {
+        delta = 0.0;
+    }
+    let cap = 0.25 * d;
+    if delta > cap {
+        delta = cap;
+    }
+    if delta <= 0.0 {
+        report.notes.push("no wall below the target; nothing to thicken".to_string());
+        return (verts.to_vec(), tris.to_vec(), report);
+    }
+    report.delta = delta;
+
+    let extra_pad = delta * 1.5 + 0.05 * d;
+    let Some(grid) = build_sdf_grid(verts, tris, resolution, samples, seed, extra_pad) else {
+        report.error = Some("no SDF grid".to_string());
+        return (verts.to_vec(), tris.to_vec(), report);
+    };
+    let spacing = grid.spacing;
+    let radius = (delta / spacing).ceil() as u32;
+    if radius < 1 {
+        report.error = Some("thicken offset below the SDF grid resolution".to_string());
+        return (verts.to_vec(), tris.to_vec(), report);
+    }
+    // Axis order matters: `SdfGrid` is NumPy-`ij` (x outermost, z fastest), but
+    // `morph::edt_3d` addresses `k * nx*ny + j * nx + i` (i innermost). Passing
+    // one straight into the other dilates along the wrong axes -- it produced
+    // 16840 occupied cells where Python had 8152, from the same 3793 seeds.
+    // Convert explicitly rather than relying on the two agreeing.
+    let d = grid.dims;
+    let mut occupancy: Vec<u8> = Vec::with_capacity(grid.sdf.len());
+    for k in 0..d[2] {
+        for j in 0..d[1] {
+            for i in 0..d[0] {
+                occupancy.push(u8::from(grid.index(i, j, k) <= 0.0));
+            }
+        }
+    }
+    let closed = crate::morph::dilate_occupancy_ball(&occupancy, d, radius);
+    if closed.iter().all(|v| *v == 0) {
+        report.error = Some("morphological dilation produced an empty solid".to_string());
+        return (verts.to_vec(), tris.to_vec(), report);
+    }
+    // Back to `ij` order for the extractor.
+    let mut field = vec![0.0f64; grid.sdf.len()];
+    for k in 0..d[2] {
+        for j in 0..d[1] {
+            for i in 0..d[0] {
+                field[i * d[1] * d[2] + j * d[2] + k] =
+                    f64::from(closed[k * d[0] * d[1] + j * d[0] + i]);
+            }
+        }
+    }
+    let closed_grid = SdfGrid {
+        origin: grid.origin,
+        spacing,
+        dims: d,
+        sdf: field,
+    };
+    let (out_v, out_t) = marching_tetrahedra(&closed_grid, 0.5);
+    if out_t.is_empty() {
+        report.error = Some("iso-surface extraction produced no faces".to_string());
+        return (verts.to_vec(), tris.to_vec(), report);
+    }
+    (out_v, out_t, report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,5 +1042,72 @@ mod tests {
         assert_eq!(median_of(&[3.0, 1.0, 2.0]), 2.0);
         assert_eq!(median_of(&[4.0, 1.0, 3.0, 2.0]), 2.5);
         assert_eq!(median_of(&[]), 0.0);
+    }
+
+    /// `morph::edt_3d` addresses cells `k*nx*ny + j*nx + i` (i innermost), while
+    /// `SdfGrid` is NumPy `ij` (x outermost). Handing one to the other dilates
+    /// along the wrong axes.
+    ///
+    /// On a real mesh that produced 16840 occupied cells where Python had 8152,
+    /// from the same 3793 seeds -- the vertex and face counts came out 2.3x too
+    /// large. This pins the conversion with a shape that is asymmetric in all
+    /// three axes, so a swap cannot pass.
+    #[test]
+    fn occupancy_is_transposed_into_edt_order() {
+        let dims = [3usize, 2, 4];
+        let mut grid = SdfGrid {
+            origin: [0.0; 3],
+            spacing: 1.0,
+            dims,
+            sdf: vec![0.0; dims[0] * dims[1] * dims[2]],
+        };
+        // Exactly one inside cell, at (i,j,k) = (2,1,3) in `ij` order.
+        let inside = |i: usize, j: usize, k: usize| i == 2 && j == 1 && k == 3;
+        for i in 0..dims[0] {
+            for j in 0..dims[1] {
+                for k in 0..dims[2] {
+                    grid.sdf[i * dims[1] * dims[2] + j * dims[2] + k] = if inside(i, j, k) {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                }
+            }
+        }
+        // Build the EDT-order buffer the way the port does.
+        let mut occ = Vec::new();
+        for k in 0..dims[2] {
+            for j in 0..dims[1] {
+                for i in 0..dims[0] {
+                    occ.push(u8::from(grid.index(i, j, k) <= 0.0));
+                }
+            }
+        }
+        assert_eq!(occ.iter().filter(|v| **v != 0).count(), 1);
+        // The single seed must sit at k*nx*ny + j*nx + i = 3*6 + 1*3 + 2.
+        assert_eq!(occ[3 * dims[0] * dims[1] + 1 * dims[0] + 2], 1);
+    }
+
+    /// `thicken_to_min` on a mesh already thicker than the target is a no-op.
+    ///
+    /// The delta formula is `(target - min) / 2`, so a target below the measured
+    /// minimum must give `delta <= 0` and return the input untouched with the
+    /// documented note -- not a dilated copy.
+    #[test]
+    fn already_thick_enough_is_untouched() {
+        let (v, t) = unit_square();
+        let (ov, ot, r) = thicken_to_min(&v, &t, Some(1e-6), 20, 200, 0);
+        assert_eq!(r.delta, 0.0);
+        assert!(r.notes.iter().any(|n| n.contains("no wall below the target")));
+        assert_eq!(ov, v, "the mesh must come back unchanged");
+        assert_eq!(ot, t);
+    }
+
+    /// A non-positive target is an error, not a silent no-op.
+    #[test]
+    fn zero_target_reports_an_error() {
+        let (v, t) = unit_square();
+        let (_, _, r) = thicken_to_min(&v, &t, Some(0.0), 20, 200, 0);
+        assert!(r.error.as_deref().unwrap_or("").contains("positive target"));
     }
 }
