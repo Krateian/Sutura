@@ -248,12 +248,6 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             "--wall-min-thickness is not implemented in the Rust CLI",
         ));
     }
-    if cli.auto_reorder {
-        return Err(RepairFailure::new(
-            2,
-            "--auto-reorder is not implemented in the Rust CLI",
-        ));
-    }
     if cli.experimental_dressing {
         return Err(RepairFailure::new(
             2,
@@ -389,8 +383,10 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         engines: engines_sel,
         auto_escalation: None,
         extra_features: cli.experimental_edge_tiebreak,
+        auto_reorder: cli.auto_reorder,
         autorefine: cli.experimental_autorefine,
         indirect_autorefine: cli.experimental_indirect_autorefine,
+        ladder_depth: 0,
     };
     if methods.contains(&13) {
         opts.graft = Some(true);

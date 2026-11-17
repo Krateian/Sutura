@@ -238,6 +238,10 @@ pub struct RepairOptions {
     /// Opt-in `--experimental-indirect-autorefine` exact arrangement split.
     #[serde(default)]
     pub indirect_autorefine: bool,
+    /// Opt-in `--auto-reorder`: reorder the ranked fallback by the suggestion
+    /// order before the first attempt.
+    #[serde(default)]
+    pub auto_reorder: bool,
     /// Internal guard: depth of a nested auto-ladder attempt.  Not part of the
     /// Python-facing option JSON.
     #[serde(skip)]
@@ -286,6 +290,7 @@ impl Default for RepairOptions {
             extra_features: false,
             autorefine: false,
             indirect_autorefine: false,
+            auto_reorder: false,
             ladder_depth: 0,
         }
     }
@@ -1915,17 +1920,11 @@ fn apply_si_escalation(
     cand_field["candidate_sha256"] = cand_sha.map(Value::from).unwrap_or(Value::Null);
     cand_field["elapsed_ms"] = Value::from(elapsed_ms.round() as i64);
 
-    let watertight = cand_report
-        .get("method_reached_watertight")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let eval_holes = cand.holes.unwrap_or(0);
-    let eval_nm = cand.nm.unwrap_or(0);
-    let eval_reason = if watertight {
-        "strict-watertight".to_string()
-    } else {
-        format!("holes={eval_holes} non-manifold={eval_nm} remain")
-    };
+    // Evaluate the SI candidate with the same reload-strict holes/nm rule as
+    // the Python ladder (`_evaluate`); the raw `method_reached_watertight` flag
+    // is pre-reload and rejected an accepted scaffold on broken_40261.
+    let (watertight, eval_holes, eval_nm, eval_reason) =
+        ladder_eval(&cand_v, &cand_t, &cand_report);
     let geom_change = geom_change_pct(input_v, input_t, &cand_v, &cand_t);
     let tried_entry = json!({
         "num": method_num,
@@ -2943,6 +2942,42 @@ fn run_auto_ladder(
         if !watertight {
             continue;
         }
+        // Python `_evaluate`: generative methods and Join get a one-sided
+        // input->output Hausdorff gate (Graft is self-guarded by its own
+        // fidelity/coverage gate below).
+        let shape_gated = method_invents_geometry(rec.num) || rec.id == "join";
+        if shape_gated && rec.num != 13 {
+            let gen_max = policy_number(
+                policy,
+                "auto",
+                "generative_max_hausdorff_rel",
+                0.01,
+            );
+            let hd = crate::proxy::one_sided_hausdorff_rel(
+                input_v, input_t, &cv, &ct,
+            )
+            .0;
+            if let Some(hd) = hd {
+                if hd > gen_max {
+                    tried.push(ladder_record(
+                        rec.num,
+                        rec.id,
+                        rec.name,
+                        "rejected",
+                        false,
+                        holes,
+                        nm,
+                        &format!(
+                            "shape changed (one-sided Hausdorff {hd:.3} > {gen_max:.3})"
+                        ),
+                        None,
+                        None,
+                        None,
+                    ));
+                    continue;
+                }
+            }
+        }
         if rec.num == 13 {
             let g = crep.get("graft");
             let fidelity_failed = g
@@ -3164,12 +3199,11 @@ fn repair_impl(
                 diagnosis_v2: analysis.diagnosis_v2.clone(),
                 ..RankingAnalysis::default()
             };
-            let recs = order_graft_before_ftetwild(rank_methods(
-                loaded,
-                &rank_analysis,
-                None,
-                None,
-            ));
+            let mut recs = rank_methods(loaded, &rank_analysis, None, None);
+            if opts.auto_reorder {
+                recs = crate::ranking::apply_auto_reorder(recs, loaded, &rank_analysis);
+            }
+            let recs = order_graft_before_ftetwild(recs);
             let avoid = prune_avoid_nums(&rank_analysis);
             Some((recs, avoid))
         }

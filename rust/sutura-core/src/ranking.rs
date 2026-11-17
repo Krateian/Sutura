@@ -735,3 +735,117 @@ mod order_tests {
         assert!(avoid.contains(&11) && avoid.contains(&15));
     }
 }
+
+
+// --- Suggestions / auto-reorder -------------------------------------------
+
+const CORE150_PRIOR_CLEAN: &[(u8, f64)] = &[(1, 0.95), (2, 0.95), (3, 0.95), (9, 0.85)];
+const CORE150_PRIOR_HOLES: &[(u8, f64)] = &[(18, 0.80), (3, 0.80), (1, 0.70), (2, 0.70)];
+const CORE150_PRIOR_SI: &[(u8, f64)] = &[(10, 0.70), (7, 0.55), (13, 0.55)];
+const CORE150_PRIOR_REPEATED: &[(u8, f64)] = &[(8, 0.80), (1, 0.80), (4, 0.80), (13, 0.70)];
+const CORE150_PRIOR_SCAN: &[(u8, f64)] = &[(9, 0.90), (1, 0.70), (3, 0.70)];
+const CORE150_PRIOR_DUPLICATE: &[(u8, f64)] = &[(8, 0.90), (1, 0.90), (2, 0.80), (4, 0.80)];
+
+fn diag_count(a: &Analysis, name: &str) -> f64 {
+    a.diagnosis_v2
+        .as_ref()
+        .and_then(|d| d.get("channels"))
+        .and_then(|c| c.get(name))
+        .and_then(|e| e.get("count"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+}
+
+fn damage_class(a: &Analysis) -> &'static str {
+    if a.self_intersections > 0.0 || diag_count(a, "self_intersection") > 0.0 {
+        return "si";
+    }
+    if a.non_manifold_edges > 0.0 || a.boundary_loops > 0.0 || diag_count(a, "loops") > 0.0 {
+        return "holes";
+    }
+    if a.repetition_score >= 0.5 {
+        return "repeated";
+    }
+    if a.single_side_score >= 0.5 || a.relief_score >= 0.5 {
+        return "scan";
+    }
+    if diag_count(a, "duplicate") > 0.0 || diag_count(a, "degenerate") > 0.0 {
+        return "duplicate";
+    }
+    "clean"
+}
+
+fn prior_for(class: &str) -> &'static [(u8, f64)] {
+    match class {
+        "holes" => CORE150_PRIOR_HOLES,
+        "si" => CORE150_PRIOR_SI,
+        "repeated" => CORE150_PRIOR_REPEATED,
+        "scan" => CORE150_PRIOR_SCAN,
+        "duplicate" => CORE150_PRIOR_DUPLICATE,
+        _ => CORE150_PRIOR_CLEAN,
+    }
+}
+
+fn has_body_overlap(a: &Analysis) -> bool {
+    let Some(d) = a.diagnosis_v2.as_ref() else {
+        return false;
+    };
+    let inter = d
+        .get("self_intersections")
+        .and_then(|s| s.get("inter_body"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if inter > 0 {
+        return true;
+    }
+    d.get("parts")
+        .and_then(|p| p.get("overlap_edges"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        > 0
+}
+
+/// Python `methods.suggest_methods` ordering only (numbers, confidence-ranked).
+pub fn suggest_order(loaded: &LoadedPolicy, analysis: &Analysis, top_n: usize) -> Vec<u8> {
+    let mut recs = rank_methods(loaded, analysis, Some(top_n.max(6)), None);
+    if !has_body_overlap(analysis) {
+        recs.retain(|r| r.num != 4);
+    }
+    let priors = prior_for(damage_class(analysis));
+    let mut scored: Vec<(u8, f64)> = recs
+        .iter()
+        .map(|r| {
+            let prior = priors.iter().find(|(n, _)| *n == r.num).map(|(_, p)| *p);
+            let conf = match prior {
+                Some(p) => 0.85 * r.score + 0.15 * p,
+                None => r.score,
+            };
+            (r.num, crate::classify::py_round(conf.min(0.95).clamp(0.0, 1.0), 3))
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    scored.into_iter().take(top_n).map(|(n, _)| n).collect()
+}
+
+/// Python `triage._apply_auto_reorder`: suggestion order, then the Graft-before-
+/// fTetWild invariant.  Opt-in (`--auto-reorder`).
+pub fn apply_auto_reorder(
+    recs: Vec<Recommendation>,
+    loaded: &LoadedPolicy,
+    analysis: &Analysis,
+) -> Vec<Recommendation> {
+    let order = suggest_order(loaded, analysis, recs.len().max(3));
+    let rank: std::collections::HashMap<u8, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (*n, i))
+        .collect();
+    let tail = rank.len();
+    let mut out = recs;
+    out.sort_by_key(|r| rank.get(&r.num).copied().unwrap_or(tail));
+    order_graft_before_ftetwild(out)
+}
