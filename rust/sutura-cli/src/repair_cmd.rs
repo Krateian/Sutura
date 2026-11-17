@@ -169,19 +169,9 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     // `repair.rs` consumes. A merge resolution restored the stale rejections
     // and made implemented features unreachable from the CLI.
     //
-    // `--wall-min-thickness` is refused for a different reason: the SDF /
-    // ray-march / marching-tetrahedra *builder* stays in Python by an approved
-    // scope decision (`tiers/wall.rs` header); Rust ships only the adoption
-    // gate, so accepting the flag would produce a repair that silently does
-    // nothing.
-    if cli.wall_min_thickness.is_some() {
-        return Err(RepairFailure::new(
-            2,
-            "--wall-min-thickness needs the wall builder, which is Python-only in \
-             this build (the Rust port ships the adoption gate); use the Python \
-             backend for wall thickening",
-        ));
-    }
+    // `--wall-min-thickness` was refused for the same reason and is now wired:
+    // the builder is ported (`sutura_geom::wall`, byte-identical to `wall.py`),
+    // so the flag sets the target and turns the tier on.
     for (flag, set) in [
         ("--experimental-autorefine", cli.experimental_autorefine),
         (
@@ -330,7 +320,12 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         dressing_rmax_scale: cli.dressing_rmax_scale,
         dressing_sigma_scale: cli.dressing_sigma_scale,
         dressing_force_adopt: cli.dressing_force_adopt,
-        wall_thicken: false,
+        // `--wall-min-thickness` implies the tier: a target thickness with the
+        // tier off would silently do nothing, which is the bug class this
+        // session has been removing. Python's CLI has no separate on/off flag
+        // for wall-thicken -- the target IS the switch.
+        wall_thicken: cli.wall_min_thickness.is_some(),
+        wall_min_thickness: cli.wall_min_thickness,
     };
     // `options_from` returns `(options, methods_given, methods)` -- the same
     // triple this function returns, computed once from the shared table.
@@ -2027,6 +2022,9 @@ mod equivalence_tests {
             (&["--dressing-force-adopt"], "/dressing_force_adopt"),
             (&["--graft-timeout", "31.5"], "/graft_timeout"),
             (&["--dense-ratio", "4"], "/dense_ratio"),
+            // The wall builder is ported, so the target thickness now reaches
+            // the options and turns the tier on.
+            (&["--wall-min-thickness", "0.8"], "/wall_min_thickness"),
         ];
         // `--max-risk` / `--max-geometry-change` are deliberately absent from
         // this table: they are budgets enforced in the CLI layer
@@ -2067,7 +2065,6 @@ mod equivalence_tests {
             &["--experimental-autorefine"],
             &["--experimental-indirect-autorefine"],
             &["--experimental-edge-tiebreak"],
-            &["--wall-min-thickness", "0.5"],
         ];
         for args in refused {
             let mut argv = vec!["sutura", "in.stl"];

@@ -27,6 +27,7 @@ pub mod self_check;
 pub mod self_repair;
 pub mod updater;
 pub mod validate;
+pub mod wall_tier;
 pub mod closing;
 pub mod dressing;
 pub mod engines;

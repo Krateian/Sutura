@@ -147,6 +147,10 @@ pub struct RepairSettings {
     pub dressing_sigma_scale: Option<f64>,
     pub dressing_force_adopt: bool,
     pub wall_thicken: bool,
+    /// `--wall-min-thickness`: target wall thickness in mm. `None` keeps
+    /// Python's default (1% of the bbox diagonal). Setting it implies
+    /// `wall_thicken`, since a target with the tier off would do nothing.
+    pub wall_min_thickness: Option<f64>,
 }
 
 impl RepairSettings {
@@ -343,6 +347,7 @@ pub fn options_from(
         dressing_sigma_scale: settings.dressing_sigma_scale,
         dressing_force_adopt: settings.dressing_force_adopt,
         wall_thicken: settings.wall_thicken,
+        wall_min_thickness: settings.wall_min_thickness,
         repeat,
         repeat_source: settings.repeat_source,
         repeat_target: settings.repeat_target,

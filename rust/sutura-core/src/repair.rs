@@ -189,6 +189,10 @@ pub struct RepairOptions {
     pub dressing_sigma_scale: Option<f64>,
     pub dressing_force_adopt: bool,
     pub wall_thicken: bool,
+    /// `--wall-min-thickness`: the target wall thickness in mm. `None` uses
+    /// `wall.DEFAULT_MIN_THICKNESS_REL * bbox_diagonal` (1%), as Python does.
+    /// Only meaningful when `wall_thicken` is on.
+    pub wall_min_thickness: Option<f64>,
     pub repeat: Option<RepeatMode>,
     /// Method 12 (`RepeatMode::Manual`): the two 3D points the transplant
     /// moves between. `--repeat-source` / `--repeat-target`; required together
@@ -254,6 +258,7 @@ impl Default for RepairOptions {
             dressing_sigma_scale: None,
             dressing_force_adopt: false,
             wall_thicken: false,
+            wall_min_thickness: None,
             repeat: None,
             repeat_source: None,
             repeat_target: None,
@@ -3384,11 +3389,33 @@ fn repair_impl(
         stats.insert("repeat".into(), r);
     }
     if opts.wall_thicken {
-        let rec = tier_error(
-            "wall_thicken",
-            "the Wall-thicken producer stays in Python; the ladder result was kept",
+        // The producer is now ported (sutura-geom, byte-identical to
+        // wall.py), so this is a real tier rather than an error record.
+        //
+        // The adoption baseline is the *current ladder* mesh's hole and
+        // non-manifold counts, matching Python's `base_holes`/`base_nm`.
+        let base_holes = boundary_loop_stats(&cur_t).0;
+        let base_nm = after.non_two_manifold_edges;
+        let outcome = crate::wall_tier::run(
+            &cur_v,
+            &cur_t,
+            verts,
+            tris,
+            opts.wall_min_thickness,
+            crate::wall_tier::DEFAULT_RESOLUTION,
+            crate::wall_tier::DEFAULT_SAMPLES,
+            0,
+            base_holes,
+            base_nm,
         );
+        let rec = outcome.record;
         emit_tier(sink, "wall_thicken", 4, &rec);
+        if outcome.adopted {
+            cur_v = outcome.verts;
+            cur_t = outcome.tris;
+            after = common::topology_summary(&cur_v, &cur_t);
+            tiers_run.push(Value::from("wall_thicken"));
+        }
         trace.record(
             "wall_thicken",
             "tiers.wall.wall_thicken_tier",
@@ -4197,6 +4224,7 @@ mod tests {
             splint: false,
             dressing: false,
             wall_thicken: false,
+            wall_min_thickness: None,
             closing: None,
             proxy_template: false,
             repeat: None,

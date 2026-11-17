@@ -767,6 +767,12 @@ pub struct ThickenReport {
     pub method: String,
     pub notes: Vec<String>,
     pub error: Option<String>,
+    /// Analytic post-offset minimum (`min_before + 2*delta`). Python reports the
+    /// analytic value rather than re-measuring, because the blocky
+    /// marching-tetrahedra surface makes a re-measurement noisy.
+    pub min_after: Option<f64>,
+    pub thin_after: Option<usize>,
+    pub faces: Option<usize>,
 }
 
 /// `wall.thicken_to_min`: thicken walls below `min_thickness` by morphological
@@ -794,6 +800,9 @@ pub fn thicken_to_min(
         method: "morphological-dilation".to_string(),
         notes: Vec::new(),
         error: None,
+        min_after: None,
+        thin_after: None,
+        faces: None,
     };
 
     if target <= 0.0 || tris.is_empty() {
@@ -866,6 +875,14 @@ pub fn thicken_to_min(
         report.error = Some("iso-surface extraction produced no faces".to_string());
         return (verts.to_vec(), tris.to_vec(), report);
     }
+    // Analytic post-offset minimum, as Python does: a uniform dilation by
+    // `delta` adds ~`2*delta` to every wall.
+    report.min_after = Some(before_min + 2.0 * delta);
+    report.faces = Some(out_t.len());
+    report.notes = vec![
+        "thin walls thickened by morphological dilation".to_string(),
+        "min_after is the analytical estimate (min_before + 2*delta)".to_string(),
+    ];
     (out_v, out_t, report)
 }
 
