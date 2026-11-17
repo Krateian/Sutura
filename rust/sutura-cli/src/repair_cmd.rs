@@ -248,18 +248,7 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             "--wall-min-thickness is not implemented in the Rust CLI",
         ));
     }
-    if cli.experimental_dressing {
-        return Err(RepairFailure::new(
-            2,
-            "--experimental-dressing is not implemented in the Rust CLI",
-        ));
-    }
     for (flag, set) in [
-        ("--dressing-drain", cli.dressing_drain.is_some()),
-        ("--dressing-defects", cli.dressing_defects.is_some()),
-        ("--dressing-rmax-scale", cli.dressing_rmax_scale.is_some()),
-        ("--dressing-sigma-scale", cli.dressing_sigma_scale.is_some()),
-        ("--dressing-force-adopt", cli.dressing_force_adopt),
         ("--diagnostics", cli.diagnostics.is_some()),
         ("--trace", cli.trace.is_some()),
         ("--last", cli.last.is_some()),
@@ -343,6 +332,12 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         Some(true)
     };
     let splint = !cli.no_splint && cli.experimental_splint;
+    let dressing_drain = cli.dressing_drain.as_ref().map(|raw| {
+        let text = raw.trim();
+        text.parse::<f64>()
+            .map(|value| Value::from(value))
+            .unwrap_or_else(|_| Value::from(text.to_ascii_lowercase()))
+    });
 
     let mut opts = RepairOptions {
         mode,
@@ -356,12 +351,12 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         flap,
         coaptation,
         splint,
-        dressing: false,
-        dressing_drain: None,
-        dressing_defects: None,
-        dressing_rmax_scale: None,
-        dressing_sigma_scale: None,
-        dressing_force_adopt: false,
+        dressing: cli.experimental_dressing || cli.dressing_force_adopt,
+        dressing_drain,
+        dressing_defects: cli.dressing_defects.clone(),
+        dressing_rmax_scale: cli.dressing_rmax_scale,
+        dressing_sigma_scale: cli.dressing_sigma_scale,
+        dressing_force_adopt: cli.dressing_force_adopt,
         wall_thicken: false,
         repeat: None,
         solid_engine,
