@@ -55,7 +55,11 @@ if [ -n "$APP" ]; then
     # CLI at all. The old `sutura-cli` names are checked last so an older bundle
     # layout still works.
     for cand in "$MACOS/sutura" "$MACOS/sutura-cli/sutura-cli" "$MACOS/sutura-cli"; do
-        if [ -x "$cand" ]; then CLI_CMD=("$cand"); break; fi
+        # APFS is case-insensitive: the Python .app launcher Contents/MacOS/Sutura
+        # would satisfy a plain -x test for "sutura". Require the exact name.
+        if [ -x "$cand" ] && ls "$(dirname "$cand")" 2>/dev/null | grep -qxF "$(basename "$cand")"; then
+            CLI_CMD=("$cand"); break
+        fi
     done
 fi
 if [ "${#CLI_CMD[@]}" -eq 0 ] && [ -x "$HOME/.local/bin/sutura" ]; then
