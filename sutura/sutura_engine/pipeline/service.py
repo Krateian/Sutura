@@ -570,6 +570,11 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
     blocks = parse_3mf_mesh_blocks(src)
     if not blocks:
         return {'error': 'no mesh objects found in 3MF'}
+    # Multi-object escalation is orchestrated HERE (Python `triage._auto_multi`):
+    # `repair_mesh_from_arrays` below is the Python pipeline and
+    # SUTURA_PIPELINE_ENGINE=rust only routes single-mesh array repairs.  The
+    # opt-in `--auto-reorder` likewise stays in `triage._auto` and is not
+    # forwarded to sutura-core.
 
     _owns_trace = False
     if not trace.is_active() and os.environ.get('SUTURA_TRACE'):
