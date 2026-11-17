@@ -110,6 +110,22 @@ struct Cli {
     max_geometry_change: Option<f64>,
     #[arg(long = "max-risk", value_name = "SCORE", global = true)]
     max_risk: Option<f64>,
+    #[arg(long = "ftetwild-max-faces", value_name = "N", global = true)]
+    ftetwild_max_faces: Option<i64>,
+    #[arg(long = "ftetwild-timeout", value_name = "S", global = true)]
+    ftetwild_timeout: Option<f64>,
+    #[arg(long = "graft-max-faces", value_name = "N", global = true)]
+    graft_max_faces: Option<i64>,
+    #[arg(long = "graft-timeout", value_name = "S", global = true)]
+    graft_timeout: Option<f64>,
+    #[arg(long = "dense-ratio", value_name = "N", global = true)]
+    dense_ratio: Option<i64>,
+    #[arg(long = "dense-min-faces", value_name = "N", global = true)]
+    dense_min_faces: Option<i64>,
+    #[arg(long = "ftetwild-max-hausdorff", value_name = "F", global = true)]
+    ftetwild_max_hausdorff: Option<f64>,
+    #[arg(long = "ftetwild-optimize-retry", global = true)]
+    ftetwild_optimize_retry: bool,
     #[arg(long, global = true)]
     force: bool,
     #[arg(long = "no-fidelity", global = true)]

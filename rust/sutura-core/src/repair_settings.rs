@@ -116,6 +116,25 @@ pub struct RepairSettings {
     pub repeat_source: Option<[f64; 3]>,
     pub repeat_target: Option<[f64; 3]>,
     pub time_budget_s: Option<f64>,
+    /// Opt-in Stage-1 `meshing_join_components` pass (`--experimental-join-
+    /// components`). A per-run override of the deep-repair chain.
+    pub join_components: bool,
+    /// Per-run fTetWild limits (`--ftetwild-max-faces`, `--ftetwild-timeout`,
+    /// `--ftetwild-max-hausdorff`). `None` keeps the intensity's value.
+    pub ftetwild_max_faces: Option<i64>,
+    pub ftetwild_timeout: Option<f64>,
+    pub ftetwild_max_hausdorff_rel: Option<f64>,
+    /// `--ftetwild-optimize` retry after a rejected fTetWild candidate.
+    pub ftetwild_optimize_retry: Option<bool>,
+    /// Per-run Graft limits (`--graft-max-faces`, `--graft-timeout`).
+    pub graft_max_faces: Option<i64>,
+    pub graft_timeout: Option<f64>,
+    /// Dense-template thresholds (`--dense-ratio`, `--dense-min-faces`).
+    pub dense_ratio: Option<i64>,
+    pub dense_min_faces: Option<i64>,
+    /// Explicit SI auto-escalation switch, kept separate from `si_mode` because
+    /// the chain reads it as a tri-state.
+    pub auto_escalation: Option<bool>,
     /// Dressing tier and its four knobs. Present on `RepairOptions` already; the
     /// switches live here so the GUI can expose them through the same mapping.
     pub dressing: bool,
@@ -334,6 +353,20 @@ pub fn options_from(
             None
         },
         time_budget_s: settings.time_budget_s,
+        // Per-run policy overrides. Every one of these was previously settable
+        // only from the CLI's own argument struct, which is why the GUI could
+        // not reach them; going through the shared table makes both front ends
+        // agree by construction.
+        join_components: settings.join_components,
+        ftetwild_max_faces: settings.ftetwild_max_faces,
+        ftetwild_timeout: settings.ftetwild_timeout,
+        ftetwild_max_hausdorff_rel: settings.ftetwild_max_hausdorff_rel,
+        ftetwild_optimize_retry: settings.ftetwild_optimize_retry,
+        graft_max_faces: settings.graft_max_faces,
+        graft_timeout: settings.graft_timeout,
+        dense_ratio: settings.dense_ratio,
+        dense_min_faces: settings.dense_min_faces,
+        auto_escalation: settings.auto_escalation,
         seed: 0,
         forced_methods: methods
             .iter()
@@ -352,6 +385,76 @@ pub fn options_from(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every per-run policy override p10/core added must survive the trip from
+    /// the settings table into `RepairOptions`. This is the property that makes
+    /// the GUI panel and the CLI agree: both build the same `RepairSettings`,
+    /// and neither can set a field the other cannot.
+    #[test]
+    fn per_run_policy_overrides_reach_the_options() {
+        let off = RepairSettings::default();
+        let (o, _, _) = options_from(&off).unwrap();
+        assert!(!o.join_components, "join_components is opt-in");
+        assert!(o.ftetwild_max_faces.is_none(), "no fTetWild face cap");
+        assert!(o.ftetwild_timeout.is_none(), "no fTetWild timeout");
+        assert!(
+            o.ftetwild_max_hausdorff_rel.is_none(),
+            "no fTetWild Hausdorff bound"
+        );
+        assert!(o.ftetwild_optimize_retry.is_none(), "optimize retry is opt-in");
+        assert!(o.graft_max_faces.is_none(), "no Graft face cap");
+        assert!(o.graft_timeout.is_none(), "no Graft timeout");
+        assert!(o.dense_ratio.is_none(), "no dense ratio override");
+        assert!(o.dense_min_faces.is_none(), "no dense face floor");
+        assert!(o.auto_escalation.is_none(), "SI escalation is left to the chain");
+
+        // Sentinel values that cannot be confused with the defaults.
+        let on = RepairSettings {
+            join_components: true,
+            ftetwild_max_faces: Some(7001),
+            ftetwild_timeout: Some(91.5),
+            ftetwild_max_hausdorff_rel: Some(0.0125),
+            ftetwild_optimize_retry: Some(true),
+            graft_max_faces: Some(8002),
+            graft_timeout: Some(92.5),
+            dense_ratio: Some(3),
+            dense_min_faces: Some(4004),
+            auto_escalation: Some(false),
+            ..RepairSettings::default()
+        };
+        let (o, _, _) = options_from(&on).unwrap();
+        assert!(o.join_components);
+        assert_eq!(o.ftetwild_max_faces, Some(7001));
+        assert_eq!(o.ftetwild_timeout, Some(91.5));
+        assert_eq!(o.ftetwild_max_hausdorff_rel, Some(0.0125));
+        assert_eq!(o.ftetwild_optimize_retry, Some(true));
+        assert_eq!(o.graft_max_faces, Some(8002));
+        assert_eq!(o.graft_timeout, Some(92.5));
+        assert_eq!(o.dense_ratio, Some(3));
+        assert_eq!(o.dense_min_faces, Some(4004));
+        assert_eq!(o.auto_escalation, Some(false));
+    }
+
+    /// The defaults must match Python's, because this table is now the single
+    /// source for both front ends and an off-by-one default would silently
+    /// change every repair.
+    #[test]
+    fn budget_defaults_are_absent_not_zero() {
+        // `None` means "use the intensity's value". A `Some(0.0)` would cap the
+        // run at zero seconds, which is the failure mode worth guarding.
+        let (o, _, _) = options_from(&RepairSettings::default()).unwrap();
+        for (name, absent) in [
+            ("ftetwild_timeout", o.ftetwild_timeout.is_none()),
+            ("graft_timeout", o.graft_timeout.is_none()),
+            ("ftetwild_max_faces", o.ftetwild_max_faces.is_none()),
+            ("graft_max_faces", o.graft_max_faces.is_none()),
+            ("dense_ratio", o.dense_ratio.is_none()),
+            ("dense_min_faces", o.dense_min_faces.is_none()),
+        ] {
+            assert!(absent, "{name} must default to None, not a zero value");
+        }
+    }
+
 
     #[test]
     fn dressing_and_wall_switches_reach_the_options() {

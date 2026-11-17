@@ -15,14 +15,39 @@ import topology
 from sutura_engine.pipeline.presets import HAUSDORFF_SAMPLES
 
 
+_RUST_SURFACE_AREA = None
+
+
+def _rust_surface_area():
+    """Return ``sutura_core_py.surface_area`` when the shared core is present."""
+    global _RUST_SURFACE_AREA
+    if _RUST_SURFACE_AREA is None:
+        try:
+            import sutura_core_py as _core
+            fn = getattr(_core, 'surface_area', None)
+            _RUST_SURFACE_AREA = fn if callable(fn) else False
+        except Exception:  # noqa: BLE001 - fall back to numpy
+            _RUST_SURFACE_AREA = False
+    return _RUST_SURFACE_AREA or None
+
+
 def surface_area(verts, tris):
     """Total triangle surface area of a mesh, computed directly from geometry.
 
-    Works for both open and closed meshes (VCG's geometric-measures volume
-    and area are only meaningful on closed meshes). Pure numpy, platform
-    independent."""
+    Works for both open and closed meshes.  Uses the shared Rust
+    ``validate::surface_area`` kernel when available (one formula for the
+    Python and Rust reports); the numpy fallback is kept for a pure-Python
+    environment."""
     if len(tris) == 0 or len(verts) == 0:
         return 0.0
+    rfn = _rust_surface_area()
+    if rfn is not None:
+        try:
+            return float(rfn(
+                np.ascontiguousarray(verts, dtype=np.float32),
+                np.ascontiguousarray(tris, dtype=np.int32)))
+        except Exception:  # noqa: BLE001 - fall back to numpy
+            pass
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
     a = v[t[:, 0]]

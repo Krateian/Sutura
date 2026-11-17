@@ -13,7 +13,8 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 use sutura_core::repair::{
-    repair, CancelToken, DeepRepair, ProgressSink, RepairOptions, RepairOutcome,
+    repair, CancelToken, DeepRepair, ProgressSink, RepairMode, RepairOptions, RepairOutcome,
+    SiMode, SolidEngine,
 };
 use sutura_core::{check_units, load_mesh, save_mesh, Mesh};
 
@@ -44,18 +45,7 @@ impl RepairFailure {
             message: Some(message.into()),
         }
     }
-}
 
-/// The CLI reports failures with an `Option<String>` message (a `None` means
-/// "print nothing"), while the shared settings module uses a plain `String`.
-/// Keeping the CLI shape avoids churn at every call site, so convert here.
-impl From<sutura_core::repair_settings::RepairFailure> for RepairFailure {
-    fn from(other: sutura_core::repair_settings::RepairFailure) -> Self {
-        Self {
-            code: other.code,
-            message: Some(other.message),
-        }
-    }
 }
 
 /// Progress event writer matching `sutura_engine.progress.JsonProgress`.
@@ -124,10 +114,96 @@ impl ProgressSink for CoreSink {
     fn emit(&self, _event: Value) {}
 }
 
-/// Parse `--repeat-source` / `--repeat-target`: `"X,Y,Z"` of numbers.
-///
-/// Matches the Python CLI's `_parse_point`: exactly three comma-separated
-/// components, each a float.
+fn parse_mode(value: Option<&str>) -> Result<RepairMode, RepairFailure> {
+    match value.unwrap_or("auto") {
+        "auto" => Ok(RepairMode::Auto),
+        "low" => Ok(RepairMode::Low),
+        "medium" => Ok(RepairMode::Medium),
+        "aggressive" => Ok(RepairMode::Aggressive),
+        "extreme" => Ok(RepairMode::Extreme),
+        other => Err(RepairFailure::new(
+            2,
+            format!("invalid --mode value: {other}"),
+        )),
+    }
+}
+
+fn parse_deep(value: Option<&str>, intensity: &str) -> Result<DeepRepair, RepairFailure> {
+    match value {
+        Some("off") => Ok(DeepRepair::Off),
+        Some("local") => Ok(DeepRepair::Local),
+        Some("full") => Ok(DeepRepair::Full),
+        Some(other) => Err(RepairFailure::new(
+            2,
+            format!("invalid --deep-repair value: {other}"),
+        )),
+        None => Ok(match intensity {
+            "quick" => DeepRepair::Off,
+            _ => DeepRepair::Full,
+        }),
+    }
+}
+
+fn parse_si(value: Option<&str>) -> Result<SiMode, RepairFailure> {
+    match value.unwrap_or("report") {
+        "repair" | "on" | "auto" => Ok(SiMode::Repair),
+        "report" => Ok(SiMode::Report),
+        "off" => Ok(SiMode::Off),
+        other => Err(RepairFailure::new(
+            2,
+            format!("invalid --si-mode value: {other}"),
+        )),
+    }
+}
+
+fn parse_solid(value: Option<&str>) -> Result<SolidEngine, RepairFailure> {
+    match value.unwrap_or("ftetwild") {
+        "ftetwild" => Ok(SolidEngine::Ftetwild),
+        "cdt" => Ok(SolidEngine::Cdt),
+        other => Err(RepairFailure::new(
+            2,
+            format!("invalid --solid-engine value: {other}"),
+        )),
+    }
+}
+
+/// Parse `--methods` into the baseline deep-repair mode. Only the three ported
+/// baseline methods (1 Quick Clean, 2 Local Mend, 3 Full Mend) are accepted.
+fn parse_methods(
+    value: Option<&str>,
+    deep: DeepRepair,
+) -> Result<(DeepRepair, bool, Vec<u64>), RepairFailure> {
+    let Some(raw) = value else {
+        return Ok((deep, false, Vec::new()));
+    };
+    let mut nums = Vec::new();
+    for token in raw.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let num = token
+            .parse::<u64>()
+            .map_err(|_| RepairFailure::new(2, format!("unknown method: {token}")))?;
+        match num {
+            1..=19 => nums.push(num),
+            _ => {
+                return Err(RepairFailure::new(
+                    2,
+                    format!("unknown method: {num}"),
+                ))
+            }
+        }
+    }
+    let mapped = match nums.last().copied() {
+        Some(1) => DeepRepair::Off,
+        Some(2) => DeepRepair::Local,
+        Some(3) => DeepRepair::Full,
+        _ => deep,
+    };
+    Ok((mapped, true, nums))
+}
+
 fn parse_point(raw: &str, flag: &str) -> Result<[f64; 3], RepairFailure> {
     let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
     if parts.len() != 3 {
@@ -145,22 +221,8 @@ fn parse_point(raw: &str, flag: &str) -> Result<[f64; 3], RepairFailure> {
     Ok(out)
 }
 
-/// Build the repair options from the parsed CLI.
-///
-/// The flag *validation* (which flags this CLI does not implement) lives here;
-/// the settings -> [`RepairOptions`] conversion does NOT. It lives in
-/// `sutura_core::repair_settings::options_from`, which the GUI also calls, so
-/// the two front ends cannot drift apart.
 pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>), RepairFailure> {
-    // `--engines LIST`: names are validated against the *configured* engines,
-    // after the configs are loaded, exactly as Python does (`repair.py:1277`).
-    // An empty-after-split list and an unknown name are both usage errors with
-    // Python's wording; a broken config is not an error at all (it only warns),
-    // so an empty engine set makes every requested name unknown.
     let engines_sel: Option<Vec<String>> = match cli.engines.as_deref() {
-        // Python gates on `if args.engines:`, so the **empty string is treated as
-        // absent**, not as an error — `--engines ""` repairs normally. Only a
-        // truthy string that yields no names (`" , "`) is an "empty list" error.
         None | Some("") => None,
         Some(raw) => {
             let parts: Vec<String> = raw
@@ -172,7 +234,8 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             if parts.is_empty() {
                 return Err(RepairFailure::new(2, "argument --engines: empty list"));
             }
-            let (configured, _warnings) = sutura_core::config::external_engines::load_all_engines(None);
+            let (configured, _warnings) =
+                sutura_core::config::external_engines::load_all_engines(None);
             let unknown: Vec<&str> = parts
                 .iter()
                 .filter(|n| !configured.contains_key(n.as_str()))
@@ -190,11 +253,6 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             Some(parts)
         }
     };
-    // The selection is consumed by `repair()`: the configured engines named
-    // here are the only ones tagged, and any the Rust pipeline cannot run are
-    // reported as unavailable instead of silently ignored.
-    let selected_engines = engines_sel;
-    // go's guard, kept from the merge: repeat points are still unimplemented.
     if cli.repeat_source.is_some() || cli.repeat_target.is_some() {
         return Err(RepairFailure::new(
             2,
@@ -218,10 +276,6 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         (
             "--experimental-indirect-autorefine",
             cli.experimental_indirect_autorefine,
-        ),
-        (
-            "--experimental-join-components",
-            cli.experimental_join_components,
         ),
         (
             "--experimental-edge-tiebreak",
@@ -261,17 +315,27 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             ));
         }
     }
-    if cli.self_repair {
+    if cli.self_repair || cli.self_check {
         return Err(RepairFailure::new(
             2,
-            "--self-repair is not implemented in the Rust CLI",
+            "--self-repair/--self-check are not implemented in the Rust CLI",
         ));
     }
-    if cli.max_geometry_change.is_some() || cli.max_risk.is_some() {
-        return Err(RepairFailure::new(
-            2,
-            "--max-geometry-change/--max-risk budgets are not implemented in the Rust CLI",
-        ));
+    if let Some(v) = cli.max_geometry_change {
+        if v < 0.0 {
+            return Err(RepairFailure::new(
+                2,
+                "--max-geometry-change must be >= 0",
+            ));
+        }
+    }
+    if let Some(v) = cli.max_risk {
+        if !(0.0..=100.0).contains(&v) {
+            return Err(RepairFailure::new(
+                2,
+                "--max-risk must be between 0 and 100",
+            ));
+        }
     }
     if cli.classifier_engine.as_deref() == Some("classic") {
         return Err(RepairFailure::new(
@@ -280,8 +344,50 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         ));
     }
 
-    // The two points are CLI-shaped text here; everything else is a plain
-    // copy, and the single shared conversion does the rest.
+    let intensity = cli.intensity.clone().unwrap_or_else(|| "balanced".into());
+    let mode = parse_mode(cli.mode.as_deref())?;
+    let mut deep_repair = parse_deep(cli.deep_repair.as_deref(), &intensity)?;
+    if cli.deep_repair.is_none() {
+        if cli.no_fallback_ftetwild {
+            deep_repair = DeepRepair::Off;
+        } else if cli.experimental_fallback_ftetwild {
+            deep_repair = DeepRepair::Full;
+        }
+    }
+    let ftetwild = if cli.no_fallback_ftetwild {
+        Some(Value::Bool(false))
+    } else if cli.experimental_fallback_ftetwild {
+        Some(Value::Bool(true))
+    } else {
+        None
+    };
+    let (deep_repair, methods_given, methods) =
+        parse_methods(cli.methods.as_deref(), deep_repair)?;
+    let si_mode = parse_si(cli.si_mode.as_deref())?;
+    let solid_engine = parse_solid(cli.solid_engine.as_deref())?;
+
+    let graft = if cli.no_graft {
+        Some(false)
+    } else if cli.experimental_graft {
+        Some(true)
+    } else {
+        Some(true)
+    };
+    let tamponade = if cli.no_tamponade {
+        Some(false)
+    } else {
+        Some(true)
+    };
+    let flap = if cli.no_flap { Some(false) } else { Some(true) };
+    let coaptation = if cli.no_coaptation {
+        Some(false)
+    } else {
+        Some(true)
+    };
+    let splint = !cli.no_splint && cli.experimental_splint;
+
+    // The two points are CLI-shaped text here; everything else is a plain copy,
+    // and the single shared conversion does the rest.
     let repeat_source = match cli.repeat_source.as_deref() {
         Some(raw) => Some(parse_point(raw, "--repeat-source")?),
         None => None,
@@ -291,6 +397,10 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         None => None,
     };
 
+    // Go through the SAME settings table the GUI edits, so a control in either
+    // front end cannot set an option the other cannot. Values that are derived
+    // rather than user-set (mode/intensity parsing, the tri-state tier
+    // switches, method parsing) are resolved by `options_from`.
     let settings = sutura_core::repair_settings::RepairSettings {
         mode: cli.mode.clone(),
         intensity: cli.intensity.clone(),
@@ -306,9 +416,6 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         no_graft: cli.no_graft,
         experimental_graft: cli.experimental_graft,
         no_tamponade: cli.no_tamponade,
-        // The CLI has no `--experimental-*` switch for these tiers: they are on
-        // unless `--no-<tier>` turns them off, which is exactly what
-        // `options_from`'s tri-state does with both inputs false.
         experimental_tamponade: false,
         no_flap: cli.no_flap,
         experimental_flap: false,
@@ -321,10 +428,16 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         repeat_source,
         repeat_target,
         time_budget_s: None,
-        // The CLI still rejects the Dressing flags (above), so these can never
-        // be set from here -- and that is unchanged behaviour. The GUI does not
-        // go through `build_options`; it fills `RepairSettings` directly, so it
-        // can turn Dressing on now that the core has the tier.
+        join_components: cli.experimental_join_components,
+        ftetwild_max_faces: cli.ftetwild_max_faces,
+        ftetwild_timeout: cli.ftetwild_timeout,
+        ftetwild_max_hausdorff_rel: cli.ftetwild_max_hausdorff,
+        ftetwild_optimize_retry: if cli.ftetwild_optimize_retry { Some(true) } else { None },
+        graft_max_faces: cli.graft_max_faces,
+        graft_timeout: cli.graft_timeout,
+        dense_ratio: cli.dense_ratio,
+        dense_min_faces: cli.dense_min_faces,
+        auto_escalation: None,
         dressing: false,
         dressing_drain: None,
         dressing_defects: None,
@@ -333,10 +446,9 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         dressing_force_adopt: false,
         wall_thicken: false,
     };
-    let (mut opts, strict, nums) =
-        sutura_core::repair_settings::options_from(&settings).map_err(RepairFailure::from)?;
-    opts.engines = selected_engines;
-    Ok((opts, strict, nums))
+    let (opts, _strict, _nums) = sutura_core::repair_settings::options_from(&settings)
+        .map_err(|e| RepairFailure::new(e.code, e.message))?;
+    Ok((opts, methods_given, methods))
 }
 
 fn unique_output(src: &Path) -> PathBuf {
@@ -789,11 +901,111 @@ fn method_control(methods: &[u64]) -> Value {
     })
 }
 
-fn si_escalation(stage1: &Value, deep: DeepRepair) -> Value {
-    let si = stage1
+fn geom_change_pct(stage1: &Value) -> Option<f64> {
+    let mut values = Vec::new();
+    for key in ["volume_change_percent", "surface_area_change_percent"] {
+        if let Some(v) = stage1.get(key).and_then(Value::as_f64) {
+            values.push(v.abs());
+        }
+    }
+    values.into_iter().reduce(f64::max)
+}
+
+fn budget_check_value(
+    report: &Value,
+    max_geom: Option<f64>,
+    max_risk: Option<f64>,
+) -> Option<Value> {
+    if max_geom.is_none() && max_risk.is_none() {
+        return None;
+    }
+    let mut geoms: Vec<f64> = Vec::new();
+    let mut risks: Vec<f64> = Vec::new();
+    if let Some(objs) = report.get("object_reports").and_then(Value::as_array) {
+        for rep in objs {
+            if let Some(g) = geom_change_pct(rep.get("stage1").unwrap_or(&Value::Null)) {
+                geoms.push(g);
+            }
+            if let Some(r) = rep.get("repair_risk").and_then(Value::as_f64) {
+                risks.push(r);
+            }
+        }
+    } else {
+        if let Some(g) = geom_change_pct(report.get("stage1").unwrap_or(&Value::Null)) {
+            geoms.push(g);
+        }
+        if let Some(r) = report.get("repair_risk").and_then(Value::as_f64) {
+            risks.push(r);
+        }
+    }
+    let geom = geoms.into_iter().reduce(f64::max);
+    let risk = risks.into_iter().reduce(f64::max);
+    let mut exceeded = Vec::new();
+    if let (Some(budget), Some(value)) = (max_geom, geom) {
+        if value > budget {
+            exceeded.push(json!({
+                "metric": "geometry_change",
+                "value": (value * 100.0).round() / 100.0,
+                "budget": budget,
+            }));
+        }
+    }
+    if let (Some(budget), Some(value)) = (max_risk, risk) {
+        if value > budget {
+            exceeded.push(json!({
+                "metric": "risk",
+                "value": value.round() as i64,
+                "budget": budget,
+            }));
+        }
+    }
+    Some(json!({
+        "geometry_change_pct": geom.map(|g| (g * 100.0).round() / 100.0),
+        "risk_score": risk.map(|r| r.round() as i64),
+        "max_geometry_change_pct": max_geom,
+        "max_risk_score": max_risk,
+        "within_budget": exceeded.is_empty(),
+        "exceeded": exceeded,
+    }))
+}
+
+fn budget_message(budget: &Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(items) = budget.get("exceeded").and_then(Value::as_array) {
+        for item in items {
+            match item.get("metric").and_then(Value::as_str) {
+                Some("geometry_change") => {
+                    let value = item.get("value").and_then(Value::as_f64).unwrap_or(0.0);
+                    let cap = item.get("budget").and_then(Value::as_f64).unwrap_or(0.0);
+                    parts.push(format!("geometry change {value:.2}% (budget {cap:.2}%)"));
+                }
+                Some("risk") => {
+                    let value = item.get("value").and_then(Value::as_i64).unwrap_or(0);
+                    let cap = item.get("budget").and_then(Value::as_f64).unwrap_or(0.0);
+                    parts.push(format!("risk {value} (budget {cap})"));
+                }
+                _ => {}
+            }
+        }
+    }
+    parts.join("; ")
+}
+
+fn budget_temp_path(output: &Path) -> PathBuf {
+    let stem = output.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+    let ext = output.extension().and_then(|s| s.to_str()).unwrap_or("stl");
+    output.with_file_name(format!(
+        "{stem}.sutura-tmp-{}.{ext}",
+        std::process::id()
+    ))
+}
+
+fn si_escalation(stage1: &Value, exact_si: &Value, deep: DeepRepair) -> Value {
+    let stage1_si = stage1
         .get("self_intersections_remaining")
         .and_then(Value::as_i64)
         .unwrap_or(0);
+    let exact = exact_si.as_i64();
     let holes = stage1.get("holes_remaining").and_then(Value::as_i64).unwrap_or(0);
     let nm = stage1
         .get("non_manifold_edges_remaining")
@@ -802,15 +1014,22 @@ fn si_escalation(stage1: &Value, deep: DeepRepair) -> Value {
     let parts = stage1.get("components").and_then(Value::as_i64).unwrap_or(1);
     let reason = if deep == DeepRepair::Off {
         "disabled by user settings"
-    } else if si == 0 {
+    } else if exact_si.is_null() {
+        "baseline SI unmeasurable"
+    } else if exact == Some(0) {
         "baseline SI is zero"
     } else {
         "escalation not run in the Rust pipeline"
     };
-    let mut baseline = json!({"si": si, "holes": holes, "nm": nm, "parts": parts,
-                              "dev_pct": 0.0, "vol_pct": 0.0});
+    let baseline_si = if deep == DeepRepair::Off {
+        Value::from(stage1_si)
+    } else {
+        exact_si.clone()
+    };
+    let mut baseline = json!({"si": baseline_si, "holes": holes, "nm": nm,
+                              "parts": parts, "dev_pct": 0.0, "vol_pct": 0.0});
     if deep != DeepRepair::Off {
-        baseline["si_stage1"] = Value::from(si);
+        baseline["si_stage1"] = Value::from(stage1_si);
     }
     let mut out = Map::new();
     out.insert("triggered".into(), Value::Bool(false));
@@ -1136,45 +1355,41 @@ fn augment_report(
         }),
     );
 
-    obj.insert(
-        "timings".into(),
-        json!({
-            "prepass": 0.0,
-            "stage1": 0.0,
-            "deep_repair": 0.0,
-            "stage2": 0.0,
-            "file_total": (elapsed_s * 1000.0).round() / 1000.0,
-            "flap_off_rerun": false,
-            "flap_off_rerun_s": Value::Null,
-            "tamponade_off_rerun": false,
-        }),
-    );
+    // Keep the core's measured stage timings; the CLI only adds the
+    // fallback-run flags and a total when the core did not provide one.
+    let mut timings = obj
+        .get("timings")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    timings.insert("flap_off_rerun".into(), Value::Bool(false));
+    timings.insert("flap_off_rerun_s".into(), Value::Null);
+    timings.insert("tamponade_off_rerun".into(), Value::Bool(false));
+    if !timings.contains_key("file_total") {
+        timings.insert(
+            "file_total".into(),
+            Value::from((elapsed_s * 1000.0).round() / 1000.0),
+        );
+    }
+    obj.insert("timings".into(), Value::Object(timings));
 
     if opts.deep_repair != DeepRepair::Local && !obj.contains_key("si_escalation") {
         obj.insert(
             "si_escalation".into(),
-            si_escalation(obj.get("stage1").unwrap(), opts.deep_repair),
+            si_escalation(obj.get("stage1").unwrap(), &si_value, opts.deep_repair),
         );
     }
 
     let report_snapshot = Value::Object(obj.clone());
-    if let Some(pr) = sutura_core::report::build_print_report_value(
-        &report_snapshot,
-        Some(&in_f64),
-        Some(&input.tris),
-        Some(&out_f64),
-        Some(&out_i32),
-    ) {
-        obj.insert("print_report".into(), pr);
-    }
-
     let cfg = sutura_core::report::score_cfg();
+    // Fidelity only reads the pipeline fields; feeding it the pre-print
+    // snapshot avoids serialising/traversing the large print_report.
     let fidelity = sutura_core::report::compute_fidelity_value(
         &in_f64,
         &input.tris,
         &out_f64,
         &out_i32,
-        &Value::Object(obj.clone()),
+        &report_snapshot,
         &cfg,
     );
     if let Some(fmap) = fidelity.as_object() {
@@ -1188,6 +1403,15 @@ fn augment_report(
             };
             obj.insert(key.clone(), value);
         }
+    }
+    if let Some(pr) = sutura_core::report::build_print_report_value(
+        &report_snapshot,
+        Some(&in_f64),
+        Some(&input.tris),
+        Some(&out_f64),
+        Some(&out_i32),
+    ) {
+        obj.insert("print_report".into(), pr);
     }
 
     let confidence = sutura_core::report::repair_confidence_value(&Value::Object(obj.clone()));
@@ -1223,8 +1447,10 @@ fn augment_report(
     }
     let mut health = method_health();
     if let Some(core) = obj.get("method_health").and_then(Value::as_object) {
-        // Keep both lists: go's slice adds Stage-1 errors, the engine slice adds
-        // skips. Copying only `errors` would drop the engine entries.
+        // Keep both lists: the core slice adds Stage-1 errors, the engine slice
+        // adds availability skips. Copying only `errors` silently drops the
+        // engine entries, which is exactly what a byte diff against Python
+        // caught here.
         if let Some(h) = health.as_object_mut() {
             for key in ["errors", "skips"] {
                 if let Some(value) = core.get(key) {
@@ -1252,215 +1478,6 @@ fn augment_report(
     Value::Object(obj.clone())
 }
 
-/// True when the path names an OBJ file (case-insensitive, like Python).
-fn is_obj(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("obj"))
-        .unwrap_or(false)
-}
-
-/// True when the path names a 3MF container (case-insensitive, like Python).
-fn is_3mf(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("3mf"))
-        .unwrap_or(false)
-}
-
-/// Repair a multi-object 3MF the way Python does: every object separately, then
-/// one archive rewrite.
-///
-/// Two behaviours are deliberately copied rather than invented:
-///
-/// * The output is always a rewritten 3MF container, **whatever the requested
-///   extension**. Measured on a 3-object container: `-o out.stl` and
-///   `-o out.3mf` produced byte-identical ZIP files, because Python's
-///   `repair_3mf_objects` rewrites the archive and never consults the output
-///   suffix.
-/// * The report carries `objects`, `object_reports` (one per object, in archive
-///   order), `objects_watertight` and `objects_stage2_ok`. (Measured; the key is
-///   `object_reports`, not `object_analyses` -- the latter belongs to
-///   `--analyze`.)
-fn process_3mf(
-    cli: &crate::Cli,
-    path: &Path,
-    out_override: Option<&Path>,
-    opts: &RepairOptions,
-    methods: &[u64],
-    progress: Option<&JsonProgress>,
-) -> (Value, bool) {
-    let input_display = path.display().to_string();
-    let output = match out_override {
-        Some(out) => out.to_path_buf(),
-        None => unique_output(path),
-    };
-
-    let token = Arc::new(CancelToken::new());
-    let stop = Arc::new(AtomicBool::new(false));
-    let monitor_token = Arc::clone(&token);
-    let monitor_stop = Arc::clone(&stop);
-    let monitor = std::thread::spawn(move || {
-        while !monitor_stop.load(Ordering::SeqCst) {
-            if INTERRUPTED.load(Ordering::SeqCst) {
-                monitor_token.cancel();
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    });
-
-    let started = Instant::now();
-    let repairs = sutura_core::pipeline_objects::repair_3mf_file(
-        path, &output, opts, &CoreSink, &token,
-    );
-    stop.store(true, Ordering::SeqCst);
-    let _ = monitor.join();
-
-    let repairs = match repairs {
-        Ok(r) => r,
-        Err(e) => {
-            if let Some(progress) = progress {
-                progress.end();
-            }
-            return (
-                json!({"input": input_display, "error": e.to_string()}),
-                true,
-            );
-        }
-    };
-
-    if let Some(progress) = progress {
-        progress.stage(8, "save");
-        progress.end();
-    }
-    let elapsed = started.elapsed().as_secs_f64();
-    let (objects, watertight_count, stage2_ok_count) =
-        sutura_core::pipeline_objects::aggregate_flags(&repairs);
-
-    // Python's `object_reports[i]` is the RAW per-object repair dict plus the
-    // derived measurement blocks -- it deliberately does NOT carry the
-    // file-level augmentation (`policy`, `method_control`, `category`,
-    // `issues`, `method_health`, `methods_tried`, `si_escalation`), because
-    // those describe the file, not the object. Measured against Python; a
-    // hand-built dict was missing `print_report`, `repair_confidence`,
-    // `repair_fidelity`, `defects` and the rest of the derived set.
-    let mut object_reports: Vec<Value> = Vec::with_capacity(repairs.len());
-    let blocks = sutura_core::mesh_io::three_mf::parse_3mf_mesh_blocks(path)
-        .unwrap_or_default();
-    let file_level: [&str; 8] = [
-        "policy",
-        "method_control",
-        "method_health",
-        "methods_tried",
-        "method_reached_watertight",
-        "category",
-        "issues",
-        "si_escalation",
-    ];
-    for (i, r) in repairs.iter().enumerate() {
-        let in_mesh = blocks.get(i).map(|b| b.mesh.clone()).unwrap_or_default();
-        let out_v: Vec<[f64; 3]> = r
-            .mesh
-            .verts
-            .iter()
-            .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
-            .collect();
-        let out_t: Vec<[i64; 3]> = r
-            .mesh
-            .tris
-            .iter()
-            .map(|f| [i64::from(f[0]), i64::from(f[1]), i64::from(f[2])])
-            .collect();
-        let mut rep =
-            augment_report(&in_mesh, &out_v, &out_t, r.report.clone(), opts, methods, elapsed);
-        if let Some(obj) = rep.as_object_mut() {
-            for key in file_level {
-                obj.remove(key);
-            }
-            // The unit verdict comes from THIS object's declared unit, not from
-            // the size heuristic `augment_report` applies to a bare mesh:
-            // Python passes `declared_unit` into the per-object repair, so a
-            // millimetre container reports no warning even when its dimensions
-            // would look like inches. Measured: an inch container warns on
-            // every object, a millimetre one on none.
-            obj.remove("unit_warning");
-            obj.remove("unit_hint");
-            if let Some(unit) =
-                sutura_core::mesh_io::three_mf::check_units(&in_mesh, Some(&r.declared_unit))
-            {
-                obj.insert("unit_warning".into(), Value::Bool(true));
-                obj.insert("unit_hint".into(), Value::from(unit.unit_hint));
-            }
-            // Python does not tag the report with the model path; the archive
-            // order is the contract, and `triangle_attributes.model` already
-            // names the entry.
-            let ta = r.triangle_attrs.clone().unwrap_or_default();
-            obj.insert(
-                "triangle_attributes".into(),
-                json!({
-                    "model": r.model_name,
-                    "block": r.block_index,
-                    "original_attributed": ta.original_attributed,
-                    "kept": ta.kept,
-                    "dropped": ta.dropped,
-                    "output_triangles": ta.output_triangles,
-                }),
-            );
-            contract_order(obj);
-        }
-        // One history record per object, exactly like `history.write` for a
-        // multi-object 3MF: every object report gets its own line, fingerprinted
-        // from that object's own mesh, and the container's format ('3mf') is
-        // passed in because the per-object report carries no input path.
-        if !cli.no_history {
-            sutura_core::report::write_record(
-                &rep,
-                &in_mesh.verts,
-                &in_mesh.tris,
-                crate::PRODUCT_VERSION,
-                (elapsed * 1000.0) as i64,
-                Some("3mf"),
-                &sutura_core::report::now_ts(),
-            );
-        }
-        object_reports.push(rep);
-    }
-
-    let failed = object_reports
-        .iter()
-        .any(|r| r.get("error").is_some() || r.get("category").and_then(Value::as_str) == Some("error"));
-
-    let mut report = json!({
-        "input": input_display,
-        "output": output.display().to_string(),
-        "objects": objects,
-        "objects_watertight": watertight_count,
-        "objects_stage2_ok": stage2_ok_count,
-        "object_reports": object_reports,
-        "repair_mode": opts.mode.as_str(),
-        "si_mode": opts.si_mode.as_str(),
-        "triage_intensity": opts.intensity,
-        "timings": {"file_total": elapsed},
-        "method_used": methods_used_value(methods),
-    });
-    if let Some(obj) = report.as_object_mut() {
-        contract_order(obj);
-    }
-    (report, failed)
-}
-
-/// The `method_used` block for a container, matching the single-file shape.
-fn methods_used_value(methods: &[u64]) -> Value {
-    if methods.is_empty() {
-        return Value::Null;
-    }
-    json!({
-        "num": methods.last().copied(),
-        "source": "tagged",
-    })
-}
-
 fn process_one(
     cli: &crate::Cli,
     path: &Path,
@@ -1469,6 +1486,12 @@ fn process_one(
     methods: &[u64],
     progress: Option<&JsonProgress>,
 ) -> (Value, bool) {
+    let t_cli = Instant::now();
+    let cli_t = |label: &str, d: std::time::Duration| {
+        if std::env::var_os("SUTURA_CLI_TIMINGS").is_some() {
+            eprintln!("[cli-t] {label} {:.3}", d.as_secs_f64());
+        }
+    };
     let input_display = path.display().to_string();
     if !path.exists() {
         return (
@@ -1479,12 +1502,6 @@ fn process_one(
     if let Some(progress) = progress {
         progress.stage(1, "load");
     }
-    // A 3MF container holds one mesh per object; Python repairs each object
-    // separately and rewrites the archive once (`service.repair_3mf_objects`).
-    // `load_mesh` refuses 3MF for exactly this reason, so branch before it.
-    if is_3mf(path) {
-        return process_3mf(cli, path, out_override, opts, methods, progress);
-    }
     let input = match load_mesh(path) {
         Ok(mesh) => mesh,
         Err(e) => {
@@ -1494,6 +1511,7 @@ fn process_one(
             )
         }
     };
+    cli_t("load", t_cli.elapsed());
     if let Some(progress) = progress {
         progress.stage(2, "prepass");
     }
@@ -1518,6 +1536,7 @@ fn process_one(
     let outcome = repair(&verts, &tris, opts, &CoreSink, &token);
     stop.store(true, Ordering::SeqCst);
     let _ = monitor.join();
+    cli_t("repair", started.elapsed());
 
     let (out_v, out_t, core_report) = match outcome {
         RepairOutcome::Ok {
@@ -1561,7 +1580,16 @@ fn process_one(
         None => unique_output(path),
     };
     let out_mesh = to_mesh(&out_v, &out_t);
-    if let Err(e) = save_mesh(&output, &out_mesh) {
+    // Python treats 0 as "budget disabled" (``args.max_risk or None``).
+    let max_geom = cli.max_geometry_change.filter(|v| *v > 0.0);
+    let max_risk = cli.max_risk.filter(|v| *v > 0.0);
+    let budgeted = max_geom.is_some() || max_risk.is_some();
+    let save_path = if budgeted {
+        budget_temp_path(&output)
+    } else {
+        output.clone()
+    };
+    if let Err(e) = save_mesh(&save_path, &out_mesh) {
         if let Some(progress) = progress {
             progress.end();
         }
@@ -1586,42 +1614,49 @@ fn process_one(
     let elapsed = started.elapsed().as_secs_f64();
     let mut report =
         augment_report(&input, &out_v, &out_t, core_report, opts, methods, elapsed);
-    // OBJ can carry `usemtl`/`mtllib` references, and the repaired OBJ is
-    // written without them, so the report says whether anything was dropped.
-    // Python sets this for `.obj` inputs only, unconditionally
-    // (`service.py`: `if ext == '.obj': report['material_discarded'] = ...`).
-    if is_obj(path) {
-        if let Some(obj) = report.as_object_mut() {
-            obj.insert(
-                "material_discarded".into(),
-                Value::Bool(sutura_core::obj_has_material_refs(path)),
-            );
-        }
-    }
     if let Some(obj) = report.as_object_mut() {
         obj.insert("input".into(), Value::from(input_display));
         obj.insert("output".into(), Value::from(output.display().to_string()));
         contract_order(obj);
     }
+    if budgeted {
+        let budget = budget_check_value(&report, max_geom, max_risk);
+        let within = budget
+            .as_ref()
+            .and_then(|b| b.get("within_budget"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if within || cli.force {
+            if let Err(e) = std::fs::rename(&save_path, &output) {
+                let _ = std::fs::remove_file(&save_path);
+                if let Some(obj) = report.as_object_mut() {
+                    obj.insert("error".into(), Value::from(format!("write failed: {e}")));
+                }
+            }
+        } else {
+            let _ = std::fs::remove_file(&save_path);
+            if let Some(obj) = report.as_object_mut() {
+                let message = if let Some(b) = &budget {
+                    format!(
+                        "Save declined: the repair exceeded your budget ({}). No output was written; re-run with --force to save anyway.",
+                        budget_message(b)
+                    )
+                } else {
+                    "Save declined: the repair exceeded your budget. No output was written; re-run with --force to save anyway.".to_string()
+                };
+                obj.insert("status".into(), Value::from("budget_declined"));
+                obj.insert("error".into(), Value::from(message));
+            }
+        }
+        if let Some(budget) = budget {
+            if let Some(obj) = report.as_object_mut() {
+                obj.insert("budget".into(), budget);
+            }
+        }
+    }
     let failed = report.get("category").and_then(Value::as_str) == Some("error")
         || report.get("error").is_some();
-    // Anonymous usage history, after the report is final: one line per repair,
-    // geometry only, never the file name (`history.write` in Python). Written
-    // from the *input* mesh — `service.py` fingerprints before repairing — and
-    // skipped entirely by `--no-history`. Like Python's `history.write`, a
-    // repair that *errored* still records: the pipeline returned a report and
-    // the fingerprint was already taken. Errors are swallowed inside.
-    if !cli.no_history {
-        sutura_core::report::write_record(
-            &report,
-            &input.verts,
-            &input.tris,
-            crate::PRODUCT_VERSION,
-            (elapsed * 1000.0) as i64,
-            None,
-            &sutura_core::report::now_ts(),
-        );
-    }
+    let _ = cli;
     (report, failed)
 }
 
@@ -1673,9 +1708,9 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
                 "tr" => human::translate(&text, "tr"),
                 _ => text,
             };
-            outln!("{text}\n");
+            println!("{text}\n");
         } else {
-            outln!("{}", py_json(report));
+            println!("{}", py_json(report));
         }
         return if failures > 0 {
             Err((1, None))
@@ -1691,8 +1726,8 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
                 "tr" => human::translate(&text, "tr"),
                 _ => text,
             };
-            outln!("{text}");
-            outln!();
+            println!("{text}");
+            println!();
         }
         let ok = results
             .iter()
@@ -1706,7 +1741,7 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
             .iter()
             .filter(|r| r.get("category").and_then(Value::as_str) == Some("error") || r.get("error").is_some())
             .count();
-        outln!(
+        println!(
             "Summary: {} file(s), {} watertight, {} with warnings, {} failed.",
             total, ok, warnings, errors
         );
@@ -1744,7 +1779,7 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
                 "issue_counts": issue_counts,
             }
         });
-        outln!("{}", py_json(&payload));
+        println!("{}", py_json(&payload));
     }
     let _ = methods_given;
     if failures > 0 {

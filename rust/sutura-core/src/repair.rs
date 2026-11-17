@@ -199,12 +199,38 @@ pub struct RepairOptions {
     pub si_mode: SiMode,
     pub ftetwild: Option<Value>,
     pub time_budget_s: Option<f64>,
+    /// Opt-in Stage-1 `meshing_join_components` pass (Python
+    /// `--experimental-join-components`).
+    #[serde(default)]
+    pub join_components: bool,
+    /// Per-run overrides for the intensity spec (None keeps the policy value).
+    #[serde(default)]
+    pub ftetwild_max_faces: Option<i64>,
+    #[serde(default)]
+    pub ftetwild_timeout: Option<f64>,
+    #[serde(default)]
+    pub graft_max_faces: Option<i64>,
+    #[serde(default)]
+    pub graft_timeout: Option<f64>,
+    #[serde(default)]
+    pub dense_ratio: Option<i64>,
+    #[serde(default)]
+    pub dense_min_faces: Option<i64>,
+    #[serde(default)]
+    pub ftetwild_max_hausdorff_rel: Option<f64>,
+    #[serde(default)]
+    pub ftetwild_optimize_retry: Option<bool>,
     pub seed: u64,
     #[serde(default)]
     pub forced_methods: Vec<u8>,
     /// `--engines`: tag only these configured external engines.
     #[serde(default)]
     pub engines: Option<Vec<String>>,
+    /// An explicit `--engines` selection keeps Python's non-escalated
+    /// baseline.  When false (and no method is forced), the Rust service skips
+    /// the auto deep-repair ladder so it does not force Graft/fTetWild.
+    #[serde(default)]
+    pub auto_escalation: Option<bool>,
 }
 
 impl Default for RepairOptions {
@@ -235,9 +261,19 @@ impl Default for RepairOptions {
             si_mode: SiMode::Report,
             ftetwild: None,
             time_budget_s: None,
+            join_components: false,
+            ftetwild_max_faces: None,
+            ftetwild_timeout: None,
+            graft_max_faces: None,
+            graft_timeout: None,
+            dense_ratio: None,
+            dense_min_faces: None,
+            ftetwild_max_hausdorff_rel: None,
+            ftetwild_optimize_retry: None,
             seed: 0,
             forced_methods: Vec::new(),
             engines: None,
+            auto_escalation: None,
         }
     }
 }
@@ -571,6 +607,9 @@ fn run_outer_shell_prepass(
     tamponade_enabled: bool,
     stats: &mut Map<String, Value>,
 ) {
+    let t_shell = Instant::now();
+    let mut shell_analyze_s = 0.0f64;
+    let mut topo_stats_s = 0.0f64;
     if !should_extract_outer_shell(cur_v, cur_t, mesh_type, 0) {
         return;
     }
@@ -589,9 +628,12 @@ fn run_outer_shell_prepass(
         ..Default::default()
     };
     let ut = u32_tris(cur_t);
+    let t_analyze = Instant::now();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         shell_analyze_and_filter(cur_v, &ut, &config)
     }));
+    shell_analyze_s = t_analyze.elapsed().as_secs_f64();
+    let t_topo = Instant::now();
 
     let mut shell_adopted = false;
     let mut shell_budget_exceeded = false;
@@ -660,6 +702,7 @@ fn run_outer_shell_prepass(
         }
     };
 
+    topo_stats_s = t_topo.elapsed().as_secs_f64();
     let info = sinfo.as_ref();
     let phase_value = shell_phase.clone().map(Value::from).unwrap_or(Value::Null);
     let reason_value = shell_reason.clone().map(Value::from).unwrap_or(Value::Null);
@@ -669,9 +712,9 @@ fn run_outer_shell_prepass(
             "shell_adopted": shell_adopted,
             "shell_phase": phase_value.clone(),
             "shell_reason": reason_value.clone(),
-            "time_s": 0.0,
-            "shell_analyze_s": 0.0,
-            "topo_stats_s": 0.0,
+            "time_s": (t_shell.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
+            "shell_analyze_s": (shell_analyze_s * 1000.0).round() / 1000.0,
+            "topo_stats_s": (topo_stats_s * 1000.0).round() / 1000.0,
             "outer_count": info.map(|r| r.outer_count).unwrap_or(0),
             "buried_count": info.map(|r| r.buried_count).unwrap_or(0),
             "cavity_count": info.map(|r| r.cavity_count).unwrap_or(0),
@@ -2366,6 +2409,21 @@ pub fn repair(
     repair_impl(verts, tris, opts, sink, cancel, true)
 }
 
+/// Python-compatible total surface area: f32 per-face areas, NumPy pairwise
+/// summation (`validate::surface_area`).  The stage-1 report uses this shared
+/// kernel so its value matches `sutura_engine.pipeline.utils.surface_area`.
+fn py_surface_area(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> f64 {
+    let v32: Vec<[f32; 3]> = verts
+        .iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect();
+    let t32: Vec<[i32; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+    crate::validate::surface_area(&v32, &t32)
+}
+
 fn repair_impl(
     verts: &[[f64; 3]],
     tris: &[[i64; 3]],
@@ -2394,9 +2452,37 @@ fn repair_impl(
         return cancelled();
     }
 
+    let t_start = Instant::now();
+    let mut t_prepass = 0.0f64;
+    let mut t_stage1 = 0.0f64;
+    let mut t_deep = 0.0f64;
+    let mut t_stage2 = 0.0f64;
+    let mut t_reload = 0.0f64;
+
     emit_stage(sink, 1, "validate");
     let policy = load_policy(None).ok();
-    let spec = resolve_intensity_spec(opts, policy.as_ref());
+    let mut spec = resolve_intensity_spec(opts, policy.as_ref());
+    if let Some(v) = opts.ftetwild_max_faces {
+        spec.ftetwild_max_faces = Some(v);
+    }
+    if let Some(v) = opts.ftetwild_timeout {
+        spec.ftetwild_timeout = v;
+    }
+    if let Some(v) = opts.graft_max_faces {
+        spec.graft_max_faces = Some(v);
+    }
+    if let Some(v) = opts.graft_timeout {
+        spec.graft_timeout = v;
+    }
+    if let Some(v) = opts.dense_ratio {
+        spec.dense_ratio = v;
+    }
+    if let Some(v) = opts.dense_min_faces {
+        spec.dense_min_faces = v;
+    }
+    if let Some(v) = opts.ftetwild_optimize_retry {
+        spec.ftetwild_optimize_retry_on_dense_fail = v;
+    }
     let intensity_for_tamponade = spec.base.clone().unwrap_or_else(|| spec.name.clone());
     let triage = resolve_triage(opts, policy.as_ref(), verts, tris);
     if cancel.is_cancelled() {
@@ -2449,6 +2535,8 @@ fn repair_impl(
     let ftetwild_bin = crate::ftetwild::find_binary();
     let (selected_engines, engine_warnings) =
         crate::engines::selected_engines(opts.engines.as_deref());
+    let auto_escalation = opts.auto_escalation.unwrap_or(true);
+    let skip_auto_ladder = !auto_escalation && opts.forced_methods.is_empty();
     let mut engine_entries: Vec<Value> = Vec::new();
 
     // The merged read-only analysis feeds the ranking and the report. Its
@@ -2494,6 +2582,7 @@ fn repair_impl(
     // Python runs this only in `auto` mode, before the Tamponade prepass, on
     // mechanical (or heavy-SI) multi-shell inputs. It is part of the Tamponade
     // feature, so an explicit `--no-tamponade` skips it.
+    let t_prepass_start = Instant::now();
     if opts.mode == RepairMode::Auto {
         let tamponade_enabled = opts.tamponade != Some(false);
         run_outer_shell_prepass(
@@ -2586,6 +2675,7 @@ fn repair_impl(
     }
 
     stage_fp_log("after_prepass", &cur_v, &cur_t);
+    t_prepass = t_prepass_start.elapsed().as_secs_f64();
     crate::engines::run_and_replace(
         &selected_engines,
         "before_stage1",
@@ -2612,7 +2702,7 @@ fn repair_impl(
             cur_v.first()
         );
     }
-    let chain = Value::Array(stage1_chain(max_hole, min_component, false));
+    let chain = Value::Array(stage1_chain(max_hole, min_component, opts.join_components));
     let mut stage1_errors: Vec<Value> = Vec::new();
     let (v1, t1, mut applied, mut skipped, removed_small) =
         crate::stage1::chain::apply_chain_with_cancel_errors(
@@ -2626,6 +2716,20 @@ fn repair_impl(
     cur_t = t1;
     if cancel.is_cancelled() {
         return cancelled();
+    }
+    if opts.join_components {
+        let (vj, tj, moved, remaining) = crate::stage1::chain::join_small_components(
+            &cur_v,
+            &cur_t,
+            min_component,
+            max_hole,
+        );
+        cur_v = vj;
+        cur_t = tj;
+        stats.insert(
+            "experimental_join_components".into(),
+            json!({"moved": moved, "remaining_small": remaining}),
+        );
     }
 
     let mut after = common::topology_summary(&cur_v, &cur_t);
@@ -2721,7 +2825,7 @@ fn repair_impl(
         let params = json!({
             "maxholesize": max_hole,
             "mincomponentsize": min_component,
-            "join_components": false,
+            "join_components": opts.join_components,
         });
         let (ran, found, removed, _applied_extra, _skipped_extra, ev, et) =
             extreme_extra_passes(&cur_v, &cur_t, &params);
@@ -2736,6 +2840,25 @@ fn repair_impl(
             );
         }
     }
+
+    // `after_stage1` engines run on the Stage-1 result, before the closing
+    // / Tamponade-post / deep ladder, exactly where Python's pipeline runs
+    // them.  Keeping the placement here (not after the ladder) is what makes
+    // the engine see the same input array on both sides.
+    stage_fp_log("after_stage1", &cur_v, &cur_t);
+    if crate::engines::run_and_replace(
+        &selected_engines,
+        "after_stage1",
+        &mut cur_v,
+        &mut cur_t,
+        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+        0.01,
+        &mut engine_entries,
+    ) {
+        after = common::topology_summary(&cur_v, &cur_t);
+    }
+    t_stage1 = t_start.elapsed().as_secs_f64();
+    let t_deep_start = Instant::now();
 
     // Tamponade second chance when the pre-pass did not adopt.
     if opts.tamponade == Some(true) && !tamponade_prepass_adopted && !tamponade_gate_skipped {
@@ -2841,7 +2964,7 @@ fn repair_impl(
     let ladder_holes_before = boundary_loop_stats(&cur_t).0;
     let ladder_nm_before = after.non_two_manifold_edges;
     let mut tiers_run: Vec<Value> = Vec::new();
-    if opts.deep_repair != DeepRepair::Off {
+    if opts.deep_repair != DeepRepair::Off && !skip_auto_ladder {
         emit_stage(sink, 4, "deep repair");
         if opts.deep_repair == DeepRepair::Full {
             let mut holes = ladder_holes_before;
@@ -3084,12 +3207,14 @@ fn repair_impl(
                 let ft_in_t = cur_t.clone();
                 let bin = ftetwild_bin.as_deref().expect("checked above");
                 let tuning = crate::ftetwild::TierTuning {
-                    max_hausdorff_rel: policy_number(
-                        policy.as_ref(),
-                        "gates.tuning",
-                        "ftetwild_max_hausdorff_rel",
-                        0.01,
-                    ),
+                    max_hausdorff_rel: opts.ftetwild_max_hausdorff_rel.unwrap_or_else(|| {
+                        policy_number(
+                            policy.as_ref(),
+                            "gates.tuning",
+                            "ftetwild_max_hausdorff_rel",
+                            0.01,
+                        )
+                    }),
                     decimate_hd_margin: policy_number(
                         policy.as_ref(),
                         "gates.tuning",
@@ -3333,7 +3458,7 @@ fn repair_impl(
     deep.insert(
         "cad_likeness".into(),
         if opts.deep_repair == DeepRepair::Full {
-            cad_likeness(&s1_in_v, &s1_in_t)
+            cad_likeness(&input_v, &input_t)
         } else {
             Value::Null
         },
@@ -3341,6 +3466,8 @@ fn repair_impl(
     deep.insert("dressing_damage".into(), Value::Null);
     deep.insert("available".into(), Value::Null);
     stats.insert("deep_repair".into(), Value::Object(deep));
+
+    t_deep = t_deep_start.elapsed().as_secs_f64();
 
     // Pinch split before Stage 2, matching the pipeline's P1a split.
     let pinch_in_v = cur_v.clone();
@@ -3376,18 +3503,6 @@ fn repair_impl(
     );
     stats.insert("pinched_vertices_split".into(), pinch_report);
 
-    stage_fp_log("after_stage1", &cur_v, &cur_t);
-    if crate::engines::run_and_replace(
-        &selected_engines,
-        "after_stage1",
-        &mut cur_v,
-        &mut cur_t,
-        Some(cancel as &dyn sutura_geom::cancel::Cancel),
-        0.01,
-        &mut engine_entries,
-    ) {
-        after = common::topology_summary(&cur_v, &cur_t);
-    }
     // --- Stage 1 report ----------------------------------------------------
     let holes_after = boundary_loop_stats(&cur_t).0;
     let nm_after = after.non_two_manifold_edges;
@@ -3440,8 +3555,8 @@ fn repair_impl(
         }
     }
     {
-        let sa_before = common::surface_area(&stage1_volume_before_v, &stage1_volume_before_t);
-        let sa_after = common::surface_area(&cur_v, &cur_t);
+        let sa_before = py_surface_area(&stage1_volume_before_v, &stage1_volume_before_t);
+        let sa_after = py_surface_area(&cur_v, &cur_t);
         let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
         stage1.insert("surface_area_before".into(), Value::from(round3(sa_before)));
         stage1.insert("surface_area_after".into(), Value::from(round3(sa_after)));
@@ -3579,6 +3694,7 @@ fn repair_impl(
         return cancelled();
     }
     emit_stage(sink, 5, "stage 2");
+    let t_stage2_start = Instant::now();
     if two_manifold && holes_after == 0 {
         let s2_in_v = cur_v.clone();
         let s2_in_t = cur_t.clone();
@@ -3612,6 +3728,8 @@ fn repair_impl(
         );
     }
 
+    t_stage2 = t_stage2_start.elapsed().as_secs_f64();
+
     // --- P-WELD ------------------------------------------------------------
     if cancel.is_cancelled() {
         return cancelled();
@@ -3628,11 +3746,13 @@ fn repair_impl(
         0.01,
         &mut engine_entries,
     );
+    let t_reload_start = Instant::now();
     let pw = crate::p_weld::p_weld_final_with_cancel(
         &cur_v,
         &cur_t,
         Some(cancel as &dyn sutura_geom::cancel::Cancel),
     );
+    t_reload = t_reload_start.elapsed().as_secs_f64();
     if cancel.is_cancelled() {
         return cancelled();
     }
@@ -3694,11 +3814,12 @@ fn repair_impl(
     stats.insert(
         "timings".into(),
         json!({
-            "prepass": 0.0,
-            "stage1": 0.0,
-            "deep_repair": 0.0,
-            "stage2": 0.0,
-            "reload_weld": 0.0,
+            "prepass": (t_prepass * 1000.0).round() / 1000.0,
+            "stage1": (t_stage1 * 1000.0).round() / 1000.0,
+            "deep_repair": (t_deep * 1000.0).round() / 1000.0,
+            "stage2": (t_stage2 * 1000.0).round() / 1000.0,
+            "reload_weld": (t_reload * 1000.0).round() / 1000.0,
+            "file_total": ((t_start.elapsed().as_secs_f64()) * 1000.0).round() / 1000.0,
         }),
     );
 

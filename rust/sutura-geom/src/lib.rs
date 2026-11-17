@@ -2598,6 +2598,35 @@ impl PyMeshBvh {
         Ok(PyArray1::from_vec(py, self.inner.winding_points_par(&pts)))
     }
 
+    /// Paired generalized winding numbers: `a[i]` and `b[i]` share one BVH
+    /// traversal per pair.  Returns two `(M,)` float64 arrays.  Values are
+    /// bit-identical to `winding_at`/`winding_points`; the shape card uses
+    /// this for the two sides of each sampled face.
+    fn winding_points_paired<'py>(
+        &self,
+        py: Python<'py>,
+        a: PyArrayLike2<'py, f64, AllowTypeChange>,
+        b: PyArrayLike2<'py, f64, AllowTypeChange>,
+    ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>)> {
+        let aa = a.as_array();
+        let bb = b.as_array();
+        if aa.ncols() != 3 || bb.ncols() != 3 || aa.nrows() != bb.nrows() {
+            return Err(PyValueError::new_err("a and b must be equal Mx3"));
+        }
+        let n = aa.nrows();
+        let pa: Vec<[f64; 3]> = (0..n)
+            .map(|i| [aa[[i, 0]], aa[[i, 1]], aa[[i, 2]]])
+            .collect();
+        let pb: Vec<[f64; 3]> = (0..n)
+            .map(|i| [bb[[i, 0]], bb[[i, 1]], bb[[i, 2]]])
+            .collect();
+        let (wa, wb) = self.inner.winding_points_pairs_par(&pa, &pb);
+        Ok((
+            PyArray1::from_vec(py, wa),
+            PyArray1::from_vec(py, wb),
+        ))
+    }
+
     /// Robust generalized winding number (antipodal method) for `(M, 3)` query
     /// points, parallel across all CPU cores.  Returns a `(M,)` float64 array.
     /// See `antipodal_points`.
