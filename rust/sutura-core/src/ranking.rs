@@ -986,16 +986,6 @@ const CORE150_PRIOR_REPEATED: &[(u8, f64)] = &[(8, 0.80), (1, 0.80), (4, 0.80), 
 const CORE150_PRIOR_SCAN: &[(u8, f64)] = &[(9, 0.90), (1, 0.70), (3, 0.70)];
 const CORE150_PRIOR_DUPLICATE: &[(u8, f64)] = &[(8, 0.90), (1, 0.90), (2, 0.80), (4, 0.80)];
 
-fn diag_count(a: &Analysis, name: &str) -> f64 {
-    a.diagnosis_v2
-        .as_ref()
-        .and_then(|d| d.get("channels"))
-        .and_then(|c| c.get(name))
-        .and_then(|e| e.get("count"))
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0)
-}
-
 fn prior_for(class: &str) -> &'static [(u8, f64)] {
     match class {
         "holes" => CORE150_PRIOR_HOLES,
