@@ -23,8 +23,14 @@ use crate::choice::{choice_weighted, next_double};
 use crate::measures::sum_f64;
 use crate::rng::Pcg64;
 
-/// `wall.DEFAULT_SAMPLES`; the sampler clamps to `[1, 4_000_000]`.
-pub const DEFAULT_SAMPLES: usize = 5000;
+/// `wall.DEFAULT_SAMPLES`. Must stay equal to the Python constant: the wall
+/// builder asks for this many samples, and a different count draws a different
+/// number of PCG64 words, so the SDF (and the mesh) would diverge.
+///
+/// This said `5000` while documenting itself as "`wall.DEFAULT_SAMPLES`", which
+/// Python defines as `40000` (`wall.py:32`). Nothing read it, so no test caught
+/// it; the wall port must not inherit it.
+pub const DEFAULT_SAMPLES: usize = 40_000;
 const MAX_SAMPLES: usize = 4_000_000;
 
 /// `(points, normals)` for `n_samples` area-weighted draws, exactly as
@@ -160,5 +166,44 @@ mod tests {
         let (verts, tris) = unit_square();
         assert_eq!(sample_surface(&verts, &tris, 0, 0).0.len(), 1);
         assert_eq!(sample_surface(&verts, &tris, 17, 0).0.len(), 17);
+    }
+
+    /// The whole point of this module: the stream is NumPy's, not merely
+    /// "deterministic". Values pinned by running
+    /// `sutura_engine.wall.sample_surface` on this exact mesh (`seed=0`,
+    /// `n_samples=5`, NumPy 2.5.4).
+    ///
+    /// Without this, nothing checked the parity claim -- the existing tests only
+    /// assert determinism and shape, which a ChaCha-based RNG would also pass.
+    #[test]
+    fn matches_numpy_choice_and_random_stream() {
+        let (verts, tris) = unit_square();
+        let (pts, normals) = sample_surface(&verts, &tris, 5, 0);
+        let want = [
+            [0.17593027794900151, 0.95538242462258105, 0.0],
+            [0.77886826599058445, 0.0021329308789381669, 0.0],
+            [0.85410570831952548, 0.73231388697101629, 0.0],
+            [0.73730929159032232, 0.024762956736125347, 0.0],
+            [0.26142086618303223, 0.96699142901463619, 0.0],
+        ];
+        assert_eq!(pts.len(), want.len());
+        for (i, (got, exp)) in pts.iter().zip(want.iter()).enumerate() {
+            for k in 0..3 {
+                assert_eq!(
+                    got[k], exp[k],
+                    "sample {i} component {k}: got {:?}, NumPy gives {:?}",
+                    got, exp
+                );
+            }
+            // The +z face normal, divided by `2*area + 1e-30` = 1.0.
+            assert_eq!(normals[i], [0.0, 0.0, 1.0], "normal {i}");
+        }
+    }
+
+    /// `DEFAULT_SAMPLES` must equal Python's, because a different count draws a
+    /// different number of PCG64 words and the whole SDF shifts.
+    #[test]
+    fn default_sample_count_matches_python() {
+        assert_eq!(DEFAULT_SAMPLES, 40_000, "wall.DEFAULT_SAMPLES is 40000");
     }
 }
