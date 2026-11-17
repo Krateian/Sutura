@@ -523,7 +523,7 @@ fn contract_order(root: &mut Map<String, Value>) {
     }
 }
 
-const FLAP_ORDER: [&str; 33] = [
+const FLAP_ORDER: [&str; 36] = [
     "ran", "adopted", "reason", "baseline_holes", "baseline_non_manifold",
     "baseline_damage", "candidate_holes", "candidate_non_manifold",
     "candidate_damage", "loops_found", "loops_filled", "loops_skipped",
@@ -533,6 +533,10 @@ const FLAP_ORDER: [&str; 33] = [
     "loop_vertex_total", "slack_units", "baseline_self_intersections",
     "candidate_self_intersections", "si_flagged", "si_checked", "si_policy",
     "guard_rejected", "guard_reason",
+    // The safety-net fields, appended last in Python's order
+    // (`service.py:466-478`): `budget_exceeded` first, then the two the net
+    // writes. Leaving them out of this list is why `retain` dropped them.
+    "budget_exceeded", "adopted_final", "final_fallback",
 ];
 
 const TAMPONADE_ORDER: [&str; 69] = [
@@ -1246,8 +1250,31 @@ fn augment_report(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    timings.insert("flap_off_rerun".into(), Value::Bool(false));
-    timings.insert("flap_off_rerun_s".into(), Value::Null);
+    // `flap_off_rerun` reports what the safety net actually did, exactly as
+    // Python derives it from `flap.final_fallback.ran` (`service.py:522-525`).
+    // It used to be hard-coded `false`, which said "no fallback was needed" on
+    // every file — including the ones where Python ran one.
+    let fallback = obj
+        .get("flap")
+        .and_then(|f| f.get("final_fallback"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    timings.insert(
+        "flap_off_rerun".into(),
+        Value::Bool(
+            fallback
+                .get("ran")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
+    );
+    timings.insert(
+        "flap_off_rerun_s".into(),
+        fallback
+            .get("seconds")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
     timings.insert("tamponade_off_rerun".into(), Value::Bool(false));
     if !timings.contains_key("file_total") {
         timings.insert(
@@ -1531,6 +1558,172 @@ fn process_3mf(
     (report, failed)
 }
 
+/// The Flap **final safety net** (Python's HIGH-1, `service.py:422-478`).
+///
+/// The Flap adoption gate is topological-only and decided on the pre-chain mesh,
+/// so it cannot promise the FINAL result beats Flap-OFF. When Flap was adopted
+/// and the final mesh is not strict-watertight, has more parts than the input,
+/// or the Flap candidate raised the exact self-intersection count, Python runs
+/// the whole file ONCE more with Flap off and keeps the better result.
+///
+/// Without it the Rust CLI reported a different mesh from Python on
+/// `broken_37402`: Python's net chose the flap-OFF run (stage 1 9478 faces), the
+/// Rust CLI had no net at all (12914).
+///
+/// This is orchestration only. The decision rules are the core's own
+/// (`tiers::flap::{si_rose, final_off, off_preferred}`), which Python calls
+/// through PyO3 too, so the two cannot drift. `repair.rs` is not touched: the
+/// core is simply called twice.
+fn run_with_flap_safety_net(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    opts: &RepairOptions,
+    token: &CancelToken,
+) -> RepairOutcome {
+    let on = match repair(verts, tris, opts, &CoreSink, token) {
+        RepairOutcome::Ok {
+            verts: out_v,
+            tris: out_t,
+            report,
+        } => (out_v, out_t, report),
+        // An error or an unavailable tier is not a candidate to compare.
+        other => return other,
+    };
+
+    // Only a Flap-adopted run can be worse *because of* Flap.
+    let flap_adopted = on
+        .2
+        .get("flap")
+        .and_then(|f| f.get("adopted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !flap_adopted || opts.flap != Some(true) {
+        return RepairOutcome::Ok {
+            verts: on.0,
+            tris: on.1,
+            report: on.2,
+        };
+    }
+
+    // A candidate SI rise is only a signal to compare the two finals; it is not
+    // on its own a rejection, because Stage 1/2 can bring the count back down.
+    let si_rise = on
+        .2
+        .get("flap")
+        .map(sutura_core::tiers::flap::si_rose)
+        .unwrap_or(false);
+    let (on_reason, on_metrics) = sutura_core::tiers::flap::final_off(
+        verts, tris, &on.0, &on.1, si_rise, si_rise,
+    );
+    let Some(on_reason) = on_reason else {
+        return RepairOutcome::Ok {
+            verts: on.0,
+            tris: on.1,
+            report: on.2,
+        };
+    };
+
+    // Re-run the file with Flap off — the same options otherwise, so the
+    // fallback cannot diverge from a plain flap-OFF repair.
+    let mut off_opts = opts.clone();
+    off_opts.flap = Some(false);
+    let t_off = std::time::Instant::now();
+    let off = match repair(verts, tris, &off_opts, &CoreSink, token) {
+        RepairOutcome::Ok {
+            verts: out_v,
+            tris: out_t,
+            report,
+        } => (out_v, out_t, report),
+        other => {
+            // The net never crashes a repair: keep the flap-ON result and say
+            // the comparison could not be made.
+            let mut report = on.2.clone();
+            if let Some(flap) = report.get_mut("flap").and_then(Value::as_object_mut) {
+                flap.insert(
+                    "final_fallback".into(),
+                    json!({"ran": true, "used": "on", "reason": on_reason,
+                           "on": on_metrics, "error": "flap-off rerun failed"}),
+                );
+            }
+            let _ = other;
+            return RepairOutcome::Ok {
+                verts: on.0,
+                tris: on.1,
+                report,
+            };
+        }
+    };
+
+    let (_, off_metrics) = sutura_core::tiers::flap::final_off(verts, tris, &off.0, &off.1, si_rise, false);
+    let use_off = sutura_core::tiers::flap::off_preferred(
+        &on_reason,
+        on_metrics.as_ref().unwrap_or(&Value::Null),
+        off_metrics.as_ref().unwrap_or(&Value::Null),
+    );
+
+    let tamponade_skipped = opts.tamponade != Some(false);
+    // Python records the re-run's cost so the report separates it from the
+    // primary run (`service.py:452-455`).
+    let off_seconds = Value::from((t_off.elapsed().as_secs_f64() * 1000.0).round() / 1000.0);
+    let mut fallback = json!({
+        "ran": true,
+        "used": if use_off { "off" } else { "on" },
+        "reason": on_reason,
+        "on": on_metrics,
+        "off": off_metrics,
+        "seconds": off_seconds,
+        "tamponade_skipped": tamponade_skipped,
+    });
+
+    if use_off {
+        // Report the primary run's Flap verdict, marked as not adopted in the
+        // end, together with the fallback record.
+        let mut on_flap = on.2.get("flap").cloned().unwrap_or_else(|| json!({}));
+        if let Some(obj) = on_flap.as_object_mut() {
+            obj.insert("adopted_final".into(), Value::Bool(false));
+            obj.insert("final_fallback".into(), fallback.clone());
+        }
+        let mut report = off.2.clone();
+        if let Some(obj) = report.as_object_mut() {
+            obj.insert("flap".into(), on_flap);
+        }
+        // Carry the primary run's tamponade verdict when it did not change the
+        // geometry (a no-op record); an adopted tier changed the flap-ON mesh,
+        // which is not the mesh now being reported.
+        let on_tamp = on.2.get("tamponade").cloned();
+        let tamponade_adopted = on_tamp
+            .as_ref()
+            .and_then(|t| t.get("adopted"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if tamponade_skipped && !tamponade_adopted {
+            if let Some(tamp) = on_tamp {
+                if let Some(obj) = report.as_object_mut() {
+                    obj.insert("tamponade".into(), tamp);
+                }
+            }
+        }
+        RepairOutcome::Ok {
+            verts: off.0,
+            tris: off.1,
+            report,
+        }
+    } else {
+        let mut report = on.2.clone();
+        if let Some(obj) = fallback.as_object_mut() {
+            obj.insert("used".into(), Value::from("on"));
+        }
+        if let Some(flap) = report.get_mut("flap").and_then(Value::as_object_mut) {
+            flap.insert("final_fallback".into(), fallback);
+        }
+        RepairOutcome::Ok {
+            verts: on.0,
+            tris: on.1,
+            report,
+        }
+    }
+}
+
 fn process_one(
     cli: &crate::Cli,
     path: &Path,
@@ -1592,7 +1785,7 @@ fn process_one(
     });
 
     let started = Instant::now();
-    let outcome = repair(&verts, &tris, opts, &CoreSink, &token);
+    let outcome = run_with_flap_safety_net(&verts, &tris, opts, &token);
     stop.store(true, Ordering::SeqCst);
     let _ = monitor.join();
     cli_t("repair", started.elapsed());

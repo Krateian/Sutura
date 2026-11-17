@@ -157,6 +157,13 @@ pub fn run_with_cancel(
     );
     rec.insert("work_units".into(), json!(frep.work_units));
     rec.insert("work_budget".into(), json!(budget));
+    // Over-budget runs cut their expensive steps short rather than producing a
+    // worse mesh, so this is recorded, not judged (`flap.py:486-487`). The
+    // record must still say it: Python reports `budget_exceeded: true` when
+    // `work_units > work_budget`, and the Rust record had no such key at all.
+    if budget >= 0 && frep.work_units > budget as u64 {
+        rec.insert("budget_exceeded".into(), json!(true));
+    }
     rec.insert("loops_found".into(), json!(frep.loops_found));
     rec.insert("loops_filled".into(), json!(frep.loops_filled));
     rec.insert("loops_skipped".into(), json!(frep.loops_skipped));
@@ -525,4 +532,86 @@ pub fn off_preferred_json(reason: &str, on: &Value, off: &Value) -> bool {
 
 pub fn si_rose_json(rec: &Value) -> bool {
     si_rose(rec)
+}
+
+#[cfg(test)]
+mod safety_net_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `si_rose` reads the candidate/baseline exact SI counts; either missing
+    /// means "unknown", which must not look like a rise.
+    #[test]
+    fn si_rose_needs_both_counts() {
+        assert!(si_rose(&json!({
+            "baseline_self_intersections": 10,
+            "candidate_self_intersections": 11
+        })));
+        assert!(!si_rose(&json!({
+            "baseline_self_intersections": 10,
+            "candidate_self_intersections": 10
+        })));
+        assert!(!si_rose(&json!({"baseline_self_intersections": 10})));
+        assert!(!si_rose(&json!({})));
+    }
+
+    /// OFF replaces ON only when it is genuinely better. These are the rules the
+    /// safety net's choice rests on (`flap.py:179-213`).
+    #[test]
+    fn off_preferred_follows_damage_then_parts_then_si() {
+        // Less damage wins.
+        assert!(off_preferred(
+            "not_watertight",
+            &json!({"holes": 4, "non_manifold": 2, "output_parts": 3, "si": 5}),
+            &json!({"holes": 1, "non_manifold": 2, "output_parts": 3, "si": 9}),
+        ));
+        // Equal damage and fewer parts wins.
+        assert!(off_preferred(
+            "not_watertight",
+            &json!({"holes": 1, "non_manifold": 0, "output_parts": 5, "si": 1}),
+            &json!({"holes": 1, "non_manifold": 0, "output_parts": 4, "si": 90}),
+        ));
+        // A parts change is never traded for a lower SI count when the trigger
+        // was an SI rise.
+        assert!(!off_preferred(
+            "si_candidate_rise",
+            &json!({"holes": 0, "non_manifold": 0, "output_parts": 5, "si": 90}),
+            &json!({"holes": 0, "non_manifold": 0, "output_parts": 4, "si": 1}),
+        ));
+        // A tie keeps ON, so Flap is discarded only when it is actually worse.
+        let same = json!({"holes": 1, "non_manifold": 1, "output_parts": 2, "si": 3});
+        assert!(!off_preferred("not_watertight", &same, &same));
+        // Unknown SI on either side is not a tie-breaker.
+        assert!(!off_preferred(
+            "not_watertight",
+            &json!({"holes": 0, "non_manifold": 0, "output_parts": 4, "si": null}),
+            &json!({"holes": 0, "non_manifold": 0, "output_parts": 4, "si": 1}),
+        ));
+    }
+
+    /// The triggers, in order: not watertight, then more parts, then an SI rise.
+    /// A watertight mesh with equal parts and no SI flag needs no re-run at all.
+    #[test]
+    fn final_off_names_the_first_trigger() {
+        let square = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        // An open square is never strict-watertight, so the first trigger wins.
+        let tris = [[0i64, 1, 2], [0, 2, 3]];
+        let (reason, metrics) = final_off(&square, &tris, &square, &tris, false, false);
+        assert_eq!(reason.as_deref(), Some("not_watertight"));
+        assert!(
+            metrics
+                .as_ref()
+                .and_then(|m| m.get("watertight"))
+                .and_then(Value::as_bool)
+                == Some(false)
+        );
+        // The SI flag is only reached once watertight and part count are clean.
+        let (reason, _) = final_off(&square, &tris, &square, &tris, false, true);
+        assert_eq!(reason.as_deref(), Some("not_watertight"));
+    }
 }
