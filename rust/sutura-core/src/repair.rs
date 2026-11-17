@@ -12,7 +12,7 @@
 //! dropped silently. No Python is called and no per-tier callback exists: the
 //! `ProgressSink` only sees stage and tier boundaries.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -33,7 +33,10 @@ use crate::mesh::Mesh;
 use crate::mirror::mirror_close;
 use crate::p_weld::{enforce_reload_verdict, p_weld_final, reload_strict_holes_nm};
 use crate::proxy::proxy_template_repair;
-use crate::ranking::{rank_methods, recommendations_json, Analysis as RankingAnalysis};
+use crate::ranking::{
+    order_graft_before_ftetwild, prune_avoid_nums, rank_methods, recommendations_json,
+    Analysis as RankingAnalysis, Recommendation,
+};
 use crate::report::defects::detect_defects;
 use crate::report::health::build_report_value;
 use crate::stage1::chain::{
@@ -2632,6 +2635,362 @@ pub(crate) fn attempt_with_method(
     }
 }
 
+/// Python `_auto_escalation_allowed`: the ranked ladder is only enabled for
+/// the full preset and while fTetWild is not explicitly off.
+fn auto_ladder_allowed(opts: &RepairOptions) -> bool {
+    opts.auto_escalation.unwrap_or(true)
+        && opts.ladder_depth == 0
+        && opts.forced_methods.is_empty()
+        && matches!(opts.deep_repair, DeepRepair::Full)
+        && !matches!(opts.ftetwild, Some(Value::Bool(false)))
+}
+
+fn method_invents_geometry(num: u8) -> bool {
+    matches!(num, 7 | 10 | 13 | 15 | 16)
+}
+
+/// Python `_evaluate` for a nested attempt: strict-watertight + reloaded
+/// holes/non-manifold edges.
+fn ladder_eval(v: &[[f64; 3]], t: &[[i64; 3]], report: &Value) -> (bool, usize, usize, String) {
+    let s1 = report.get("stage1");
+    let two = s1
+        .and_then(|s| s.get("two_manifold"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let holes_remaining = s1
+        .and_then(|s| s.get("holes_remaining"))
+        .and_then(Value::as_i64)
+        .unwrap_or(-1);
+    let stage2_ok = report
+        .get("stage2")
+        .and_then(|s| s.get("ok"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let watertight = two && holes_remaining == 0 && stage2_ok;
+    let (holes, nm) = if watertight {
+        (0usize, 0usize)
+    } else {
+        reload_strict_holes_nm(v, t)
+    };
+    let reason = if watertight {
+        "strict-watertight".to_string()
+    } else if holes > 0 || nm > 0 {
+        format!("holes={holes} non-manifold={nm} remain")
+    } else {
+        "stage 1 closed but stage 2 did not confirm the solid".to_string()
+    };
+    (watertight, holes, nm, reason)
+}
+
+fn ladder_guard_policy(policy: Option<&LoadedPolicy>, method_id: &str) -> common::GuardPolicy {
+    let read = |key: &str, default: f64| policy_number(policy, "gates.adoption", key, default);
+    let si_policy = match method_id {
+        "graft" | "ftetwild" => "improved_flag",
+        "splint" | "transplant" | "transplant_plus" | "wall_thicken" => "non_rise",
+        "coaptation" | "dressing" => "strict_zero",
+        "flap" | "tamponade" => "flag",
+        _ => "flag",
+    };
+    common::GuardPolicy {
+        face_ratio: read("face_ratio", 4.0),
+        vertex_ratio: read("vertex_ratio", 4.0),
+        min_slack: read("min_slack", 256.0) as i64,
+        loop_face_slack: read("loop_face_slack", 16.0) as i64,
+        loop_vertex_slack: read("loop_vertex_slack", 16.0) as i64,
+        si_policy: si_policy.to_string(),
+        si_rel_tol: 0.0,
+        si_abs_tol: 0,
+        face_abs_floor: if method_id == "ftetwild" {
+            read("ftetwild_abs_floor", 50_000.0) as i64
+        } else {
+            0
+        },
+        vertex_abs_floor: if method_id == "ftetwild" {
+            read("ftetwild_abs_floor", 50_000.0) as i64
+        } else {
+            0
+        },
+        allow_growth_if_improved: method_id == "ftetwild",
+    }
+}
+
+fn ladder_record(
+    num: u8,
+    id: &str,
+    name: &str,
+    outcome: &str,
+    watertight: bool,
+    holes: usize,
+    nm: usize,
+    reason: &str,
+    work_units: Option<i64>,
+    work_budget: Option<i64>,
+    budget_scope: Option<&str>,
+) -> Value {
+    let mut rec = json!({
+        "num": num,
+        "id": id,
+        "name": name,
+        "outcome": outcome,
+        "watertight": watertight,
+        "holes": holes,
+        "non_manifold": nm,
+        "hausdorff_rel": Value::Null,
+        "geom_change_pct": Value::Null,
+        "guard_rejected": Value::Null,
+        "guard_reason": Value::Null,
+        "si_flagged": false,
+        "adopt_guard": Value::Null,
+        "reason": reason,
+        "template": Value::Null,
+        "elapsed_ms": 0,
+    });
+    if let Some(units) = work_units {
+        rec["work_units"] = Value::from(units);
+    }
+    if let Some(budget) = work_budget {
+        rec["work_budget"] = Value::from(budget);
+    }
+    if let Some(scope) = budget_scope {
+        rec["budget_scope"] = Value::from(scope);
+    }
+    rec
+}
+
+fn ladder_attach_budgets(
+    report: &mut Map<String, Value>,
+    work_budget: Option<i64>,
+    grid_budget: Option<i64>,
+    damage: i64,
+    grid: i64,
+    counts: &(i64, i64, i64, i64),
+) {
+    report.insert(
+        "fallback_work_budget".into(),
+        work_budget.map(Value::from).unwrap_or(Value::Null),
+    );
+    report.insert(
+        "fallback_grid_work_budget".into(),
+        grid_budget.map(Value::from).unwrap_or(Value::Null),
+    );
+    report.insert(
+        "fallback_work_input".into(),
+        json!({
+            "faces": counts.0,
+            "nm_edges": counts.1,
+            "nm_vertices": counts.2,
+            "holes": counts.3,
+        }),
+    );
+    report.insert(
+        "fallback_work_estimate".into(),
+        json!({"damage_units": damage, "grid_units": grid}),
+    );
+}
+
+/// Run the ranked fallback ladder on a non-watertight baseline.  Returns the
+/// adopted candidate when one wins; otherwise annotates the baseline report
+/// and returns `None` (the baseline output is kept).
+#[allow(clippy::too_many_arguments)]
+fn run_auto_ladder(
+    input_v: &[[f64; 3]],
+    input_t: &[[i64; 3]],
+    opts: &RepairOptions,
+    policy: Option<&LoadedPolicy>,
+    ranking: &(Vec<Recommendation>, HashSet<u8>),
+    base_report: &mut Map<String, Value>,
+    cancel: &CancelToken,
+) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Map<String, Value>)> {
+    let (base_num, _, _) = baseline_method(opts.deep_repair);
+    let faces = input_t.len() as i64;
+    let topo = common::topology_summary(input_v, input_t);
+    let holes = boundary_loop_stats(input_t).0 as i64;
+    let counts = (
+        faces,
+        topo.non_two_manifold_edges as i64,
+        topo.non_two_manifold_vertices as i64,
+        holes,
+    );
+    let damage = input_damage_work(input_v, input_t);
+    let grid = fallback_grid_work(input_v, input_t, &opts.intensity);
+    let work_budget = fallback_work_budget();
+    let grid_budget = graft_grid_budget();
+    let max_attempts = policy_number(policy, "auto", "max_attempts", 3.0).max(0.0) as usize;
+    let invent_min = policy_number(policy, "auto", "invent_min_score", 0.8);
+    let baseline_entry = base_report
+        .get("methods_tried")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut tried: Vec<Value> = Vec::new();
+    let mut attempts = 0usize;
+    let mut deferred_graft: Option<(
+        Recommendation,
+        Vec<[f64; 3]>,
+        Vec<[i64; 3]>,
+        Map<String, Value>,
+        bool,
+    )> = None;
+
+    let mut adopt = |rec: &Recommendation,
+                     v: Vec<[f64; 3]>,
+                     t: Vec<[i64; 3]>,
+                     cand_report: Value,
+                     tried: &[Value]|
+     -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Map<String, Value>)> {
+        let mut m = cand_report.as_object().cloned().unwrap_or_default();
+        let mut all = Vec::with_capacity(tried.len() + 1);
+        all.push(baseline_entry.clone());
+        all.extend(tried.iter().cloned());
+        m.insert("methods_tried".into(), Value::Array(all));
+        m.insert(
+            "method_used".into(),
+            json!({
+                "num": rec.num,
+                "id": rec.id,
+                "name": rec.name,
+                "source": "auto_escalated",
+                "note": null,
+            }),
+        );
+        m.insert("method_reached_watertight".into(), Value::Bool(true));
+        ladder_attach_budgets(&mut m, work_budget, grid_budget, damage, grid, &counts);
+        Some((v, t, m))
+    };
+
+    for rec in &ranking.0 {
+        if rec.num == base_num || ranking.1.contains(&rec.num) {
+            continue;
+        }
+        let Some(_) = method_options(opts, rec.num) else {
+            continue;
+        };
+        let work = candidate_work(rec.id, damage, grid, faces);
+        let cls = work_class(rec.id);
+        let budget = if cls == "grid" { grid_budget } else { work_budget };
+        let scope = if cls == "grid" { "grid" } else { "fallback" };
+        if !fits_budget(work, budget) {
+            tried.push(ladder_record(
+                rec.num,
+                rec.id,
+                rec.name,
+                "skipped_budget",
+                false,
+                0,
+                0,
+                &format!(
+                    "estimated {cls} work {work} (budget {}) is above the cap; method not started, stage-1 result kept",
+                    budget.map(|b| b.to_string()).unwrap_or_else(|| "none".into())
+                ),
+                Some(work),
+                budget,
+                Some(scope),
+            ));
+            continue;
+        }
+        if method_invents_geometry(rec.num) && rec.score < invent_min {
+            continue;
+        }
+        if attempts >= max_attempts {
+            break;
+        }
+        attempts += 1;
+        let Some((cv, ct, crep)) = attempt_with_method(input_v, input_t, opts, rec.num, cancel) else {
+            continue;
+        };
+        let (mut watertight, holes, nm, reason) = ladder_eval(&cv, &ct, &crep);
+        if watertight {
+            let guard_policy = ladder_guard_policy(policy, rec.id);
+            if let Some(g) = common::blowup_reason(
+                input_t.len(),
+                input_v.len(),
+                ct.len(),
+                cv.len(),
+                0,
+                &guard_policy,
+            ) {
+                watertight = false;
+                tried.push(ladder_record(
+                    rec.num,
+                    rec.id,
+                    rec.name,
+                    "rejected",
+                    false,
+                    holes,
+                    nm,
+                    &format!("adopt guard: {g}"),
+                    None,
+                    None,
+                    None,
+                ));
+                continue;
+            }
+        }
+        tried.push(ladder_record(
+            rec.num,
+            rec.id,
+            rec.name,
+            if watertight { "accepted" } else { "rejected" },
+            watertight,
+            holes,
+            nm,
+            &reason,
+            None,
+            None,
+            None,
+        ));
+        if !watertight {
+            continue;
+        }
+        if rec.num == 13 {
+            let g = crep.get("graft");
+            let fidelity_failed = g
+                .and_then(|g| g.get("fidelity_ok"))
+                .and_then(Value::as_bool)
+                == Some(false);
+            let coverage_failed = g
+                .and_then(|g| g.get("coverage_ok"))
+                .and_then(Value::as_bool)
+                == Some(false);
+            if fidelity_failed || coverage_failed {
+                deferred_graft = Some((
+                    rec.clone(),
+                    cv,
+                    ct,
+                    crep.as_object().cloned().unwrap_or_default(),
+                    coverage_failed,
+                ));
+                continue;
+            }
+        }
+        return adopt(rec, cv, ct, crep, &tried);
+    }
+
+    if let Some((rec, cv, ct, mut cand, coverage_failed)) = deferred_graft {
+        if !coverage_failed {
+            return adopt(&rec, cv, ct, Value::Object(cand), &tried);
+        }
+        // Coverage failure: never adopt this Graft; surface it on the baseline.
+        let g = cand.remove("graft").unwrap_or(Value::Null);
+        if let Some(gm) = g.as_object() {
+            let mut surf = gm.clone();
+            surf.insert("ran".into(), Value::Bool(true));
+            surf.insert("adopted".into(), Value::Bool(false));
+            surf.insert("reject_reason".into(), Value::from("coverage"));
+            base_report.insert("graft".into(), Value::Object(surf));
+        }
+    }
+
+    // No candidate won: keep the baseline bytes but record the attempts.
+    let mut all = Vec::with_capacity(tried.len() + 1);
+    all.push(baseline_entry);
+    all.extend(tried.iter().cloned());
+    base_report.insert("methods_tried".into(), Value::Array(all));
+    ladder_attach_budgets(base_report, work_budget, grid_budget, damage, grid, &counts);
+    None
+}
+
 /// Repair one mesh given as float64/int64 arrays.
 pub fn repair(
     verts: &[[f64; 3]],
@@ -2790,7 +3149,8 @@ fn repair_impl(
     if cancel.is_cancelled() {
         return cancelled();
     }
-    let recommendations = match (policy.as_ref(), mesh_analysis.as_ref()) {
+    let ranking: Option<(Vec<Recommendation>, HashSet<u8>)> =
+        match (policy.as_ref(), mesh_analysis.as_ref()) {
         (Some(loaded), Some(analysis)) => {
             let rank_analysis = RankingAnalysis {
                 mesh_type: Some(analysis.mesh_type.clone()),
@@ -2804,11 +3164,20 @@ fn repair_impl(
                 diagnosis_v2: analysis.diagnosis_v2.clone(),
                 ..RankingAnalysis::default()
             };
-            let recs = rank_methods(loaded, &rank_analysis, None, None);
-            Some(recommendations_json(&recs))
+            let recs = order_graft_before_ftetwild(rank_methods(
+                loaded,
+                &rank_analysis,
+                None,
+                None,
+            ));
+            let avoid = prune_avoid_nums(&rank_analysis);
+            Some((recs, avoid))
         }
         _ => None,
     };
+    let recommendations = ranking
+        .as_ref()
+        .map(|(recs, _)| recommendations_json(recs));
 
     if cancel.is_cancelled() {
         return cancelled();
@@ -4191,6 +4560,27 @@ fn repair_impl(
     );
     out.insert("method_used".into(), method_used_value(opts.deep_repair));
     out.insert("unavailable".into(), unavailable);
+
+    // Ranked fallback ladder (Python `triage._auto`), before the final SI
+    // escalation.  Nested attempts disable auto_escalation, so this cannot
+    // recurse; an adopted candidate replaces the whole baseline result.
+    if let Some(ranking) = ranking.as_ref() {
+        if !reachable && auto_ladder_allowed(opts) && !cancel.is_cancelled() {
+            if let Some((adopted_v, adopted_t, adopted_report)) = run_auto_ladder(
+                &input_v,
+                &input_t,
+                opts,
+                policy.as_ref(),
+                ranking,
+                &mut out,
+                cancel,
+            ) {
+                cur_v = adopted_v;
+                cur_t = adopted_t;
+                out = adopted_report;
+            }
+        }
+    }
 
     if allow_si_escalation && si_escalation_allowed(opts) {
         if let Some((adopted_v, adopted_t, adopted_report)) = apply_si_escalation(
