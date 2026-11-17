@@ -1478,6 +1478,104 @@ fn graft_grid_budget() -> Option<i64> {
     }
 }
 
+const DEFAULT_FALLBACK_WORK_BUDGET: i64 = 6_000_000;
+const PIPELINE_FACE_COST: i64 = 8;
+
+#[allow(dead_code)]
+fn resolve_budget_env(key: &str, default: i64) -> Option<i64> {
+    let Ok(raw) = std::env::var(key) else {
+        return Some(default);
+    };
+    let text = raw.trim().to_ascii_lowercase();
+    if text.is_empty() {
+        return Some(default);
+    }
+    if matches!(text.as_str(), "0" | "false" | "no" | "off") {
+        return None;
+    }
+    match text.parse::<i64>() {
+        Ok(value) if value > 0 => Some(value),
+        Ok(_) => None,
+        Err(_) => Some(default),
+    }
+}
+
+#[allow(dead_code)]
+fn fallback_work_budget() -> Option<i64> {
+    resolve_budget_env("SUTURA_FALLBACK_BUDGET", DEFAULT_FALLBACK_WORK_BUDGET)
+}
+
+#[allow(dead_code)]
+fn work_class(method_id: &str) -> &'static str {
+    match method_id {
+        "quick_clean" | "local_mend" | "join" | "transplant" | "transplant_plus" => "faces",
+        "graft" | "dressing" => "grid",
+        _ => "damage",
+    }
+}
+
+#[allow(dead_code)]
+fn candidate_work(method_id: &str, damage: i64, grid: i64, faces: i64) -> i64 {
+    match work_class(method_id) {
+        "grid" if grid > 0 => grid,
+        "faces" if faces > 0 => faces * PIPELINE_FACE_COST,
+        _ => damage,
+    }
+}
+
+#[allow(dead_code)]
+fn fits_budget(work: i64, budget: Option<i64>) -> bool {
+    budget.map(|b| work <= b).unwrap_or(true)
+}
+
+#[allow(dead_code)]
+fn grid_work_units(faces: i64, cells: i64) -> i64 {
+    (faces.max(0) * cells.max(0) + 999) / 1000
+}
+
+#[allow(dead_code)]
+fn grid_work_with_holes(faces: i64, cells: i64, holes: i64) -> i64 {
+    grid_work_units(faces, cells) * (1 + holes.max(0) / 100)
+}
+
+/// Python `triage._fallback_grid_work` for one mesh: the morphology grid
+/// estimate at the resolved intensity budget, with the hole multiplier.
+#[allow(dead_code)]
+fn fallback_grid_work(v: &[[f64; 3]], t: &[[i64; 3]], intensity: &str) -> i64 {
+    if t.is_empty() {
+        return 0;
+    }
+    let budget = crate::graft::shell::resolve_grid_budget(Some(intensity));
+    let voxel = crate::graft::helpers::auto_voxel(v, t, Some(budget));
+    let cells = crate::graft::helpers::grid_cell_count(v, voxel);
+    let holes = boundary_loop_stats(t).0 as i64;
+    grid_work_with_holes(t.len() as i64, cells, holes)
+}
+
+#[cfg(test)]
+mod work_estimate_tests {
+    use super::*;
+
+    #[test]
+    fn work_classes_match_python() {
+        assert_eq!(work_class("quick_clean"), "faces");
+        assert_eq!(work_class("autorefine"), "damage");
+        assert_eq!(work_class("graft"), "grid");
+        assert_eq!(candidate_work("quick_clean", 7, 0, 10), 80);
+        assert_eq!(candidate_work("autorefine", 7, 0, 10), 7);
+        assert_eq!(candidate_work("graft", 7, 99, 10), 99);
+    }
+
+    #[test]
+    fn budget_and_grid_math() {
+        assert!(fits_budget(6_000_000, None));
+        assert!(fits_budget(6_000_000, Some(6_000_000)));
+        assert!(!fits_budget(6_000_001, Some(6_000_000)));
+        assert_eq!(grid_work_units(10, 1), 1);
+        assert_eq!(grid_work_with_holes(10, 1000, 250), 20);
+    }
+}
+
 fn input_damage_work(v: &[[f64; 3]], t: &[[i64; 3]]) -> i64 {
     let topo = common::topology_summary(v, t);
     let holes = boundary_loop_stats(t).0 as i64;
