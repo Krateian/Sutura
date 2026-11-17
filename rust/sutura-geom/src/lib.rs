@@ -3683,6 +3683,116 @@ fn classifier_features<'py>(
 }
 
 #[cfg(feature = "python")]
+/// `wall.estimate_wall_thickness`, exposed so Python can call the Rust kernel
+/// instead of its own NumPy version (single source of truth).
+///
+/// Returns `(per_vertex, {min, median, mean, min_thickness, thin_count,
+/// resolution, method})`. Byte-identical to the Python implementation: pinned by
+/// `per_vertex` md5 `156810316e613d2e3e69af2241757d49` on `broken_37402`.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, resolution=40, samples=40000, seed=0, min_thickness=None))]
+fn wall_estimate_thickness<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    resolution: usize,
+    samples: usize,
+    seed: u64,
+    min_thickness: Option<f64>,
+) -> PyResult<(
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt) = parse_mesh_i64(&verts, &tris)?;
+    let est = wall::estimate_wall_thickness(&rv, &rt, resolution, samples, seed, min_thickness)
+        .ok_or_else(|| PyValueError::new_err("no SDF grid (empty or zero-area mesh)"))?;
+    let per_vertex = PyArray1::from_vec(py, est.per_vertex.clone());
+    let meta = PyDict::new(py);
+    meta.set_item("min", est.min)?;
+    meta.set_item("median", est.median)?;
+    meta.set_item("mean", est.mean)?;
+    meta.set_item("min_thickness", est.min_thickness)?;
+    meta.set_item("thin_count", est.thin_count)?;
+    meta.set_item("resolution", est.resolution)?;
+    meta.set_item("method", est.method)?;
+    Ok((per_vertex, meta))
+}
+
+/// `wall.thicken_to_min`, exposed for the same single-source reason.
+///
+/// Returns `(verts, tris, report)`; `report` carries every field Python's
+/// `thicken_to_min` sets, including `min_after` (the analytic post-offset value,
+/// which Python reports instead of re-measuring).
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(name = "wall_thicken_to_min")]
+#[pyo3(signature = (verts, tris, min_thickness=None, resolution=40, samples=40000, seed=0))]
+fn wall_thicken_to_min<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    min_thickness: Option<f64>,
+    resolution: usize,
+    samples: usize,
+    seed: u64,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i64>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt) = parse_mesh_i64(&verts, &tris)?;
+    let (ov, ot, rep) =
+        wall::thicken_to_min(&rv, &rt, min_thickness, resolution, samples, seed);
+    let rv_rows: Vec<Vec<f64>> = ov.iter().map(|p| vec![p[0], p[1], p[2]]).collect();
+    let rt_rows: Vec<Vec<i64>> = ot
+        .iter()
+        .map(|t| vec![t[0] as i64, t[1] as i64, t[2] as i64])
+        .collect();
+    let rv_out = PyArray2::from_vec2(py, &rv_rows)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let rt_out = PyArray2::from_vec2(py, &rt_rows)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let d = PyDict::new(py);
+    d.set_item("min_thickness", rep.min_thickness)?;
+    d.set_item("min_before", rep.min_before)?;
+    d.set_item("thin_before", rep.thin_before)?;
+    d.set_item("delta", rep.delta)?;
+    d.set_item("method", rep.method)?;
+    d.set_item("notes", rep.notes)?;
+    if let Some(e) = rep.error {
+        d.set_item("error", e)?;
+    }
+    if let Some(v) = rep.min_after {
+        d.set_item("min_after", v)?;
+    }
+    if let Some(v) = rep.thin_after {
+        d.set_item("thin_after", v)?;
+    }
+    if let Some(v) = rep.faces {
+        d.set_item("faces", v)?;
+    }
+    Ok((rv_out, rt_out, d))
+}
+
+/// Parse `(verts, tris)` where `tris` is `i64` (the wall code works on `i64`).
+#[cfg(feature = "python")]
+fn parse_mesh_i64(
+    verts: &PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: &PyArrayLike2<'_, i64, AllowTypeChange>,
+) -> PyResult<(Vec<[f64; 3]>, Vec<[usize; 3]>)> {
+    let va = verts.as_array();
+    let ta = tris.as_array();
+    let rv: Vec<[f64; 3]> = va.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect();
+    let rt: Vec<[usize; 3]> = ta
+        .rows()
+        .into_iter()
+        .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+        .collect();
+    Ok((rv, rt))
+}
+
+/// `wall._morphological_dilate`, exposed so the Python wall module can use the
+/// same dilation the Rust tier uses.
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
@@ -3696,6 +3806,8 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(manifold::boolean_transplant, m)?)?;
     m.add_function(wrap_pyfunction!(_set_cdt_experimental, m)?)?;
     m.add_function(wrap_pyfunction!(sdf_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(wall_estimate_thickness, m)?)?;
+    m.add_function(wrap_pyfunction!(wall_thicken_to_min, m)?)?;
     m.add_function(wrap_pyfunction!(morph_close, m)?)?;
     m.add_function(wrap_pyfunction!(dressing_coat, m)?)?;
     m.add_function(wrap_pyfunction!(nearest_points, m)?)?;
