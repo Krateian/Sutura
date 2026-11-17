@@ -3113,6 +3113,9 @@ fn repair_impl(
     }
     let intensity_for_tamponade = spec.base.clone().unwrap_or_else(|| spec.name.clone());
     let triage = resolve_triage(opts, policy.as_ref(), verts, tris);
+    if std::env::var_os("SUTURA_STAGE1_FP").is_some() {
+        eprintln!("[stage1-fp] triage type={} conf={:e} confbits={:016x} min={} hole={} tuned={}", triage.mesh_type, triage.confidence, triage.confidence.to_bits(), triage.min_component, triage.max_hole, triage.tuning_applied);
+    }
     if cancel.is_cancelled() {
         return cancelled();
     }
