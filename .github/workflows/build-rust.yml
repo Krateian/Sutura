@@ -261,9 +261,12 @@ jobs:
   # `macos-x86_64` arm, so the only thing missing was an artifact to point it at.
   macos-x86_64:
     name: macOS x86_64 (.app/.dmg)
-    # Pinned to the last Intel image; `macos-latest` is Apple Silicon, and a
-    # cross-build of the GUI is not something to guess at.
-    runs-on: macos-13
+    # A genuine Intel runner, natively -- not a cross-build of the GUI.
+    # `macos-13` is withdrawn: GitHub's current Intel labels are
+    # `macos-15-intel` / `macos-26-intel`. A job pinned to a label that no
+    # longer maps to a runner queues forever (observed: 24 min with no runner
+    # assigned, which also blocks the whole run's logs).
+    runs-on: macos-15-intel
     timeout-minutes: 60
     steps:
       - name: Check out repository
