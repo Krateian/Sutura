@@ -54,6 +54,7 @@ say "removing the Rust Sutura install"
 # Programs and integration first; user data is decided last.
 remove_path "$BIN_DIR/sutura"
 remove_path "$BIN_DIR/sutura-gui"
+remove_path "$BIN_DIR/ftetwild"
 # macOS: the bundle and its Finder integration (no-ops elsewhere).
 remove_path "$HOME/Applications/Sutura.app"
 remove_path "$HOME/Library/Services/Sutura Quick Action.workflow"

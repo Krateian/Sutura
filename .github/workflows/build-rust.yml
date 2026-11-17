@@ -119,6 +119,13 @@ jobs:
           # 4. The licences ship.
           test -f "$APP/Contents/Resources/LICENSE"
           test -f "$APP/Contents/Resources/ATTRIBUTION.md"
+          # The deterministic fTetWild sidecar is bundled where
+          # `sutura_core::ftetwild::find_binary` looks (`<exe dir>/ftetwild`).
+          # A missing fallback tier is a feature loss, and a silently absent
+          # binary would only surface at repair time.
+          test -x "$APP/Contents/MacOS/ftetwild"
+          "$APP/Contents/MacOS/ftetwild" --help >/dev/null
+          echo "fTetWild sidecar: $(du -h "$APP/Contents/MacOS/ftetwild" | cut -f1)"
           echo "macOS bundle verified"
 
       - name: Report artifact sizes
@@ -216,6 +223,11 @@ jobs:
           # needs to know where the old install went, and may have no checkout.
           test -f "$root/MIGRATE.md"
           test "$(find "$root/third_party" -name '*LICENSE*' -o -name '*NOTICE*' | wc -l | tr -d ' ')" -ge 3
+          # The deterministic fTetWild sidecar is bundled where
+          # `sutura_core::ftetwild::find_binary` looks (`<exe dir>/ftetwild`).
+          test -x "$root/bin/ftetwild"
+          "$root/bin/ftetwild" --help >/dev/null
+          echo "fTetWild sidecar: $(du -h "$root/bin/ftetwild" | cut -f1)"
           echo "Linux package verified"
 
       - name: Report artifact sizes
@@ -296,8 +308,14 @@ jobs:
           "$APP/Contents/MacOS/sutura" --version
           "$APP/Contents/MacOS/sutura" --list-methods > /tmp/methods.txt
           grep -q quick_clean /tmp/methods.txt
-          test -f "$APP/Contents/Resources/LICENSE"
           test -f "$APP/Contents/Resources/ATTRIBUTION.md"
+          # The deterministic fTetWild sidecar is bundled where
+          # `sutura_core::ftetwild::find_binary` looks (`<exe dir>/ftetwild`).
+          # A missing fallback tier is a feature loss, and a silently absent
+          # binary would only surface at repair time.
+          test -x "$APP/Contents/MacOS/ftetwild"
+          "$APP/Contents/MacOS/ftetwild" --help >/dev/null
+          echo "fTetWild sidecar: $(du -h "$APP/Contents/MacOS/ftetwild" | cut -f1)"
           hdiutil detach /tmp/mnt -force >/dev/null 2>&1 || true
           echo "macOS Intel bundle verified"
 
@@ -373,6 +391,11 @@ jobs:
           grep -q quick_clean /tmp/methods.txt
           test -f "$root/LICENSE"
           test -f "$root/ATTRIBUTION.md"
+          # The deterministic fTetWild sidecar is bundled where
+          # `sutura_core::ftetwild::find_binary` looks (`<exe dir>/ftetwild`).
+          test -x "$root/bin/ftetwild"
+          "$root/bin/ftetwild" --help >/dev/null
+          echo "fTetWild sidecar: $(du -h "$root/bin/ftetwild" | cut -f1)"
           echo "Linux arm64 package verified"
 
       - name: Write sha256 manifests

@@ -115,7 +115,7 @@ fi
 
 # Terminal entry points. The bundle carries both binaries, so the PATH commands
 # and the Quick Action resolve to the same build.
-for bin in sutura sutura-gui; do
+for bin in sutura sutura-gui ftetwild; do
     if [ -x "$APPS_DIR/Sutura.app/Contents/MacOS/$bin" ]; then
         run ln -sf "$APPS_DIR/Sutura.app/Contents/MacOS/$bin" "$BIN_DIR/$bin"
     fi

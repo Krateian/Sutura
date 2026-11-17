@@ -108,7 +108,10 @@ if [ -d "$STAGE/keep-data/data" ]; then
 fi
 
 # Symlinks, not copies: the updater replaces $APP_DIR, so the PATH entry follows.
-for bin in sutura sutura-gui; do
+# `ftetwild` is the fTetWild fallback CLI the package bundles; linking it keeps
+# the tier findable through PATH as well as through the bundled path
+# `sutura_core::ftetwild::find_binary` checks (`$APP_DIR/bin/ftetwild`).
+for bin in sutura sutura-gui ftetwild; do
     if [ -f "$APP_DIR/bin/$bin" ]; then
         run ln -sf "$APP_DIR/bin/$bin" "$BIN_DIR/$bin"
     fi
