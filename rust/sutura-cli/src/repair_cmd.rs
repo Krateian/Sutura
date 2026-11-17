@@ -353,6 +353,7 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
 
     let mut opts = RepairOptions {
         mode,
+        ladder_depth: 0,
         intensity,
         profile: cli.profile.clone(),
         deep_repair,
