@@ -2703,6 +2703,7 @@ fn repair_impl(
                 components: analysis.components as f64,
                 largest_loop_ratio: analysis.largest_loop_ratio,
                 open_area_ratio: analysis.open_area_ratio,
+                diagnosis_v2: analysis.diagnosis_v2.clone(),
                 ..RankingAnalysis::default()
             };
             let recs = rank_methods(loaded, &rank_analysis, None, None);

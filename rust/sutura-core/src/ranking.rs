@@ -8,6 +8,8 @@
 //! bonus. Method availability and `needs_user_input` are static here; the
 //! Python registry can be extended at runtime, so this is the built-in set.
 
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
 use crate::config::learning::{learning_bonus, LearningKnobs};
@@ -61,6 +63,8 @@ pub struct Analysis {
     pub single_side_score: f64,
     pub relief_score: f64,
     pub repetition_score: f64,
+    /// diagnosis-v2 JSON (channels/regions) for the avoid-prune; not a score.
+    pub diagnosis_v2: Option<Value>,
 }
 
 impl Analysis {
@@ -617,4 +621,117 @@ pub fn recommendations_json(recs: &[Recommendation]) -> Value {
             })
             .collect(),
     )
+}
+
+
+/// Registry numbers used by the Graft/fTetWild ordering and tie-break.
+pub const GRAFT_METHOD_NUM: u8 = 13;
+pub const FTETWILD_METHOD_NUM: u8 = 7;
+
+/// Python `pipeline.order.order_graft_before_ftetwild`: keep the set, move
+/// Graft in front of fTetWild when both are present.
+pub fn order_graft_before_ftetwild(recs: Vec<Recommendation>) -> Vec<Recommendation> {
+    let graft = recs.iter().position(|r| r.num == GRAFT_METHOD_NUM);
+    let ft = recs.iter().position(|r| r.num == FTETWILD_METHOD_NUM);
+    match (graft, ft) {
+        (Some(g), Some(f)) if g > f => {
+            let mut out = recs;
+            let item = out.remove(g);
+            out.insert(f, item);
+            out
+        }
+        _ => recs,
+    }
+}
+
+/// Python `pipeline.order.ftetwild_supersedes_graft`.
+pub fn ftetwild_supersedes_graft(
+    ft_dev: Option<f64>,
+    graft_dev: Option<f64>,
+    coverage_failed: bool,
+) -> bool {
+    if coverage_failed {
+        return true;
+    }
+    match (ft_dev, graft_dev) {
+        (Some(ft), Some(g)) => ft < g,
+        _ => false,
+    }
+}
+
+/// Python `triage._prune_avoid_nums`: duplicate damage makes Join futile and
+/// interior damage makes Transplant/Wall futile (the latter are already
+/// filtered out by `needs_user_input`).
+pub fn prune_avoid_nums(analysis: &Analysis) -> HashSet<u8> {
+    let mut avoid = HashSet::new();
+    let Some(d2) = analysis.diagnosis_v2.as_ref() else {
+        return avoid;
+    };
+    let count = |name: &str| -> f64 {
+        d2.get("channels")
+            .and_then(|c| c.get(name))
+            .and_then(|e| e.get("count"))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+    };
+    if count("duplicate") > 0.0 {
+        avoid.insert(4);
+    }
+    let interior_region = d2
+        .get("regions")
+        .and_then(Value::as_array)
+        .map(|regions| {
+            regions.iter().any(|r| {
+                r.get("channel").and_then(Value::as_str) == Some("interior")
+            })
+        })
+        .unwrap_or(false);
+    if count("interior") > 0.0 || interior_region {
+        avoid.insert(11);
+        avoid.insert(15);
+    }
+    avoid
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    fn rec(num: u8) -> Recommendation {
+        Recommendation {
+            num,
+            id: "",
+            name: "",
+            score: 0.0,
+            reason: String::new(),
+            template: None,
+            reason_key: "",
+            reason_args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn graft_moves_before_ftetwild() {
+        let out = order_graft_before_ftetwild(vec![rec(7), rec(3), rec(13)]);
+        let nums: Vec<u8> = out.iter().map(|r| r.num).collect();
+        assert_eq!(nums, vec![13, 7, 3]);
+    }
+
+    #[test]
+    fn tie_break_matches_python() {
+        assert!(ftetwild_supersedes_graft(Some(0.1), Some(0.2), false));
+        assert!(!ftetwild_supersedes_graft(Some(0.2), Some(0.1), false));
+        assert!(!ftetwild_supersedes_graft(None, Some(0.1), false));
+        assert!(ftetwild_supersedes_graft(None, None, true));
+    }
+
+    #[test]
+    fn avoid_prune_reads_channels() {
+        let mut a = Analysis::default();
+        a.diagnosis_v2 = Some(json!({"channels": {"duplicate": {"count": 2}}}));
+        assert!(prune_avoid_nums(&a).contains(&4));
+        a.diagnosis_v2 = Some(json!({"channels": {"interior": {"count": 1}}}));
+        let avoid = prune_avoid_nums(&a);
+        assert!(avoid.contains(&11) && avoid.contains(&15));
+    }
 }
