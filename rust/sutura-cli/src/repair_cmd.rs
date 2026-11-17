@@ -1689,7 +1689,27 @@ fn process_one(
     }
     let failed = report.get("category").and_then(Value::as_str) == Some("error")
         || report.get("error").is_some();
-    let _ = cli;
+
+    // History: the writer existed and was byte-verified (D1) but nothing in the
+    // CLI called it, so `history.jsonl` was never extended by a Rust repair.
+    // `--no-history` is the switch, matching Python. Failures and declined saves
+    // are not recorded -- Python records a successful repair only, and a record
+    // for a mesh that was never written would corrupt the learning stats.
+    if !cli.no_history && !failed {
+        let wrote_output = report.get("status").and_then(Value::as_str) != Some("budget_declined");
+        if wrote_output {
+            let ts = sutura_core::report::history::now_ts();
+            sutura_core::report::history::write_record(
+                &report,
+                &input.verts,
+                &input.tris,
+                env!("SUTURA_PRODUCT_VERSION"),
+                (elapsed * 1000.0).round() as i64,
+                None,
+                &ts,
+            );
+        }
+    }
     (report, failed)
 }
 

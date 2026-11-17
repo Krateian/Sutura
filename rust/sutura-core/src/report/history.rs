@@ -316,11 +316,24 @@ pub fn mesh_fingerprint(verts: &[[f32; 3]], tris: &[[i32; 3]]) -> String {
     let mut h = Sha256::new();
     for v in verts {
         for c in v {
-            // `round` on a float32 value must round the f32 itself, so the
-            // arithmetic is done in f64 and stored back as f32 — the same
-            // double-rounding NumPy performs.
-            let r = (f64::from(*c) * 1e4).round() / 1e4;
-            h.update((r as f32).to_le_bytes());
+            // NumPy's `np.round` on a **float32** array stays in float32 and
+            // rounds with `rint` (half-to-even), not half-away-from-zero.
+            // Both details matter:
+            //
+            //  * precision: `(x * 1e4) / 1e4` in f32, not a decimal round of the
+            //    f64 value -- the two disagree for 109 of 13,803 components on a
+            //    typical scan mesh (27.68595 -> 27.686 the NumPy way, 27.6859 the
+            //    f64 way);
+            //  * rounding mode: 25.75785 scales to exactly 257578.5, where
+            //    `round_ties_even` gives 257578 (`np.rint`) and `round` gives
+            //    257579.
+            //
+            // Either mistake changes the fingerprint and silently breaks history
+            // parity with Python. Verified against the real NumPy path: this
+            // expression matches `np.round(np.float32 array, 4)` exactly.
+            let scaled = (*c * 1e4f32).round_ties_even();
+            let r = scaled / 1e4f32;
+            h.update(r.to_le_bytes());
         }
     }
     for t in tris {
@@ -528,6 +541,34 @@ mod tests {
         let b = [[0.00002f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let tris = [[0i32, 1, 2]];
         assert_eq!(mesh_fingerprint(&a, &tris), mesh_fingerprint(&b, &tris));
+    }
+
+    /// NumPy rounds a float32 array **in float32**, and it matters.
+    ///
+    /// `np.round(np.float32(27.68595), 4)` is `27.686`, because NumPy evaluates
+    /// `(x * 1e4).round() / 1e4` in single precision. Rounding the f64 value
+    /// instead gives `27.6859`. On a real 4601-vertex scan mesh the two disagree
+    /// for 109 components, which changes the fingerprint and breaks history
+    /// parity with Python — so this pins the arithmetic, not just the decimals.
+    #[test]
+    fn fingerprint_rounds_in_float32_like_numpy() {
+        let tris = [[0i32, 1, 2]];
+        // The three values that exposed the divergence, with NumPy's answers.
+        for (raw, want) in [
+            (27.68595f32, 27.686f32),
+            (29.179749f32, 29.1798f32),
+            (25.75785f32, 25.7578f32),
+        ] {
+            let verts = [[raw, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+            let got = mesh_fingerprint(&verts, &tris);
+
+            let rounded = [[want, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+            assert_eq!(
+                got,
+                mesh_fingerprint(&rounded, &tris),
+                "{raw} must round to NumPy's {want}, not the f64 decimal"
+            );
+        }
     }
 }
 
