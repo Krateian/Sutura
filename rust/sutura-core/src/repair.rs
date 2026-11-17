@@ -2849,7 +2849,11 @@ fn repair_impl(
 
     let mut after = common::topology_summary(&cur_v, &cur_t);
     if after.non_two_manifold_edges > 0 || after.non_two_manifold_vertices > 0 {
-        let fallback = Value::Array(delete_fallback_chain(max_hole, min_component, false));
+        let fallback = Value::Array(delete_fallback_chain(
+            max_hole,
+            min_component,
+            opts.join_components,
+        ));
         let (fv, ft, f_applied, f_skipped, _) = apply_chain_with_cancel(
             &cur_v, &cur_t, &fallback, Some(cancel as &dyn sutura_geom::cancel::Cancel));
         if cancel.is_cancelled() {
