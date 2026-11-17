@@ -1141,8 +1141,12 @@ fn augment_report(
         if s1.get("volume_after").is_none() {
             s1.insert("volume_after".into(), Value::from(after_volume));
         }
-        s1.insert("surface_area_before".into(), Value::from((before_area * 1000.0).round() / 1000.0));
-        s1.insert("surface_area_after".into(), Value::from((after_area * 1000.0).round() / 1000.0));
+        if s1.get("surface_area_before").is_none() {
+            s1.insert("surface_area_before".into(), Value::from((before_area * 1000.0).round() / 1000.0));
+        }
+        if s1.get("surface_area_after").is_none() {
+            s1.insert("surface_area_after".into(), Value::from((after_area * 1000.0).round() / 1000.0));
+        }
         let pct = match (
             s1.get("volume_before").and_then(Value::as_f64),
             s1.get("volume_after").and_then(Value::as_f64),
@@ -1156,10 +1160,12 @@ fn augment_report(
             "volume_change_percent".into(),
             pct.map(|v| Value::from(round2(v))).unwrap_or(Value::Null),
         );
-        s1.insert(
-            "surface_area_change_percent".into(),
-            surface_change.map(|v| Value::from(round2(v))).unwrap_or(Value::Null),
-        );
+        if s1.get("surface_area_change_percent").is_none() {
+            s1.insert(
+                "surface_area_change_percent".into(),
+                surface_change.map(|v| Value::from(round2(v))).unwrap_or(Value::Null),
+            );
+        }
         if s1.get("self_intersections_remaining").is_none() {
             s1.insert("self_intersections_remaining".into(), si_value.clone());
             s1.insert("si_work_units".into(), Value::from(si_work));
