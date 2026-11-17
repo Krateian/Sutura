@@ -375,7 +375,7 @@ index 0000000..e5cf5cc
 
 --- a/cmake/FloatTetwildDependencies.cmake
 +++ b/cmake/FloatTetwildDependencies.cmake
-@@ -92,7 +92,16 @@
+@@ -92,11 +92,26 @@
      elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
          set(GEO_PLATFORM "Darwin-clang")
      else()
@@ -393,3 +393,13 @@ index 0000000..e5cf5cc
      endif()
  
      set(VORPALINE_PLATFORM ${GEO_PLATFORM})
+ 
++    # The non-x86 platform configs set VORPALINE_BUILD_DYNAMIC, which makes
++    # geogram.cmake force BUILD_SHARED_LIBS=TRUE. This project builds a static,
++    # self-contained fTetWild binary -- `GEOGRAM_BUILD_STATIC` above is inert,
++    # nothing reads it -- so pin the flag the library actually uses.
++    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
++
+     set(GEOGRAM_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+     set(GEOGRAM_BUILD_STATIC ON CACHE BOOL "" FORCE)
+ 
