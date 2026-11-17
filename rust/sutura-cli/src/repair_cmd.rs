@@ -13,8 +13,7 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 use sutura_core::repair::{
-    repair, CancelToken, DeepRepair, ProgressSink, RepairMode, RepairOptions, RepairOutcome,
-    SiMode, SolidEngine,
+    repair, CancelToken, DeepRepair, ProgressSink, RepairOptions, RepairOutcome,
 };
 use sutura_core::{check_units, load_mesh, save_mesh, Mesh};
 
@@ -45,7 +44,18 @@ impl RepairFailure {
             message: Some(message.into()),
         }
     }
+}
 
+/// The CLI reports failures with an `Option<String>` message (a `None` means
+/// "print nothing"), while the shared settings module uses a plain `String`.
+/// Keeping the CLI shape avoids churn at every call site, so convert here.
+impl From<sutura_core::repair_settings::RepairFailure> for RepairFailure {
+    fn from(other: sutura_core::repair_settings::RepairFailure) -> Self {
+        Self {
+            code: other.code,
+            message: Some(other.message),
+        }
+    }
 }
 
 /// Progress event writer matching `sutura_engine.progress.JsonProgress`.
@@ -114,98 +124,43 @@ impl ProgressSink for CoreSink {
     fn emit(&self, _event: Value) {}
 }
 
-fn parse_mode(value: Option<&str>) -> Result<RepairMode, RepairFailure> {
-    match value.unwrap_or("auto") {
-        "auto" => Ok(RepairMode::Auto),
-        "low" => Ok(RepairMode::Low),
-        "medium" => Ok(RepairMode::Medium),
-        "aggressive" => Ok(RepairMode::Aggressive),
-        "extreme" => Ok(RepairMode::Extreme),
-        other => Err(RepairFailure::new(
+/// Parse `--repeat-source` / `--repeat-target`: `"X,Y,Z"` of numbers.
+///
+/// Matches the Python CLI's `_parse_point`: exactly three comma-separated
+/// components, each a float.
+fn parse_point(raw: &str, flag: &str) -> Result<[f64; 3], RepairFailure> {
+    let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
+    if parts.len() != 3 {
+        return Err(RepairFailure::new(
             2,
-            format!("invalid --mode value: {other}"),
-        )),
+            format!("argument {flag}: expected X,Y,Z"),
+        ));
     }
+    let mut out = [0.0f64; 3];
+    for (i, part) in parts.iter().enumerate() {
+        out[i] = part.parse::<f64>().map_err(|_| {
+            RepairFailure::new(2, format!("argument {flag}: coordinates must be numbers"))
+        })?;
+    }
+    Ok(out)
 }
 
-fn parse_deep(value: Option<&str>, intensity: &str) -> Result<DeepRepair, RepairFailure> {
-    match value {
-        Some("off") => Ok(DeepRepair::Off),
-        Some("local") => Ok(DeepRepair::Local),
-        Some("full") => Ok(DeepRepair::Full),
-        Some(other) => Err(RepairFailure::new(
-            2,
-            format!("invalid --deep-repair value: {other}"),
-        )),
-        None => Ok(match intensity {
-            "quick" => DeepRepair::Off,
-            _ => DeepRepair::Full,
-        }),
-    }
-}
-
-fn parse_si(value: Option<&str>) -> Result<SiMode, RepairFailure> {
-    match value.unwrap_or("report") {
-        "repair" | "on" | "auto" => Ok(SiMode::Repair),
-        "report" => Ok(SiMode::Report),
-        "off" => Ok(SiMode::Off),
-        other => Err(RepairFailure::new(
-            2,
-            format!("invalid --si-mode value: {other}"),
-        )),
-    }
-}
-
-fn parse_solid(value: Option<&str>) -> Result<SolidEngine, RepairFailure> {
-    match value.unwrap_or("ftetwild") {
-        "ftetwild" => Ok(SolidEngine::Ftetwild),
-        "cdt" => Ok(SolidEngine::Cdt),
-        other => Err(RepairFailure::new(
-            2,
-            format!("invalid --solid-engine value: {other}"),
-        )),
-    }
-}
-
-/// Parse `--methods` into the baseline deep-repair mode. Only the three ported
-/// baseline methods (1 Quick Clean, 2 Local Mend, 3 Full Mend) are accepted.
-fn parse_methods(
-    value: Option<&str>,
-    deep: DeepRepair,
-) -> Result<(DeepRepair, bool, Vec<u64>), RepairFailure> {
-    let Some(raw) = value else {
-        return Ok((deep, false, Vec::new()));
-    };
-    let mut nums = Vec::new();
-    for token in raw.split(',') {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
-        }
-        let num = token
-            .parse::<u64>()
-            .map_err(|_| RepairFailure::new(2, format!("unknown method: {token}")))?;
-        match num {
-            1..=19 => nums.push(num),
-            _ => {
-                return Err(RepairFailure::new(
-                    2,
-                    format!("unknown method: {num}"),
-                ))
-            }
-        }
-    }
-    let mapped = match nums.last().copied() {
-        Some(1) => DeepRepair::Off,
-        Some(2) => DeepRepair::Local,
-        Some(3) => DeepRepair::Full,
-        _ => deep,
-    };
-    Ok((mapped, true, nums))
-}
-
+/// Build the repair options from the parsed CLI.
+///
+/// The flag *validation* (which flags this CLI does not implement) lives here;
+/// the settings -> [`RepairOptions`] conversion does NOT. It lives in
+/// `sutura_core::repair_settings::options_from`, which the GUI also calls, so
+/// the two front ends cannot drift apart.
 pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>), RepairFailure> {
+    // `--engines LIST`: names are validated against the *configured* engines,
+    // after the configs are loaded, exactly as Python does (`repair.py:1277`).
+    // An empty-after-split list and an unknown name are both usage errors with
+    // Python's wording; a broken config is not an error at all (it only warns),
+    // so an empty engine set makes every requested name unknown.
     let engines_sel: Option<Vec<String>> = match cli.engines.as_deref() {
+        // Python gates on `if args.engines:`, so the **empty string is treated as
+        // absent**, not as an error — `--engines ""` repairs normally. Only a
+        // truthy string that yields no names (`" , "`) is an "empty list" error.
         None | Some("") => None,
         Some(raw) => {
             let parts: Vec<String> = raw
@@ -217,8 +172,7 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             if parts.is_empty() {
                 return Err(RepairFailure::new(2, "argument --engines: empty list"));
             }
-            let (configured, _warnings) =
-                sutura_core::config::external_engines::load_all_engines(None);
+            let (configured, _warnings) = sutura_core::config::external_engines::load_all_engines(None);
             let unknown: Vec<&str> = parts
                 .iter()
                 .filter(|n| !configured.contains_key(n.as_str()))
@@ -236,6 +190,11 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             Some(parts)
         }
     };
+    // The selection is consumed by `repair()`: the configured engines named
+    // here are the only ones tagged, and any the Rust pipeline cannot run are
+    // reported as unavailable instead of silently ignored.
+    let selected_engines = engines_sel;
+    // go's guard, kept from the merge: repeat points are still unimplemented.
     if cli.repeat_source.is_some() || cli.repeat_target.is_some() {
         return Err(RepairFailure::new(
             2,
@@ -302,10 +261,10 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             ));
         }
     }
-    if cli.self_repair || cli.self_check {
+    if cli.self_repair {
         return Err(RepairFailure::new(
             2,
-            "--self-repair/--self-check are not implemented in the Rust CLI",
+            "--self-repair is not implemented in the Rust CLI",
         ));
     }
     if cli.max_geometry_change.is_some() || cli.max_risk.is_some() {
@@ -321,60 +280,51 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         ));
     }
 
-    let intensity = cli.intensity.clone().unwrap_or_else(|| "balanced".into());
-    let mode = parse_mode(cli.mode.as_deref())?;
-    let mut deep_repair = parse_deep(cli.deep_repair.as_deref(), &intensity)?;
-    if cli.deep_repair.is_none() {
-        if cli.no_fallback_ftetwild {
-            deep_repair = DeepRepair::Off;
-        } else if cli.experimental_fallback_ftetwild {
-            deep_repair = DeepRepair::Full;
-        }
-    }
-    let ftetwild = if cli.no_fallback_ftetwild {
-        Some(Value::Bool(false))
-    } else if cli.experimental_fallback_ftetwild {
-        Some(Value::Bool(true))
-    } else {
-        None
+    // The two points are CLI-shaped text here; everything else is a plain
+    // copy, and the single shared conversion does the rest.
+    let repeat_source = match cli.repeat_source.as_deref() {
+        Some(raw) => Some(parse_point(raw, "--repeat-source")?),
+        None => None,
     };
-    let (deep_repair, methods_given, methods) =
-        parse_methods(cli.methods.as_deref(), deep_repair)?;
-    let si_mode = parse_si(cli.si_mode.as_deref())?;
-    let solid_engine = parse_solid(cli.solid_engine.as_deref())?;
+    let repeat_target = match cli.repeat_target.as_deref() {
+        Some(raw) => Some(parse_point(raw, "--repeat-target")?),
+        None => None,
+    };
 
-    let graft = if cli.no_graft {
-        Some(false)
-    } else if cli.experimental_graft {
-        Some(true)
-    } else {
-        Some(true)
-    };
-    let tamponade = if cli.no_tamponade {
-        Some(false)
-    } else {
-        Some(true)
-    };
-    let flap = if cli.no_flap { Some(false) } else { Some(true) };
-    let coaptation = if cli.no_coaptation {
-        Some(false)
-    } else {
-        Some(true)
-    };
-    let splint = !cli.no_splint && cli.experimental_splint;
-
-    let mut opts = RepairOptions {
-        mode,
-        intensity,
+    let settings = sutura_core::repair_settings::RepairSettings {
+        mode: cli.mode.clone(),
+        intensity: cli.intensity.clone(),
         profile: cli.profile.clone(),
-        deep_repair,
-        closing: None,
-        proxy_template: false,
-        graft,
-        tamponade,
-        flap,
-        coaptation,
-        splint,
+        deep_repair: cli.deep_repair.clone(),
+        si_mode: cli.si_mode.clone(),
+        solid_engine: cli.solid_engine.clone(),
+        classifier_engine: cli.classifier_engine.clone(),
+        methods: cli.methods.clone(),
+        max_geometry_change: cli.max_geometry_change,
+        max_risk: cli.max_risk,
+        force: cli.force,
+        no_graft: cli.no_graft,
+        experimental_graft: cli.experimental_graft,
+        no_tamponade: cli.no_tamponade,
+        // The CLI has no `--experimental-*` switch for these tiers: they are on
+        // unless `--no-<tier>` turns them off, which is exactly what
+        // `options_from`'s tri-state does with both inputs false.
+        experimental_tamponade: false,
+        no_flap: cli.no_flap,
+        experimental_flap: false,
+        no_coaptation: cli.no_coaptation,
+        experimental_coaptation: false,
+        experimental_splint: cli.experimental_splint,
+        no_splint: cli.no_splint,
+        no_fallback_ftetwild: cli.no_fallback_ftetwild,
+        experimental_fallback_ftetwild: cli.experimental_fallback_ftetwild,
+        repeat_source,
+        repeat_target,
+        time_budget_s: None,
+        // The CLI still rejects the Dressing flags (above), so these can never
+        // be set from here -- and that is unchanged behaviour. The GUI does not
+        // go through `build_options`; it fills `RepairSettings` directly, so it
+        // can turn Dressing on now that the core has the tier.
         dressing: false,
         dressing_drain: None,
         dressing_defects: None,
@@ -382,24 +332,11 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         dressing_sigma_scale: None,
         dressing_force_adopt: false,
         wall_thicken: false,
-        repeat: None,
-        solid_engine,
-        si_mode,
-        ftetwild,
-        time_budget_s: None,
-        seed: 0,
-        forced_methods: Vec::new(),
-        engines: engines_sel,
     };
-    if methods.contains(&13) {
-        opts.graft = Some(true);
-        opts.deep_repair = DeepRepair::Off;
-    }
-    opts.forced_methods = methods
-        .iter()
-        .filter_map(|n| u8::try_from(*n).ok())
-        .collect();
-    Ok((opts, methods_given, methods))
+    let (mut opts, strict, nums) =
+        sutura_core::repair_settings::options_from(&settings).map_err(RepairFailure::from)?;
+    opts.engines = selected_engines;
+    Ok((opts, strict, nums))
 }
 
 fn unique_output(src: &Path) -> PathBuf {
@@ -684,44 +621,6 @@ fn non_manifold_json(regions: &[sutura_core::report::NonManifoldRegion]) -> Valu
     )
 }
 
-fn score_cfg() -> Value {
-    json!({
-        "health": {"weights": {"watertight": 39, "no_non_manifold": 22,
-                               "no_self_intersections": 22, "no_holes": 17}},
-        "risk": {"weights": {"face_delta": 30, "vertex_delta": 20,
-                             "component_change": 25, "volume_delta": 25},
-                 "delta_scale_percent": 25, "component_loss_penalty": 30},
-        "fidelity": {
-            "weights": {"healthy_distance": 35, "feature_recall": 25,
-                        "healthy_volume": 20, "volume_bbox": 10, "invented_area": 10},
-            "distance_scale_pct": 0.5, "distance_mean_weight": 0.3,
-            "volume_scale_fraction": 0.01, "volume_change_scale_pct": 15.0,
-            "bbox_scale_pct": 5.0, "invented_scale_fraction": 0.05,
-            "invented_tol_pct": 1.0, "change_tol_factor": 3.0,
-            "changed_min_healthy_distance_pct": 1.0,
-            "tiers": {"high": 85, "mid": 60},
-            "low_confidence": {"invented_area_fraction": 0.03,
-                               "area_min_fraction": 0.0005,
-                               "low_area_min_fraction": 0.03, "max_areas": 99},
-            "budgets": {"full_faces": 20000, "max_faces": 150000,
-                        "distance_samples": 4000, "reduced_distance_samples": 1200,
-                        "sharp_samples_per_edge": 4, "reduced_sharp_samples_per_edge": 2,
-                        "recall_max_faces": 50000, "max_sharp_samples": 6000,
-                        "full_lattice_area": 1200, "full_lattice_layers": 6,
-                        "reduced_lattice_area": 400, "reduced_lattice_layers": 4}
-        },
-        "status": {
-            "health_tiers": {"high": 80, "mid": 60},
-            "risk_tiers": {"high": 70, "mid": 40},
-            "labels": {"safe": "Safe to inspect", "review": "Review recommended",
-                       "caution": "Caution advised", "failed": "Failed / inspect",
-                       "unavailable": "Scoring unavailable"},
-            "table": {"high_low": "safe", "high_mid": "review", "high_high": "review",
-                      "mid_low": "review", "mid_mid": "review", "mid_high": "caution",
-                      "low_low": "failed", "low_mid": "failed", "low_high": "failed"}
-        }
-    })
-}
 
 fn cad_likeness(verts: &[[f64; 3]], tris: &[[i32; 3]]) -> Value {
     let faces = tris.len();
@@ -1269,7 +1168,7 @@ fn augment_report(
         obj.insert("print_report".into(), pr);
     }
 
-    let cfg = score_cfg();
+    let cfg = sutura_core::report::score_cfg();
     let fidelity = sutura_core::report::compute_fidelity_value(
         &in_f64,
         &input.tris,
@@ -1324,9 +1223,13 @@ fn augment_report(
     }
     let mut health = method_health();
     if let Some(core) = obj.get("method_health").and_then(Value::as_object) {
-        if let Some(errors) = core.get("errors") {
-            if let Some(h) = health.as_object_mut() {
-                h.insert("errors".into(), errors.clone());
+        // Keep both lists: go's slice adds Stage-1 errors, the engine slice adds
+        // skips. Copying only `errors` would drop the engine entries.
+        if let Some(h) = health.as_object_mut() {
+            for key in ["errors", "skips"] {
+                if let Some(value) = core.get(key) {
+                    h.insert(key.into(), value.clone());
+                }
             }
         }
     }
@@ -1349,6 +1252,215 @@ fn augment_report(
     Value::Object(obj.clone())
 }
 
+/// True when the path names an OBJ file (case-insensitive, like Python).
+fn is_obj(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("obj"))
+        .unwrap_or(false)
+}
+
+/// True when the path names a 3MF container (case-insensitive, like Python).
+fn is_3mf(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("3mf"))
+        .unwrap_or(false)
+}
+
+/// Repair a multi-object 3MF the way Python does: every object separately, then
+/// one archive rewrite.
+///
+/// Two behaviours are deliberately copied rather than invented:
+///
+/// * The output is always a rewritten 3MF container, **whatever the requested
+///   extension**. Measured on a 3-object container: `-o out.stl` and
+///   `-o out.3mf` produced byte-identical ZIP files, because Python's
+///   `repair_3mf_objects` rewrites the archive and never consults the output
+///   suffix.
+/// * The report carries `objects`, `object_reports` (one per object, in archive
+///   order), `objects_watertight` and `objects_stage2_ok`. (Measured; the key is
+///   `object_reports`, not `object_analyses` -- the latter belongs to
+///   `--analyze`.)
+fn process_3mf(
+    cli: &crate::Cli,
+    path: &Path,
+    out_override: Option<&Path>,
+    opts: &RepairOptions,
+    methods: &[u64],
+    progress: Option<&JsonProgress>,
+) -> (Value, bool) {
+    let input_display = path.display().to_string();
+    let output = match out_override {
+        Some(out) => out.to_path_buf(),
+        None => unique_output(path),
+    };
+
+    let token = Arc::new(CancelToken::new());
+    let stop = Arc::new(AtomicBool::new(false));
+    let monitor_token = Arc::clone(&token);
+    let monitor_stop = Arc::clone(&stop);
+    let monitor = std::thread::spawn(move || {
+        while !monitor_stop.load(Ordering::SeqCst) {
+            if INTERRUPTED.load(Ordering::SeqCst) {
+                monitor_token.cancel();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    });
+
+    let started = Instant::now();
+    let repairs = sutura_core::pipeline_objects::repair_3mf_file(
+        path, &output, opts, &CoreSink, &token,
+    );
+    stop.store(true, Ordering::SeqCst);
+    let _ = monitor.join();
+
+    let repairs = match repairs {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(progress) = progress {
+                progress.end();
+            }
+            return (
+                json!({"input": input_display, "error": e.to_string()}),
+                true,
+            );
+        }
+    };
+
+    if let Some(progress) = progress {
+        progress.stage(8, "save");
+        progress.end();
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    let (objects, watertight_count, stage2_ok_count) =
+        sutura_core::pipeline_objects::aggregate_flags(&repairs);
+
+    // Python's `object_reports[i]` is the RAW per-object repair dict plus the
+    // derived measurement blocks -- it deliberately does NOT carry the
+    // file-level augmentation (`policy`, `method_control`, `category`,
+    // `issues`, `method_health`, `methods_tried`, `si_escalation`), because
+    // those describe the file, not the object. Measured against Python; a
+    // hand-built dict was missing `print_report`, `repair_confidence`,
+    // `repair_fidelity`, `defects` and the rest of the derived set.
+    let mut object_reports: Vec<Value> = Vec::with_capacity(repairs.len());
+    let blocks = sutura_core::mesh_io::three_mf::parse_3mf_mesh_blocks(path)
+        .unwrap_or_default();
+    let file_level: [&str; 8] = [
+        "policy",
+        "method_control",
+        "method_health",
+        "methods_tried",
+        "method_reached_watertight",
+        "category",
+        "issues",
+        "si_escalation",
+    ];
+    for (i, r) in repairs.iter().enumerate() {
+        let in_mesh = blocks.get(i).map(|b| b.mesh.clone()).unwrap_or_default();
+        let out_v: Vec<[f64; 3]> = r
+            .mesh
+            .verts
+            .iter()
+            .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+            .collect();
+        let out_t: Vec<[i64; 3]> = r
+            .mesh
+            .tris
+            .iter()
+            .map(|f| [i64::from(f[0]), i64::from(f[1]), i64::from(f[2])])
+            .collect();
+        let mut rep =
+            augment_report(&in_mesh, &out_v, &out_t, r.report.clone(), opts, methods, elapsed);
+        if let Some(obj) = rep.as_object_mut() {
+            for key in file_level {
+                obj.remove(key);
+            }
+            // The unit verdict comes from THIS object's declared unit, not from
+            // the size heuristic `augment_report` applies to a bare mesh:
+            // Python passes `declared_unit` into the per-object repair, so a
+            // millimetre container reports no warning even when its dimensions
+            // would look like inches. Measured: an inch container warns on
+            // every object, a millimetre one on none.
+            obj.remove("unit_warning");
+            obj.remove("unit_hint");
+            if let Some(unit) =
+                sutura_core::mesh_io::three_mf::check_units(&in_mesh, Some(&r.declared_unit))
+            {
+                obj.insert("unit_warning".into(), Value::Bool(true));
+                obj.insert("unit_hint".into(), Value::from(unit.unit_hint));
+            }
+            // Python does not tag the report with the model path; the archive
+            // order is the contract, and `triangle_attributes.model` already
+            // names the entry.
+            let ta = r.triangle_attrs.clone().unwrap_or_default();
+            obj.insert(
+                "triangle_attributes".into(),
+                json!({
+                    "model": r.model_name,
+                    "block": r.block_index,
+                    "original_attributed": ta.original_attributed,
+                    "kept": ta.kept,
+                    "dropped": ta.dropped,
+                    "output_triangles": ta.output_triangles,
+                }),
+            );
+            contract_order(obj);
+        }
+        // One history record per object, exactly like `history.write` for a
+        // multi-object 3MF: every object report gets its own line, fingerprinted
+        // from that object's own mesh, and the container's format ('3mf') is
+        // passed in because the per-object report carries no input path.
+        if !cli.no_history {
+            sutura_core::report::write_record(
+                &rep,
+                &in_mesh.verts,
+                &in_mesh.tris,
+                crate::PRODUCT_VERSION,
+                (elapsed * 1000.0) as i64,
+                Some("3mf"),
+                &sutura_core::report::now_ts(),
+            );
+        }
+        object_reports.push(rep);
+    }
+
+    let failed = object_reports
+        .iter()
+        .any(|r| r.get("error").is_some() || r.get("category").and_then(Value::as_str) == Some("error"));
+
+    let mut report = json!({
+        "input": input_display,
+        "output": output.display().to_string(),
+        "objects": objects,
+        "objects_watertight": watertight_count,
+        "objects_stage2_ok": stage2_ok_count,
+        "object_reports": object_reports,
+        "repair_mode": opts.mode.as_str(),
+        "si_mode": opts.si_mode.as_str(),
+        "triage_intensity": opts.intensity,
+        "timings": {"file_total": elapsed},
+        "method_used": methods_used_value(methods),
+    });
+    if let Some(obj) = report.as_object_mut() {
+        contract_order(obj);
+    }
+    (report, failed)
+}
+
+/// The `method_used` block for a container, matching the single-file shape.
+fn methods_used_value(methods: &[u64]) -> Value {
+    if methods.is_empty() {
+        return Value::Null;
+    }
+    json!({
+        "num": methods.last().copied(),
+        "source": "tagged",
+    })
+}
+
 fn process_one(
     cli: &crate::Cli,
     path: &Path,
@@ -1366,6 +1478,12 @@ fn process_one(
     }
     if let Some(progress) = progress {
         progress.stage(1, "load");
+    }
+    // A 3MF container holds one mesh per object; Python repairs each object
+    // separately and rewrites the archive once (`service.repair_3mf_objects`).
+    // `load_mesh` refuses 3MF for exactly this reason, so branch before it.
+    if is_3mf(path) {
+        return process_3mf(cli, path, out_override, opts, methods, progress);
     }
     let input = match load_mesh(path) {
         Ok(mesh) => mesh,
@@ -1468,6 +1586,18 @@ fn process_one(
     let elapsed = started.elapsed().as_secs_f64();
     let mut report =
         augment_report(&input, &out_v, &out_t, core_report, opts, methods, elapsed);
+    // OBJ can carry `usemtl`/`mtllib` references, and the repaired OBJ is
+    // written without them, so the report says whether anything was dropped.
+    // Python sets this for `.obj` inputs only, unconditionally
+    // (`service.py`: `if ext == '.obj': report['material_discarded'] = ...`).
+    if is_obj(path) {
+        if let Some(obj) = report.as_object_mut() {
+            obj.insert(
+                "material_discarded".into(),
+                Value::Bool(sutura_core::obj_has_material_refs(path)),
+            );
+        }
+    }
     if let Some(obj) = report.as_object_mut() {
         obj.insert("input".into(), Value::from(input_display));
         obj.insert("output".into(), Value::from(output.display().to_string()));
@@ -1475,7 +1605,23 @@ fn process_one(
     }
     let failed = report.get("category").and_then(Value::as_str) == Some("error")
         || report.get("error").is_some();
-    let _ = cli;
+    // Anonymous usage history, after the report is final: one line per repair,
+    // geometry only, never the file name (`history.write` in Python). Written
+    // from the *input* mesh — `service.py` fingerprints before repairing — and
+    // skipped entirely by `--no-history`. Like Python's `history.write`, a
+    // repair that *errored* still records: the pipeline returned a report and
+    // the fingerprint was already taken. Errors are swallowed inside.
+    if !cli.no_history {
+        sutura_core::report::write_record(
+            &report,
+            &input.verts,
+            &input.tris,
+            crate::PRODUCT_VERSION,
+            (elapsed * 1000.0) as i64,
+            None,
+            &sutura_core::report::now_ts(),
+        );
+    }
     (report, failed)
 }
 
@@ -1527,9 +1673,9 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
                 "tr" => human::translate(&text, "tr"),
                 _ => text,
             };
-            println!("{text}\n");
+            outln!("{text}\n");
         } else {
-            println!("{}", py_json(report));
+            outln!("{}", py_json(report));
         }
         return if failures > 0 {
             Err((1, None))
@@ -1545,8 +1691,8 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
                 "tr" => human::translate(&text, "tr"),
                 _ => text,
             };
-            println!("{text}");
-            println!();
+            outln!("{text}");
+            outln!();
         }
         let ok = results
             .iter()
@@ -1560,7 +1706,7 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
             .iter()
             .filter(|r| r.get("category").and_then(Value::as_str) == Some("error") || r.get("error").is_some())
             .count();
-        println!(
+        outln!(
             "Summary: {} file(s), {} watertight, {} with warnings, {} failed.",
             total, ok, warnings, errors
         );
@@ -1598,7 +1744,7 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
                 "issue_counts": issue_counts,
             }
         });
-        println!("{}", py_json(&payload));
+        outln!("{}", py_json(&payload));
     }
     let _ = methods_given;
     if failures > 0 {

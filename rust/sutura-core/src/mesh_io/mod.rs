@@ -37,6 +37,31 @@ pub fn read_mesh(path: impl AsRef<Path>) -> MeshResult<Mesh> {
     }
 }
 
+/// One object from a multi-object file: `(model_name, mesh)`.
+///
+/// `model_name` is `None` for STL/OBJ/PLY, which carry a single unnamed mesh,
+/// and the 3MF object's name for a 3MF block.
+pub type NamedMesh = (Option<String>, Mesh);
+
+/// `mesh_io.load_meshes`: every object in a file.
+///
+/// STL/OBJ/PLY give one unnamed entry; a 3MF gives one entry per mesh block (or
+/// an empty list when it has none). This is the same reader the pyo3 bridge
+/// exposes as `load_meshes`, kept in core so `--analyze` does not need pyo3 and
+/// so multi-object 3MF handling has ONE implementation for both callers.
+pub fn load_meshes(path: impl AsRef<Path>) -> MeshResult<Vec<NamedMesh>> {
+    let path = path.as_ref();
+    if format_of(path)? == SourceFormat::ThreeMf {
+        let blocks = parse_3mf_mesh_blocks(path)?;
+        return Ok(blocks
+            .into_iter()
+            .map(|b| (Some(b.model_name), b.mesh))
+            .collect());
+    }
+    let mesh = load_mesh(path)?;
+    Ok(vec![(None, mesh)])
+}
+
 /// Read a single mesh; STL is welded exactly like the Python load_mesh path.
 pub fn load_mesh(path: impl AsRef<Path>) -> MeshResult<Mesh> {
     let path = path.as_ref();

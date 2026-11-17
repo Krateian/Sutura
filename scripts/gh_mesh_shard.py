@@ -13,6 +13,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,47 @@ FLAGS = {'io_parity': [],
          'bench115': ['--quality', '--no-visual',
                       '--exclude-nondeterministic']}
 QUALITY_MODES = ('quality_ab', 'single_side', 'bench115')
+
+
+
+STAGE_FP_RE = re.compile(r'^\[stage-fp\] (\S+) (\d+) (\d+) (\d+)\s*$')
+
+
+def stage_fingerprints(mesh_path):
+    """Run one mesh through the candidate CLI and return its stage fingerprints.
+
+    Only hashes and counts are returned: the `[stage-fp] <label> <hash> <faces>
+    <verts>` lines carry no geometry and no file names, so they are safe to put
+    in a shard summary. Returns None when the fingerprinting path is unavailable,
+    so a missing row means "not requested", never "changed".
+
+    Opt-in via SUTURA_STAGE_FP=1: this runs one extra repair per mesh, which is
+    not something every shard should pay for.
+    """
+    if os.environ.get('SUTURA_STAGE_FP', '') not in ('1', 'true', 'yes'):
+        return None
+    cli = os.environ.get('RUST_BIN', os.path.abspath('cand-bin/sutura'))
+    if not os.path.exists(cli):
+        return None
+    out = tempfile.mkdtemp(prefix='stagefp-')
+    try:
+        env = dict(os.environ)
+        env['SUTURA_STAGE_FP'] = '1'
+        proc = subprocess.run(
+            [cli, mesh_path, '-o', os.path.join(out, 'out.stl'), '--json'],
+            capture_output=True, text=True, env=env, timeout=1800)
+        stages = []
+        for line in proc.stderr.splitlines():
+            m = STAGE_FP_RE.match(line.strip())
+            if m:
+                stages.append({'label': m.group(1), 'hash': m.group(2),
+                               'faces': int(m.group(3)),
+                               'verts': int(m.group(4))})
+        return stages or None
+    except Exception:
+        return None
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
 
 
 def resolve_mesh(corpus, rel):
@@ -242,7 +284,7 @@ def main():
                 # and they have their own board lines.
                 verdict = 'MISSING'
                 reason = 'missing metric(s): %s' % ', '.join(missing)
-            rows.append({'id': item.get('name'), 'verdict': verdict,
+            row = {'id': item.get('name'), 'verdict': verdict,
                          'reason': reason,
                          'baseline': sides['baseline'],
                          'candidate': sides['candidate'],
@@ -254,7 +296,13 @@ def main():
                              'baseline': strict_watertight(sides['baseline']),
                              'candidate': strict_watertight(sides['candidate']),
                          } if quality else None,
-                         'missing': missing})
+                         'missing': missing}
+            # Stage-by-stage fingerprints, when requested, so a byte difference
+            # can be localised to the stage that produced it.
+            fp = stage_fingerprints(resolve_mesh(corpus, item.get('name')))
+            if fp:
+                row['stage_fp'] = fp
+            rows.append(row)
     else:
         err = {'rc': r.returncode, 'error_type': 'MissingSummary',
                'tail': (r.stderr.strip().splitlines()[-1][:200]

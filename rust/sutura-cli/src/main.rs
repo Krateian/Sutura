@@ -18,6 +18,12 @@ use sutura_core::{
     check_units, load_mesh, parse_3mf_mesh_blocks, read_3mf_units, save_mesh, scan_bad_coordinates,
     Mesh, SourceFormat,
 };
+// The method registry lives in the shared settings module: the GUI needs it too
+// and must not depend on this binary crate.
+use sutura_core::repair_settings::METHODS;
+
+#[macro_use]
+mod output;
 
 mod human;
 mod repair_cmd;
@@ -78,9 +84,13 @@ struct Cli {
     methods: Option<String>,
     #[arg(long, value_name = "LIST", global = true)]
     engines: Option<String>,
-    #[arg(long = "repeat-source", value_name = "X,Y,Z", global = true)]
+    // `allow_hyphen_values`: the value is "X,Y,Z" and negative coordinates are
+    // legal, so `--repeat-source -3.5,0,0` must not be read as a flag.
+    #[arg(long = "repeat-source", value_name = "X,Y,Z", global = true,
+          allow_hyphen_values = true)]
     repeat_source: Option<String>,
-    #[arg(long = "repeat-target", value_name = "X,Y,Z", global = true)]
+    #[arg(long = "repeat-target", value_name = "X,Y,Z", global = true,
+          allow_hyphen_values = true)]
     repeat_target: Option<String>,
     #[arg(long = "wall-min-thickness", value_name = "T", global = true)]
     wall_min_thickness: Option<f64>,
@@ -114,6 +124,12 @@ struct Cli {
     dry_run: bool,
     #[arg(short = 'y', long, global = true)]
     yes: bool,
+    /// Check for a newer release (`update` / `license` / `none`).
+    #[arg(long = "check-update")]
+    check_update: bool,
+    /// Print the release notes saved by the last update (works offline).
+    #[arg(long = "whats-new")]
+    whats_new: bool,
     #[arg(long = "experimental-join-components", global = true)]
     experimental_join_components: bool,
     #[arg(long = "experimental-autorefine", global = true)]
@@ -231,10 +247,81 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
     if cli.list_intensities {
         let loaded = sutura_core::config::policy::load_policy(None)
             .map_err(|e| (1, Some(e.to_string())))?;
-        println!(
+        outln!(
             "{}",
             sutura_core::config::intensity::format_intensities(&loaded, None)
         );
+        return Ok(());
+    }
+    if cli.self_check {
+        let report = sutura_core::self_check::run(true);
+        if cli.json {
+            outln!("{}", crate::repair_cmd::py_json(&report));
+        } else {
+            outln!("{}", sutura_core::self_check::human_text(&report));
+        }
+        let code = sutura_core::self_check::exit_code(&report);
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err((code, None))
+        };
+    }
+    // `clear-cache` is a positional subcommand, like Python (`repair.py:1092`):
+    // it must be the first file argument, and it exits 0 either way.
+    if cli.files.first().map(|p| p.as_os_str()) == Some(std::ffi::OsStr::new("clear-cache")) {
+        let freed = sutura_core::cache::clear();
+        let human_bytes = sutura_core::cache::format_bytes(freed);
+        if cli.json {
+            outln!(
+                "{}",
+                crate::repair_cmd::py_json(&serde_json::json!({
+                    "cleared": true, "freed_bytes": freed, "freed_human": human_bytes,
+                }))
+            );
+        } else {
+            outln!("Cache cleared: {human_bytes} freed");
+        }
+        return Ok(());
+    }
+    if cli.whats_new {
+        // Pure filesystem read: the snapshot is written by the updater before it
+        // installs, so this works with no network.
+        let dir = sutura_core::whatsnew::current_dir();
+        match (sutura_core::whatsnew::current_tag(), sutura_core::whatsnew::current_body()) {
+            (Some(tag), Some(body)) => {
+                outln!("{}", sutura_core::whatsnew::plain_text(&tag, &body, &dir));
+            }
+            _ => outln!(
+                "no release notes saved yet; see {}",
+                sutura_core::updater::RELEASES_URL
+            ),
+        }
+        return Ok(());
+    }
+    if cli.check_update {
+        let status = sutura_core::updater::check_for_update(PRODUCT_VERSION, true);
+        if cli.json {
+            outln!(
+                "{}",
+                crate::repair_cmd::py_json(&serde_json::json!({
+                    "status": status.status,
+                    "tag": status.tag,
+                    "current": PRODUCT_VERSION,
+                }))
+            );
+        } else {
+            match (status.status, status.tag.as_deref()) {
+                ("update", Some(tag)) => outln!("update available: {tag} (current {PRODUCT_VERSION})"),
+                ("license", Some(tag)) => outln!(
+                    "Sutura {tag} changes the license terms (PolyForm Noncommercial 1.0.0 - \
+commercial use requires a separate agreement). This update will not be applied \
+automatically - download it manually from {} if you accept the new terms.",
+                    sutura_core::updater::RELEASES_URL
+                ),
+                _ => outln!("no update available (current {PRODUCT_VERSION})"),
+            }
+        }
         return Ok(());
     }
     if let Some(Command::Io { command }) = cli.command {
@@ -305,13 +392,26 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
         return run_read_only(&cli, &cli.files.clone(), ReadOnly::DryRun);
     }
     if cli.analyze {
-        return Err((
-            2,
-            Some(
-                "--analyze needs the unported repetition/closing analysis signals"
-                    .to_string(),
-            ),
-        ));
+        // Same guards Python applies before touching the files.
+        if cli.output.is_some() {
+            return Err((2, Some("-o is not valid with --analyze".to_string())));
+        }
+        if cli.dry_run {
+            return Err((2, Some("--analyze is not valid with --dry-run".to_string())));
+        }
+        if cli.methods.is_some() {
+            return Err((2, Some("--methods is not valid with --analyze".to_string())));
+        }
+        if cli.engines.is_some() {
+            return Err((2, Some("--engines is not valid with --analyze".to_string())));
+        }
+        if cli.files.is_empty() {
+            return Err((
+                2,
+                Some("--analyze requires at least one input file".to_string()),
+            ));
+        }
+        return run_read_only(&cli, &cli.files.clone(), ReadOnly::Analyze);
     }
 
     if cli.files.is_empty() {
@@ -321,29 +421,6 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
 
     repair_cmd::run(&cli)
 }
-
-/// The 19 built-in repair methods, in registry order.
-const METHODS: [(u8, &str, &str, &str); 19] = [
-    (1, "quick_clean", "clean", "Quick Clean"),
-    (2, "local_mend", "topology", "Local Mend"),
-    (3, "full_mend", "topology", "Full Mend"),
-    (4, "join", "topology", "Join"),
-    (5, "autorefine", "si", "Autorefine"),
-    (6, "exact_refine", "si", "Exact Refine"),
-    (7, "ftetwild", "envelope", "fTetWild"),
-    (8, "balloon", "closing", "Balloon"),
-    (9, "backplate", "closing", "Backplate"),
-    (10, "scaffold", "template", "Scaffold"),
-    (11, "transplant", "pattern", "Transplant"),
-    (12, "transplant_plus", "pattern", "Transplant+"),
-    (13, "graft", "envelope", "Graft"),
-    (14, "mirror_complete", "closing", "Mirror Complete"),
-    (15, "wall_thicken", "envelope", "Wall Thicken"),
-    (16, "dressing", "envelope", "Dressing"),
-    (17, "tamponade", "interior", "Tamponade"),
-    (18, "splint", "solid", "Splint"),
-    (19, "coaptation", "solid", "Coaptation"),
-];
 
 /// Whether the optional fTetWild binary is installed. The Rust CLI cannot
 /// import Python's pytetwild; until the Rust tier is wired this mirrors the
@@ -361,8 +438,8 @@ fn ftetwild_available() -> bool {
 }
 
 fn print_list_methods() {
-    println!("Repair methods:");
-    println!("  num  id                    family      available  name");
+    outln!("Repair methods:");
+    outln!("  num  id                    family      available  name");
     let ftw = ftetwild_available();
     for (num, id, family, name) in METHODS {
         let (ok, reason) = if id == "ftetwild" && !ftw {
@@ -375,7 +452,7 @@ fn print_list_methods() {
         } else {
             format!("  ({reason})")
         };
-        println!(
+        outln!(
             "  {:<4} {:<21} {:<11} {:<10} {}{}",
             num,
             id,
@@ -385,7 +462,7 @@ fn print_list_methods() {
             suffix
         );
     }
-    println!();
+    outln!();
     let loaded = match sutura_core::config::policy::load_policy(None) {
         Ok(policy) => policy,
         Err(e) => {
@@ -405,8 +482,8 @@ fn print_list_methods() {
                 .join(", ")
         })
         .unwrap_or_default();
-    println!("Automatic deep-tier order: {order}");
-    println!(
+    outln!("Automatic deep-tier order: {order}");
+    outln!(
         "Policy: schema {}, hash {}, {}",
         loaded.schema_version,
         loaded.content_hash,
@@ -477,24 +554,24 @@ fn probe(path: &Path, json_out: bool) -> Result<(), (u8, String)> {
         "scan": scan,
     });
     if json_out {
-        println!("{}", serde_json::to_string(&payload).unwrap());
+        outln!("{}", serde_json::to_string(&payload).unwrap());
     } else {
-        println!("format: {}", format_name(format));
-        println!("bytes: {bytes_in}");
+        outln!("format: {}", format_name(format));
+        outln!("bytes: {bytes_in}");
         for m in payload["meshes"].as_array().unwrap() {
-            println!(
+            outln!(
                 "mesh: name={} index={} verts={} tris={} bbox={}",
                 m["name"], m["index"], m["verts"], m["tris"], m["bbox"]
             );
         }
         for w in payload["unit_warnings"].as_array().unwrap() {
-            println!("warning: {}", w["unit_hint"]);
+            outln!("warning: {}", w["unit_hint"]);
         }
         if material_refs {
-            println!("warning: OBJ material/texture references are not preserved");
+            outln!("warning: OBJ material/texture references are not preserved");
         }
         if let Some(s) = scan {
-            println!("scan: {s}");
+            outln!("scan: {s}");
         }
     }
     Ok(())
@@ -504,7 +581,7 @@ fn convert(input: &Path, output: &Path, json_out: bool) -> Result<(), (u8, Strin
     let mesh = load_mesh(input).map_err(|e| (1, format!("{}: {e}", input.display())))?;
     save_mesh(output, &mesh).map_err(|e| (1, format!("{}: {e}", output.display())))?;
     if json_out {
-        println!(
+        outln!(
             "{}",
             serde_json::to_string(&json!({
                 "input": input.display().to_string(),
@@ -515,7 +592,7 @@ fn convert(input: &Path, output: &Path, json_out: bool) -> Result<(), (u8, Strin
             .unwrap()
         );
     } else {
-        println!(
+        outln!(
             "wrote {} ({} verts, {} tris)",
             output.display(),
             mesh.vertex_count(),
@@ -585,6 +662,7 @@ fn material_refs(path: &Path) -> bool {
 enum ReadOnly {
     Validate,
     DryRun,
+    Analyze,
 }
 
 /// `validate` / `--dry-run`: analyse every input, write nothing.
@@ -610,29 +688,36 @@ fn run_read_only(cli: &Cli, files: &[PathBuf], kind: ReadOnly) -> Result<(), (u8
                 json!({"input": input, "error": message})
             }
         };
+        // `--analyze` reports failures inside the payload, so count them here;
+        // Python exits 1 whenever any result carries an `error`.
+        if kind == ReadOnly::Analyze && report.get("error").is_some() {
+            errors += 1;
+        }
         reports.push(report);
     }
 
     if reports.len() == 1 {
         let report = &reports[0];
         if human {
-            println!("{}", match kind {
+            outln!("{}", match kind {
                 ReadOnly::Validate => human_validate(report),
                 ReadOnly::DryRun => human_dry_run(report),
+                ReadOnly::Analyze => sutura_core::analyze::format_analyze_human(report),
             });
         } else {
-            println!("{}", serde_json::to_string(report).unwrap());
+            outln!("{}", serde_json::to_string(report).unwrap());
         }
     } else if human {
         for report in &reports {
-            println!("{}", match kind {
+            outln!("{}", match kind {
                 ReadOnly::Validate => human_validate(report),
                 ReadOnly::DryRun => human_dry_run(report),
+                ReadOnly::Analyze => sutura_core::analyze::format_analyze_human(report),
             });
-            println!();
+            outln!();
         }
     } else {
-        println!("{}", serde_json::to_string(&json!({"files": reports})).unwrap());
+        outln!("{}", serde_json::to_string(&json!({"files": reports})).unwrap());
     }
     if errors > 0 {
         return Err((1, None));
@@ -650,9 +735,35 @@ fn read_only_one(
     si_mode: &str,
     mode: &str,
 ) -> Result<Value, String> {
+    // `--analyze` handles the file itself: it walks every 3MF object through
+    // `mesh_io::load_meshes`, so it must not go through the single-mesh load
+    // below. Its failures are reported INSIDE the payload (Python's
+    // `analyze_report` catches them and sets `result['error']`), and it exits 1
+    // when any file has an error.
+    if kind == ReadOnly::Analyze {
+        let input = path.display().to_string();
+        if !path.exists() {
+            return Ok(json!({
+                "input": input,
+                "error": format!("analysis failed: file not found: {}", path.display()),
+            }));
+        }
+        return Ok(sutura_core::analyze::analyze_report(
+            &input,
+            loaded,
+            engine,
+            // `diagnosis.analyze_file` never overrides the default, so SI is
+            // always counted for `--analyze`.
+            true,
+            // `--no-cache` used to be parsed and dropped; it now really opts out,
+            // and `SUTURA_NO_CACHE` is honoured inside the same gate.
+            !cli.no_cache && sutura_core::cache::enabled(),
+        ));
+    }
     let prefix = match kind {
         ReadOnly::Validate => "validation failed: ",
         ReadOnly::DryRun => "dry run failed: ",
+        ReadOnly::Analyze => unreachable!("handled above"),
     };
     if !path.exists() {
         return Err(format!("{prefix}file not found: {}", path.display()));
@@ -678,6 +789,7 @@ fn read_only_one(
             !cli.no_flap,
         )
         .map_err(|e| format!("{prefix}{e}"))?,
+        ReadOnly::Analyze => unreachable!("handled before the single-mesh load"),
     };
     let mut out = serde_json::Map::new();
     out.insert("input".into(), json!(path.display().to_string()));

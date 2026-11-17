@@ -361,11 +361,14 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
     # engines, feature modes or a classifier change. The v2 -> classic fallback
     # is deterministic for a given mesh, so the requested engine is a
     # sufficient discriminator (the engine actually used is recorded below).
+    #
+    # `cachefmt:2` covers the payload change from `to_dict()` (3-decimal
+    # presentation values) to the object's raw fields; see `_cache_payload`.
     m_hash = None
     cache_key = None
     if use_cache and cache.is_cache_enabled():
         m_hash = cache.hash_arrays(v, t)
-        cache_key = '%s|%s|%d|%s|diagv2:%s' % (version, engine,
+        cache_key = '%s|%s|%d|%s|diagv2:%s|cachefmt:2' % (version, engine,
                                      1 if extra_features else 0,
                                      CLASSIFIER_VERSION, DIAGNOSIS_V2_VERSION)
         cached_dict = cache.get_cached_analysis(m_hash, cache_key)
@@ -377,7 +380,7 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
             analysis.model = model
             return analysis
 
-    diag = float(np.linalg.norm(v.max(axis=0) - v.min(axis=0)))
+    diag = _bbox_diagonal(v)
     analysis.bbox_diagonal = round(diag, 6)
     analysis.surface_area = round(_surface_area(v, t), 3)
     analysis.non_manifold_edges = _non_manifold_edge_count(t)
@@ -448,9 +451,42 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
         analysis.possible_debris = None
 
     if use_cache and m_hash and cache.is_cache_enabled():
-        cache.put_cached_analysis(m_hash, cache_key, to_dict(analysis))
+        cache.put_cached_analysis(m_hash, cache_key, _cache_payload(analysis))
 
     return analysis
+
+
+def _bbox_diagonal(v: np.ndarray) -> float:
+    """`np.linalg.norm(v.max(axis=0) - v.min(axis=0))` through the shared kernel.
+
+    NumPy computes that norm as `sqrt(v.dot(v))`, i.e. BLAS `sdot`, whose
+    accumulation order is not portable: measured on 3000 random 3-vectors it
+    matches "sum in f64, then round once" on 71% and the naive f32 sum on 76%.
+    The 1 ULP difference is enough to flip the reported 4th decimal
+    (98.504745 -> 98.5047 vs 98.504753 -> 98.5048), so Python calls the Rust
+    kernel instead of keeping a second NumPy implementation.
+    """
+    try:
+        from sutura_core_py import bbox_diagonal as _core
+        return float(_core(np.ascontiguousarray(v, dtype=np.float32)))
+    except Exception:
+        return float(np.linalg.norm(v.max(axis=0) - v.min(axis=0)))
+
+
+def _cache_payload(analysis: 'ObjectAnalysis') -> dict:
+    """The stored analysis: the object's RAW fields, not the rounded report.
+
+    `to_dict` exists for presentation and rounds (`repetition_score` to 3
+    decimals, `open_area_ratio` to 4). Storing that dict and rehydrating it
+    changed the object a warm run sees, so a cold and a warm run disagreed:
+    on a 528-face corpus mesh `repetition_score` read 0.7411 cold and 0.742
+    warm, and the method ranking -- which reads the field, not the report --
+    moved the `transplant` score with it.
+
+    The cache must hand back exactly what a fresh run produced, so it stores
+    `vars()` unchanged.
+    """
+    return {k: v for k, v in vars(analysis).items()}
 
 
 def analyze_file(path: str, engine: str = 'experimental',

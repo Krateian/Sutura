@@ -10,6 +10,7 @@ on:
       env_candidate: { description: 'Side B env, e.g. SUTURA_SI_EXCISE=0', required: false, default: '' }
       shards:        { description: 'Shard count override (per set)', required: false, default: '' }
       extra_args:    { description: 'Repair CLI args for both sides, space separated, e.g. --methods 14 or --deep-repair full', required: false, default: '' }
+      stage_fingerprints: { description: 'Set to 1 to add per-stage geometry hashes (and face/vertex counts) to every mesh row, to localise a platform difference to a stage. Costs one extra repair per mesh.', required: false, default: '' }
 permissions:
   contents: read
 jobs:
@@ -165,6 +166,11 @@ jobs:
           echo "MODE=$MODE" >> "$GITHUB_ENV"; echo "SET_NAME=$SET_NAME" >> "$GITHUB_ENV"
           echo "SHARD=$SHARD" >> "$GITHUB_ENV"; echo "SHARDS=$SHARDS" >> "$GITHUB_ENV"
           echo "ENV_CAND=$ENV_CAND" >> "$GITHUB_ENV"; echo "ENV_BASE=$ENV_BASE" >> "$GITHUB_ENV"
+          # Opt-in stage fingerprints: with SUTURA_STAGE_FP=1 each mesh row also
+          # carries the per-stage geometry hashes and counts, so a byte
+          # difference between two platforms can be localised to the stage that
+          # produced it. Hashes and counts only; no names, no geometry.
+          echo "SUTURA_STAGE_FP=${SUTURA_STAGE_FP:-}" >> "$GITHUB_ENV"
           echo "EXTRA_ARGS=$EXTRA_ARGS" >> "$GITHUB_ENV"
         env:
           MODE: '${{ matrix.mode }}'
@@ -174,6 +180,7 @@ jobs:
           ENV_CAND: '${{ inputs.env_candidate }}'
           EXTRA_ARGS: '${{ inputs.extra_args }}'
           ENV_BASE: '${{ inputs.env_base }}'
+          SUTURA_STAGE_FP: '${{ inputs.stage_fingerprints }}'
       - uses: actions/setup-python@v7
         with: { python-version: '3.11' }
       - uses: actions/checkout@v7

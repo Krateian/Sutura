@@ -54,6 +54,75 @@ def _eigh3(cov):
     return np.linalg.eigh(a)
 
 
+def _svd3_core(h):
+    """3x3 SVD from the shared numeric core, or LAPACK when it is absent.
+
+    ``np.linalg.svd`` is LAPACK, so the Rust kernel is the single source of
+    truth and both languages see the same singular values and the same
+    reflection handling. Falls back to LAPACK only without the binding;
+    ``SUTURA_REQUIRE_RUST=1`` turns that into an error.
+    """
+    a = np.asarray(h, dtype=np.float64)
+    core = getattr(sutura_geom, 'svd3', None)
+    if core is not None:
+        return core(a)
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.svd3 is unavailable')
+    return np.linalg.svd(a)
+
+
+def _lstsq3_core(a, b):
+    """`np.linalg.lstsq(A, b, rcond=None)` for a tall `(n, 3)` A, shared core."""
+    A = np.ascontiguousarray(a, dtype=np.float64)
+    rhs = np.ascontiguousarray(b, dtype=np.float64)
+    core = getattr(sutura_geom, 'lstsq3', None)
+    if core is not None:
+        return core(A, rhs)
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.lstsq3 is unavailable')
+    sol, _, _, _ = np.linalg.lstsq(A, rhs, rcond=None)
+    return sol
+
+
+def _covariance_core(pts, center):
+    """`(pts - center).T @ (pts - center) / n` from the shared kernel.
+
+    NumPy's `A.T @ A` is BLAS `dgemm`, whose internal blocking no portable
+    accumulation order reproduces (measured: it differs from a sequential sum,
+    from `np.dot` per element and from `np.sum(d_i*d_j)`). Falls back to NumPy
+    only without the binding.
+    """
+    a = np.ascontiguousarray(pts, dtype=np.float64)
+    c = np.ascontiguousarray(center, dtype=np.float64)
+    core = getattr(sutura_geom, 'covariance', None)
+    if core is not None:
+        return np.asarray(core(a, c))
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.covariance is unavailable')
+    return (a - c).T @ (a - c) / max(len(a), 1)
+
+
+def _cross_covariance_core(a, a_center, b, b_center):
+    """`(a - a_center).T @ (b - b_center)` from the shared kernel.
+
+    The Kabsch cross-covariance; same BLAS reasoning as `_covariance_core`.
+    """
+    av = np.ascontiguousarray(a, dtype=np.float64)
+    bv = np.ascontiguousarray(b, dtype=np.float64)
+    ac = np.ascontiguousarray(a_center, dtype=np.float64)
+    bc = np.ascontiguousarray(b_center, dtype=np.float64)
+    core = getattr(sutura_geom, 'cross_covariance', None)
+    if core is not None:
+        return np.asarray(core(av, ac, bv, bc))
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.cross_covariance is unavailable')
+    return (av - ac).T @ (bv - bc)
+
+
 def _canonical_axis_sign(ax):
     """+1 when the largest-magnitude component is positive, else -1.
 
@@ -109,10 +178,18 @@ def _referenced_only(verts, tris):
 def _decimate_faces(verts, tris, target):
     """Quadric-decimate to ``target`` faces (Faz 4 W3b, native).
 
-    Uses ``sutura_geom.decimate_qem`` (meshopt); no PyMeshLab or trimesh is
-    needed.  The picker only needs a light LOD, so no border lock or normal
-    attribute is passed.  Returns ``(verts float64, tris int32)``.
+    Uses the shared QEM kernel (meshopt); no PyMeshLab or trimesh is needed.
+    The picker only needs a light LOD, so no border lock or normal attribute is
+    passed. Returns ``(verts float64, tris int32)``.
     """
+    core = getattr(sutura_geom, 'decimate_faces', None)
+    if core is not None:
+        dv, dt = core(np.ascontiguousarray(verts, dtype=np.float64),
+                      np.ascontiguousarray(tris, dtype=np.int64), int(target))
+        return (np.asarray(dv, dtype=np.float64), np.asarray(dt, dtype=np.int32))
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.decimate_faces is unavailable')
     dv, dt, _rec = topology.decimate_qem(
         verts, tris, int(target), lock_border=False, preserve_normal=False)
     return (np.asarray(dv, dtype=np.float64),
@@ -155,8 +232,17 @@ def check_mesh_validity(verts, tris):
 def _compute_obb(pts, margin=OBB_EXPANSION_MARGIN, epsilon=OBB_MIN_EPSILON):
     """Compute oriented bounding box (OBB) parameters (center, extents, rotation frame)."""
     pts = np.asarray(pts, dtype=np.float64)
+    core = getattr(sutura_geom, 'compute_obb', None)
+    if core is not None:
+        c, e, f = core(np.ascontiguousarray(pts), float(margin), float(epsilon))
+        return (np.asarray(c, dtype=np.float64),
+                np.asarray(e, dtype=np.float64),
+                np.asarray(f, dtype=np.float64))
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.compute_obb is unavailable')
     c = np.mean(pts, axis=0)
-    cov = (pts - c).T @ (pts - c) / max(len(pts), 1)
+    cov = _covariance_core(pts, c)
     w, v = _eigh3(cov)
     frame = v[:, [2, 1, 0]]
     if np.linalg.det(frame) < 0:
@@ -179,6 +265,16 @@ def _compute_obb(pts, margin=OBB_EXPANSION_MARGIN, epsilon=OBB_MIN_EPSILON):
 def _is_inside_obb(pts, center, extents, frame, margin_factor=1.0):
     """Boolean mask of whether points lie inside an oriented bounding box."""
     pts = np.asarray(pts, dtype=np.float64)
+    core = getattr(sutura_geom, 'is_inside_obb', None)
+    if core is not None:
+        return np.asarray(core(np.ascontiguousarray(pts),
+                               np.ascontiguousarray(center, dtype=np.float64),
+                               np.ascontiguousarray(extents, dtype=np.float64),
+                               np.ascontiguousarray(frame, dtype=np.float64),
+                               float(margin_factor)), dtype=bool)
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.is_inside_obb is unavailable')
     local = (pts - center) @ frame
     half = (extents * margin_factor) / 2.0
     return np.all(np.abs(local) <= half, axis=1)
@@ -273,13 +369,6 @@ def segment_elements(verts, tris, angle_deg=DEFAULT_FEATURE_ANGLE_DEG):
         face_centroids = (v0[f_in_e] + v1[f_in_e] + v2[f_in_e]) / 3.0
         centroid = np.sum(face_centroids * areas[f_in_e, None], axis=0) / patch_area
 
-        # PCA frame and eigenvalues
-        cov = (pts - centroid).T @ (pts - centroid) / max(len(pts), 1)
-        eigvals, eigvecs = _eigh3(cov)
-        frame = eigvecs[:, [2, 1, 0]]
-        if np.linalg.det(frame) < 0:
-            frame[:, 2] = -frame[:, 2]
-
         span = pts.max(axis=0) - pts.min(axis=0)
         diag = float(np.linalg.norm(span))
 
@@ -288,8 +377,6 @@ def segment_elements(verts, tris, angle_deg=DEFAULT_FEATURE_ANGLE_DEG):
             'verts_idx': patch_vidx,
             'centroid': centroid,
             'area': patch_area,
-            'eigvals': eigvals[[2, 1, 0]],
-            'frame': frame,
             'diag': diag,
         })
 
@@ -315,6 +402,26 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
     if len(src_pts) == 0 or len(dst_pts) == 0:
         return np.eye(4), float('inf')
 
+    # The whole routine lives in the shared kernel. The frame search picks the
+    # best of four sign combinations by mean SQUARED distance, and on a
+    # degenerate PCA (two equal eigenvalues) those four values differ by ~1 ULP
+    # -- so reimplementing the loop here would tie-break differently from Rust
+    # and send the resulting transform down a different ICP branch. One
+    # implementation removes the possibility.
+    core = getattr(sutura_geom, 'align', None)
+    if core is not None:
+        T, rel_rms = core(
+            np.ascontiguousarray(src_pts),
+            np.ascontiguousarray(dst_pts),
+            bool(allow_reflection),
+            bool(allow_scale),
+            int(max_iters),
+        )
+        return np.asarray(T, dtype=np.float64), float(rel_rms)
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.align is unavailable')
+
     c_src = np.mean(src_pts, axis=0)
     c_dst = np.mean(dst_pts, axis=0)
 
@@ -329,9 +436,11 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
 
     src_scaled = (src_pts - c_src) * scale_factor + c_src
 
-    # PCA frames
-    cov_src = (src_scaled - c_src).T @ (src_scaled - c_src) / max(len(src_scaled), 1)
-    cov_dst = (dst_pts - c_dst).T @ (dst_pts - c_dst) / max(len(dst_pts), 1)
+    # PCA frames. NumPy's `A.T @ A` is a BLAS dgemm whose accumulation order no
+    # portable loop reproduces, so the covariance comes from the shared kernel --
+    # a 1e-16 difference here changed which sign combination ICP started from.
+    cov_src = _covariance_core(src_scaled, c_src)
+    cov_dst = _covariance_core(dst_pts, c_dst)
 
     _, v_src = _eigh3(cov_src)
     _, v_dst = _eigh3(cov_dst)
@@ -387,11 +496,15 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
         p_bar = np.mean(current_pts, axis=0)
         q_bar = np.mean(target_pts, axis=0)
 
-        H = (current_pts - p_bar).T @ (target_pts - q_bar)
-        U, _, Vt = np.linalg.svd(H)
+        H = _cross_covariance_core(current_pts, p_bar, target_pts, q_bar)
+        U, _s, Vt = _svd3_core(H)
+        U = np.asarray(U, dtype=np.float64)
+        Vt = np.asarray(Vt, dtype=np.float64).copy()
         R_step = Vt.T @ U.T
 
         if not allow_reflection and np.linalg.det(R_step) < 0:
+            # Kabsch reflection fix: negate the LAST row of Vt (the smallest
+            # singular value) and recompute. Minimal change; lands on V, not U.
             Vt[-1, :] = -Vt[-1, :]
             R_step = Vt.T @ U.T
 
@@ -445,6 +558,20 @@ def _execute_boolean_transplant(verts, tris, template_pts, transforms,
 def _compute_hausdorff_outside(orig_v, orig_t, result_v, result_t, dst_boxes, samples=5000):
     """One-sided Hausdorff distance from the original mesh to the result mesh
     outside ``dst_boxes`` (operates on plain vertex/triangle arrays)."""
+    core = getattr(sutura_geom, 'hausdorff_outside', None)
+    if core is not None:
+        return float(core(
+            np.ascontiguousarray(orig_v, dtype=np.float64),
+            np.ascontiguousarray(orig_t, dtype=np.int32),
+            np.ascontiguousarray(result_v, dtype=np.float64),
+            np.ascontiguousarray(result_t, dtype=np.int32),
+            [(np.asarray(c, dtype=np.float64),
+              np.asarray(e, dtype=np.float64),
+              np.asarray(f, dtype=np.float64)) for c, e, f in dst_boxes],
+            int(samples)))
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        rust_bridge.unavailable('sutura_geom.hausdorff_outside is unavailable')
     sample_pts, _ = _surface_sample(orig_v, orig_t, samples, seed=0)
 
     # Filter out points inside any destination box
@@ -482,146 +609,27 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
     if len(verts) < 4 or len(tris) < 4:
         return 0.0, {'pattern_type': 'none', 'reason': 'Too few vertices or triangles'}
 
-    n_pts = n_samples
-    dense_pts, _ = _surface_sample(verts, tris, n_pts * 2, seed=42)
-    query_pts, _ = _surface_sample(verts, tris, n_pts, seed=123)
-
-    c = np.mean(dense_pts, axis=0)
-    span = dense_pts.max(axis=0) - dense_pts.min(axis=0)
-    diag = float(np.linalg.norm(span))
-    if diag <= 1e-12:
-        return 0.0, {'pattern_type': 'none', 'reason': 'Zero bounding box diagonal'}
-
-    tol = 0.015 * diag
-    cov = (dense_pts - c).T @ (dense_pts - c) / max(len(dense_pts), 1)
-    _, eigvecs = _eigh3(cov)
-    tree = sutura_geom.KdTree(dense_pts)
-
-    candidate_orders = list(range(2, max_order + 1)) + [72, 80, 90, 100, 120]
-    best_match = None
-    best_score = 0.0
-
-    candidate_axes = [
-        np.array([1.0, 0.0, 0.0]),
-        np.array([0.0, 1.0, 0.0]),
-        np.array([0.0, 0.0, 1.0]),
-    ] + [eigvecs[:, i] for i in range(3)]
-
-    # An eigenvector is only defined up to sign, and rotating by +theta about
-    # +ax is a different point set than rotating by +theta about -ax. Rotational
-    # symmetry is a property of the unoriented axis (an n-fold axis is n-fold
-    # whichever way you traverse it), so every candidate is evaluated in BOTH
-    # directions and the better score wins. Together with the canonical signs
-    # `_eigh3` returns, this makes the score a function of the axis line: the
-    # same mesh scores identically no matter which sign the solver produced.
+    # The whole route lives in the shared kernel; Python only formats the result.
     #
-    # The per-candidate surface-distance lookups dominate the runtime (a few
-    # hundred exact nearest-neighbour queries of the sampled query points). Build every
-    # candidate rotation one at a time with the original scalar expression (so
-    # the resulting coordinates and distances are bit-identical to the scalar
-    # loop) but defer the lookups into ONE batched, threaded KD-tree query. Both
-    # directions of every axis are joined into that same batch, so the extra
-    # work is more points in one call rather than another call. The scalar
-    # reductions and the best-match selection then run unchanged in the
-    # original axis-major / order-minor iteration order.
-    q0 = query_pts - c
-    candidates = []
-    for ax in candidate_axes:
-        norm_ax = np.linalg.norm(ax)
-        if norm_ax < 1e-6:
-            continue
-        ax = ax / norm_ax
-
-        if abs(ax[0]) < 0.9:
-            u = np.cross(ax, [1.0, 0.0, 0.0])
-        else:
-            u = np.cross(ax, [0.0, 1.0, 0.0])
-        u = u / (np.linalg.norm(u) + 1e-12)
-        v_vec = np.cross(ax, u)
-        v_vec = v_vec / (np.linalg.norm(v_vec) + 1e-12)
-
-        # Cannonical direction first, so ties resolve in a fixed order.
-        sign = _canonical_axis_sign(ax)
-        for direction in (sign, -sign):
-            ax_d = ax * direction
-            u_d = u * direction
-            v_d = v_vec * direction
-            for n in candidate_orders:
-                th = 2.0 * np.pi / n
-                R = _rotation_matrix(th, ax_d, point=c)[:3, :3]
-                rot = q0 @ R.T + c
-                move_d = float(np.mean(np.linalg.norm(rot - query_pts, axis=1)))
-                candidates.append((ax_d, u_d, v_d, n, th, rot, move_d))
-
-    if candidates:
-        rot_stack = np.stack([cand[5] for cand in candidates])
-        all_dists = tree.query(rot_stack.reshape(-1, 3), k=1)[0].reshape(len(candidates), -1)
-    else:
-        all_dists = np.zeros((0, len(query_pts)))
-
-    first = []
-    step_jobs = []
-    for i, (ax, u, v_vec, n, th, rot, move_d) in enumerate(candidates):
-        dists = all_dists[i]
-        frac = float((dists < tol).mean())
-        mean_d = float(dists.mean())
-        rel_dev = mean_d / (move_d + 1e-6)
-        first.append((frac, mean_d, rel_dev))
-
-        if frac >= 0.70 and (rel_dev < 0.30 or (n >= 40 and rel_dev < 0.65)):
-            steps_to_check = [2]
-            if n >= 4:
-                steps_to_check.append(n // 2)
-            step_rots = []
-            for s_k in steps_to_check:
-                R_k = _rotation_matrix(s_k * th, ax, point=c)[:3, :3]
-                step_rots.append(q0 @ R_k.T + c)
-            step_jobs.append((i, step_rots))
-
-    step_frac_by_i = {}
-    if step_jobs:
-        flat_steps = []
-        for _i, step_rots in step_jobs:
-            flat_steps.extend(step_rots)
-        step_dists = tree.query(np.stack(flat_steps).reshape(-1, 3), k=1)[0].reshape(len(flat_steps), -1)
-        k = 0
-        for _i, step_rots in step_jobs:
-            step_frac_by_i[_i] = [float((step_dists[k + j] < tol).mean()) for j in range(len(step_rots))]
-            k += len(step_rots)
-
-    for i, (ax, u, v_vec, n, th, rot, move_d) in enumerate(candidates):
-        step_fracs = step_frac_by_i.get(i)
-        if step_fracs is None:
-            continue
-        frac, mean_d, _rel_dev = first[i]
-
-        if all(sf >= 0.55 for sf in step_fracs):
-            avg_frac = (frac + sum(step_fracs)) / (1.0 + len(step_fracs))
-            score = float(np.clip(avg_frac * (1.0 - min(mean_d / tol, 1.0) * 0.4), 0.0, 1.0))
-            is_better = score > best_score
-            if best_match is not None and not is_better:
-                prev_n = best_match['order']
-                if n > prev_n and n % prev_n == 0 and (n // prev_n) <= 4 and score >= best_score * 0.90:
-                    is_better = True
-            if is_better:
-                best_score = score
-                best_match = {
-                    'pattern_type': 'rotational',
-                    'order': n,
-                    'center': c,
-                    'axis': ax,
-                    'u_axis': u,
-                    'v_axis': v_vec,
-                    'step_angle': th,
-                    'score': score,
-                    'match_fraction': frac,
-                    'mean_distance': mean_d,
-                    'method': 'segmentation_free',
-                }
-
-    if best_match is not None and best_score >= 0.60:
-        return best_score, best_match
-    return 0.0, {'pattern_type': 'none', 'reason': 'No rotational symmetry detected'}
+    # Delegating rather than reimplementing is not cosmetic: the candidate score
+    # is `frac(mean of dists < tol)`, and on the 89999-face corpus nut `dists`
+    # has 3000 entries whose `np.mean` differs from the kernel's pairwise
+    # accumulator by 1 ULP. That single ULP moved the reported `mean_distance`
+    # and hence the score, which is why the 226-mesh gate saw `score_diffs 7`.
+    # One implementation cannot disagree with itself.
+    from sutura_engine import rust_bridge
+    if rust_bridge.require_rust():
+        if not hasattr(sutura_geom, 'detect_rotational_symmetry_free'):
+            rust_bridge.unavailable(
+                'sutura_geom.detect_rotational_symmetry_free is unavailable')
+    found = sutura_geom.detect_rotational_symmetry_free(
+        verts, tris, int(n_samples), int(max_order))
+    if found is None:
+        return 0.0, {
+            'pattern_type': 'none',
+            'reason': 'No rotational symmetry detected',
+        }
+    return float(found['score']), dict(found)
 
 
 def _detect_repetition_patches(verts, tris):
@@ -704,7 +712,7 @@ def _detect_repetition_patches(verts, tris):
         try:
             A = np.column_stack([2.0 * x_2d, 2.0 * y_2d, np.ones(len(x_2d))])
             b = x_2d ** 2 + y_2d ** 2
-            sol, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+            sol = _lstsq3_core(A, b)
             cx, cy = float(sol[0]), float(sol[1])
             r_sq = sol[2] + cx ** 2 + cy ** 2
             if r_sq > 0:
@@ -889,6 +897,43 @@ def _detect_repetition_patches(verts, tris):
     }
 
 
+def _detect_repetition_kernel(verts, tris):
+    """`(score, info)` from the shared kernel, or ``None`` without the binding.
+
+    Both routes (segmentation-free and patch) live in `sutura_geom`, so Python
+    only formats the result. The member patch indices come back as plain ints,
+    which is what `repair_repeat_auto` indexes with.
+    """
+    core = getattr(sutura_geom, 'detect_repetition', None)
+    if core is None:
+        from sutura_engine import rust_bridge
+        if rust_bridge.require_rust():
+            rust_bridge.unavailable('sutura_geom.detect_repetition is unavailable')
+        return None
+    score, _route, info = core(verts, tris.astype(np.int64), 3000, 64)
+    out = {}
+    for key, value in info.items():
+        if key in ('k_indices', 'p_indices', 'q_indices', 'r_indices'):
+            out[key] = np.asarray(value, dtype=np.int64)
+        elif key in ('center', 'axis', 'u_axis', 'v_axis', 'origin',
+                     'axis_u', 'axis_v', 'axis_w'):
+            out[key] = np.asarray(value, dtype=np.float64)
+        elif key == 'members':
+            # Patch dicts, not indices: repair_repeat_auto reads m['area'],
+            # m['centroid'], m['verts_idx'] and m['diag'] off each member.
+            out[key] = [
+                {k: (np.asarray(v, dtype=np.int64)
+                     if k in ('faces', 'verts_idx')
+                     else np.asarray(v, dtype=np.float64)
+                     if k == 'centroid' else v)
+                 for k, v in m.items()}
+                for m in (value or [])
+            ]
+        else:
+            out[key] = value
+    return float(score), out
+
+
 def detect_repetition(verts, tris):
     """Analyze mesh for repeated congruent elements and identify pattern parameters.
 
@@ -905,6 +950,13 @@ def detect_repetition(verts, tris):
 
     if len(verts) < 4 or len(tris) < 4:
         return 0.0, {'pattern_type': 'none', 'reason': 'Too few vertices or triangles'}
+
+    # Both routes live in the shared kernel; Python only formats the result.
+    # `_detect_repetition_kernel` returns None when the binding is absent.
+    kernel = _detect_repetition_kernel(verts, tris)
+    if kernel is not None:
+        score, info = kernel
+        return float(score), info
 
     # 1. Fast segmentation-free rotational symmetry check
     free_score, free_info = detect_rotational_symmetry_free(verts, tris)
@@ -1026,6 +1078,48 @@ def repair_repeat_manual(verts, tris, source_point, target_point, margin=OBB_EXP
         }
 
 
+def _finish_repeat_plan(verts, tris, orig_v, orig_t, payload, margin=OBB_EXPANSION_MARGIN,
+                        force_bridge=None):
+    """Run the CSG transplant for a plan the kernel produced.
+
+    The kernel decides *what* to transplant; `boolean_transplant` is the only
+    part that needs Manifold, so it stays here.
+    """
+    transforms = [np.asarray(T, dtype=np.float64) for T in payload['transforms']]
+    template_pts = np.asarray(payload['template_pts'], dtype=np.float64)
+    pattern_type = payload.get('pattern_type', 'none')
+    per_pos_devs = list(payload.get('per_position_deviation', []))
+
+    if transforms:
+        rep_v, rep_t, vol_change, dst_boxes, is_watertight = _execute_boolean_transplant(
+            verts, tris, template_pts, transforms, margin=margin,
+            force_bridge=force_bridge)
+        positions_repaired = len(transforms)
+        h_outside = (_compute_hausdorff_outside(orig_v, orig_t, rep_v, rep_t, dst_boxes)
+                     if dst_boxes else 0.0)
+        notes = [f"{positions_repaired} repeated elements were replaced by healthy copies"]
+    else:
+        rep_v, rep_t = verts, tris
+        vol_change = 0.0
+        h_outside = 0.0
+        is_watertight = True
+        positions_repaired = 0
+        notes = ["All detected pattern positions are healthy"]
+
+    return rep_v, rep_t, {
+        'watertight': bool(is_watertight),
+        'repaired': bool(positions_repaired > 0),
+        'pattern_type': pattern_type,
+        'group_size': int(payload.get('group_size', 0) or 0),
+        'positions_checked': int(payload.get('positions_checked', 0) or 0),
+        'positions_repaired': positions_repaired,
+        'per_position_deviation': per_pos_devs,
+        'volume_change': round(float(vol_change), 6),
+        'hausdorff_outside': round(float(h_outside), 6),
+        'notes': notes,
+    }
+
+
 def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=None):
     """Automated repeated-element repair (Method #11).
 
@@ -1064,6 +1158,23 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
             'error': err_msg,
             'notes': [],
         }
+
+    # Planning (detection, template choice, per-position deviation, transform
+    # list) lives in the shared kernel; the CSG transplant stays here because
+    # `boolean_transplant` needs the manifold feature.
+    #
+    # `plan` is `("early", report)` when there is nothing to transplant, or
+    # `("transplant", payload)` when the caller still has to run the CSG.
+    _planner = getattr(sutura_geom, 'plan_repeat_auto', None)
+    if _planner is not None:
+        kind, payload = _planner(
+            np.ascontiguousarray(verts, dtype=np.float64),
+            np.ascontiguousarray(tris, dtype=np.int64))
+        if kind == 'early':
+            return verts, tris, dict(payload)
+        return _finish_repeat_plan(
+            verts, tris, orig_v, orig_t, payload, margin=margin,
+            force_bridge=force_bridge)
 
     try:
         score, info = detect_repetition(verts, tris)

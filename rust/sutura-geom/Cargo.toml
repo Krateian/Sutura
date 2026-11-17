@@ -60,6 +60,7 @@ kiddo = "6.3"
 # extension grows 5,055,632 -> 5,166,592 B (+108 KB) on macOS arm64.  Needs a
 # C++11 compiler, which the Geogram build already requires.
 meshopt = "0.7"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [build-dependencies]
 # Compiles the vendored Geogram Delaunay PSM (C++20). Build tool only.

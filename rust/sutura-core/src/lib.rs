@@ -7,16 +7,23 @@
 //! them may depend on pyo3 or numpy.
 
 pub mod analysis;
+pub mod analyze;
+pub mod cache;
 pub mod classify;
 pub mod config;
 pub mod error;
 pub mod fmt;
+pub mod http;
+pub mod install;
+pub mod whatsnew;
 pub mod ftetwild;
 pub mod mesh;
 pub mod mesh_io;
 pub mod p_weld;
 pub mod ranking;
 pub mod reduce;
+pub mod self_check;
+pub mod updater;
 pub mod validate;
 pub mod closing;
 pub mod dressing;
@@ -24,8 +31,10 @@ pub mod engines;
 pub mod graft;
 pub mod local_remesh;
 pub mod mirror;
+pub mod pipeline_objects;
 pub mod proxy;
 pub mod repair;
+pub mod repair_settings;
 pub mod stage1;
 pub mod stage2;
 pub mod report;

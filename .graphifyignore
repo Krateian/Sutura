@@ -4,3 +4,28 @@
 *.3mf
 docs/screenshots/
 *.png
+
+# Build output. `rust/target/` is ~24 GB of object files, rlibs and incremental
+# state — not source, and scanning it dominated the run (30+ minutes at ~42% CPU
+# and ~680 MB before this line existed).
+rust/target/
+target/
+
+# Virtualenvs and vendored Python. The repo carries venvs for the CI harness and
+# the D7b comparison; none of it is project code.
+venv/
+.venv/
+*-venv/
+tools-venv/
+base-venv/
+cand-venv/
+__pycache__/
+*.pyc
+
+# VCS internals.
+.git/
+
+# Local scratch output.
+graphify-out/
+node_modules/
+dist/

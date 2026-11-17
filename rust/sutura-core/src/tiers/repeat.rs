@@ -137,3 +137,130 @@ pub fn decide(
     }
     (cur_v.to_vec(), cur_t.to_vec(), Value::Object(rec))
 }
+
+/// A report for a caller error, in the shape the tier consumes.
+pub fn error_report(message: &str) -> sutura_geom::repeat_repair::AutoReport {
+    sutura_geom::repeat_repair::AutoReport {
+        watertight: false,
+        repaired: false,
+        pattern_type: "none".to_string(),
+        group_size: 0,
+        positions_checked: 0,
+        positions_repaired: 0,
+        per_position_deviation: Vec::new(),
+        volume_change: 0.0,
+        hausdorff_outside: 0.0,
+        notes: Vec::new(),
+        error: Some(message.to_string()),
+    }
+}
+
+/// Repair `cur_v`/`cur_t` through the shared kernel, with no Python involved.
+///
+/// This is the entry point the Rust CLI uses. `decide` above takes the repair
+/// report as JSON because the pyo3 bridge still supplies it; here the kernel
+/// produces it, so the whole Repeat path -- plan, Manifold transplant and the
+/// Hausdorff guard -- is Rust.
+///
+/// Auto repair, returning the kernel's own `AutoReport` so callers can treat
+/// the auto and manual routes uniformly.
+pub fn repair_auto_raw(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    margin: f64,
+) -> (
+    Vec<[f64; 3]>,
+    Vec<[i64; 3]>,
+    sutura_geom::repeat_repair::AutoReport,
+) {
+    let v: Vec<[f64; 3]> = verts.to_vec();
+    let t: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+        .collect();
+    let (ov, ot, rep) = sutura_geom::repeat_repair::repair_repeat_auto_core(&v, &t, margin);
+    let ot_i: Vec<[i64; 3]> = ot
+        .iter()
+        .map(|f| [f[0] as i64, f[1] as i64, f[2] as i64])
+        .collect();
+    (ov, ot_i, rep)
+}
+
+/// Render a kernel `AutoReport` as the JSON the tier report carries.
+pub fn report_to_value(rep: sutura_geom::repeat_repair::AutoReport) -> Value {
+    let mut out = Map::new();
+    out.insert("watertight".into(), json!(rep.watertight));
+    out.insert("repaired".into(), json!(rep.repaired));
+    // An empty `pattern_type` means the route reports no pattern at all -- the
+    // manual route (#12). Python's `repair_repeat_manual` returns exactly
+    // watertight/repaired/volume_change/hausdorff_outside/notes in that case,
+    // so emit only those; filling in zeros made the report differ for the same
+    // mesh.
+    if !rep.pattern_type.is_empty() {
+        out.insert("pattern_type".into(), json!(rep.pattern_type));
+        out.insert("group_size".into(), json!(rep.group_size));
+        out.insert("positions_checked".into(), json!(rep.positions_checked));
+        out.insert("positions_repaired".into(), json!(rep.positions_repaired));
+        let devs: Vec<Value> = rep
+            .per_position_deviation
+            .iter()
+            .map(|p| json!({"index": p.index, "deviation": p.deviation}))
+            .collect();
+        out.insert("per_position_deviation".into(), json!(devs));
+    }
+    out.insert("volume_change".into(), json!(rep.volume_change));
+    out.insert("hausdorff_outside".into(), json!(rep.hausdorff_outside));
+    out.insert("notes".into(), json!(rep.notes));
+    if let Some(e) = rep.error {
+        out.insert("error".into(), json!(e));
+    }
+    Value::Object(out)
+}
+
+pub fn repair_auto_report(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    margin: f64,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>, Value) {
+    let (ov, ot_i, rep) = repair_auto_raw(verts, tris, margin);
+    (ov, ot_i, report_to_value(rep))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The repeat tier must reach the Manifold transplant with no pyo3 in the
+    /// graph.
+    ///
+    /// A tetrahedron is not a neutral fixture: it legitimately carries 3-fold
+    /// rotational symmetry, so the repair transplants one position and the
+    /// output has 8 vertices. That is exactly what makes it a useful census --
+    /// the whole plan + CSG + Hausdorff path runs, and the mesh changes.
+    #[test]
+    fn repair_auto_report_runs_without_python() {
+        let v = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let t = vec![[0i64, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]];
+        let (ov, ot, rep) = repair_auto_report(&v, &t, 0.10);
+        assert_eq!(
+            rep.get("pattern_type").and_then(Value::as_str),
+            Some("rotational")
+        );
+        assert_eq!(rep.get("positions_repaired").and_then(Value::as_u64), Some(1));
+        // The transplant ran: a repaired mesh is not the input.
+        assert_ne!(ov.len(), v.len());
+        assert!(!ot.is_empty());
+        assert!(rep.get("hausdorff_outside").is_some(), "{rep}");
+
+        // Deterministic: same input, same report and same mesh.
+        let (ov2, ot2, rep2) = repair_auto_report(&v, &t, 0.10);
+        assert_eq!(rep, rep2);
+        assert_eq!(ov, ov2);
+        assert_eq!(ot, ot2);
+    }
+}
