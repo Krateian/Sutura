@@ -719,11 +719,12 @@ fn has_body_overlap(analysis: &Analysis) -> bool {
     {
         return true;
     }
-    d.get("parts")
-        .and_then(|p| p.get("overlap_edges"))
-        .and_then(Value::as_array)
-        .map(|a| !a.is_empty())
-        .unwrap_or(false)
+    match d.get("parts").and_then(|p| p.get("overlap_edges")) {
+        Some(Value::Number(n)) => n.as_i64().unwrap_or(0) > 0,
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Bool(b)) => *b,
+        _ => false,
+    }
 }
 
 /// `int(round(conf * 100))` — Python rounds half-to-even on the binary value.
@@ -995,25 +996,6 @@ fn diag_count(a: &Analysis, name: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn damage_class(a: &Analysis) -> &'static str {
-    if a.self_intersections > 0.0 || diag_count(a, "self_intersection") > 0.0 {
-        return "si";
-    }
-    if a.non_manifold_edges > 0.0 || a.boundary_loops > 0.0 || diag_count(a, "loops") > 0.0 {
-        return "holes";
-    }
-    if a.repetition_score >= 0.5 {
-        return "repeated";
-    }
-    if a.single_side_score >= 0.5 || a.relief_score >= 0.5 {
-        return "scan";
-    }
-    if diag_count(a, "duplicate") > 0.0 || diag_count(a, "degenerate") > 0.0 {
-        return "duplicate";
-    }
-    "clean"
-}
-
 fn prior_for(class: &str) -> &'static [(u8, f64)] {
     match class {
         "holes" => CORE150_PRIOR_HOLES,
@@ -1023,25 +1005,6 @@ fn prior_for(class: &str) -> &'static [(u8, f64)] {
         "duplicate" => CORE150_PRIOR_DUPLICATE,
         _ => CORE150_PRIOR_CLEAN,
     }
-}
-
-fn has_body_overlap(a: &Analysis) -> bool {
-    let Some(d) = a.diagnosis_v2.as_ref() else {
-        return false;
-    };
-    let inter = d
-        .get("self_intersections")
-        .and_then(|s| s.get("inter_body"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    if inter > 0 {
-        return true;
-    }
-    d.get("parts")
-        .and_then(|p| p.get("overlap_edges"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0)
-        > 0
 }
 
 /// Python `methods.suggest_methods` ordering only (numbers, confidence-ranked).
