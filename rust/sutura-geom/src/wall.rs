@@ -819,6 +819,13 @@ pub fn thicken_to_min(
         delta = cap;
     }
     if delta <= 0.0 {
+        // Nothing to thicken. Python still reports the measured values here
+        // (`wall.py:435-438`): `min_after` is the unchanged minimum and
+        // `thin_after` the unchanged thin count. Omitting them made the Rust
+        // record say `min_after: null` where Python said the real number, which
+        // the tier gate caught on `broken_37890` (no wall below target).
+        report.min_after = Some(before_min);
+        report.thin_after = Some(report.thin_before);
         report.notes.push("no wall below the target; nothing to thicken".to_string());
         return (verts.to_vec(), tris.to_vec(), report);
     }
@@ -1118,6 +1125,21 @@ mod tests {
         assert!(r.notes.iter().any(|n| n.contains("no wall below the target")));
         assert_eq!(ov, v, "the mesh must come back unchanged");
         assert_eq!(ot, t);
+        // The early return must still report the measured values. Python sets
+        // `min_after = before['min']` and `thin_after = before['thin_count']`
+        // here (`wall.py:435-436`); leaving them `None` made the Rust record
+        // disagree with Python on `broken_37890`, which the wall-tier gate
+        // caught as `min_after: 3.433…!=None`.
+        assert_eq!(
+            r.min_after,
+            Some(r.min_before),
+            "min_after must be the unchanged minimum, not None"
+        );
+        assert_eq!(
+            r.thin_after,
+            Some(r.thin_before),
+            "thin_after must be the unchanged thin count, not None"
+        );
     }
 
     /// A non-positive target is an error, not a silent no-op.
