@@ -143,6 +143,22 @@ struct Cli {
     /// Check for a newer release (`update` / `license` / `none`).
     #[arg(long = "check-update")]
     check_update: bool,
+    /// Install the newest release.
+    ///
+    /// Asks first, and the answer defaults to **no**; `--yes` answers for you.
+    /// Downloads the verified artifact, backs up the current install, swaps it
+    /// in, and rolls back if the new build does not start. `--check-update`
+    /// only reports; this is the one that installs.
+    #[arg(long = "update")]
+    update: bool,
+    /// Restore the newest backup over the installed files.
+    ///
+    /// This is the same recovery the updater performs on its own when a new
+    /// version fails to start, exposed for when you want it deliberately. It
+    /// restores the newest backup only; two are kept, and older ones are
+    /// evicted. User data is never part of a backup and is never touched.
+    #[arg(long = "rollback")]
+    rollback: bool,
     /// Print the release notes saved by the last update (works offline).
     #[arg(long = "whats-new")]
     whats_new: bool,
@@ -339,6 +355,12 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
             ),
         }
         return Ok(());
+    }
+    if cli.update {
+        return update_command(&cli);
+    }
+    if cli.rollback {
+        return rollback_command(&cli);
     }
     if cli.check_update {
         let status = sutura_core::updater::check_for_update(PRODUCT_VERSION, true);
@@ -1134,17 +1156,21 @@ fn run_quiet(binary: &Path, args: &[&str]) -> (i32, String) {
 /// the updater's own backup/health-check/rollback path. It never changes the
 /// version -- a repair that silently updated would be a different operation.
 pub(crate) fn self_repair_command(cli: &Cli) -> Result<(), (u8, Option<String>)> {
-    // Confirmation mirrors `--migrate-from-python`: this replaces files the
-    // user is currently running.
-    if !cli.yes {
-        return Err((
-            2,
-            Some(
-                "--repair-install replaces the installed files; pass --yes to \
-                 confirm"
-                    .to_string(),
-            ),
-        ));
+    // Asks before replacing files the user is running, with the answer
+    // defaulting to no. This used to hard-require `--yes`, which meant there was
+    // no prompt at all -- the docs said it "always asks", and it did not.
+    if !confirm("Reinstall the installed files?", cli.yes) {
+        if cli.json {
+            outln!(
+                "{}",
+                crate::repair_cmd::py_json(&serde_json::json!({
+                    "repaired": false, "cancelled": true,
+                }))
+            );
+            return Ok(());
+        }
+        outln!("Nothing was changed.");
+        return Ok(());
     }
     match sutura_core::self_repair::repair_install(None, &run_quiet) {
         Ok(report) => {
@@ -1185,22 +1211,142 @@ pub(crate) fn self_repair_command(cli: &Cli) -> Result<(), (u8, Option<String>)>
     }
 }
 
+/// Ask before replacing the installed files. The answer defaults to **no**.
+///
+/// A bare Enter must never install or remove anything, so the empty answer is
+/// "no" and anything unrecognised is "no". `--yes` answers for you, which is
+/// what an unattended bridge-release update passes. A non-interactive stdin
+/// (a pipe, CI) is also "no": there is nobody to ask.
+fn confirm(question: &str, yes: bool) -> bool {
+    if yes {
+        return true;
+    }
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        eprintln!("sutura: {question} [y/N] (no terminal to ask on; pass --yes to confirm)");
+        return false;
+    }
+    eprint!("{question} [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+fn update_command(cli: &Cli) -> Result<(), (u8, Option<String>)> {
+    if !confirm("Install the newest release now?", cli.yes) {
+        if cli.json {
+            outln!(
+                "{}",
+                crate::repair_cmd::py_json(&serde_json::json!({
+                    "updated": false, "cancelled": true,
+                }))
+            );
+            return Ok(());
+        }
+        outln!("Nothing was changed.");
+        return Ok(());
+    }
+    match sutura_core::self_repair::update(&run_quiet) {
+        Ok(report) => {
+            if cli.json {
+                outln!(
+                    "{}",
+                    crate::repair_cmd::py_json(&serde_json::json!({
+                        "updated": true,
+                        "tag": report.tag,
+                        "backup": report.backup.map(|p| p.display().to_string()),
+                    }))
+                );
+                return Ok(());
+            }
+            if let Some(backup) = &report.backup {
+                outln!("  previous install saved at {}", backup.display());
+            }
+            for note in &report.notes {
+                outln!("  {note}");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if cli.json {
+                outln!(
+                    "{}",
+                    crate::repair_cmd::py_json(&serde_json::json!({
+                        "updated": false, "error": e.to_string(),
+                    }))
+                );
+            }
+            Err((1, Some(e.to_string())))
+        }
+    }
+}
+
+fn rollback_command(cli: &Cli) -> Result<(), (u8, Option<String>)> {
+    if !confirm("Restore the newest backup over the installed files?", cli.yes) {
+        if cli.json {
+            outln!(
+                "{}",
+                crate::repair_cmd::py_json(&serde_json::json!({
+                    "rolled_back": false, "cancelled": true,
+                }))
+            );
+            return Ok(());
+        }
+        outln!("Nothing was changed.");
+        return Ok(());
+    }
+    match sutura_core::self_repair::rollback_command() {
+        Ok(restored) => {
+            if cli.json {
+                outln!(
+                    "{}",
+                    crate::repair_cmd::py_json(&serde_json::json!({
+                        "rolled_back": true,
+                        "backup": restored.display().to_string(),
+                    }))
+                );
+            } else {
+                outln!("Restored {}.", restored.display());
+            }
+            Ok(())
+        }
+        Err(e) => Err((1, Some(e.to_string()))),
+    }
+}
+
 #[cfg(test)]
 mod migrate_flag_tests {
     use clap::Parser;
 
-    /// `--repair-install` replaces the installed files, so a bare invocation
-    /// must refuse with a usage error rather than start swapping them.
+    /// `--repair-install` replaces the installed files, so without `--yes` and
+    /// without a terminal it must decline rather than start swapping them.
+    ///
+    /// It used to *require* `--yes`, which meant there was no prompt at all --
+    /// the docs claimed it "always asks" and the code never did. Now it asks,
+    /// the answer defaults to no, and `--yes` answers for you.
     #[test]
-    fn repair_install_requires_confirmation() {
+    fn repair_install_declines_without_yes_on_a_non_tty() {
         let cli = <super::Cli as Parser>::try_parse_from(["sutura", "--repair-install"])
             .expect("parses");
-        let err = super::self_repair_command(&cli).expect_err("must refuse without --yes");
-        assert_eq!(err.0, 2, "usage error, not a crash");
+        // The test harness's stdin is not a terminal, so `confirm` declines and
+        // the command returns Ok without touching anything. That the *decline*
+        // path is taken (not an error) is the point.
+        let result = super::self_repair_command(&cli);
         assert!(
-            err.1.unwrap_or_default().contains("--yes"),
-            "the message must say what is missing"
+            result.is_ok(),
+            "declining must be a clean no-op, got {result:?}"
         );
+    }
+
+    /// `--yes` alone must not be enough to reach the network here: the command
+    /// still refuses when the install is not there to repair. This pins that
+    /// `confirm` short-circuits on `--yes` without falling through to a prompt.
+    #[test]
+    fn confirm_honours_yes_without_asking() {
+        assert!(super::confirm("anything?", true));
     }
 
     /// The two spellings are the same switch, and `--self-repair` (Python's

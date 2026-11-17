@@ -64,31 +64,25 @@ impl std::fmt::Display for RepairError {
     }
 }
 
-/// Re-install the running version.
+/// Install `tag` into this tree. Shared by the repair, update and migrate paths.
 ///
-/// `tag` defaults to the running version; `run` is the injected process runner
-/// so the health check is testable without installing anything (same shape as
-/// [`install::health_check`]).
-pub fn repair_install(
-    tag: Option<&str>,
+/// `tag` is the release to install; every step is an existing `install::`
+/// function, so an update and a repair cannot drift apart in how they back up,
+/// verify or roll back.
+pub fn install_release(
+    tag: &str,
     run: &dyn Fn(&Path, &[&str]) -> (i32, String),
 ) -> Result<Report, RepairError> {
     let version = install::current_version();
-    let tag = tag.map(str::to_string).unwrap_or_else(|| format!("v{version}"));
     let mut report = Report {
-        tag: tag.clone(),
+        tag: tag.to_string(),
         backup: None,
         notes: Vec::new(),
     };
 
-    // The release for the **running** tag, not the newest one. A repair must
-    // reinstall what the user has; fetching `/releases/latest` would either
-    // find nothing (when the running version is older) or, worse, quietly
-    // upgrade -- which is `--check-update`'s job, not a repair's.
-    let release =
-        updater::fetch_release_by_tag(&tag).ok_or(RepairError::Offline)?;
+    let release = updater::fetch_release_by_tag(tag).ok_or(RepairError::Offline)?;
     let (url, sha_url) =
-        install::find_asset(&release, &tag).ok_or_else(|| RepairError::NoAsset(tag.clone()))?;
+        install::find_asset(&release, tag).ok_or_else(|| RepairError::NoAsset(tag.to_string()))?;
 
     // Verified before anything on disk is touched -- a tampered or truncated
     // download must not reach the backup step. A transport failure is reported
@@ -105,43 +99,97 @@ pub fn repair_install(
 
     // Notes are fetched here, before anything on disk changes, so a "what's new"
     // view never waits on this download -- but they are only *written* below,
-    // after the health check. A failed repair therefore leaves the previous
+    // after the health check. A failed install therefore leaves the previous
     // snapshot in place instead of overwriting it with notes for a version that
     // never got installed.
-    let notes = whatsnew::fetch_for_tag(&tag);
+    let notes = whatsnew::fetch_for_tag(tag);
 
-    install::apply_artifact(&bytes, &tag)
-        .map_err(|e| RepairError::Install(format!("reinstall failed: {e}")))?;
+    install::apply_artifact(&bytes, tag)
+        .map_err(|e| RepairError::Install(format!("install failed: {e}")))?;
 
     // The same gate an update goes through: a binary that does not run must not
     // be adopted, and the previous tree comes back.
     let binary = install::installed_binary();
-    if let Err(why) = install::health_check(&tag, run, &binary) {
+    if let Err(why) = install::health_check(tag, run, &binary) {
         // The previous tree comes back; the caller learns where from the error
         // text, which is also what the user needs. (Reporting it on the success
         // path would be dead code: this branch always returns.)
         return Err(RepairError::Install(match install::rollback() {
             Ok(restored) => format!(
-                "{tag} did not start after reinstalling ({why}); restored {}",
+                "{tag} did not start ({why}); restored {}",
                 restored.display()
             ),
             Err(e) => format!(
-                "{tag} did not start after reinstalling ({why}) and the rollback \
-                 also failed ({e})"
+                "{tag} did not start ({why}) and the rollback also failed ({e})"
             ),
         }));
     }
 
     // Installed and running: now the notes may replace the stored copy.
-    // Best effort -- a notes failure must never fail a successful repair.
+    // Best effort -- a notes failure must never fail a successful install.
     if let Some(pending) = &notes {
         if let Err(e) = whatsnew::commit(pending) {
             report.notes.push(format!("release notes not saved: {e}"));
         }
     }
 
+    Ok(report)
+}
+
+/// Re-install the running version.
+///
+/// `tag` defaults to the running version; `run` is the injected process runner
+/// so the health check is testable without installing anything (same shape as
+/// [`install::health_check`]).
+///
+/// A repair must reinstall what the user has, so it pins the tag to the running
+/// version: fetching `/releases/latest` would either find nothing (when the
+/// running version is older) or, worse, quietly upgrade -- which is [`update`]'s
+/// job, not a repair's.
+pub fn repair_install(
+    tag: Option<&str>,
+    run: &dyn Fn(&Path, &[&str]) -> (i32, String),
+) -> Result<Report, RepairError> {
+    let version = install::current_version();
+    let tag = tag.map(str::to_string).unwrap_or_else(|| format!("v{version}"));
+    let mut report = install_release(&tag, run)?;
     report.notes.push(format!("reinstalled {tag}"));
     Ok(report)
+}
+
+/// Install the newest release.
+///
+/// Refuses to go backwards and refuses a licence-boundary crossing, exactly as
+/// the GUI's update does; `preflight` owns both rules so they cannot diverge.
+pub fn update(
+    run: &dyn Fn(&Path, &[&str]) -> (i32, String),
+) -> Result<Report, RepairError> {
+    let current = install::current_version();
+    let tag = updater::fetch_latest_release().ok_or(RepairError::Offline)?;
+    install::preflight(&current, &tag).map_err(RepairError::Install)?;
+    if !updater::is_newer(&tag, &current) {
+        let mut report = Report {
+            tag: tag.clone(),
+            backup: None,
+            notes: Vec::new(),
+        };
+        report
+            .notes
+            .push(format!("already up to date (current v{current})"));
+        return Ok(report);
+    }
+    let mut report = install_release(&tag, run)?;
+    report.notes.push(format!("updated v{current} -> {tag}"));
+    Ok(report)
+}
+
+/// Restore the newest backup over the installed tree.
+///
+/// The same recovery the updater performs by itself when a new version fails to
+/// start, exposed for when the user wants it deliberately. User data is never
+/// part of a backup and is left alone.
+pub fn rollback_command() -> Result<std::path::PathBuf, RepairError> {
+    install::rollback().map_err(RepairError::Install)
 }
 
 #[cfg(test)]
