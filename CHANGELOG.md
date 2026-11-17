@@ -2,6 +2,61 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **`sutura --update` and `sutura --rollback`.** Until now an update could only
+  be started from the GUI, and a backup could only be restored by the updater
+  deciding to do it. `--update` installs the newest release (verify, back up,
+  swap, health-check, roll back on failure); `--rollback` restores the newest
+  backup on demand. Both ask first, and the answer defaults to **no**; `--yes`
+  answers for you, and a run with no terminal declines rather than assuming
+  consent. Two backups are kept.
+- **Packages for Intel Macs and arm64 Linux.** The Rust build shipped only
+  macOS arm64 and Linux x86_64, while the Python version it replaces supported
+  both architectures on both platforms. All four targets now build and install,
+  so nobody loses `--check-update` or `--repair-install` by upgrading.
+- **`MIGRATE.md`**, shipped inside the release package: what moving from the
+  Python version carries over, where the previous install is saved, and how to
+  get back to it.
+
+### Changed
+
+- **`--wall-min-thickness` now does something.** The flag was documented,
+  accepted, and completely inert: it set a target but never turned the Wall
+  Thicken tier on, and nothing in the pipeline read it. Passing it now enables
+  the tier, which measures wall thickness and thickens anything below the
+  target. The report gains a `wall_thicken` block. Because it creates geometry it
+  is gated like every other tier: the result is kept only when the topology does
+  not get worse.
+- **`--repair-install` asks before replacing files**, and the answer defaults to
+  no. It previously required `--yes` and did not prompt at all, which the
+  documentation described incorrectly.
+- **`--purge` now removes update backups** (`sutura.backup/`, and a quarantined
+  Python-era `sutura.backup.python-*`). They live beside the install rather than
+  inside it, so a purge used to leave two full copies of the program behind.
+- **Release notes are written only after an install succeeds.** They are fetched
+  before the swap so the "what's new" view never waits on a download, but a
+  failed or rolled-back update leaves the previous notes in place instead of
+  describing a version that is not installed. `--whats-new` also now works on a
+  CLI-only install; it previously only had notes if the GUI had done the update.
+- **Installed binaries are matched by exact name.** APFS is case-insensitive, so
+  on macOS `Contents/MacOS/sutura` resolved to the Python bundle's `Sutura` GUI
+  launcher. That could make the updater health-check the wrong program, and make
+  migration decide a Python install was already a Rust one and skip itself.
+
+### Fixed
+
+- **The documentation described things the program did not do.** The install
+  guide covered the Python product (conda, virtualenvs, the AppImage), several
+  troubleshooting entries named failures a native build cannot hit, and the
+  update section promised behaviour that did not exist. All of it is rewritten
+  against the Rust build, in English and Turkish. The install and update pages
+  now state what is actually true, including the limits: which platforms have
+  packages, that `--rollback` reaches only the newest backup, and that the
+  download-from-Releases step is not live until the first Rust release.
+
 ## [0.9.9] - 2026-11-12
 
 ### Added
