@@ -236,6 +236,25 @@ pub fn fetch_latest_release_full() -> Option<Value> {
     http::get_json(&api_endpoint())
 }
 
+/// The release object for one specific tag.
+///
+/// `/releases/latest` only ever returns the newest release, which is the wrong
+/// thing for a repair: reinstalling the *running* version must find that
+/// version's assets, not a newer release's. Derived from [`api_endpoint`] so the
+/// `SUTURA_UPDATE_API` test hook applies here too -- an override of the
+/// `/releases/latest` shape has a sibling `/releases/tags/<tag>`.
+pub fn fetch_release_by_tag(tag: &str) -> Option<Value> {
+    let api = api_endpoint();
+    // `GITHUB_API` is the `/releases/latest` endpoint, so its sibling is
+    // `/releases/tags/<tag>`. An override is assumed to have the same shape --
+    // that is what the test hook documents.
+    let url = match api.rsplit_once('/') {
+        Some((base, _last)) => format!("{base}/tags/{tag}"),
+        None => format!("{api}/tags/{tag}"),
+    };
+    http::get_json(&url)
+}
+
 /// Outcome of a check.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UpdateStatus {
@@ -403,5 +422,43 @@ mod tests {
         std::env::remove_var(API_ENV);
         std::env::remove_var("XDG_CONFIG_HOME");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `fetch_release_by_tag` must address the release for a *specific* tag.
+    ///
+    /// A repair reinstalls the running version, so `/releases/latest` is the
+    /// wrong endpoint: on an older install it would find nothing, and on a newer
+    /// release existing it would silently upgrade. Pin the derived URL so a
+    /// repair can never turn into an update.
+    #[test]
+    fn release_by_tag_addresses_that_tag() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(API_ENV);
+
+        // The default endpoint is `.../releases/latest`, whose sibling is
+        // `.../releases/tags/<tag>`.
+        let base = api_endpoint();
+        assert!(base.ends_with("/releases/latest"), "{base}");
+        let derived = match base.rsplit_once('/') {
+            Some((head, _)) => format!("{head}/tags/v9.9.9"),
+            None => unreachable!(),
+        };
+        assert_eq!(
+            derived,
+            "https://api.github.com/repos/Krateian/Sutura/releases/tags/v9.9.9"
+        );
+
+        // An override keeps the same shape, so the test hook still works.
+        std::env::set_var(API_ENV, "http://127.0.0.1:9/releases/latest");
+        let over = api_endpoint();
+        let over_derived = match over.rsplit_once('/') {
+            Some((head, _)) => format!("{head}/tags/v9.9.9"),
+            None => unreachable!(),
+        };
+        assert_eq!(
+            over_derived,
+            "http://127.0.0.1:9/releases/tags/v9.9.9"
+        );
+        std::env::remove_var(API_ENV);
     }
 }

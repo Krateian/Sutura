@@ -100,6 +100,17 @@ impl Updater {
         std::thread::spawn(move || run_install(tx, tag, current));
     }
 
+    /// "Repair installation": re-install the version already running.
+    ///
+    /// Same worker and the same download/verify/swap/rollback path as an update
+    /// -- only the tag differs, and it is the *current* one. Python's
+    /// `self_repair.py` did this by rewriting its install tree; a static binary
+    /// has no tree to rewrite, so the honest equivalent is a verified reinstall.
+    pub fn start_repair_install(&mut self) {
+        let tag = format!("v{}", self.current_version);
+        self.start_install(tag);
+    }
+
     /// Drain worker events. Returns true when the UI should repaint.
     pub fn poll(&mut self) -> bool {
         let mut events = Vec::new();
@@ -142,7 +153,11 @@ fn run_install(tx: Sender<UpdateEvent>, tag: String, current: String) {
         let _ = tx.send(UpdateEvent::Failed(e));
         return;
     }
-    let Some(release) = updater::fetch_latest_release_full() else {
+    // The release for the tag we were asked to install -- not `/releases/latest`.
+    // For an update those are the same; for "repair installation" the tag is the
+    // running version, and fetching latest would find no asset for it (or
+    // silently upgrade, which is not what a repair promises).
+    let Some(release) = updater::fetch_release_by_tag(&tag) else {
         let _ = tx.send(UpdateEvent::Failed("could not read the release".into()));
         return;
     };

@@ -1253,6 +1253,7 @@ impl eframe::App for SuturaApp {
             let mut open = self.updater_open;
             let mut check = false;
             let mut install: Option<String> = None;
+            let mut repair = false;
             let mut show_notes = false;
             {
                 use crate::updater_ui::Phase;
@@ -1305,16 +1306,37 @@ impl eframe::App for SuturaApp {
                             }
                         }
                         ui.separator();
-                        ui.add_enabled(
-                            !u.is_busy(),
-                            egui::Button::new(rust_i18n::t!("app.updater_check").to_string()),
-                        )
-                        .clicked()
-                        .then(|| check = true);
+                        ui.horizontal(|ui| {
+                            ui.add_enabled(
+                                !u.is_busy(),
+                                egui::Button::new(rust_i18n::t!("app.updater_check").to_string()),
+                            )
+                            .clicked()
+                            .then(|| check = true);
+                            // Reinstalls the running version over itself. The
+                            // static-binary answer to Python's self-repair:
+                            // there is no venv to rewrite, but a damaged
+                            // install can still be re-downloaded, verified and
+                            // swapped in, with rollback if it will not start.
+                            ui.add_enabled(
+                                !u.is_busy(),
+                                egui::Button::new(
+                                    rust_i18n::t!("app.updater_repair").to_string(),
+                                ),
+                            )
+                            .on_hover_text(
+                                rust_i18n::t!("app.updater_repair_tip").to_string(),
+                            )
+                            .clicked()
+                            .then(|| repair = true);
+                        });
                     });
             }
             if check {
                 self.updater.start_check(true);
+            }
+            if repair {
+                self.updater.start_repair_install();
             }
             if let Some(tag) = install {
                 self.updater.start_install(tag);

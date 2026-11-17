@@ -153,6 +153,13 @@ struct Cli {
     /// because it removes the old runtime.
     #[arg(long = "migrate-from-python")]
     migrate_from_python: bool,
+    /// Reinstall this version over itself (repairs a damaged install).
+    ///
+    /// Re-downloads the release asset for the **running** version, verifies its
+    /// sha256, swaps it in, and rolls back if the new tree does not start. It
+    /// never changes the version, so it cannot silently update or downgrade.
+    #[arg(long = "repair-install", alias = "repair-installation")]
+    repair_install: bool,
     /// The verified release artifact to install (defaults to the running
     /// binary's own release, which is what a manual run wants).
     #[arg(long = "from-artifact", value_name = "PATH")]
@@ -449,6 +456,12 @@ automatically - download it manually from {} if you accept the new terms.",
     }
 
     if cli.files.is_empty() {
+        // These two act on the *installation*, not on a mesh, so they legitimately
+        // take no positional input. `repair_cmd::run` dispatches them; the usage
+        // error below must not shadow them.
+        if cli.self_repair || cli.repair_install {
+            return repair_cmd::run(&cli);
+        }
         // No positional input: keep the Python CLI's usage error shape.
         return Err((2, Some("no input files".to_string())));
     }
@@ -1113,9 +1126,96 @@ fn run_quiet(binary: &Path, args: &[&str]) -> (i32, String) {
     }
 }
 
+/// `--self-repair` / `--repair-install`: reinstall this version over itself.
+///
+/// The Rust answer to Python's `self_repair.py`. A static binary has no venv to
+/// rewrite, but its *install* can still be damaged, so this re-downloads the
+/// asset for the version already running, verifies it, and swaps it in through
+/// the updater's own backup/health-check/rollback path. It never changes the
+/// version -- a repair that silently updated would be a different operation.
+pub(crate) fn self_repair_command(cli: &Cli) -> Result<(), (u8, Option<String>)> {
+    // Confirmation mirrors `--migrate-from-python`: this replaces files the
+    // user is currently running.
+    if !cli.yes {
+        return Err((
+            2,
+            Some(
+                "--repair-install replaces the installed files; pass --yes to \
+                 confirm"
+                    .to_string(),
+            ),
+        ));
+    }
+    match sutura_core::self_repair::repair_install(None, &run_quiet) {
+        Ok(report) => {
+            // `--json` prints one object and nothing else, so a caller parsing
+            // stdout does not have to strip human lines first.
+            if cli.json {
+                outln!(
+                    "{}",
+                    crate::repair_cmd::py_json(&serde_json::json!({
+                        "repaired": true,
+                        "tag": report.tag,
+                        "backup": report.backup.map(|p| p.display().to_string()),
+                    }))
+                );
+                return Ok(());
+            }
+            if let Some(backup) = &report.backup {
+                outln!("  previous install saved at {}", backup.display());
+            }
+            for note in &report.notes {
+                outln!("  {note}");
+            }
+            outln!("Reinstalled {}.", report.tag);
+            Ok(())
+        }
+        Err(e) => {
+            if cli.json {
+                outln!(
+                    "{}",
+                    crate::repair_cmd::py_json(&serde_json::json!({
+                        "repaired": false,
+                        "error": e.to_string(),
+                    }))
+                );
+            }
+            Err((1, Some(e.to_string())))
+        }
+    }
+}
+
 #[cfg(test)]
 mod migrate_flag_tests {
     use clap::Parser;
+
+    /// `--repair-install` replaces the installed files, so a bare invocation
+    /// must refuse with a usage error rather than start swapping them.
+    #[test]
+    fn repair_install_requires_confirmation() {
+        let cli = <super::Cli as Parser>::try_parse_from(["sutura", "--repair-install"])
+            .expect("parses");
+        let err = super::self_repair_command(&cli).expect_err("must refuse without --yes");
+        assert_eq!(err.0, 2, "usage error, not a crash");
+        assert!(
+            err.1.unwrap_or_default().contains("--yes"),
+            "the message must say what is missing"
+        );
+    }
+
+    /// The two spellings are the same switch, and `--self-repair` (Python's
+    /// name) still routes here so an existing script keeps working.
+    #[test]
+    fn both_spellings_reach_the_repair_path() {
+        for flag in ["--repair-install", "--self-repair"] {
+            let cli = <super::Cli as Parser>::try_parse_from(["sutura", flag])
+                .unwrap_or_else(|e| panic!("{flag} must parse: {e}"));
+            assert!(
+                cli.repair_install || cli.self_repair,
+                "{flag} must reach the repair path"
+            );
+        }
+    }
 
     /// `--migrate-from-python` must refuse without `--yes`.
     ///

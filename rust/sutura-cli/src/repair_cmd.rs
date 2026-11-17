@@ -307,12 +307,8 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             ));
         }
     }
-    if cli.self_repair {
-        return Err(RepairFailure::new(
-            2,
-            "--self-repair is not implemented in the Rust CLI",
-        ));
-    }
+    // `--self-repair` is handled in `run()` (it reinstalls rather than
+    // repairing a mesh), so it is not refused here.
     if let Some(v) = cli.max_geometry_change {
         if v < 0.0 {
             return Err(RepairFailure::new(
@@ -1714,6 +1710,13 @@ fn process_one(
 }
 
 pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
+    // `--self-repair [--repair-install]` reinstalls the running version; it has
+    // no mesh to repair, so it short-circuits before any file handling. Python's
+    // `self_repair.py` did the same job by rewriting its install tree; here the
+    // work is the updater's own download/verify/swap/rollback path, reused.
+    if cli.self_repair || cli.repair_install {
+        return crate::self_repair_command(cli);
+    }
     let (opts, methods_given, methods) = build_options(cli).map_err(|e| (e.code, e.message))?;
     if cli.files.is_empty() {
         return Err((2, Some("no input files".to_string())));

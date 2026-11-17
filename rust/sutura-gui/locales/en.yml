@@ -110,6 +110,8 @@ app:
   updater_whats_new: What's new
   updater_no_notes: No release notes are saved locally.
   updater_check: Check for updates
+  updater_repair: Repair installation
+  updater_repair_tip: Re-download this version, verify it, and reinstall it. Use this if the install is damaged. It never changes the version.
   updater_body: Check for a newer release. Nothing is downloaded or installed until you approve it.
   repeat_pick: Pick repeat points
   repeat_pick_title: Repeat Pick

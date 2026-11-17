@@ -24,6 +24,7 @@ pub mod p_weld;
 pub mod ranking;
 pub mod reduce;
 pub mod self_check;
+pub mod self_repair;
 pub mod updater;
 pub mod validate;
 pub mod closing;

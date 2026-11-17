@@ -110,6 +110,8 @@ app:
   updater_whats_new: Neler yeni
   updater_no_notes: Yerel olarak kayıtlı sürüm notu yok.
   updater_check: Güncellemeleri kontrol et
+  updater_repair: Kurulumu onar
+  updater_repair_tip: Bu sürümü yeniden indirip doğrular ve yeniden kurar. Kurulum bozulduysa kullanın. Sürümü asla değiştirmez.
   updater_body: Yeni bir sürüm olup olmadığını denetleyin. Onaylamadan hiçbir şey indirilmez veya kurulmaz.
   repeat_pick: Tekrar noktalarını seç
   repeat_pick_title: Tekrar Noktası Seçimi
