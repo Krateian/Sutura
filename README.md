@@ -14,12 +14,12 @@
   <a href="https://github.com/Krateian/Sutura/releases"><img src="https://img.shields.io/github/downloads/Krateian/Sutura/total?cacheSeconds=3600&color=2ea44f" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-informational" alt="Platforms">
   <img src="https://img.shields.io/badge/core-Rust-dea584?logo=rust&logoColor=white" alt="Rust core">
-  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <br>
   <a href="https://github.com/Krateian/Sutura/actions/workflows/ci.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Krateian/Sutura/actions/workflows/build-sutura-geom.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/build-sutura-geom.yml/badge.svg" alt="sutura_geom wheels"></a>
+  <a href="https://github.com/Krateian/Sutura/actions/workflows/linux-install.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/linux-install.yml/badge.svg" alt="Linux install E2E"></a>
+  <a href="https://github.com/Krateian/Sutura/actions/workflows/macos-install.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/macos-install.yml/badge.svg" alt="macOS install E2E"></a>
   <a href="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
-  <a href="https://github.com/Krateian/Sutura/actions/workflows/build-appimage.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/build-appimage.yml/badge.svg" alt="AppImage build"></a>
-  <a href="https://github.com/Krateian/Sutura/actions/workflows/build-macos.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/build-macos.yml/badge.svg" alt="macOS build"></a>
   <br>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue" alt="License"></a>
   <a href="https://docs.google.com/forms/d/e/1FAIpQLSdqFrO11fjIBACrFwovOKGPpKVdnPcwxW0VRaQfwCqGayfJig/viewform"><img src="https://img.shields.io/badge/commercial%20license-request%20form-blue" alt="Commercial license"></a>
@@ -74,29 +74,36 @@ a file-manager right-click or an OrcaSlicer plugin.
 
 ## Install
 
-**Linux** — one line (installs the latest `main`; re-running updates it):
+Sutura is a native program: no Python, no virtualenv, no conda. It runs on
+**Linux (x86_64, aarch64)** and **macOS (Apple Silicon, Intel)**.
+
+Download the package for your machine from the
+[releases page](https://github.com/Krateian/Sutura/releases/latest), put the
+installer beside it, and run it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Krateian/Sutura/main/install.sh | bash
+bash install-rust.sh --from Sutura-rust-v<version>-x86_64.tar.gz    # Linux
+bash install-macos-rust.sh --from Sutura-rust-v<version>-arm64.dmg  # macOS
 ```
 
-A self-contained **AppImage** is attached to every
-[release](https://github.com/Krateian/Sutura/releases/latest):
+Every package ships a `.sha256` beside it, and the installer verifies it. Both
+installers detect your architecture, so they refuse the wrong package instead of
+guessing; `--dry-run` prints what would be written.
 
-```sh
-chmod +x Sutura-x86_64.AppImage && ./Sutura-x86_64.AppImage
-```
+> The Rust packages are built as workflow artifacts today — the build creates no
+> release yet. Until the first Rust release is published, the installers work
+> with a package you place beside them.
 
-**macOS** — download `Sutura-vX.Y.Z.dmg` from the
-[latest release](https://github.com/Krateian/Sutura/releases/latest) (unsigned:
-open it with right-click → *Open* the first time), or install from source:
+Requirements, the integrity check, updates and uninstalling are covered in
+[Install and requirements](docs/guide/install.md).
 
-```sh
-git clone https://github.com/Krateian/Sutura.git && cd Sutura && ./install-macos.sh
-```
+### Upgrading from the Python version
 
-Requirements, the fTetWild tier, updates and uninstalling are covered
-in [Install and requirements](docs/guide/install.md).
+A Python install is migrated, not reinstalled: your history and learning data
+carry over, the previous install is saved where you can get back to it, and
+nothing is removed until the new build has passed its health check. The last
+Python release can hand over by itself, or you can run it directly — see
+[Moving from the Python version](MIGRATE.md).
 
 ## Use
 
@@ -105,8 +112,18 @@ sutura model.stl                 # writes model_fixed.stl
 sutura model.3mf -o fixed.3mf    # choose the output name
 sutura model.stl --human         # readable report of what was fixed
 sutura model.stl --no-fidelity   # skip the shape-fidelity score (report only)
+sutura model.stl --wall-min-thickness 1.5   # thicken walls below 1.5 mm (opt-in)
 sutura validate model.stl        # analyse only, change nothing
 sutura a.stl b.stl c.3mf         # batch
+```
+
+Managing the install:
+
+```sh
+sutura --check-update   # is there a newer release? (reports only)
+sutura --update         # install it — asks first, default answer is no
+sutura --rollback       # restore the newest backup
+sutura --whats-new      # release notes from the last install, offline
 ```
 
 - **GUI:** launch *Sutura* from the application menu or Spotlight, add files
@@ -173,6 +190,7 @@ The full walk-through is in [How Sutura works](docs/guide/how-it-works.md).
 | Repair methods, intensity presets and external engines | [Methods](docs/guide/methods.md) | [Yöntemler](docs/guide/tr/methods.md) |
 | Policy file: tunable sections and locked safety gates | [Policy](docs/guide/policy.md) | [Politika](docs/guide/tr/policy.md) |
 | Install, requirements, updates and removal | [Install](docs/guide/install.md) | [Kurulum](docs/guide/tr/install.md) |
+| Moving from the Python version | [MIGRATE.md](MIGRATE.md) | [MIGRATE.tr.md](MIGRATE.tr.md) |
 | CLI, GUI, reports, Dolphin, Quick Action, OrcaSlicer | [Usage](docs/guide/usage.md) | [Kullanım](docs/guide/tr/usage.md) |
 | Common problems and fixes | [Troubleshooting](docs/guide/troubleshooting.md) | [Sorun giderme](docs/guide/tr/troubleshooting.md) |
 | Maturity of each area | [Feature status](docs/guide/feature-status.md) | [Özellik durumu](docs/guide/tr/feature-status.md) |
