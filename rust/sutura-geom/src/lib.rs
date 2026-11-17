@@ -3791,8 +3791,7 @@ fn parse_mesh_i64(
     Ok((rv, rt))
 }
 
-/// `wall._morphological_dilate`, exposed so the Python wall module can use the
-/// same dilation the Rust tier uses.
+#[cfg(feature = "python")]
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
