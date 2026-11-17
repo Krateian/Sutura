@@ -78,14 +78,14 @@ fn clean_and_orient(v: &[[f64; 3]], t: &[[i64; 3]]) -> (Vec<[f64; 3]>, Vec<[i64;
 
 /// Run the wall-thicken tier.
 ///
-/// `cur_v`/`cur_t` is the current (ladder) mesh; `input_v`/`input_t` is the
-/// original input, which the producer runs on — the thickness measurement must
-/// see the user's geometry, not a partially repaired version.
+/// `cur_v`/`cur_t` is the mesh the ladder has produced so far, and it is what
+/// the producer measures. That matches Python, whose `pipeline_repair` passes
+/// `v`/`t` — names the pipeline rebinds whenever an earlier tier is adopted
+/// (`pipeline.py:504-506` for Flap), not the pristine input. Measuring the
+/// original instead gave `thin_before` 2507 where Python reported 2537.
 pub fn run(
     cur_v: &[[f64; 3]],
     cur_t: &[[i64; 3]],
-    input_v: &[[f64; 3]],
-    input_t: &[[i64; 3]],
     min_thickness: Option<f64>,
     resolution: usize,
     samples: usize,
@@ -95,8 +95,8 @@ pub fn run(
 ) -> Outcome {
     let mut rec = rec_base();
 
-    let in_v: Vec<[f64; 3]> = input_v.to_vec();
-    let in_t: Vec<[usize; 3]> = input_t
+    let in_v: Vec<[f64; 3]> = cur_v.to_vec();
+    let in_t: Vec<[usize; 3]> = cur_t
         .iter()
         .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
         .collect();
@@ -178,8 +178,11 @@ pub fn run(
     let (gv, gt, gate_rec) = gate::decide(
         cur_v,
         cur_t,
-        input_v,
-        input_t,
+        // The gate's "input" pair is the same current mesh: Python calls
+        // `tier_wall_decide(cur_v, cur_t, v, t, ...)` where `v`/`t` are the
+        // ladder mesh too, not the pristine input.
+        cur_v,
+        cur_t,
         &cv,
         &ct,
         &Value::Object(rec.clone()),

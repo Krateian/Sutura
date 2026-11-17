@@ -3399,8 +3399,11 @@ fn repair_impl(
         let outcome = crate::wall_tier::run(
             &cur_v,
             &cur_t,
-            verts,
-            tris,
+            // `cur_v`/`cur_t` is what Python measures: the pipeline rebinds
+            // `v`/`t` whenever an earlier tier is adopted (Flap does, at
+            // pipeline.py:504-506), so the wall tier sees the ladder mesh, not
+            // the pristine input. Passing the original gave `thin_before` 2507
+            // where Python reported 2537 on broken_37011.
             opts.wall_min_thickness,
             crate::wall_tier::DEFAULT_RESOLUTION,
             crate::wall_tier::DEFAULT_SAMPLES,
