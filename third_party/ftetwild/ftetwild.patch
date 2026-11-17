@@ -55,6 +55,27 @@ index c121794..9dc2ef5 100644
          int res = (gen()-std::mt19937::min())/double(std::mt19937::max()-std::mt19937::min())*(max-min)+min;
  
          return res;
+diff --git a/src/Mesh.hpp b/src/Mesh.hpp
+--- a/src/Mesh.hpp
++++ b/src/Mesh.hpp
+@@ -109,7 +109,7 @@
+ 
+         inline void reset() {
+             is_surface_fs = {{NOT_SURFACE, NOT_SURFACE, NOT_SURFACE, NOT_SURFACE}};
+-            is_bbox_fs = {{NOT_BBOX, NOT_BBOX, NOT_BBOX, NOT_BBOX}};
++            is_bbox_fs = {{static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX)}};
+             opp_t_ids = {{OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN}};
+             surface_tags = {{0, 0, 0, 0}};
+ 
+@@ -150,7 +150,7 @@
+         }
+ 
+         std::array<char, 4> is_surface_fs = {{NOT_SURFACE, NOT_SURFACE, NOT_SURFACE, NOT_SURFACE}};
+-        std::array<char, 4> is_bbox_fs = {{NOT_BBOX, NOT_BBOX, NOT_BBOX, NOT_BBOX}};
++        std::array<char, 4> is_bbox_fs = {{static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX)}};
+         std::array<int, 4> opp_t_ids = {{OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN}};
+         std::array<char, 4> surface_tags = {{0, 0, 0, 0}};
+ 
 diff --git a/src/TriangleInsertion.cpp b/src/TriangleInsertion.cpp
 index bc4b168..0629915 100644
 --- a/src/TriangleInsertion.cpp
