@@ -36,6 +36,21 @@ const V2_WEIGHTS: [f64; 7] = [2.3823, 2.9866, -0.9694, -0.5230, 0.5083, 2.2289, 
 const V2_MEAN: [f64; 6] = [20.9532, 30.5532, 35.5085, 4.9296, 0.2917, 0.5122];
 const V2_STD: [f64; 6] = [24.1622, 17.6785, 30.5004, 6.4313, 0.3129, 0.2819];
 
+/// Opt-in edge-tiebreak head (`--experimental-edge-tiebreak`): the base six
+/// features plus the five FAZ10 signals.
+const V2_EXTRA_WEIGHTS: [f64; 12] = [
+    2.3710, 1.2358, -0.7830, 0.0135, 0.5777, 2.1649, 1.1438, 0.2955, 1.9530, 0.0802, 0.0848,
+    0.2433,
+];
+const V2_EXTRA_MEAN: [f64; 11] = [
+    20.9532, 30.5532, 35.5085, 4.9296, 0.2917, 0.5122, 8880301.1344, 0.2947, 2.6936, 286513.4431,
+    0.5724,
+];
+const V2_EXTRA_STD: [f64; 11] = [
+    24.1622, 17.6785, 30.5004, 6.4313, 0.3129, 0.2819, 44317875.2737, 0.2680, 0.3578,
+    1277023.6886, 0.8934,
+];
+
 pub use sutura_geom::classify::py_round;
 
 fn sigmoid(x: f64) -> f64 {
@@ -107,6 +122,21 @@ fn head_p_mechanical(features: [f64; 6]) -> f64 {
     sigmoid(z)
 }
 
+fn head_p_mechanical_extra(base: [f64; 6], extra: [f64; 5]) -> f64 {
+    let mut x = [0.0f64; 11];
+    x[..6].copy_from_slice(&base);
+    x[6..].copy_from_slice(&extra);
+    let z = V2_EXTRA_WEIGHTS[0]
+        + x.iter()
+            .enumerate()
+            .map(|(i, value)| {
+                let xs = (value - V2_EXTRA_MEAN[i]) / V2_EXTRA_STD[i];
+                V2_EXTRA_WEIGHTS[i + 1] * xs
+            })
+            .sum::<f64>();
+    sigmoid(z)
+}
+
 fn classic_verdict(mechanical: f64, organic: f64) -> (&'static str, f64) {
     if mechanical >= MECH_FLOOR {
         ("mechanical", mechanical)
@@ -119,6 +149,15 @@ fn classic_verdict(mechanical: f64, organic: f64) -> (&'static str, f64) {
 
 /// `classify_mesh(..., engine='experimental')` with the baked head.
 pub fn classify_v2(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Value {
+    classify_v2_extra(verts, tris, false)
+}
+
+/// The v2 head, optionally with the opt-in edge-tiebreak 11-feature model.
+pub fn classify_v2_extra(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    extra_features: bool,
+) -> Value {
     let (near90, flat, gentle) = dihedral_stats(verts, tris);
     let (plane_count, plane_area) = ransac_plane_features(verts, tris);
     let developable = curvature_developable_fraction(verts, tris);
@@ -137,14 +176,25 @@ pub fn classify_v2(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Value {
     metrics.insert("plane_area".into(), json!(plane_area));
     metrics.insert("developable_fraction".into(), json!(developable));
 
-    let p_mech = head_p_mechanical([
+    let base = [
         near90,
         flat,
         gentle,
         plane_count as f64,
         plane_area,
         developable,
-    ]);
+    ];
+    let p_mech = if extra_features {
+        let extra = sutura_geom::classify::edge_extra_features(verts, tris);
+        metrics.insert("edge_oppmax_std".into(), json!(py_round(extra[0], 4)));
+        metrics.insert("edge_don_mean".into(), json!(py_round(extra[1], 4)));
+        metrics.insert("edge_dihed_mean".into(), json!(py_round(extra[2], 4)));
+        metrics.insert("edge_rmin_mean".into(), json!(py_round(extra[3], 4)));
+        metrics.insert("edge_gc_mean".into(), json!(py_round(extra[4], 4)));
+        head_p_mechanical_extra(base, extra)
+    } else {
+        head_p_mechanical(base)
+    };
     if !(0.0..=1.0).contains(&p_mech) {
         return classify_classic(verts, tris);
     }
@@ -174,9 +224,19 @@ pub fn classify_mesh(
     tris: &[[usize; 3]],
     engine: &str,
 ) -> Value {
+    classify_mesh_with(verts, tris, engine, false)
+}
+
+/// `classify_mesh` with the opt-in edge-tiebreak head (`extra_features`).
+pub fn classify_mesh_with(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    engine: &str,
+    extra_features: bool,
+) -> Value {
     if engine == "classic" {
         classify_classic(verts, tris)
     } else {
-        classify_v2(verts, tris)
+        classify_v2_extra(verts, tris, extra_features)
     }
 }

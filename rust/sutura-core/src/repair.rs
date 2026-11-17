@@ -23,7 +23,7 @@ use sutura_geom::manifold::{outer_shell_union_core, stage2_rebuild_core, Stage2R
 use sutura_geom::shell::{shell_analyze_and_filter, ShellAnalysisResult, ShellConfig};
 
 use crate::analysis::{analyze_mesh, Analysis as MeshAnalysis};
-use crate::classify::classify_mesh;
+use crate::classify::classify_mesh_with;
 use crate::closing::{flat_back_close_with_cancel, poisson_close_with_cancel};
 use crate::config::intensity::{resolve_intensity, IntensitySpec};
 use crate::config::policy::{load_policy, LoadedPolicy, PolicyValue};
@@ -226,6 +226,15 @@ pub struct RepairOptions {
     /// the auto deep-repair ladder so it does not force Graft/fTetWild.
     #[serde(default)]
     pub auto_escalation: Option<bool>,
+    /// Opt-in `--experimental-edge-tiebreak` classifier head.
+    #[serde(default)]
+    pub extra_features: bool,
+    /// Opt-in `--experimental-autorefine` snap-rounding pass.
+    #[serde(default)]
+    pub autorefine: bool,
+    /// Opt-in `--experimental-indirect-autorefine` exact arrangement split.
+    #[serde(default)]
+    pub indirect_autorefine: bool,
 }
 
 impl Default for RepairOptions {
@@ -267,6 +276,9 @@ impl Default for RepairOptions {
             forced_methods: Vec::new(),
             engines: None,
             auto_escalation: None,
+            extra_features: false,
+            autorefine: false,
+            indirect_autorefine: false,
         }
     }
 }
@@ -862,7 +874,7 @@ fn resolve_triage(
         .iter()
         .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
         .collect();
-    let cls = classify_mesh(verts, &tri_usize, "experimental");
+    let cls = classify_mesh_with(verts, &tri_usize, "experimental", opts.extra_features);
     let mesh_type = cls
         .get("type")
         .and_then(Value::as_str)
@@ -2391,6 +2403,40 @@ fn unavailable_tiers(ftetwild_reason: Option<&str>) -> Value {
     Value::Object(tiers)
 }
 
+/// Re-run the Stage-1 chain on an opt-in pre-processed candidate.
+fn stage1_variant(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+    max_hole: i64,
+    min_component: i64,
+    join_components: bool,
+    cancel: &CancelToken,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
+    let chain = Value::Array(stage1_chain(max_hole, min_component, join_components));
+    let (out_v, out_t, _applied, _skipped, _small) = apply_chain_with_cancel(
+        verts,
+        tris,
+        &chain,
+        Some(cancel as &dyn sutura_geom::cancel::Cancel),
+    );
+    (out_v, out_t)
+}
+
+/// Python's candidate guard: holes and non-manifold edges no worse than the
+/// baseline chain output.
+fn candidate_no_worse(
+    cand_v: &[[f64; 3]],
+    cand_t: &[[i64; 3]],
+    base_v: &[[f64; 3]],
+    base_t: &[[i64; 3]],
+) -> bool {
+    let cand_holes = boundary_loop_stats(cand_t).0;
+    let cand_nm = common::topology_summary(cand_v, cand_t).non_two_manifold_edges;
+    let base_holes = boundary_loop_stats(base_t).0;
+    let base_nm = common::topology_summary(base_v, base_t).non_two_manifold_edges;
+    cand_holes <= base_holes && cand_nm <= base_nm
+}
+
 /// Repair one mesh given as float64/int64 arrays.
 pub fn repair(
     verts: &[[f64; 3]],
@@ -2710,19 +2756,95 @@ fn repair_impl(
     if cancel.is_cancelled() {
         return cancelled();
     }
-    if opts.join_components {
-        let (vj, tj, moved, remaining) = crate::stage1::chain::join_small_components(
-            &cur_v,
-            &cur_t,
-            min_component,
-            max_hole,
-        );
-        cur_v = vj;
-        cur_t = tj;
+
+    // Opt-in autorefine prototypes: re-run the SAME Stage-1 chain on the
+    // pre-processed input and adopt the candidate only when holes and
+    // non-manifold edges are no worse. Python order is autorefine, then the
+    // exact indirect arrangement, then delete-fallback/join.
+    if opts.autorefine {
+        let (ar_v, ar_t, rec) = crate::autorefine::autorefine(&s1_in_v, &s1_in_t);
+        let mut rep = rec;
+        if ar_t.is_empty() {
+            rep["skipped"] = Value::Bool(true);
+        } else {
+            let (av, at) = stage1_variant(
+                &ar_v, &ar_t, max_hole, min_component, opts.join_components, cancel,
+            );
+            let adopted = candidate_no_worse(&av, &at, &cur_v, &cur_t);
+            rep["adopted"] = Value::Bool(adopted);
+            rep["skipped"] = Value::Bool(false);
+            if adopted {
+                cur_v = av;
+                cur_t = at;
+            }
+        }
+        stats.insert("experimental_autorefine".into(), rep);
+        if cancel.is_cancelled() {
+            return cancelled();
+        }
+    }
+    if opts.indirect_autorefine {
+        let mut rep = Map::new();
+        rep.insert("skipped".into(), Value::Bool(false));
+        let source_t: Vec<[usize; 3]> = s1_in_t
+            .iter()
+            .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+            .collect();
+        match sutura_geom::arrangement::arrangement_lite_core(&s1_in_v, &source_t) {
+            Ok((pool, out_t, report)) => {
+                let av: Vec<[f64; 3]> = pool
+                    .iter()
+                    .map(|p| {
+                        let p = sutura_geom::arrangement::rat3_to_f64(p);
+                        [p[0] as f32 as f64, p[1] as f32 as f64, p[2] as f32 as f64]
+                    })
+                    .collect();
+                let at: Vec<[i64; 3]> = out_t
+                    .iter()
+                    .map(|t| [t[0] as i64, t[1] as i64, t[2] as i64])
+                    .collect();
+                rep.insert("ran".into(), Value::Bool(true));
+                rep.insert(
+                    "si_before".into(),
+                    Value::from(report.si_pairs_detected as i64),
+                );
+                rep.insert("si_after".into(), Value::from(0i64));
+                rep.insert("faces_before".into(), Value::from(report.input_faces as i64));
+                rep.insert("faces_after".into(), Value::from(report.output_faces as i64));
+                let mut degen = Map::new();
+                for (key, value) in report.degenerate_cases {
+                    degen.insert(key, Value::from(value as i64));
+                }
+                rep.insert("degenerate_cases".into(), Value::Object(degen));
+                rep.insert("error".into(), Value::Null);
+                if !at.is_empty() {
+                    let (cv, ct) = stage1_variant(
+                        &av, &at, max_hole, min_component, opts.join_components, cancel,
+                    );
+                    let adopted = candidate_no_worse(&cv, &ct, &cur_v, &cur_t);
+                    rep.insert("adopted".into(), Value::Bool(adopted));
+                    if adopted {
+                        cur_v = cv;
+                        cur_t = ct;
+                    }
+                }
+            }
+            Err(err) => {
+                rep.insert(
+                    "error".into(),
+                    Value::from(format!(
+                        "indirect arrangement-lite failed: {err}"
+                    )),
+                );
+            }
+        }
         stats.insert(
-            "experimental_join_components".into(),
-            json!({"moved": moved, "remaining_small": remaining}),
+            "experimental_indirect_autorefine".into(),
+            Value::Object(rep),
         );
+        if cancel.is_cancelled() {
+            return cancelled();
+        }
     }
 
     let mut after = common::topology_summary(&cur_v, &cur_t);
@@ -2743,6 +2865,22 @@ fn repair_impl(
             applied = f_applied;
             skipped = f_skipped;
         }
+    }
+
+    if opts.join_components {
+        let (vj, tj, moved, remaining) = crate::stage1::chain::join_small_components(
+            &cur_v,
+            &cur_t,
+            min_component,
+            max_hole,
+        );
+        cur_v = vj;
+        cur_t = tj;
+        after = common::topology_summary(&cur_v, &cur_t);
+        stats.insert(
+            "experimental_join_components".into(),
+            json!({"moved": moved, "remaining_small": remaining}),
+        );
     }
 
     trace.record(

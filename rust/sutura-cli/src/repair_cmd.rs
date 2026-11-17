@@ -254,24 +254,6 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             "--auto-reorder is not implemented in the Rust CLI",
         ));
     }
-    for (flag, set) in [
-        ("--experimental-autorefine", cli.experimental_autorefine),
-        (
-            "--experimental-indirect-autorefine",
-            cli.experimental_indirect_autorefine,
-        ),
-        (
-            "--experimental-edge-tiebreak",
-            cli.experimental_edge_tiebreak,
-        ),
-    ] {
-        if set {
-            return Err(RepairFailure::new(
-                2,
-                format!("{flag} is not implemented in the Rust CLI"),
-            ));
-        }
-    }
     if cli.experimental_dressing {
         return Err(RepairFailure::new(
             2,
@@ -406,6 +388,9 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         forced_methods: Vec::new(),
         engines: engines_sel,
         auto_escalation: None,
+        extra_features: cli.experimental_edge_tiebreak,
+        autorefine: cli.experimental_autorefine,
+        indirect_autorefine: cli.experimental_indirect_autorefine,
     };
     if methods.contains(&13) {
         opts.graft = Some(true);

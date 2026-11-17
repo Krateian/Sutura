@@ -420,6 +420,39 @@ pub fn orient3d_indirect_one_lpi(
     Some((sign * d_sign) as f64)
 }
 
+/// Adaptive explicit `orient3d`: the float64 4x4 determinant when it is
+/// comfortably away from zero, otherwise the exact `robust` determinant.
+/// Mirrors `autorefine.orient3d_adaptive` (the Python fallback returns the
+/// exact determinant magnitude, not just its sign).
+pub fn orient3d_adaptive_coords(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    let (ax, ay, az) = (a[0], a[1], a[2]);
+    let (bx, by, bz) = (b[0], b[1], b[2]);
+    let (cx, cy, cz) = (c[0], c[1], c[2]);
+    let (dx, dy, dz) = (d[0], d[1], d[2]);
+    let det = (bx - ax) * ((cy - ay) * (dz - az) - (cz - az) * (dy - ay))
+        - (by - ay) * ((cx - ax) * (dz - az) - (cz - az) * (dx - ax))
+        + (bz - az) * ((cx - ax) * (dy - ay) - (cy - ay) * (dx - ax));
+    let scale = (bx - ax).abs()
+        + (by - ay).abs()
+        + (bz - az).abs()
+        + (cx - ax).abs()
+        + (cy - ay).abs()
+        + (cz - az).abs()
+        + (dx - ax).abs()
+        + (dy - ay).abs()
+        + (dz - az).abs();
+    let floor = 1e-14 * scale.max(1e-300) * scale.max(1e-300);
+    if det.abs() > floor {
+        return det;
+    }
+    robust_orient3d(
+        Coord3D { x: ax, y: ay, z: az },
+        Coord3D { x: bx, y: by, z: bz },
+        Coord3D { x: cx, y: cy, z: cz },
+        Coord3D { x: dx, y: dy, z: dz },
+    )
+}
+
 /// Convenience: `orient3d_sign` where the arguments are explicit points.
 pub fn orient3d_sign_explicit(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
     orient3d_sign(

@@ -149,6 +149,10 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 'engines': (sorted(engines.keys())
                             if engines is not None else None),
                 'auto_escalation': bool(auto_escalation),
+                'join_components': bool(join_components),
+                'extra_features': bool(extra_features),
+                'autorefine': bool(autorefine),
+                'indirect_autorefine': bool(indirect_autorefine),
             }
             def _rust_call(flap_value, tamponade_value):
                 call_opts = dict(opts)
@@ -295,6 +299,10 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                     'wall_thicken': _pb(wall_thicken), 'repeat': repeat,
                     'solid_engine': solid_engine, 'si_mode': si_mode,
                     'time_budget_s': None, 'seed': 0,
+                    'join_components': bool(join_components),
+                    'extra_features': bool(extra_features),
+                    'autorefine': bool(autorefine),
+                    'indirect_autorefine': bool(indirect_autorefine),
                 }
                 rv, rt, rj = core.pipeline_repair(
                     np.ascontiguousarray(verts, dtype=np.float64),
