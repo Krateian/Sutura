@@ -21,30 +21,35 @@ güvenilir şekilde algılayabilir.
 
 ## Bilinen sınırlamalar
 
+* **Yalnızca dört platform.** Paketler Linux x86_64, Linux aarch64, macOS arm64
+  ve macOS Intel için vardır — Python sürümünün kapsadığı küme. Windows
+  derlemesi yoktur ve bunların dışındaki bir hedefte `--check-update` ile
+  `--repair-install` indirecek bir şey bulamaz ve bunu söyler.
+* **`--rollback` yalnızca en yeni yedeği geri yükler.** İki yedek saklanır
+  (`~/.local/share/sutura.backup/<version>/`) ve her güncellemede üçüncü en
+  yeni silinir. Daha eskisini seçecek bir komut yoktur. Python dönemine ait
+  yedek bilerek bu döngünün dışında, `~/.local/share/sutura.backup.python-<zaman>/`
+  içinde tutulur; böylece silinemez — bkz. [MIGRATE.md](../../../MIGRATE.tr.md).
+* **`--whats-new` önce başarılı bir kurulum ister.** Notlar, bir güncelleme veya
+  `--repair-install` başarılı olduğunda yazılan bir anlık görüntüdür; bu yüzden
+  yeni bir kurulumda gösterilecek bir şey yoktur ve komut sürümler sayfasını
+  işaret eder.
 * **macOS'ta sağ tık, Dolphin tarzı menü değil Quick Action gerektirir.**
   macOS'ta ServiceMenu karşılığı yoktur; kurulumcu bunun yerine
   `~/Library/Services/` içine bir Finder **Quick Action** ("Sutura — Repair")
   ekler; sağ tık → Quick Actions altında her seçili dosya için görünür, yalnızca
   STL/3MF dosyaları onarılır, diğer seçimler bildirimle atlanır. Quick Action,
-  bir PyInstaller `Sutura.app` içindeki paketli `sutura-cli`'yi çağırır; bu yüzden yalnızca böyle bir uygulama mevcutsa
-  (`/Applications` veya `~/Applications` içinde) onarım yapar — dev kurulum
-  sarmalayıcı uygulaması tek başına paketli CLI içermez. İndirilmiş (karantinalı)
-  bir `Sutura.app`, Quick Action onu çalıştırmadan önce bir kez sağ tık → Aç
-  ile açılmalıdır (Gatekeeper; bildirim size bunu söyler).
-* **macOS kaldırma betiği yok.** Linux `uninstall.sh`'inin macOS karşılığı
-  yoktur; macOS kurulumunu kaldırmak elle yapılır (macOS kurulum bölümündeki
-  "macOS kurulumunu kaldırma" bölümüne bakın).
-* **Yerel KDE dosya diyaloğu.** GUI, QFileDialog'un yerel KDE diyaloğunu
-  (lastik bant dikdörtgen seçimi dahil) kullanması için
-  `QT_QPA_PLATFORMTHEME=kde` ayarlar ve `QT_PLUGIN_PATH`'i
-  `/usr/lib/qt6/plugins`'e yönlendirir. Bu yalnızca sistem Qt sürümü
-  paketlenmiş PySide6 Qt'siyle eşleştiğinde çalışır — GUI, sürümleri
-  (`qmake` ile) kontrol eder ve sistem eklentilerini yalnızca eşleşmede
-  kullanır. Farklı olduklarında (ör. sistem Qt 6.11.2'ye karşı paketli
-  6.11.1), sistem platform eklentileri paketli Qt'ye yüklenemez, bu yüzden
-  GUI, Qt'yi kendi paketli eklentilerinde tutar ve gömülü diyaloğa geri
-  döner — dikdörtgen seçim kullanılamayabilir, ama Ctrl/Shift+tık her zaman
-  çalışır.
+  `Sutura.app` içindeki CLI'yi kullanır; bu yüzden yalnızca böyle bir uygulama
+  mevcutsa (`~/Applications` içinde) onarım yapar. İndirilmiş (karantinalı) bir
+  `Sutura.app`, Quick Action onu çalıştırmadan önce bir kez sağ tık → Aç ile
+  açılmalıdır (Gatekeeper; bildirim size bunu söyler).
+* **macOS uygulaması notarize edilmemiştir.** Ad-hoc imzalıdır, bu yüzden ilk
+  açılışta *tanımlanamayan geliştirici* uyarısı görünür; bir kez sağ tık → Aç
+  ile açın. macOS kurulumunu kaldırmak `bash uninstall-rust.sh` ile yapılır; bu
+  betik iki platformu da kapsar.
+* **GUI'de KDE dosya diyaloğu.** Yerel KDE dosya diyaloğu masaüstünüzde
+  `plasma-integration` gerektirir; yoksa GUI kendi diyaloğunu kullanır ve
+  dikdörtgen seçim kullanılamayabilir, ancak Ctrl/Shift+tık her zaman çalışır.
 * **Bağlı bir kabuk içinde kendisiyle kesişimler.** Manifold meshi bir katı
   olarak yeniden kurar, bu iç/örtüşen geometriyi çözer, ama patolojik
   durumlarda yeniden kurma, özellikleri hafifçe yeniden şekillendirebilir.
