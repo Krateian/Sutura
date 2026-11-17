@@ -2502,6 +2502,15 @@ fn repair_impl(
     let input_t = tris.to_vec();
     let mut cur_v = verts.to_vec();
     let mut cur_t = tris.to_vec();
+    // Python keeps a second pair, `v`/`t`, that starts as the input rounded to
+    // float32 (`pipeline.py:151`) and is rebound **only** by the external-engine
+    // adoption and by Flap — not by the Stage-1 chain, which writes to
+    // `verts`/`tris`. The wall tier measures `v`/`t` (`pipeline.py:897`), so it
+    // sees the Flap output but never the Stage-1 output. Tracking it separately
+    // is what makes the tier read the same mesh as Python: measuring `cur_v`
+    // gave 17250 faces on broken_37011 where Python measured 17308.
+    let mut py_v = quantize(verts);
+    let mut py_t = tris.to_vec();
     let mut stage1_snapshot: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>)> = None;
     let mut trace = TraceLog::new();
     let mut stats = Map::new();
@@ -2590,6 +2599,7 @@ fn repair_impl(
     let t_prepass_start = Instant::now();
     if opts.mode == RepairMode::Auto {
         let tamponade_enabled = opts.tamponade != Some(false);
+        let shell_before = (cur_v.clone(), cur_t.clone());
         run_outer_shell_prepass(
             &mut cur_v,
             &mut cur_t,
@@ -2597,6 +2607,12 @@ fn repair_impl(
             tamponade_enabled,
             &mut stats,
         );
+        // Python's `v, t = verts, tris` after an adopted outer-shell extraction
+        // (`pipeline.py:394`); when it is rejected, `cur` is unchanged too.
+        if cur_t != shell_before.1 {
+            py_v = quantize(&cur_v);
+            py_t = cur_t.clone();
+        }
     }
     let before = common::topology_summary(&cur_v, &cur_t);
     let input_components = common::topology_summary(&input_v, &input_t).components;
@@ -2645,6 +2661,10 @@ fn repair_impl(
         if tamponade_prepass_adopted {
             cur_v = quantize(&out_v);
             cur_t = out_t;
+            // Python's `verts, tris = v, t` after an adopted prepass
+            // (`pipeline.py:471`).
+            py_v = cur_v.clone();
+            py_t = cur_t.clone();
         }
         emit_tier(sink, "tamponade_prepass", 2, &rec);
         stats.insert("tamponade".into(), rec);
@@ -2665,6 +2685,10 @@ fn repair_impl(
         if adopted(&rec) {
             cur_v = quantize(&out_v);
             cur_t = out_t;
+            // Python rebinds `v`/`t` here too (`pipeline.py:506`), which is why
+            // the wall tier sees the Flap output but not the Stage-1 output.
+            py_v = cur_v.clone();
+            py_t = cur_t.clone();
         }
         if std::env::var_os("SUTURA_PIPELINE_DEBUG").is_some() {
             eprintln!(
@@ -3396,14 +3420,16 @@ fn repair_impl(
         // non-manifold counts, matching Python's `base_holes`/`base_nm`.
         let base_holes = boundary_loop_stats(&cur_t).0;
         let base_nm = after.non_two_manifold_edges;
+        // Python's tier input is `v`/`t`: the input rounded to float32 at
+        // pipeline entry, rebound by Flap but **not** by the Stage-1 chain. That
+        // is why the measured face count follows the Flap output (17308 on
+        // broken_37011) rather than the Stage-1 output (17250).
         let outcome = crate::wall_tier::run(
+            &py_v,
+            &py_t,
+            // Ladder mesh: used only for the adoption gate's base counts.
             &cur_v,
             &cur_t,
-            // `cur_v`/`cur_t` is what Python measures: the pipeline rebinds
-            // `v`/`t` whenever an earlier tier is adopted (Flap does, at
-            // pipeline.py:504-506), so the wall tier sees the ladder mesh, not
-            // the pristine input. Passing the original gave `thin_before` 2507
-            // where Python reported 2537 on broken_37011.
             opts.wall_min_thickness,
             crate::wall_tier::DEFAULT_RESOLUTION,
             crate::wall_tier::DEFAULT_SAMPLES,

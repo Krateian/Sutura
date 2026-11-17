@@ -78,12 +78,23 @@ fn clean_and_orient(v: &[[f64; 3]], t: &[[i64; 3]]) -> (Vec<[f64; 3]>, Vec<[i64;
 
 /// Run the wall-thicken tier.
 ///
-/// `cur_v`/`cur_t` is the mesh the ladder has produced so far, and it is what
-/// the producer measures. That matches Python, whose `pipeline_repair` passes
-/// `v`/`t` — names the pipeline rebinds whenever an earlier tier is adopted
-/// (`pipeline.py:504-506` for Flap), not the pristine input. Measuring the
-/// original instead gave `thin_before` 2507 where Python reported 2537.
+/// `measure_v`/`measure_t` is what the producer measures, and it is the **input
+/// mesh**, not the ladder result. Python passes `v`/`t` here
+/// (`pipeline.py:897`), and those are rebound only by the external-engine
+/// adoption path at `pipeline.py:181-182` — Flap rebinds them at `:504-506`
+/// *after* this tier, so the wall tier never sees the Flap output.
+///
+/// Verified by dumping the tier's actual argument on `broken_37011`: 17288
+/// faces, byte-identical to the loaded input cast to float32. An earlier
+/// version of this function measured `cur_v` on the theory that Flap had
+/// already rebased it; that produced `thin_before` 2357 against Python's 2537
+/// and was wrong.
+///
+/// `cur_v`/`cur_t` is the ladder mesh, used only for the base topology counts
+/// the adoption gate compares against.
 pub fn run(
+    measure_v: &[[f64; 3]],
+    measure_t: &[[i64; 3]],
     cur_v: &[[f64; 3]],
     cur_t: &[[i64; 3]],
     min_thickness: Option<f64>,
@@ -95,8 +106,8 @@ pub fn run(
 ) -> Outcome {
     let mut rec = rec_base();
 
-    let in_v: Vec<[f64; 3]> = cur_v.to_vec();
-    let in_t: Vec<[usize; 3]> = cur_t
+    let in_v: Vec<[f64; 3]> = measure_v.to_vec();
+    let in_t: Vec<[usize; 3]> = measure_t
         .iter()
         .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
         .collect();
@@ -174,15 +185,13 @@ pub fn run(
     }
 
     // Feed the gate the *raw* candidate plus the report, exactly as the Python
-    // tier does (`tier_wall_decide(..., json.dumps(rep), json.dumps({}))`).
+    // tier does (`tier_wall_decide(cur_v, cur_t, v, t, json.dumps(rep),
+    // json.dumps({}))`): ladder mesh first, measurement mesh second.
     let (gv, gt, gate_rec) = gate::decide(
         cur_v,
         cur_t,
-        // The gate's "input" pair is the same current mesh: Python calls
-        // `tier_wall_decide(cur_v, cur_t, v, t, ...)` where `v`/`t` are the
-        // ladder mesh too, not the pristine input.
-        cur_v,
-        cur_t,
+        measure_v,
+        measure_t,
         &cv,
         &ct,
         &Value::Object(rec.clone()),
