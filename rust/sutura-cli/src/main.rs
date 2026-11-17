@@ -146,6 +146,17 @@ struct Cli {
     /// Print the release notes saved by the last update (works offline).
     #[arg(long = "whats-new")]
     whats_new: bool,
+    /// Migrate an existing Python install to this Rust build.
+    ///
+    /// Used by the bridge release's updater, which downloads the artifact and
+    /// runs this; it is not a normal user-facing flag. `--yes` is required
+    /// because it removes the old runtime.
+    #[arg(long = "migrate-from-python")]
+    migrate_from_python: bool,
+    /// The verified release artifact to install (defaults to the running
+    /// binary's own release, which is what a manual run wants).
+    #[arg(long = "from-artifact", value_name = "PATH")]
+    from_artifact: Option<std::path::PathBuf>,
     #[arg(long = "experimental-join-components", global = true)]
     experimental_join_components: bool,
     #[arg(long = "experimental-autorefine", global = true)]
@@ -268,6 +279,13 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
             sutura_core::config::intensity::format_intensities(&loaded, None)
         );
         return Ok(());
+    }
+    // Migration from a Python install. Called by the bridge release's updater
+    // with the downloaded artifact, because the migration (backup, data move,
+    // swap, health gate, venv removal) must exist in exactly one place and that
+    // place is here.
+    if cli.migrate_from_python {
+        return migrate_command(&cli);
     }
     if cli.self_check {
         let report = sutura_core::self_check::run(true);
@@ -1018,5 +1036,127 @@ fn title_case(text: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
+    }
+}
+
+/// `--migrate-from-python`: turn an existing Python install into this build.
+///
+/// The bridge release's updater downloads and verifies the artifact and then
+/// runs the binary inside it with this flag. Doing the work here means the
+/// migration exists once, in `sutura_core::migrate`, rather than being spelled
+/// out a second time in Python.
+fn migrate_command(cli: &Cli) -> Result<(), (u8, Option<String>)> {
+    // `--yes` is not a formality: this removes the previous runtime.
+    if !cli.yes {
+        return Err((
+            2,
+            Some(
+                "--migrate-from-python removes the previous Python install; \
+                 pass --yes to confirm"
+                    .to_string(),
+            ),
+        ));
+    }
+    let app = sutura_core::install::app_dir();
+    let data = sutura_core::config::learning::data_dir();
+    let plan = sutura_core::migrate::detect(&app, &data);
+    if plan.legacy.is_none() {
+        outln!("Nothing to migrate: no Python install at {}", app.display());
+        return Ok(());
+    }
+
+    // The artifact to install. When invoked from the bridge release the binary
+    // runs from the unpacked artifact, so its own directory holds the tree to
+    // install; `--from-artifact` overrides that for a manual run.
+    let payload = match &cli.from_artifact {
+        Some(path) => std::fs::read(path)
+            .map_err(|e| (1, Some(format!("{}: {e}", path.display()))))?,
+        None => {
+            return Err((
+                2,
+                Some(
+                    "--from-artifact is required: pass the downloaded release \
+                     artifact so the migration installs a verified tree"
+                        .to_string(),
+                ),
+            ))
+        }
+    };
+
+    let tag = format!("v{}", env!("SUTURA_PRODUCT_VERSION"));
+    let stamp = sutura_core::report::history::now_ts();
+    let report = sutura_core::migrate::run(&plan, &tag, &payload, &stamp, &run_quiet)
+        .map_err(|e| (1, Some(e)))?;
+
+    for note in &report.notes {
+        outln!("  {note}");
+    }
+    outln!(
+        "Migrated to {tag}: {} file(s) moved, {} removed.",
+        report.moved.len(),
+        report.removed.len()
+    );
+    Ok(())
+}
+
+/// Run a binary for the health check without inheriting the caller's stdio.
+///
+/// The migration's own output is what the user reads; a child that prints to
+/// the same stream would interleave with it.
+fn run_quiet(binary: &Path, args: &[&str]) -> (i32, String) {
+    match std::process::Command::new(binary).args(args).output() {
+        Ok(out) => (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        ),
+        Err(_) => (-1, String::new()),
+    }
+}
+
+#[cfg(test)]
+mod migrate_flag_tests {
+    use clap::Parser;
+
+    /// `--migrate-from-python` must refuse without `--yes`.
+    ///
+    /// The flag removes the previous runtime, so a bare invocation has to be a
+    /// no-op with a clear reason rather than a surprise.
+    #[test]
+    fn migrate_requires_confirmation() {
+        let cli = <super::Cli as Parser>::try_parse_from([
+            "sutura",
+            "--migrate-from-python",
+            "--from-artifact",
+            "/nonexistent/asset.tar.gz",
+        ])
+        .expect("parses");
+        let err = super::migrate_command(&cli).expect_err("must refuse without --yes");
+        assert_eq!(err.0, 2, "usage error, not a crash");
+        assert!(
+            err.1.unwrap_or_default().contains("--yes"),
+            "the message must say what is missing"
+        );
+    }
+
+    /// With `--yes` but no artifact there is nothing safe to install.
+    #[test]
+    fn migrate_needs_an_artifact() {
+        let cli = <super::Cli as Parser>::try_parse_from([
+            "sutura",
+            "--migrate-from-python",
+            "--yes",
+        ])
+        .expect("parses");
+        // Only asserted when this machine actually has a Python install; on a
+        // clean machine the command correctly reports nothing to migrate, which
+        // is a success, so the two outcomes are both acceptable but the message
+        // must never be a panic.
+        match super::migrate_command(&cli) {
+            Ok(()) => {}
+            Err((code, msg)) => {
+                assert_eq!(code, 2);
+                assert!(msg.unwrap_or_default().contains("--from-artifact"));
+            }
+        }
     }
 }

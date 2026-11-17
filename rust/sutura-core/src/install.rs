@@ -284,15 +284,33 @@ pub fn rollback() -> Result<PathBuf, String> {
 
 /// Where the CLI lands inside the installed app tree.
 ///
-/// `scripts/package_rust.sh` puts it at `Contents/MacOS/sutura` inside the macOS
-/// bundle and at `bin/sutura` on Linux. This is the binary `health_check` runs
-/// after a swap.
+/// The *artifact* decides the layout, not the OS: `apply_artifact` detects a
+/// gzip (Linux tarball, `Sutura/` root) versus a disk image (macOS,
+/// `Sutura.app`) from the bytes. So this checks what is actually on disk rather
+/// than trusting `cfg!(target_os)`, which would name the wrong file whenever
+/// those two disagree -- as they do on a macOS machine that installed the
+/// tarball.
 pub fn installed_binary() -> PathBuf {
     let app = app_dir();
+    let candidates: [PathBuf; 3] = [
+        // Linux tarball layout.
+        app.join("bin/sutura"),
+        // macOS bundle, copied in as the bundle root.
+        app.join("Contents/MacOS/sutura"),
+        // macOS bundle, copied in whole.
+        app.join("Sutura.app/Contents/MacOS/sutura"),
+    ];
+    for path in &candidates {
+        if path.is_file() {
+            return path.clone();
+        }
+    }
+    // Nothing installed yet: fall back to this platform's expected path so the
+    // caller gets a useful "not found" rather than a wrong hit.
     if cfg!(target_os = "macos") {
-        app.join("Contents/MacOS/sutura")
+        candidates[1].clone()
     } else {
-        app.join("bin/sutura")
+        candidates[0].clone()
     }
 }
 
@@ -467,6 +485,19 @@ fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The one guard for every test that mutates `SUTURA_APP_DIR`.
+///
+/// Lives at the module root, not inside `mod tests`, because `migrate.rs`'s
+/// tests must take the *same* lock. Two independent mutexes serialise nothing:
+/// those tests ran alongside the ones below, a `scratch` call in one module
+/// pointed the env at a temp tree while the other was mid-`backup_install`, and
+/// a write escaped into the real `~/.local/share/sutura`.
+#[cfg(test)]
+pub(crate) fn tests_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,8 +584,10 @@ mod tests {
     /// A scratch install root, so no test touches the real one.
     ///
     /// `SUTURA_APP_DIR` is process-global, so the tests that use this hold
-    /// [`ENV_LOCK`] for their whole body; otherwise the default parallel runner
-    /// lets them overwrite each other's install root.
+    /// [`tests_env_lock`] for their whole body. Sharing that one guard with
+    /// `migrate.rs` is what keeps the two modules' tests from interleaving: it
+    /// is the lock, not the cleanup, that makes this safe, since every test
+    /// sets the variable itself before touching the filesystem.
     fn scratch(name: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(
             "sutura-install-{name}-{}",
@@ -566,10 +599,8 @@ mod tests {
         base
     }
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        super::tests_env_lock()
     }
 
     /// Three versions in a row leave exactly the newest two, the oldest is
@@ -627,6 +658,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// `installed_binary` follows what is actually on disk, not the OS.
+    ///
+    /// The artifact decides the layout (`apply_artifact` sniffs gzip vs a disk
+    /// image), so a macOS machine that installed the tarball must be checked at
+    /// `bin/sutura`. Getting this wrong made the health check run a path that
+    /// did not exist and report "version check failed (exit -1)".
+    #[test]
+    fn installed_binary_follows_the_installed_layout() {
+        let _guard = lock_env();
+        let base = scratch("layout");
+        let app = base.join("app");
+
+        // Nothing installed: a plausible path, not an empty one.
+        assert!(installed_binary().ends_with("bin/sutura")
+            || installed_binary().ends_with("Contents/MacOS/sutura"));
+
+        // Tarball layout wins when present, whatever the OS.
+        std::fs::create_dir_all(app.join("bin")).unwrap();
+        std::fs::write(app.join("bin/sutura"), "").unwrap();
+        assert_eq!(installed_binary(), app.join("bin/sutura"));
+
+        // A bundle layout is found when that is what is there.
+        std::fs::remove_file(app.join("bin/sutura")).unwrap();
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::write(app.join("Contents/MacOS/sutura"), "").unwrap();
+        assert_eq!(installed_binary(), app.join("Contents/MacOS/sutura"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// The gate between "installed" and "adopted": a binary that fails its
     /// health check must be rolled back, and a healthy one must not.
     ///
@@ -639,17 +700,14 @@ mod tests {
         let _guard = lock_env();
         let base = scratch("gate");
 
-        // Build the tree at the path `installed_binary` really names, so the
-        // test exercises the same file the check runs. On macOS that is
-        // `Contents/MacOS/sutura`, on Linux `bin/sutura`; hardcoding either one
-        // would make this test pass on one platform and check nothing on the
-        // other.
-        let bin = installed_binary();
-        let bin_dir = bin.parent().unwrap().to_path_buf();
-        std::fs::create_dir_all(&bin_dir).unwrap();
+        // Build the tree at a real layout path, then let `installed_binary`
+        // discover it -- the same discovery the health check does.
+        let bin = base.join("app/bin/sutura");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "GOOD").unwrap();
+        assert_eq!(installed_binary(), bin, "discovery agrees with the tree");
 
         // A good install, backed up.
-        std::fs::write(&bin, "GOOD").unwrap();
         std::fs::write(base.join("app/data/history.jsonl"), "HISTORY\n").unwrap();
         backup_install("0.9.9").unwrap();
 

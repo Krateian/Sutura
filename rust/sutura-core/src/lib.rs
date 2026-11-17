@@ -15,6 +15,7 @@ pub mod error;
 pub mod fmt;
 pub mod http;
 pub mod install;
+pub mod migrate;
 pub mod whatsnew;
 pub mod ftetwild;
 pub mod mesh;
