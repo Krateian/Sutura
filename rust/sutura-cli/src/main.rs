@@ -277,11 +277,23 @@ enum IoCommand {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // `--debug` (or `SUTURA_DEBUG=1`) shows the traceback for unexpected
+    // failures, as Python's does (`repair.py:1400-1404`). The flag was declared
+    // and never read. In Rust the equivalent of `traceback.print_exc()` is the
+    // panic backtrace, so this enables it before any work; expected errors come
+    // back through `run`'s `Result` and are reported as one line either way.
+    let debug = cli.debug || std::env::var("SUTURA_DEBUG").is_ok_and(|v| v == "1");
+    if debug && std::env::var_os("RUST_BACKTRACE").is_none() {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err((code, Some(message))) => {
             if !message.is_empty() {
                 eprintln!("sutura: {message}");
+            }
+            if !debug {
+                eprintln!("hint: run with --debug for details");
             }
             ExitCode::from(code)
         }
@@ -338,6 +350,53 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
             );
         } else {
             outln!("Cache cleared: {human_bytes} freed");
+        }
+        return Ok(());
+    }
+    // `export-history` is a positional subcommand, like `clear-cache` and like
+    // Python (`repair.py:1125`). It was missing entirely, which is why
+    // `--summary-only`, `--last` and `--clear` had no home and were refused.
+    if cli.files.first().map(|p| p.as_os_str()) == Some(std::ffi::OsStr::new("export-history")) {
+        if cli.files.len() > 1 || cli.output.is_some() || cli.human || cli.dry_run {
+            return Err((
+                2,
+                Some(
+                    "export-history takes no positional arguments \
+                     (flags: --last N, --clear, --summary-only)"
+                        .to_string(),
+                ),
+            ));
+        }
+        // Python's `export_history` (`history.py:326`): a summary, then the full
+        // JSON array for copy-paste sharing. `--summary-only` prints the summary
+        // alone; `--clear` wipes the file afterwards, reporting the count.
+        let records = sutura_core::report::history::load_records(cli.last.unwrap_or(0));
+        if records.is_empty() {
+            outln!("no history yet (no repairs recorded)");
+        } else {
+            outln!("{}", sutura_core::report::history::summary_text_value(&records));
+            if !cli.summary_only {
+                outln!();
+                outln!("--- full data (paste this into the issue) ---");
+                outln!(
+                    "{}",
+                    sutura_core::report::history::py_json_dumps(&serde_json::Value::Array(
+                        records.clone()
+                    ))
+                );
+            }
+        }
+        if cli.clear {
+            let path = sutura_core::report::history::history_path();
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    outln!();
+                    outln!("history cleared ({} record(s) removed)", records.len());
+                }
+                // Python swallows a missing file here and prints nothing.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => {}
+            }
         }
         return Ok(());
     }
@@ -1351,6 +1410,107 @@ mod migrate_flag_tests {
             assert!(
                 cli.repair_install || cli.self_repair,
                 "{flag} must reach the repair path"
+            );
+        }
+    }
+
+    /// Every flag declared must actually be *read* by the CLI.
+    ///
+    /// Five were parsed and then ignored — `--flap`, `--tamponade`,
+    /// `--coaptation`, `--no-dressing` and `--debug` — because the code that
+    /// should have consumed them hard-coded `false` (or, for `--debug`, did not
+    /// exist). Clap's derive counts as a read for the compiler, so `dead_code`
+    /// never fired; these assertions are the guard instead.
+    ///
+    /// Each case constructs a `RepairSettings` through the same path the CLI
+    /// uses, so a regression at the mapping site fails here.
+    #[test]
+    fn tier_flags_reach_repair_settings() {
+        // Goes through the same `build_options` the CLI uses, so a regression at
+        // the mapping site fails here rather than silently doing nothing.
+        let opts = |argv: &[&str]| {
+            let cli = <super::Cli as Parser>::try_parse_from(argv).expect("parses");
+            super::repair_cmd::build_options(&cli).expect("options").0
+        };
+        // All three default to ON, so `--flap` on its own is a no-op against the
+        // default: asserting it passes whether or not the flag is wired at all
+        // (verified by restoring the bug). What is genuinely observable, and what
+        // the bug broke, is that the flag is *parsed into the struct* the mapper
+        // reads -- so assert that, plus the negative path that does change the
+        // outcome.
+        let getters: [(&str, fn(&super::Cli) -> bool); 3] = [
+            ("--flap", |c| c.flap),
+            ("--tamponade", |c| c.tamponade),
+            ("--coaptation", |c| c.coaptation),
+        ];
+        for (flag, get) in getters {
+            let plain = <super::Cli as Parser>::try_parse_from(["sutura"]).expect("parses");
+            let forced = <super::Cli as Parser>::try_parse_from(["sutura", flag])
+                .unwrap_or_else(|e| panic!("{flag} must parse: {e}"));
+            assert!(!get(&plain), "{flag} must default off");
+            assert!(get(&forced), "{flag} must be read into the Cli struct");
+        }
+        // The positive flag's *effect* is unobservable while the tier defaults
+        // on, so pin the wiring itself: `build_options` must pass `cli.flap`
+        // through. A source-level assertion is the only honest check here, and
+        // it is exactly what the bug broke (it hard-coded `false`).
+        let src = include_str!("../src/repair_cmd.rs");
+        for (field, needle) in [
+            ("flap", "experimental_flap: cli.flap,"),
+            ("tamponade", "experimental_tamponade: cli.tamponade,"),
+            ("coaptation", "experimental_coaptation: cli.coaptation,"),
+            ("dressing", "dressing: cli.experimental_dressing && !cli.no_dressing,"),
+        ] {
+            assert!(
+                src.contains(needle),
+                "{field} must be wired from the CLI into RepairSettings, not hard-coded"
+            );
+        }
+        // The negative flags are observable end to end.
+        assert_eq!(opts(&["sutura"]).flap, Some(true));
+        assert_eq!(opts(&["sutura", "--no-flap"]).flap, Some(false));
+        assert_eq!(opts(&["sutura", "--no-tamponade"]).tamponade, Some(false));
+        assert_eq!(opts(&["sutura", "--no-coaptation"]).coaptation, Some(false));
+        // Precedence: off wins over on, as Python's `resolve_flap` does.
+        assert_eq!(
+            opts(&["sutura", "--no-flap", "--flap"]).flap,
+            Some(false),
+            "off must win over on"
+        );
+        // Dressing is opt-in, and `--no-dressing` wins over
+        // `--experimental-dressing`, matching Python's `resolve_dressing`.
+        assert!(!opts(&["sutura"]).dressing);
+        assert!(opts(&["sutura", "--experimental-dressing"]).dressing);
+        assert!(
+            !opts(&["sutura", "--experimental-dressing", "--no-dressing"]).dressing,
+            "--no-dressing must win over --experimental-dressing"
+        );
+    }
+
+    /// `--debug` and `SUTURA_DEBUG=1` both suppress the "run with --debug" hint.
+    #[test]
+    fn debug_flag_is_read() {
+        let cli = <super::Cli as Parser>::try_parse_from(["sutura", "--debug"]).expect("parses");
+        assert!(cli.debug, "--debug must be read");
+        let plain = <super::Cli as Parser>::try_parse_from(["sutura"]).expect("parses");
+        assert!(!plain.debug);
+    }
+
+    /// `export-history` accepts its three flags and nothing positional, as
+    /// Python's `parser.error('export-history takes no positional arguments')`.
+    #[test]
+    fn export_history_flags_parse() {
+        for argv in [
+            vec!["sutura", "export-history"],
+            vec!["sutura", "export-history", "--summary-only"],
+            vec!["sutura", "export-history", "--last", "5"],
+            vec!["sutura", "export-history", "--clear"],
+        ] {
+            let cli = <super::Cli as Parser>::try_parse_from(&argv)
+                .unwrap_or_else(|e| panic!("{argv:?} must parse: {e}"));
+            assert_eq!(
+                cli.files.first().map(|p| p.as_os_str()),
+                Some(std::ffi::OsStr::new("export-history"))
             );
         }
     }

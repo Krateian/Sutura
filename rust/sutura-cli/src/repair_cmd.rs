@@ -180,9 +180,6 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     for (flag, set) in [
         ("--diagnostics", cli.diagnostics.is_some()),
         ("--trace", cli.trace.is_some()),
-        ("--last", cli.last.is_some()),
-        ("--clear", cli.clear),
-        ("--summary-only", cli.summary_only),
     ] {
         if set {
             return Err(RepairFailure::new(
@@ -255,11 +252,17 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         no_graft: cli.no_graft,
         experimental_graft: cli.experimental_graft,
         no_tamponade: cli.no_tamponade,
-        experimental_tamponade: false,
+        // Python's `resolve_tamponade(no_tamponade, force=args.tamponade)`, and
+        // the same for flap and coaptation: the forcing flag was declared but
+        // hard-coded to `false` here, so `--flap` / `--tamponade` /
+        // `--coaptation` were accepted and ignored. `tri()` implements exactly
+        // Python's precedence (off wins, then force, then the default), and
+        // `SUTURA_*` env handling lives in the core, as it does for the others.
+        experimental_tamponade: cli.tamponade,
         no_flap: cli.no_flap,
-        experimental_flap: false,
+        experimental_flap: cli.flap,
         no_coaptation: cli.no_coaptation,
-        experimental_coaptation: false,
+        experimental_coaptation: cli.coaptation,
         experimental_splint: cli.experimental_splint,
         no_splint: cli.no_splint,
         no_fallback_ftetwild: cli.no_fallback_ftetwild,
@@ -287,9 +290,11 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         auto_escalation: None,
         // Dressing: the producer is ported (`dressing.rs`, `coat`/`run` with its
         // own adoption gate), so these now come from the CLI instead of being
-        // hardcoded off. `--experimental-dressing` is the switch; the five
-        // sub-options only mean anything with it on (Python's precedence).
-        dressing: cli.experimental_dressing,
+        // hardcoded off. `--experimental-dressing` turns it on and `--no-dressing`
+        // turns it off -- Python's `resolve_dressing(no_dressing, force=...)`
+        // gives the negative flag precedence, and `--no-dressing` was declared
+        // but never read, so it did nothing.
+        dressing: cli.experimental_dressing && !cli.no_dressing,
         // `--dressing-drain` accepts a mode name (`none`/`half`/`full`/`deep`)
         // or a bare number, and `dressing::resolve_drain` handles both shapes
         // (`Value::String` vs a number). Parse a numeric argument as a number so

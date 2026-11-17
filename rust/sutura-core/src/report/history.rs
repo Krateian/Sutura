@@ -437,6 +437,38 @@ pub fn write_record(
 /// The history file name inside the data directory (`paths.data_file`).
 pub const HISTORY_FILE: &str = "history.jsonl";
 
+/// Path of the history file inside the current data directory.
+///
+/// Same resolution the writer uses (`append_record`), so a reader and a writer
+/// can never disagree about where history lives.
+pub fn history_path() -> std::path::PathBuf {
+    crate::config::learning::data_file(HISTORY_FILE)
+}
+
+/// Read the recorded history, newest `last` records only when `last > 0`.
+///
+/// Mirrors `history.load_records` (`history.py:268`): a missing file is an empty
+/// list, and a corrupt line is skipped rather than aborting the export.
+pub fn load_records(last: usize) -> Vec<Value> {
+    let mut records: Vec<Value> = Vec::new();
+    let Ok(text) = std::fs::read_to_string(history_path()) else {
+        return records;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            records.push(v);
+        }
+    }
+    if last > 0 && records.len() > last {
+        records = records.split_off(records.len() - last);
+    }
+    records
+}
+
 /// Current UTC time as Python's `datetime.now(timezone.utc).isoformat()`.
 ///
 /// That is `YYYY-MM-DDTHH:MM:SS.ffffff+00:00` — always six fractional digits and
