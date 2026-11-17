@@ -424,3 +424,22 @@ index 0000000..e5cf5cc
      set(GEOGRAM_BUILD_SHARED OFF CACHE BOOL "" FORCE)
      set(GEOGRAM_BUILD_STATIC ON CACHE BOOL "" FORCE)
  
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -139,6 +139,14 @@
+     target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/tbb_shim)
+ endif()
+ 
++# Upstream code predates GCC 13, which diagnoses narrowing conversions in
++# brace-initialisation as hard errors (the standard requires the diagnostic).
++# Scoped to THIS third-party target and only under GCC: PRIVATE, not exported,
++# so it cannot leak into Sutura's own translation units.
++if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
++    target_compile_options(${PROJECT_NAME} PRIVATE -Wno-narrowing)
++endif()
++
+ if(FLOAT_TETWILD_WITH_EXACT_ENVELOPE)
+     target_link_libraries(${PROJECT_NAME} PUBLIC FastEnvelope)
+     target_compile_definitions(${PROJECT_NAME} PUBLIC NEW_ENVELOPE)
