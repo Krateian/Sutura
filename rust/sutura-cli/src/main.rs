@@ -365,15 +365,7 @@ const METHODS: [(u8, &str, &str, &str); 19] = [
 /// import Python's pytetwild; until the Rust tier is wired this mirrors the
 /// filesystem check used by the installer.
 fn ftetwild_available() -> bool {
-    if let Some(path) = std::env::var_os("SUTURA_FTETWILD_BIN") {
-        return !path.is_empty() && Path::new(&path).exists();
-    }
-    match std::env::var_os("HOME") {
-        Some(home) => Path::new(&home)
-            .join(".local/share/sutura/ftetwild/bin/ftetwild")
-            .exists(),
-        None => false,
-    }
+    sutura_core::ftetwild::find_binary().is_some()
 }
 
 fn print_list_methods() {

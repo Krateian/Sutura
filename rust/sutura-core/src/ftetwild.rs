@@ -92,6 +92,33 @@ pub fn find_binary() -> Option<String> {
         }
     }
 
+    // Packaged sidecar: macOS `.app/Contents/MacOS/ftetwild`, a tarball
+    // beside `sutura`, and the user data dir the installers populate.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [
+                dir.join("ftetwild"),
+                dir.join("../Resources/bin/ftetwild"),
+                dir.join("../MacOS/ftetwild"),
+            ] {
+                if is_executable(&candidate) {
+                    return Some(abspath(&candidate));
+                }
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for candidate in [
+            home.join(".local/share/sutura/bin/ftetwild"),
+            home.join(".local/share/sutura/ftetwild/bin/ftetwild"),
+        ] {
+            if is_executable(&candidate) {
+                return Some(abspath(&candidate));
+            }
+        }
+    }
+
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let repo_bin = repo.join("third_party/ftetwild/bin/ftetwild");
     if is_executable(&repo_bin) {
