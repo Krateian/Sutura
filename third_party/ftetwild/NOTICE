@@ -9,7 +9,7 @@ This package bundles or uses a modified executable version of fTetWild.
    - Modifications: Deterministic RNG seeding, static Random class with reset(seed), sorted BFS queues, Geogram single-threaded configuration, serial execution shim eliminating Intel TBB dependency, and arch-aware Geogram platform selection (see third_party/ftetwild/ftetwild.patch).
    - Modified Files:
      * CMakeLists.txt
-     * cmake/geogram.cmake
+     * cmake/FloatTetwildDependencies.cmake
      * src/FloatTetwild.cpp
      * src/Mesh.hpp
      * src/TriangleInsertion.cpp

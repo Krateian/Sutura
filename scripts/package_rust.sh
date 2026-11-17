@@ -171,16 +171,32 @@ PLIST
         cp -R "$REPO_ROOT/share/Sutura Quick Action.workflow" "$res/"
     fi
 
-    # Ad-hoc signature, INSIDE OUT: the inner binaries first, `--deep` last.
-    # Signing the bundle before its children would invalidate the outer seal.
+    # Ad-hoc signature, INSIDE OUT: every executable in the bundle first, then
+    # the bundle itself. Deliberately **no** `--deep`: Apple deprecated it, and
+    # on the macOS 15 Intel runner it fails with
+    #
+    #   Contents/MacOS/sutura-gui: code object is not signed at all
+    #   In subcomponent: Contents/MacOS/ftetwild
+    #
+    # which is `--deep` refusing to sign an outer item while a nested
+    # executable is unsigned. Signing each binary explicitly and then the
+    # bundle seals the same way without depending on traversal order.
     # No notarization: that needs an Apple Developer ID, which this project does
     # not have (the Python .dmg was unsigned for the same reason).
     if command -v codesign >/dev/null 2>&1; then
-        codesign --force --sign - "$macos/sutura" >/dev/null
-        codesign --force --sign - "$macos/sutura-gui" >/dev/null
-        [ -n "$FTW" ] && codesign --force --sign - "$macos/ftetwild" >/dev/null
-        codesign --force --deep --sign - "$app" >/dev/null
-        echo "==> ad-hoc signed"
+        local signed=0
+        for bin in "$macos"/*; do
+            [ -f "$bin" ] || continue
+            [ -x "$bin" ] || continue
+            codesign --force --sign - "$bin" >/dev/null || {
+                echo "error: codesign failed for $bin" >&2; return 1
+            }
+            signed=$((signed + 1))
+        done
+        codesign --force --sign - "$app" >/dev/null || {
+            echo "error: codesign failed for $app" >&2; return 1
+        }
+        echo "==> ad-hoc signed ($signed executable(s) + bundle)"
     else
         echo "==> codesign unavailable; leaving the bundle unsigned"
     fi
