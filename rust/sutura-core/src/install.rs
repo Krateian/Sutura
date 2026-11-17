@@ -282,6 +282,20 @@ pub fn rollback() -> Result<PathBuf, String> {
     Ok(backup)
 }
 
+/// Where the CLI lands inside the installed app tree.
+///
+/// `scripts/package_rust.sh` puts it at `Contents/MacOS/sutura` inside the macOS
+/// bundle and at `bin/sutura` on Linux. This is the binary `health_check` runs
+/// after a swap.
+pub fn installed_binary() -> PathBuf {
+    let app = app_dir();
+    if cfg!(target_os = "macos") {
+        app.join("Contents/MacOS/sutura")
+    } else {
+        app.join("bin/sutura")
+    }
+}
+
 /// The health check from `updater.health_check`: the new binary reports the
 /// expected version and can actually repair a small mesh.
 ///
@@ -610,6 +624,63 @@ mod tests {
         assert_eq!(ver, "0.9.9", "the newest backup is restored");
         let hist = std::fs::read_to_string(base.join("app/data/history.jsonl")).unwrap();
         assert_eq!(hist, "NEWER\n", "data written after the backup survives");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The gate between "installed" and "adopted": a binary that fails its
+    /// health check must be rolled back, and a healthy one must not.
+    ///
+    /// Before this was wired, `health_check` and `rollback` had **no production
+    /// caller** — a bad release was installed and kept, and the only recovery
+    /// was a manual reinstall. This test pins the two outcomes so the wiring
+    /// cannot silently disappear again.
+    #[test]
+    fn a_failed_health_check_rolls_back_and_a_healthy_one_stays() {
+        let _guard = lock_env();
+        let base = scratch("gate");
+
+        // Build the tree at the path `installed_binary` really names, so the
+        // test exercises the same file the check runs. On macOS that is
+        // `Contents/MacOS/sutura`, on Linux `bin/sutura`; hardcoding either one
+        // would make this test pass on one platform and check nothing on the
+        // other.
+        let bin = installed_binary();
+        let bin_dir = bin.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        // A good install, backed up.
+        std::fs::write(&bin, "GOOD").unwrap();
+        std::fs::write(base.join("app/data/history.jsonl"), "HISTORY\n").unwrap();
+        backup_install("0.9.9").unwrap();
+
+        // The update lands, but the binary reports the version it replaced.
+        std::fs::write(&bin, "BAD").unwrap();
+        let broken = |_: &Path, _: &[&str]| (0, "sutura 0.9.9".to_string());
+        let err = health_check("v0.10.0", &broken, &bin).unwrap_err();
+        assert!(err.contains("version mismatch"), "{err}");
+
+        rollback().expect("rollback after a failed check");
+        assert_eq!(
+            std::fs::read_to_string(&bin).unwrap(),
+            "GOOD",
+            "the previous build is back"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("app/data/history.jsonl")).unwrap(),
+            "HISTORY\n",
+            "user data is never rolled back"
+        );
+
+        // The same sequence with a healthy binary must keep the new build.
+        std::fs::write(&bin, "NEWER").unwrap();
+        let healthy = |_: &Path, _: &[&str]| (0, "sutura 0.10.0".to_string());
+        health_check("v0.10.0", &healthy, &bin).expect("healthy build is adopted");
+        assert_eq!(
+            std::fs::read_to_string(&bin).unwrap(),
+            "NEWER",
+            "a passing check must not roll anything back"
+        );
+
         let _ = std::fs::remove_dir_all(&base);
     }
 

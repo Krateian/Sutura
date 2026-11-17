@@ -134,8 +134,9 @@ impl Default for Updater {
     }
 }
 
-/// The worker body: snapshot notes, download and verify, install, health check,
-/// roll back on failure.
+/// The worker body: preflight, fetch, find the asset for this platform,
+/// snapshot the notes, download and verify, install, health check, and roll
+/// back if the new build does not run.
 fn run_install(tx: Sender<UpdateEvent>, tag: String, current: String) {
     if let Err(e) = install::preflight(&current, &tag) {
         let _ = tx.send(UpdateEvent::Failed(e));
@@ -180,7 +181,53 @@ fn run_install(tx: Sender<UpdateEvent>, tag: String, current: String) {
         let _ = tx.send(UpdateEvent::Failed(format!("install failed: {e}")));
         return;
     }
+
+    // Health check, then roll back if the new build does not run. Without this
+    // the module's promise ("roll back if the new version does not work") was
+    // only true of the tests: a bad release was installed and kept, and the
+    // only way out was a manual reinstall. Both `health_check` and `rollback`
+    // already existed; nothing called them.
+    let binary = install::installed_binary();
+    if let Err(why) = install::health_check(&tag, &run_binary, &binary) {
+        match install::rollback() {
+            Ok(restored) => {
+                let _ = tx.send(UpdateEvent::Failed(format!(
+                    "{tag} did not start ({why}); restored {}",
+                    restored.display()
+                )));
+            }
+            Err(e) => {
+                // Both the new build and the restore failed. Say exactly where
+                // the backup is rather than leaving the user with a dead
+                // install and no pointer.
+                let where_ = install::newest_backup()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| install::backup_root().display().to_string());
+                let _ = tx.send(UpdateEvent::Failed(format!(
+                    "{tag} did not start ({why}) and the rollback failed ({e}); \
+                     your previous version is at {where_}"
+                )));
+            }
+        }
+        return;
+    }
+
     let _ = tx.send(UpdateEvent::Ready { tag, has_notes });
+}
+
+/// Run the freshly installed binary for [`install::health_check`].
+///
+/// Kept as a named function rather than a closure so the argument shape matches
+/// the injected runner the unit tests use.
+fn run_binary(binary: &std::path::Path, args: &[&str]) -> (i32, String) {
+    match std::process::Command::new(binary).args(args).output() {
+        Ok(out) => (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        ),
+        // A missing or non-executable binary is a failed check, not a panic.
+        Err(_) => (-1, String::new()),
+    }
 }
 
 /// The panel's phase for a worker event, kept separate so the download →
