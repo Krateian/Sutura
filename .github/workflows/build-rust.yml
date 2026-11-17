@@ -1,9 +1,14 @@
 name: Build Rust distribution artifacts
 
-# Packages the Rust binaries (sutura + sutura-gui) for macOS arm64 and Linux
-# x86_64 -- the Python-free counterpart of build-macos.yml / build-appimage.yml.
+# Packages the Rust binaries (sutura + sutura-gui) for every platform the Python
+# distribution supported -- macOS arm64 and x86_64, Linux x86_64 and aarch64 --
+# the Python-free counterpart of build-macos.yml / build-appimage.yml.
 # Deliberately a SEPARATE workflow: those two publish to GitHub Releases and are
 # left untouched.
+#
+# All four targets matter: `install::asset_name` returns None on a platform with
+# no asset, which silently disables `--check-update` and `--repair-install`
+# there. Dropping Intel Mac or arm64 Linux would be a feature loss.
 #
 # This workflow creates NO release, tag or version. It only uploads build
 # artifacts, so `permissions: contents: read` is the whole of its authority.
@@ -230,6 +235,155 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sutura-rust-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  # Intel Macs were supported by the Python distribution. Dropping them is a
+  # feature loss, not a packaging detail: `install::asset_name` has a
+  # `macos-x86_64` arm, so the only thing missing was an artifact to point it at.
+  macos-x86_64:
+    name: macOS x86_64 (.app/.dmg)
+    # Pinned to the last Intel image; `macos-latest` is Apple Silicon, and a
+    # cross-build of the GUI is not something to guess at.
+    runs-on: macos-13
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Build release binaries
+        working-directory: rust
+        run: |
+          cargo build --release -p sutura-cli -p sutura-gui
+
+      - name: Install fTetWild build dependencies
+        run: brew install gmp ninja ccache
+
+      - name: Build fTetWild (pinned upstream + determinism patches)
+        run: bash third_party/ftetwild/build.sh
+
+      - name: Package .app and .dmg
+        env:
+          FTETWILD_BIN: third_party/ftetwild/bin/ftetwild
+        run: bash scripts/package_rust.sh --platform macos-x86_64
+
+      - name: Verify the bundle (no Python, ad-hoc signed, runs)
+        run: |
+          set -e
+          dmg=$(ls dist/*.dmg | head -1)
+          mkdir -p /tmp/mnt
+          hdiutil attach "$dmg" -mountpoint /tmp/mnt -nobrowse -quiet
+          APP=$(ls -d /tmp/mnt/*.app | head -1)
+          test -d "$APP/Contents/MacOS"
+          test "$(find "$APP" -name '*python*' | wc -l | tr -d ' ')" = "0"
+          codesign -dv --verbose=2 "$APP" 2>&1 | grep -q 'Signature=adhoc'
+          "$APP/Contents/MacOS/sutura" --version
+          "$APP/Contents/MacOS/sutura" --list-methods > /tmp/methods.txt
+          grep -q quick_clean /tmp/methods.txt
+          test -f "$APP/Contents/Resources/LICENSE"
+          test -f "$APP/Contents/Resources/ATTRIBUTION.md"
+          hdiutil detach /tmp/mnt -force >/dev/null 2>&1 || true
+          echo "macOS Intel bundle verified"
+
+      - name: Write sha256 manifests
+        run: |
+          cd dist
+          for f in *.dmg *.app.tar.gz; do
+            [ -f "$f" ] || continue
+            shasum -a 256 "$f" | awk '{print $1"  "$2}' > "$f.sha256"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sutura-rust-macos-x86_64
+          path: |
+            dist/*.dmg
+            dist/*.app.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  # arm64 Linux was supported by the Python distribution too (the sutura_geom
+  # wheels ship linux-aarch64), so the same rule applies.
+  linux-aarch64:
+    name: Linux aarch64 (tar.gz)
+    # Native arm64 runner: cross-compiling the GUI (X11/wayland/GL) is a much
+    # bigger risk than using the real architecture.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libgmp-dev ninja-build ccache
+
+      - name: Build release binaries
+        working-directory: rust
+        run: cargo build --release -p sutura-cli -p sutura-gui
+
+      - name: Build fTetWild (pinned upstream + determinism patches)
+        run: bash third_party/ftetwild/build.sh
+
+      - name: Package tar.gz
+        env:
+          FTETWILD_BIN: third_party/ftetwild/bin/ftetwild
+        run: bash scripts/package_rust.sh --platform linux-aarch64
+
+      - name: Verify the package (no Python, runs, licences)
+        run: |
+          set -e
+          tgz=$(ls dist/*.tar.gz | head -1)
+          rm -rf /tmp/verify && mkdir -p /tmp/verify
+          tar -xzf "$tgz" -C /tmp/verify
+          root=/tmp/verify/Sutura
+          test "$(find "$root" -name '*python*' | wc -l | tr -d ' ')" = "0"
+          test "$(ldd "$root/bin/sutura" | grep -ci python || true)" = "0"
+          "$root/bin/sutura" --version
+          "$root/bin/sutura" --list-methods > /tmp/methods.txt
+          grep -q quick_clean /tmp/methods.txt
+          test -f "$root/LICENSE"
+          test -f "$root/ATTRIBUTION.md"
+          echo "Linux arm64 package verified"
+
+      - name: Write sha256 manifests
+        run: |
+          cd dist
+          for f in *.tar.gz; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" | awk '{print $1"  "$2}' > "$f.sha256"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sutura-rust-linux-aarch64
           path: |
             dist/*.tar.gz
             dist/*.sha256

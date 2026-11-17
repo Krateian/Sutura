@@ -42,12 +42,20 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 1
 fi
 
-# Locate the package: explicit --from, else the newest dmg/app.tar.gz here.
+# Intel Macs were supported by the Python distribution, so detect the arch
+# instead of assuming Apple Silicon.
+case "$(uname -m)" in
+    arm64|aarch64) RU_ARCH="arm64" ;;
+    x86_64)        RU_ARCH="x86_64" ;;
+    *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+# Locate the package: explicit --from, else the newest dmg/app.tar.gz for this arch.
 if [ -z "$PKG" ]; then
-    PKG="$(ls -1t "$HERE"/Sutura-rust-v*-arm64.dmg "$HERE"/Sutura-rust-v*-arm64.app.tar.gz 2>/dev/null | head -1 || true)"
+    PKG="$(ls -1t "$HERE"/Sutura-rust-v*-"$RU_ARCH".dmg "$HERE"/Sutura-rust-v*-"$RU_ARCH".app.tar.gz 2>/dev/null | head -1 || true)"
 fi
 if [ -z "$PKG" ] || [ ! -f "$PKG" ]; then
-    echo "no package found: pass --from <Sutura-rust-*.dmg|.app.tar.gz>" >&2
+    echo "no package found: pass --from <Sutura-rust-v*-${RU_ARCH}.dmg|.app.tar.gz>" >&2
     exit 1
 fi
 say "package: $PKG"

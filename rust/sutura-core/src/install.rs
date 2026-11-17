@@ -82,18 +82,40 @@ pub fn protected_entries() -> Vec<String> {
 
 /// The asset file name for this platform, matching `scripts/package_rust.sh`.
 ///
-/// | target          | asset                                  |
-/// |-----------------|----------------------------------------|
-/// | macOS arm64     | `Sutura-rust-v<ver>-arm64.dmg`          |
-/// | Linux x86_64    | `Sutura-rust-v<ver>-x86_64.tar.gz`      |
+/// | target                    | asset                                |
+/// |---------------------------|--------------------------------------|
+/// | macOS arm64               | `Sutura-rust-v<ver>-arm64.dmg`        |
+/// | macOS x86_64 (Intel)      | `Sutura-rust-v<ver>-x86_64.dmg`       |
+/// | Linux x86_64              | `Sutura-rust-v<ver>-x86_64.tar.gz`    |
+/// | Linux aarch64             | `Sutura-rust-v<ver>-aarch64.tar.gz`   |
+///
+/// The macOS pair is distinguished by the arch label only, because the file
+/// extension already says "macOS"; the Linux pair likewise. That keeps the
+/// naming consistent across targets instead of encoding the OS twice.
+///
+/// Every target the Python build shipped must be here. `None` means "no update
+/// and no repair possible on this machine", so a missing arm64-linux or Intel
+/// entry is a silent feature loss, not just a packaging gap.
 pub fn asset_name(tag: &str) -> Option<String> {
+    asset_name_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        tag,
+    )
+}
+
+/// [`asset_name`] for an explicit platform, so every target is testable from one
+/// host. `cfg!` alone can only ever exercise the machine the test runs on, which
+/// is how the Intel Mac and arm64 Linux arms could go missing without a single
+/// failing test.
+pub fn asset_name_for(os: &str, arch: &str, tag: &str) -> Option<String> {
     let ver = tag.strip_prefix('v').unwrap_or(tag);
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some(format!("Sutura-rust-v{ver}-arm64.dmg"))
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some(format!("Sutura-rust-v{ver}-x86_64.tar.gz"))
-    } else {
-        None
+    match (os, arch) {
+        ("macos", "aarch64") => Some(format!("Sutura-rust-v{ver}-arm64.dmg")),
+        ("macos", "x86_64") => Some(format!("Sutura-rust-v{ver}-x86_64.dmg")),
+        ("linux", "x86_64") => Some(format!("Sutura-rust-v{ver}-x86_64.tar.gz")),
+        ("linux", "aarch64") => Some(format!("Sutura-rust-v{ver}-aarch64.tar.gz")),
+        _ => None,
     }
 }
 
@@ -551,6 +573,48 @@ pub(crate) fn tests_env_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every platform the Python distribution shipped must have an asset name.
+    ///
+    /// `asset_name` returns None without one, which disables `--check-update` and
+    /// `--repair-install` on that machine — so a missing target is a silent
+    /// feature loss. `cfg!`-based dispatch can only test the host, which is
+    /// exactly how Intel Mac and arm64 Linux went missing: no test could have
+    /// caught it. These are pinned against `scripts/package_rust.sh`.
+    #[test]
+    fn every_shipped_platform_has_an_asset_name() {
+        let cases = [
+            ("macos", "aarch64", "Sutura-rust-v0.9.9-arm64.dmg"),
+            ("macos", "x86_64", "Sutura-rust-v0.9.9-x86_64.dmg"),
+            ("linux", "x86_64", "Sutura-rust-v0.9.9-x86_64.tar.gz"),
+            ("linux", "aarch64", "Sutura-rust-v0.9.9-aarch64.tar.gz"),
+        ];
+        for (os, arch, want) in cases {
+            assert_eq!(
+                asset_name_for(os, arch, "v0.9.9").as_deref(),
+                Some(want),
+                "{os}/{arch} must resolve to {want}"
+            );
+        }
+        // The tag is accepted with or without the `v`.
+        assert_eq!(
+            asset_name_for("linux", "x86_64", "0.9.9").as_deref(),
+            Some("Sutura-rust-v0.9.9-x86_64.tar.gz")
+        );
+        // Genuinely unsupported targets still answer None rather than guessing.
+        for (os, arch) in [("windows", "x86_64"), ("linux", "riscv64")] {
+            assert_eq!(asset_name_for(os, arch, "v0.9.9"), None, "{os}/{arch}");
+        }
+    }
+
+    /// The host's own answer must match what the platform table says, so the two
+    /// cannot drift.
+    #[test]
+    fn host_asset_name_agrees_with_the_table() {
+        let host = asset_name("v1.2.3");
+        let table = asset_name_for(std::env::consts::OS, std::env::consts::ARCH, "v1.2.3");
+        assert_eq!(host, table);
+    }
 
     #[test]
     fn sha256_hex_is_lowercase_and_correct() {

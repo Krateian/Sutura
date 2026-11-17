@@ -602,10 +602,17 @@ def test_rust_asset_names_match_the_rust_updater():
 
     # The Rust side formats `Sutura-rust-v{ver}-<tail>`; the bridge writes
     # `Sutura-rust-v%s-<tail>`. Both must name the same file per platform.
+    # All four shipped targets: dropping one here would strand those users on a
+    # Python build that can no longer be updated.
     expected = {
         'darwin-arm64': 'Sutura-rust-v{ver}-arm64.dmg',
+        'darwin-x86_64': 'Sutura-rust-v{ver}-x86_64.dmg',
         'linux-x86_64': 'Sutura-rust-v{ver}-x86_64.tar.gz',
+        'linux-aarch64': 'Sutura-rust-v{ver}-aarch64.tar.gz',
     }
+    assert set(updater.RUST_ASSETS) == set(expected), (
+        'bridge platforms %r do not match the shipped set %r'
+        % (sorted(updater.RUST_ASSETS), sorted(expected)))
     for key, rust_name in expected.items():
         assert '"%s"' % rust_name in src, (
             'install.rs no longer formats %r; update RUST_ASSETS to match'

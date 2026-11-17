@@ -348,11 +348,17 @@ def download_source(tag, dest_dir):
 # ------------------------------------------------ bridge release (source -> Rust)
 
 # Asset names the Rust updater expects (rust/sutura-core/src/install.rs::
-# asset_name). Kept in sync by hand: there are exactly two platforms, and a
-# mismatch is caught by the test below rather than silently shipping.
+# asset_name). Kept in sync by hand: a mismatch is caught by the test below
+# rather than silently shipping.
+#
+# All four targets the Python distribution supported are listed, because the
+# bridge runs ON the Python install's platform: leaving Intel Mac or arm64 Linux
+# out would strand those users on a Python build that can never be updated again.
 RUST_ASSETS = {
     'darwin-arm64': 'Sutura-rust-v%s-arm64.dmg',
+    'darwin-x86_64': 'Sutura-rust-v%s-x86_64.dmg',
     'linux-x86_64': 'Sutura-rust-v%s-x86_64.tar.gz',
+    'linux-aarch64': 'Sutura-rust-v%s-aarch64.tar.gz',
 }
 MIGRATE_FLAG = '--migrate-from-python'
 
@@ -360,15 +366,22 @@ MIGRATE_FLAG = '--migrate-from-python'
 def rust_asset_platform():
     """The platform key for RUST_ASSETS, or None when unsupported.
 
-    Matches install::asset_name's compile-time platform list: macOS on Apple
-    silicon and Linux on x86_64. Everything else has no Rust build, so the
-    bridge must leave those installs alone rather than guess.
+    Matches install::asset_name's compile-time platform list exactly: macOS on
+    Apple silicon or Intel, Linux on x86_64 or aarch64. Everything else has no
+    Rust build, so the bridge must leave those installs alone rather than guess.
     """
-    if sys.platform == 'darwin' and platform.machine() in ('arm64', 'aarch64'):
-        return 'darwin-arm64'
-    if sys.platform.startswith('linux') and platform.machine() in ('x86_64',
-                                                                  'AMD64'):
-        return 'linux-x86_64'
+    machine = platform.machine()
+    if sys.platform == 'darwin':
+        if machine in ('arm64', 'aarch64'):
+            return 'darwin-arm64'
+        if machine in ('x86_64', 'AMD64'):
+            return 'darwin-x86_64'
+        return None
+    if sys.platform.startswith('linux'):
+        if machine in ('x86_64', 'AMD64'):
+            return 'linux-x86_64'
+        if machine in ('aarch64', 'arm64'):
+            return 'linux-aarch64'
     return None
 
 

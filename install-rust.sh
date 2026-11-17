@@ -47,12 +47,20 @@ if [ "$(uname -s)" != "Linux" ]; then
     exit 1
 fi
 
-# Locate the package: explicit --from, else the newest tarball beside this file.
+# The package name carries the architecture, and the Python distribution shipped
+# both x86_64 and aarch64, so detect it rather than assuming.
+case "$(uname -m)" in
+    x86_64|amd64) RU_ARCH="x86_64" ;;
+    aarch64|arm64) RU_ARCH="aarch64" ;;
+    *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+# Locate the package: explicit --from, else the newest tarball for this arch.
 if [ -z "$PKG" ]; then
-    PKG="$(ls -1t "$HERE"/Sutura-rust-v*-x86_64.tar.gz 2>/dev/null | head -1 || true)"
+    PKG="$(ls -1t "$HERE"/Sutura-rust-v*-"$RU_ARCH".tar.gz 2>/dev/null | head -1 || true)"
 fi
 if [ -z "$PKG" ] || [ ! -f "$PKG" ]; then
-    echo "no package found: pass --from <Sutura-rust-*.tar.gz>" >&2
+    echo "no package found: pass --from <Sutura-rust-v*-${RU_ARCH}.tar.gz>" >&2
     exit 1
 fi
 say "package: $PKG"
