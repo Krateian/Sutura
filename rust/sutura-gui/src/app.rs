@@ -934,6 +934,13 @@ impl eframe::App for SuturaApp {
                             &rust_i18n::t!("app.ftetwild_timeout"));
                     opt_f64(ui, "gui_ft_haus", &mut self.settings.ftetwild_max_hausdorff_rel,
                             &rust_i18n::t!("app.ftetwild_max_hausdorff"));
+                    // Wall-thicken target. Setting a value turns the tier on,
+                    // matching the CLI (`--wall-min-thickness` IS the switch):
+                    // a target with the tier off would silently do nothing.
+                    opt_f64(ui, "gui_wall_min", &mut self.settings.wall_min_thickness,
+                            &rust_i18n::t!("app.wall_min_thickness"));
+                    self.settings.wall_thicken =
+                        self.settings.wall_min_thickness.is_some();
                     ui.separator();
                     ui.checkbox(
                         &mut self.settings.join_components,

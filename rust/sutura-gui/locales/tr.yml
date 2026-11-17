@@ -73,6 +73,7 @@ app:
   ftetwild_max_faces: "fTetWild yüz sınırı"
   ftetwild_timeout: "fTetWild zaman aşımı (sn)"
   ftetwild_max_hausdorff: "fTetWild azami Hausdorff"
+  wall_min_thickness: "Duvar asgari kalınlığı (mm)"
   ftetwild_optimize_retry: "fTetWild: optimize ile yeniden dene"
   join_components: "Bileşenleri birleştir (Stage 1)"
   auto_escalation: "SI otomatik yükseltme"

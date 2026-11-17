@@ -73,6 +73,7 @@ app:
   ftetwild_max_faces: "fTetWild face cap"
   ftetwild_timeout: "fTetWild timeout (s)"
   ftetwild_max_hausdorff: "fTetWild max Hausdorff"
+  wall_min_thickness: "Wall min thickness (mm)"
   ftetwild_optimize_retry: "fTetWild: retry with optimize"
   join_components: "Join components (Stage 1)"
   auto_escalation: "SI auto-escalation"
