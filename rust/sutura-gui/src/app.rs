@@ -1704,6 +1704,14 @@ impl SuturaApp {
                 #[cfg(test)]
                 let probe = self.settings_scroll_probe.clone();
                 let settings_out = area.show(ui, |ui| {
+                    // Rows must wrap inside the panel, never extend past it. A
+                    // `ui.horizontal` takes its natural width and a right-aligned
+                    // `Panel` then spills that to the left, off-screen -- which is
+                    // what a Steam Deck showed as "Settings" cut in half. Forcing
+                    // the wrap width makes the combos and boxes shrink to the
+                    // column instead of overflowing it.
+                    ui.set_max_width(ui.available_width());
+                    let wrap = ui.available_width();
                     ui.heading(rust_i18n::t!("app.settings").to_string());
                     ui.separator();
                     ui.horizontal(|ui| {
@@ -1785,7 +1793,7 @@ impl SuturaApp {
                     ui.add(
                         egui::Label::new(egui::RichText::new(desc).small().weak()).wrap(),
                     );
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let label_id = labelled(ui, rust_i18n::t!("app.profile").to_string());
                         let current = self.settings.profile.clone();
                         egui::ComboBox::from_id_salt("profile")
@@ -1871,7 +1879,7 @@ impl SuturaApp {
                         // means "leave it to the intensity", exactly like the
                         // per-run limits above.
                         ui.indent("dressing_knobs", |ui| {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(rust_i18n::t!("app.dressing_drain").to_string());
                                 let mut text = self
                                     .settings
@@ -1904,7 +1912,7 @@ impl SuturaApp {
                                     };
                                 }
                             });
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(rust_i18n::t!("app.dressing_defects").to_string());
                                 let mut text = self
                                     .settings
@@ -1927,7 +1935,7 @@ impl SuturaApp {
                                 }
                             });
                             let mut knob = |ui: &mut egui::Ui, label: &str, value: &mut Option<f64>| {
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     ui.label(label);
                                     let mut text =
                                         value.map(|v| v.to_string()).unwrap_or_default();
@@ -2051,7 +2059,7 @@ impl SuturaApp {
                     }
 
                     ui.separator();
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let si_label = labelled(ui, rust_i18n::t!("app.si_mode").to_string());
                         let current = self
                             .settings
@@ -2069,7 +2077,7 @@ impl SuturaApp {
                             })
                             .response.labelled_by(si_label);
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let solid_label = labelled(ui, rust_i18n::t!("app.solid_engine").to_string());
                         let current = self
                             .settings
