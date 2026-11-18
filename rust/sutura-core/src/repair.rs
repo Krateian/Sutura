@@ -4400,7 +4400,49 @@ fn repair_impl(
             .iter()
             .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
             .collect();
-        let (_m, si, skipped) = sutura_geom::self_intersections_core(&cur_v, &ut);
+        // SI excise already measured the post-excision count.  Reuse it only
+        // when nothing after SI excise could have changed the mesh: no deep
+        // tier, no post-SI tamponade/closing/proxy/mirror/repeat/wall adoption
+        // and no pinch split.  Otherwise recompute exactly as before.
+        let post_si_adopted = |key: &str| {
+            stats
+                .get(key)
+                .map(|r| adopted(r))
+                .unwrap_or(false)
+        };
+        let deep_changed = stats
+            .get("deep_repair")
+            .and_then(|d| d.get("tiers_run"))
+            .and_then(Value::as_array)
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        let pinch_changed = stats
+            .get("pinched_vertices_split")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let reuse_si = stats
+            .get("si_excise")
+            .filter(|r| {
+                r.get("si_after").and_then(Value::as_i64).is_some()
+                    && !deep_changed
+                    && !pinch_changed
+                    && !post_si_adopted("tamponade")
+                    && !post_si_adopted("closing")
+                    && !post_si_adopted("proxy_template")
+                    && !post_si_adopted("mirror_complete")
+                    && !post_si_adopted("repeat")
+                    && !post_si_adopted("wall_thicken")
+            })
+            .and_then(|r| r.get("si_after"))
+            .and_then(Value::as_i64);
+        let (si, skipped) = match reuse_si {
+            Some(si) => (si, false),
+            None => {
+                let (_m, si, skipped) =
+                    sutura_geom::self_intersections_core(&cur_v, &ut);
+                (si, skipped)
+            }
+        };
         stage1.insert(
             "self_intersections_remaining".into(),
             if skipped || si < 0 {
