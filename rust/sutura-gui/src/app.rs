@@ -1825,12 +1825,27 @@ pub fn headless_objects(input: &Path, out: Option<PathBuf>) -> eframe::Result<()
     Ok(())
 }
 
+/// The output path for a repaired file: `<stem>_fixed.<ext>`, **keeping the
+/// input's extension**.
+///
+/// The extension is not cosmetic. `repair_3mf_file` rewrites a valid 3MF
+/// container (see `run_repair`), so a hard-coded `.stl` wrote those archive
+/// bytes into a file named `_fixed.stl` — a slicer rejects it, and the user
+/// reads that as "the repair failed". The same applies to `.obj`/`.ply`, which
+/// the file dialog accepts.
+///
+/// Falls back to `stl` only when the input has no extension at all.
 pub fn fixed_path(input: &Path) -> PathBuf {
     let stem = input
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "mesh".to_string());
-    input.with_file_name(format!("{stem}_fixed.stl"))
+    let ext = input
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .filter(|e| !e.is_empty())
+        .unwrap_or_else(|| "stl".to_string());
+    input.with_file_name(format!("{stem}_fixed.{ext}"))
 }
 
 /// A numeric box that distinguishes "blank" (`None`, keep the tier's value) from
@@ -2156,5 +2171,42 @@ fn save_screenshot(path: &Path, img: &egui::ColorImage) {
     match image::save_buffer(path, &rgba, w as u32, h as u32, image::ColorType::Rgba8) {
         Ok(()) => eprintln!("screenshot written: {}", path.display()),
         Err(e) => eprintln!("screenshot failed: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The output keeps the input's extension, for every format the dialog
+    /// accepts. A hard-coded `.stl` wrote a rewritten 3MF archive (and OBJ/PLY)
+    /// into a file a slicer cannot open, which reads as a failed repair.
+    #[test]
+    fn fixed_path_keeps_the_input_extension() {
+        for (input, want) in [
+            ("/tmp/model.stl", "/tmp/model_fixed.stl"),
+            ("/tmp/model.3mf", "/tmp/model_fixed.3mf"),
+            ("/tmp/model.obj", "/tmp/model_fixed.obj"),
+            ("/tmp/model.ply", "/tmp/model_fixed.ply"),
+            // Case is preserved: the dialog accepts `.STL`/`.3MF` too.
+            ("/tmp/model.STL", "/tmp/model_fixed.STL"),
+            // No extension: fall back to stl rather than producing a dotfile.
+            ("/tmp/model", "/tmp/model_fixed.stl"),
+        ] {
+            assert_eq!(
+                fixed_path(Path::new(input)),
+                PathBuf::from(want),
+                "{input} must produce {want}"
+            );
+        }
+    }
+
+    /// A name that merely contains dots must not confuse the split.
+    #[test]
+    fn fixed_path_handles_dotted_names() {
+        assert_eq!(
+            fixed_path(Path::new("/tmp/v1.2.part.stl")),
+            PathBuf::from("/tmp/v1.2.part_fixed.stl")
+        );
     }
 }
