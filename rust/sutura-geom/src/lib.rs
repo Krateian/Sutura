@@ -2226,12 +2226,94 @@ fn self_intersecting_faces<'py>(
 }
 
 /// Core self-intersection scan (no Python): `(mask, count, skipped)`.
+fn mesh_hash_bytes(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for v in verts {
+        for x in v {
+            for b in x.to_bits().to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    for t in tris {
+        for x in t {
+            for b in x.to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    h
+}
+
+/// FNV-1a content key for an f64/usize mesh, used by run-scoped caches.
+pub fn mesh_hash_usize(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for v in verts {
+        for x in v {
+            for b in x.to_bits().to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    for t in tris {
+        for x in t {
+            for b in (*x as u64).to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    h
+}
+
+/// FNV-1a content key for an f64/i64 mesh, used by run-scoped caches.
+pub fn mesh_hash_i64(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> u64 {
+    mesh_hash_bytes(verts, tris)
+}
+
+thread_local! {
+    static SI_CACHE: std::cell::RefCell<Vec<(u64, Vec<bool>, i64, bool)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static BVH_CACHE: std::cell::RefCell<Option<(u64, winding::MeshBvh)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool>, i64, bool) {
     if tris.len() > SI_MAX_FACES {
         return (vec![false; tris.len()], -1, true);
     }
-    let bvh = winding::MeshBvh::from_arrays(verts, tris);
-    bvh.self_intersections(verts, tris)
+    let key = mesh_hash_usize(verts, tris);
+    if let Some(hit) = SI_CACHE.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|(k, ..)| *k == key)
+            .map(|(_, m, n, s)| (m.clone(), *n, *s))
+    }) {
+        return hit;
+    }
+    // One BVH per mesh content: SI excise and the Stage-1 report often ask for
+    // the same mesh; the immutable BVH can be shared without changing values.
+    let out = BVH_CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let bvh = match slot.take() {
+            Some((k, bvh)) if k == key => bvh,
+            _ => winding::MeshBvh::from_arrays(verts, tris),
+        };
+        let out = bvh.self_intersections(verts, tris);
+        *slot = Some((key, bvh));
+        out
+    });
+    SI_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 4 {
+            c.remove(0);
+        }
+        c.push((key, out.0.clone(), out.1, out.2));
+    });
+    out
 }
 
 /// Self-intersections counted only from a face SUBSET.
