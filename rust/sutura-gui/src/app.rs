@@ -213,6 +213,11 @@ pub struct SuturaApp {
     /// options dialog; settings live in a permanent panel here, so the honest
     /// equivalent is to show or hide that panel.
     settings_open: bool,
+    /// Method availability, from `self_check::run`. Process-wide, so it is
+    /// computed once at startup rather than per file -- and with
+    /// `run_fixtures:false`, the same cheap availability probe `--self-check`
+    /// does without `--self-check-fixtures`.
+    method_health: Vec<Value>,
 }
 
 impl SuturaApp {
@@ -258,6 +263,7 @@ impl SuturaApp {
             ready_frames: 0,
             persisted: String::new(),
             settings_open: true,
+            method_health: Vec::new(),
         }
     }
 
@@ -295,6 +301,18 @@ impl SuturaApp {
         } else {
             saved.settings.clone()
         };
+        // Availability only: no fixtures, so this is a directory lookup per
+        // method rather than a repair run, and it is safe to do before the
+        // window opens.
+        let method_health = sutura_core::self_check::run(false)
+            .get("methods")
+            .and_then(|m| m.as_object())
+            .map(|m| {
+                let mut v: Vec<Value> = m.values().cloned().collect();
+                v.sort_by_key(|r| r.get("num").and_then(Value::as_u64).unwrap_or(0));
+                v
+            })
+            .unwrap_or_default();
         let mut app = Self {
             files: Vec::new(),
             selected: None,
@@ -335,6 +353,7 @@ impl SuturaApp {
             // unexercised until some control happened to change.
             persisted: String::new(),
             settings_open: true,
+            method_health,
         };
         for path in files {
             app.add_path(path);
@@ -913,7 +932,62 @@ impl eframe::App for SuturaApp {
                         self.about_open = true;
                     }
                 });
+
             });
+                // Method-health band: one dot per method, from the same
+                // availability probe `--self-check` runs. Only shown when
+                // something is NOT fine -- a green strip every launch is noise,
+                // and the point is to notice a broken external engine without
+                // opening a terminal.
+                let unhealthy: Vec<&Value> = self
+                    .method_health
+                    .iter()
+                    .filter(|m| {
+                        m.get("status").and_then(|v| v.as_str()) != Some("ok")
+                    })
+                    .collect();
+                if !unhealthy.is_empty() {
+                    // Plain `horizontal`, not `horizontal_wrapped`: wrapping
+                    // inside the top panel made it claim the full window height
+                    // (verified in a screenshot -- the whole preview was pushed
+                    // off-screen). The list is short enough not to need it.
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                rust_i18n::t!("app.method_health", count = unhealthy.len() as i64)
+                                    .to_string(),
+                            )
+                            .small()
+                            .weak(),
+                        );
+                        for m in unhealthy {
+                            let num = m.get("num").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let name = m
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            let status = m
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            let reason = m
+                                .get("reason")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let colour = if status == "skip" {
+                                egui::Color32::from_rgb(0xc0, 0xa0, 0x40)
+                            } else {
+                                egui::Color32::LIGHT_RED
+                            };
+                            ui.label(
+                                egui::RichText::new(format!("#{num} {status}"))
+                                    .small()
+                                    .color(colour),
+                            )
+                            .on_hover_text(format!("{name}: {reason}"));
+                        }
+                    });
+                }
         });
 
         egui::containers::Panel::left("files")
@@ -3353,6 +3427,36 @@ mod tests {
             "the shortcut must not steal a typed comma"
         );
         finish(&ctx);
+    }
+
+    /// The method-health band must reflect what `--self-check` reports.
+    ///
+    /// It reads the same `self_check::run(false)`, so the GUI cannot disagree
+    /// with the CLI about whether an external engine is usable -- which is the
+    /// whole point: a user should learn that from the app, not from opening a
+    /// terminal.
+    #[test]
+    fn method_health_matches_self_check() {
+        let report = sutura_core::self_check::run(false);
+        let methods = report
+            .get("methods")
+            .and_then(|m| m.as_object())
+            .expect("self-check always reports a methods map");
+        assert_eq!(methods.len(), 19, "the 19 built-in methods");
+
+        for (id, m) in methods {
+            let status = m.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            assert!(
+                matches!(status, "ok" | "skip" | "error"),
+                "method {id} has an unexpected status {status:?}"
+            );
+            // The band only shows the others, so they must carry the fields the
+            // row renders.
+            if status != "ok" {
+                assert!(m.get("num").is_some(), "{id} needs a num for the row");
+                assert!(m.get("name").is_some(), "{id} needs a name");
+            }
+        }
     }
 
     /// The settings panel must be inside a scroll area.

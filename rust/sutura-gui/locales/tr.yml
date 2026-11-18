@@ -48,6 +48,7 @@ app:
   ob_vertices: Köşeler
   recommended: Önerilen yöntemler
   rec_object: Nesne %{index}
+  method_health: "%{count} yöntem kullanılamıyor:"
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"

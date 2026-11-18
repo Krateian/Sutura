@@ -48,6 +48,7 @@ app:
   ob_vertices: Vertices
   recommended: Recommended methods
   rec_object: Object %{index}
+  method_health: "%{count} method(s) unavailable:"
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"
