@@ -190,9 +190,18 @@ pub fn buried_face_mask_with_bvh(
     let d = delta.max(0.0);
 
     // 0 = buried, 1 = debris, 2 = degenerate, 3 = other (outer/cavity/ambiguous).
+    let verify = std::env::var_os("SUTURA_WINDING_VERIFY").is_some();
     let results: Vec<(u8, f64)> = (0..tris.len())
         .into_par_iter()
-        .map(|i| classify_buried_face(verts, tris, &bvh, eps, d, i))
+        .map(|i| {
+            let approx = classify_buried_face(verts, tris, &bvh, eps, d, i, 5e-2);
+            if verify {
+                let exact = classify_buried_face(verts, tris, &bvh, eps, d, i, 1e-2);
+                assert_eq!(approx.0, exact.0,
+                    "winding verify mismatch face {i}: approx {} exact {}", approx.0, exact.0);
+            }
+            approx
+        })
         .collect();
 
     for (i, (class, area)) in results.iter().enumerate() {
@@ -225,6 +234,7 @@ fn classify_buried_face(
     eps: f64,
     d: f64,
     i: usize,
+    tol: f64,
 ) -> (u8, f64) {
     let t = tris[i];
     let v0 = verts[t[0] as usize];
@@ -242,8 +252,6 @@ fn classify_buried_face(
 
     let front = add3(c, scale3(unorm, eps));
     let back = sub3(c, scale3(unorm, eps));
-    // 1e-3 far-field tolerance is far below the 0.1 classification margins.
-    let tol = 5e-2;
     let (w_front, w_back) = bvh.winding_at_pair_tol(front, back, tol);
     let integral = |w: f64| (w - w.round()).abs() <= d;
 
@@ -344,7 +352,7 @@ impl BuriedMaskContext {
                 let i = fi as usize;
                 if i < self.tris.len() {
                     let (class, area) = classify_buried_face(
-                        &self.verts, &self.tris, &self.bvh, self.eps, self.d, i);
+                        &self.verts, &self.tris, &self.bvh, self.eps, self.d, i, 5e-2);
                     Some((i, class, area))
                 } else {
                     None
