@@ -209,12 +209,6 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             ));
         }
     }
-    if cli.classifier_engine.as_deref() == Some("classic") {
-        return Err(RepairFailure::new(
-            2,
-            "the classic classifier is not available in the Rust CLI",
-        ));
-    }
 
     // Everything below is resolved by `options_from` from the settings table --
     // including validation, with the same messages and the same exit code

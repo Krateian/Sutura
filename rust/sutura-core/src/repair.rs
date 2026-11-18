@@ -255,6 +255,10 @@ pub struct RepairOptions {
     /// (Python `ftetwild_params()`), including when the SI trigger forces it.
     #[serde(default)]
     pub ftetwild_optimize: bool,
+    /// `--classifier-engine classic|experimental`; the policy default is
+    /// experimental, matching Python.
+    #[serde(default)]
+    pub classifier_engine: Option<String>,
     /// Internal guard: depth of a nested auto-ladder attempt.  Not part of the
     /// Python-facing option JSON.
     #[serde(skip)]
@@ -308,6 +312,7 @@ impl Default for RepairOptions {
             indirect_autorefine: false,
             auto_reorder: false,
             ftetwild_optimize: false,
+            classifier_engine: None,
             ladder_depth: 0,
         }
     }
@@ -904,7 +909,12 @@ fn resolve_triage(
         .iter()
         .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
         .collect();
-    let cls = classify_mesh_with(verts, &tri_usize, "experimental", opts.extra_features);
+    let engine = opts
+        .classifier_engine
+        .as_deref()
+        .unwrap_or("experimental")
+        .to_string();
+    let cls = classify_mesh_with(verts, &tri_usize, &engine, opts.extra_features);
     let mesh_type = cls
         .get("type")
         .and_then(Value::as_str)
@@ -925,7 +935,7 @@ fn resolve_triage(
         return Triage {
             mesh_type,
             confidence,
-            engine: "experimental".to_string(),
+            engine,
             min_component,
             max_hole,
             tuning_applied: false,
@@ -937,7 +947,7 @@ fn resolve_triage(
         return Triage {
             mesh_type,
             confidence,
-            engine: "experimental".to_string(),
+            engine,
             min_component,
             max_hole,
             tuning_applied: false,
@@ -954,7 +964,7 @@ fn resolve_triage(
     Triage {
         mesh_type,
         confidence,
-        engine: "experimental".to_string(),
+        engine,
         min_component,
         max_hole,
         tuning_applied: applied,
