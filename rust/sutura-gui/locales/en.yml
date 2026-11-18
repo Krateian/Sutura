@@ -66,6 +66,12 @@ app:
   engines_none: "No external engines configured."
   engines_enabled: "enabled"
   engines_disabled: "disabled"
+  changelog: "Changelog"
+  changelog_tip: "Fetch the version history from GitHub (read-only, not saved)"
+  changelog_loading: "Loading release notes…"
+  changelog_offline: "Release notes could not be loaded (offline?)."
+  changelog_empty: "No releases found."
+  retry: "Retry"
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"

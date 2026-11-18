@@ -246,6 +246,13 @@ pub struct SuturaApp {
     crash_open: bool,
     /// Result message of the last diagnostics export, shown in the dialog.
     diagnostics_note: Option<String>,
+    /// Version history for the Changelog view: `(tag, body)` pairs, newest
+    /// first. Fetched **on request and never written to disk** -- the on-disk
+    /// snapshot has exactly one copy (`whatsnew::current/`), and a second one
+    /// would drift from it.
+    changelog: Option<Vec<(String, String)>>,
+    changelog_open: bool,
+    changelog_error: Option<String>,
 }
 
 impl SuturaApp {
@@ -295,6 +302,9 @@ impl SuturaApp {
             ftetwild: None,
             crash_open: false,
             diagnostics_note: None,
+            changelog: None,
+            changelog_open: false,
+            changelog_error: None,
         }
     }
 
@@ -388,6 +398,9 @@ impl SuturaApp {
             ftetwild: sutura_core::ftetwild::find_binary(),
             crash_open: crate::crash::panic_recorded(),
             diagnostics_note: None,
+            changelog: None,
+            changelog_open: false,
+            changelog_error: None,
         };
         for path in files {
             app.add_path(path);
@@ -483,6 +496,48 @@ impl SuturaApp {
         let Some(entry) = self.files.get(idx) else { return };
         let Some(mesh) = entry.input.clone() else { return };
         self.repeat_picker = Some(crate::repeat_picker::RepeatPicker::new(&mesh));
+    }
+
+    /// Fetch the version history for the Changelog view.
+    ///
+    /// **Never writes to disk.** The single on-disk copy of release notes is
+    /// `whatsnew::current/`, maintained by the updater after an install; a cache
+    /// here would be a second copy that drifts (Python keeps exactly that, a
+    /// `release_notes_cache.json`, and the product rule for this port is one
+    /// copy only). So this reads the releases API into memory on request.
+    ///
+    /// Failure is a message, not a silent empty list: "offline?" and "no
+    /// releases" look identical otherwise.
+    fn fetch_changelog(&mut self) {
+        // The `/latest` endpoint returns one release; the list endpoint is what
+        // a history needs.
+        let url = sutura_core::updater::GITHUB_API.replace(
+            "/releases/latest",
+            "/releases?per_page=20",
+        );
+        let Some(value) = sutura_core::http::get_json(&url) else {
+            self.changelog_error = Some(rust_i18n::t!("app.changelog_offline").to_string());
+            return;
+        };
+        let entries: Vec<(String, String)> = value
+            .as_array()
+            .map(|releases| {
+                releases
+                    .iter()
+                    .filter_map(|r| {
+                        let tag = r.get("tag_name").and_then(|v| v.as_str())?;
+                        let body = r.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                        Some((tag.to_string(), body.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if entries.is_empty() {
+            self.changelog_error = Some(rust_i18n::t!("app.changelog_empty").to_string());
+            return;
+        }
+        self.changelog = Some(entries);
+        self.changelog_error = None;
     }
 
     /// Write a diagnostics archive wherever the user says.
@@ -1004,6 +1059,16 @@ impl eframe::App for SuturaApp {
                     }
                     if ui.button(rust_i18n::t!("app.about").to_string()).clicked() {
                         self.about_open = true;
+                    }
+                    if ui
+                        .button(rust_i18n::t!("app.changelog").to_string())
+                        .on_hover_text(rust_i18n::t!("app.changelog_tip").to_string())
+                        .clicked()
+                    {
+                        self.changelog_open = true;
+                        if self.changelog.is_none() {
+                            self.fetch_changelog();
+                        }
                     }
                     if ui
                         .button(rust_i18n::t!("app.diagnostics").to_string())
@@ -2306,6 +2371,37 @@ impl eframe::App for SuturaApp {
                     ui.label(rust_i18n::t!("app.about_body").to_string());
                 });
             self.about_open = open;
+        }
+        if self.changelog_open {
+            let mut open = self.changelog_open;
+            egui::Window::new(rust_i18n::t!("app.changelog").to_string())
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(620.0)
+                .show(&ctx, |ui| {
+                    if let Some(err) = &self.changelog_error {
+                        ui.label(egui::RichText::new(err).color(egui::Color32::LIGHT_RED));
+                        if ui.button(rust_i18n::t!("app.retry").to_string()).clicked() {
+                            self.changelog_error = None;
+                            self.fetch_changelog();
+                        }
+                        return;
+                    }
+                    let Some(entries) = &self.changelog else {
+                        ui.label(rust_i18n::t!("app.changelog_loading").to_string());
+                        return;
+                    };
+                    egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
+                        for (tag, body) in entries {
+                            egui::CollapsingHeader::new(tag.clone())
+                                .id_salt(format!("changelog-{tag}"))
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    ui.label(egui::RichText::new(body).monospace().small());
+                                });
+                        }
+                    });
+                });
         }
         if self.crash_open {
             // Python shows one short dialog pointing at the export; this is the
@@ -3876,6 +3972,42 @@ mod tests {
         for name in configured.keys() {
             assert!(!name.is_empty());
         }
+    }
+
+    /// The Changelog must be read-only: fetching it may not create a second
+    /// on-disk copy of the release notes.
+    ///
+    /// The product rule for this port is one copy (`whatsnew::current/`, written
+    /// by the updater after an install). Python keeps a
+    /// `release_notes_cache.json` beside it, which is exactly the drift this
+    /// avoids. Asserted as a source property, because the fetch needs a network
+    /// and a click, neither of which a unit test has.
+    #[test]
+    fn changelog_fetch_does_not_write_to_disk() {
+        let src = include_str!("app.rs");
+        let start = src
+            .find("fn fetch_changelog(")
+            .expect("the changelog fetch exists");
+        let end = src[start..]
+            .find("\n    /// ")
+            .map(|i| start + i)
+            .expect("the fetch ends");
+        let body = &src[start..end];
+
+        for writer in [
+            "fs::write",
+            "fs::create_dir",
+            "File::create",
+            "whatsnew::snapshot_release_notes",
+            "whatsnew::commit",
+        ] {
+            assert!(
+                !body.contains(writer),
+                "the changelog fetch must not write: found {writer}"
+            );
+        }
+        // It reads the releases list, not `/latest`: a history needs the list.
+        assert!(body.contains("/releases?per_page="), "reads the list endpoint");
     }
 
     /// The settings panel must be inside a scroll area.

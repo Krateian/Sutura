@@ -66,6 +66,12 @@ app:
   engines_none: "Yapılandırılmış dış motor yok."
   engines_enabled: "etkin"
   engines_disabled: "devre dışı"
+  changelog: "Değişiklikler"
+  changelog_tip: "Sürüm geçmişini GitHub'dan getir (salt okunur, kaydedilmez)"
+  changelog_loading: "Sürüm notları yükleniyor…"
+  changelog_offline: "Sürüm notları yüklenemedi (çevrimdışı mı?)."
+  changelog_empty: "Sürüm bulunamadı."
+  retry: "Yeniden dene"
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"
