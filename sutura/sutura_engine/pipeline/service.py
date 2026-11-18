@@ -38,6 +38,11 @@ from sutura_engine.pipeline.report import (
 from sutura_engine.pipeline.stage1 import (
     _local_exact_budget, _should_run_local_exact,
 )
+from sutura_engine import backend as _backend
+
+# Product default: the Rust pipeline.  SUTURA_BACKEND=python selects the
+# legacy Python engines for one release; see sutura_engine/backend.py.
+_backend.apply_engine_defaults()
 from sutura_engine.pipeline.stage2 import maybe_run_stage2
 from sutura_engine.pipeline.tiers.engines import run_after_stage2_engines
 from sutura_engine.pipeline.tiers.flap import (

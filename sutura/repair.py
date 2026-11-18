@@ -40,6 +40,7 @@ from sutura_engine.progress import (
 )
 import local_exact
 from sutura_engine import policy as policy_mod
+from sutura_engine import backend as _backend
 import topology
 import triage
 import methods as method_registry
@@ -602,6 +603,11 @@ def _main(argv=None):
                         help='output file (only valid with a single input)')
     parser.add_argument('--lang', choices=('en', 'tr'), default='en',
                         help='human report language (default: en)')
+    parser.add_argument('--backend', choices=('rust', 'python'), default=None,
+                        help='repair backend: rust (default) runs the Rust '
+                             'pipeline/cores; python selects the deprecated '
+                             'legacy pipeline for one release. Also from '
+                             'SUTURA_BACKEND; the flag wins.')
     parser.add_argument('--human', action='store_true',
                         help='print a human-readable report; a progress line is '
                              'shown on stderr when stderr is a TTY')
@@ -950,6 +956,9 @@ def _main(argv=None):
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args(argv)
     os.environ['SUTURA_LANG'] = args.lang
+    _backend_value = _backend.resolve(args.backend)
+    _backend.apply_engine_defaults(_backend_value)
+    _backend.note_deprecated(_backend_value)
 
     # --list-intensities: print the presets and user profiles, then exit.
     if args.list_intensities:

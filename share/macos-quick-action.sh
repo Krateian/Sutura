@@ -48,28 +48,12 @@ else
 fi
 
 CLI_CMD=()
-if [ -n "$APP" ]; then
-    MACOS="$APP/Contents/MacOS"
-    # `scripts/package_rust.sh` puts the CLI at Contents/MacOS/sutura (beside
-    # sutura-gui); the Python .app this script was written for never shipped a
-    # CLI at all. The old `sutura-cli` names are checked last so an older bundle
-    # layout still works.
-    for cand in "$MACOS/sutura" "$MACOS/sutura-cli/sutura-cli" "$MACOS/sutura-cli"; do
-        # APFS is case-insensitive: the Python .app launcher Contents/MacOS/Sutura
-        # would satisfy a plain -x test for "sutura". Require the exact name.
-        if [ -x "$cand" ] && ls "$(dirname "$cand")" 2>/dev/null | grep -qxF "$(basename "$cand")"; then
-            CLI_CMD=("$cand"); break
-        fi
-    done
-fi
-if [ "${#CLI_CMD[@]}" -eq 0 ] && [ -x "$HOME/.local/bin/sutura" ]; then
-    # Conda install (or a normal CLI install): the .app is only a GUI wrapper.
-    CLI_CMD=("$HOME/.local/bin/sutura")
-fi
-if [ "${#CLI_CMD[@]}" -eq 0 ]; then
-    # Legacy Python installs only. A Rust install always resolves above, so this
-    # is a fallback for machines that still have the conda distribution.
-    for py in "$HOME/miniforge3/envs/sutura-env/bin/python" \
+BACKEND="${SUTURA_BACKEND:-rust}"
+if [ "$BACKEND" = "python" ]; then
+    # Legacy Python backend: prefer the interpreter + repair.py directly; the
+    # PATH launcher is the second choice because it also honours the env.
+    for py in "$HOME/.local/share/sutura/venv/bin/python" \
+              "$HOME/miniforge3/envs/sutura-env/bin/python" \
               "$HOME/miniconda3/envs/sutura-env/bin/python" \
               "$HOME/anaconda3/envs/sutura-env/bin/python"; do
         if [ -x "$py" ] && [ -f "$HOME/.local/share/sutura/repair.py" ]; then
@@ -77,6 +61,40 @@ if [ "${#CLI_CMD[@]}" -eq 0 ]; then
             break
         fi
     done
+    if [ "${#CLI_CMD[@]}" -eq 0 ] && [ -x "$HOME/.local/bin/sutura" ]; then
+        CLI_CMD=("$HOME/.local/bin/sutura")
+    fi
+else
+    if [ -n "$APP" ]; then
+        MACOS="$APP/Contents/MacOS"
+        # `scripts/package_rust.sh` puts the CLI at Contents/MacOS/sutura (beside
+        # sutura-gui); the Python .app this script was written for never shipped a
+        # CLI at all. The old `sutura-cli` names are checked last so an older bundle
+        # layout still works.
+        for cand in "$MACOS/sutura" "$MACOS/sutura-cli/sutura-cli" "$MACOS/sutura-cli"; do
+            # APFS is case-insensitive: the Python .app launcher Contents/MacOS/Sutura
+            # would satisfy a plain -x test for "sutura". Require the exact name.
+            if [ -x "$cand" ] && ls "$(dirname "$cand")" 2>/dev/null | grep -qxF "$(basename "$cand")"; then
+                CLI_CMD=("$cand"); break
+            fi
+        done
+    fi
+    if [ "${#CLI_CMD[@]}" -eq 0 ] && [ -x "$HOME/.local/bin/sutura" ]; then
+        # Conda install (or a normal CLI install): the .app is only a GUI wrapper.
+        CLI_CMD=("$HOME/.local/bin/sutura")
+    fi
+    if [ "${#CLI_CMD[@]}" -eq 0 ]; then
+        # Legacy Python installs only. A Rust install always resolves above, so this
+        # is a fallback for machines that still have the conda distribution.
+        for py in "$HOME/miniforge3/envs/sutura-env/bin/python" \
+                  "$HOME/miniconda3/envs/sutura-env/bin/python" \
+                  "$HOME/anaconda3/envs/sutura-env/bin/python"; do
+            if [ -x "$py" ] && [ -f "$HOME/.local/share/sutura/repair.py" ]; then
+                CLI_CMD=("$py" "$HOME/.local/share/sutura/repair.py")
+                break
+            fi
+        done
+    fi
 fi
 
 if [ "${#CLI_CMD[@]}" -eq 0 ]; then

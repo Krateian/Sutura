@@ -105,6 +105,19 @@ nothing is removed until the new build has passed its health check. The last
 Python release can hand over by itself, or you can run it directly — see
 [Moving from the Python version](MIGRATE.md).
 
+### Backend selection (transition)
+
+The CLI, the GUI and every entry point use the Rust pipeline by default. The
+previous Python backend stays available for one release:
+
+```sh
+SUTURA_BACKEND=python sutura model.stl      # environment variable
+sutura --backend python model.stl          # CLI flag (wins over the env)
+```
+
+The Python backend prints a one-line deprecation note and will be removed in
+the next release.
+
 ## Use
 
 ```sh

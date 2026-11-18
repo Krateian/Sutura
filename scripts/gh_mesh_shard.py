@@ -211,6 +211,9 @@ def main():
                 '--python', os.path.abspath('cand-venv/bin/python'),
                 '--out-dir', outdir]
         if mode not in ('determinism', 'io_parity'):
+            # P10: the product default is the Rust backend; the comparison's
+            # baseline side must still be the legacy Python pipeline.
+            cmd += ['--baseline-env', 'SUTURA_BACKEND=python']
             cmd += ['--baseline-env', 'SUTURA_IO_ENGINE=python']
             try:
                 probe = subprocess.run(

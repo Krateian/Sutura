@@ -9,12 +9,19 @@ silently, matching the Phase 1-3 engine contract.
 """
 import os
 
-from sutura_engine import rust_bridge
+from sutura_engine import backend, rust_bridge
 
 
 
 def tier_engine(name):
-    """Return ``'rust'`` or ``'python'`` for a tier slug."""
+    """Return ``'rust'`` or ``'python'`` for a tier slug.
+
+    The product backend wins: under ``SUTURA_BACKEND=rust`` every tier uses the
+    Rust core regardless of a stale per-tier switch.  The legacy per-tier
+    switches still work under ``SUTURA_BACKEND=python``.
+    """
+    if backend.resolve() == backend.RUST:
+        return backend.RUST
     key = 'SUTURA_%s_ENGINE' % str(name).upper().replace('-', '_')
     value = os.environ.get(key, os.environ.get('SUTURA_TIER_ENGINE', 'python'))
     return str(value).strip().lower()
