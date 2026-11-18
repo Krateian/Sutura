@@ -38,6 +38,12 @@ fn main() -> eframe::Result<()> {
     let mut headless_scores = false;
     let mut about = false;
     let mut updater = false;
+    // Views a screenshot needs to reach, since `--screenshot` runs with no input
+    // device and nothing can be clicked.
+    let mut open = app::OpenOnStart::None;
+    let mut select: Option<usize> = None;
+    let mut settings_scroll = 0.0f32;
+    let mut wait_frames = 3u8;
     let mut intensity = app::Intensity::Balanced;
     let mut intensity_explicit = false;
     let mut language = i18n::Language::System;
@@ -94,6 +100,20 @@ fn main() -> eframe::Result<()> {
             "--heatmap" => heatmap = true,
             "--about" => about = true,
             "--updates" => updater = true,
+            "--open-compare" => open = app::OpenOnStart::Compare,
+            "--open-repeat-picker" => open = app::OpenOnStart::RepeatPicker,
+            "--open-changelog" => open = app::OpenOnStart::Changelog,
+            "--defect-colors" => open = app::OpenOnStart::DefectColors,
+            "--select" => select = args.next().and_then(|s| s.parse::<usize>().ok()),
+            "--wait-frames" => {
+                wait_frames = args.next().and_then(|s| s.parse().ok()).unwrap_or(3)
+            }
+            "--settings-scroll" => {
+                settings_scroll = args
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0)
+            }
             "--intensity" => {
                 intensity_explicit = true;
                 intensity = match args.next().as_deref() {
@@ -206,6 +226,10 @@ fn main() -> eframe::Result<()> {
                     intensity,
                     intensity_explicit,
                     language_explicit,
+                    open,
+                    select,
+                    settings_scroll,
+                    wait_frames,
                 },
             )))
         }),

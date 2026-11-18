@@ -239,6 +239,33 @@ pub struct StartupOptions {
     pub intensity_explicit: bool,
     /// True when `--lang` was given.
     pub language_explicit: bool,
+    /// Open a view as soon as the first frame is drawn, so a screenshot can
+    /// capture it without a click. `--screenshot` runs with no input device, so
+    /// there is no way to open a window or a picker interactively; these flags
+    /// are what make every view reachable from a script. Same role as
+    /// `--heatmap` and `--about`, which already existed for this reason.
+    pub open: OpenOnStart,
+    /// Select this file index after loading (default: the last added, which is
+    /// what a user who just dropped a file sees).
+    pub select: Option<usize>,
+    /// Start the settings panel at this scroll offset. Proving a control near
+    /// the bottom of a taller-than-any-window panel needs it, and `--screenshot`
+    /// cannot scroll.
+    pub settings_scroll: f32,
+    /// Frames to settle before capturing; an overlay needs more than the main
+    /// window for its fade-in to finish.
+    pub wait_frames: u8,
+}
+
+/// Which overlay to show on the first frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OpenOnStart {
+    #[default]
+    None,
+    Compare,
+    RepeatPicker,
+    Changelog,
+    DefectColors,
 }
 
 pub struct SuturaApp {
@@ -285,15 +312,24 @@ pub struct SuturaApp {
     auto_repair: bool,
     auto_repair_started: bool,
     ready_frames: u8,
+    /// Frames to settle before capturing. 3 by default; an overlay such as the
+    /// before/after window needs more for its fade-in to finish.
+    wait_frames: u8,
     /// Serialized form of the last persisted state. Compared at the end of every
     /// frame so a write happens only when something actually changed -- the
     /// settings panel mutates `self.settings` in a dozen places and hooking each
     /// one would drift.
     persisted: String,
+    /// `--open-compare` asked for the pair, but the repair had not finished when
+    /// the window opened. Opened from the frame that has the result.
+    pending_compare: bool,
     /// `Ctrl+,` toggles the settings panel. Python's only shortcut opens its
     /// options dialog; settings live in a permanent panel here, so the honest
     /// equivalent is to show or hide that panel.
     settings_open: bool,
+    /// Where the settings panel starts scrolled to. `--settings-scroll`, and 0
+    /// (the top) unless a script asks otherwise.
+    settings_scroll: f32,
     /// Method availability, from `self_check::run`. Process-wide, so it is
     /// computed once at startup rather than per file -- and with
     /// `run_fixtures:false`, the same cheap availability probe `--self-check`
@@ -362,8 +398,11 @@ impl SuturaApp {
             auto_repair: false,
             auto_repair_started: false,
             ready_frames: 0,
+            wait_frames: 3,
             persisted: String::new(),
             settings_open: true,
+            settings_scroll: 0.0,
+            pending_compare: false,
             method_health: Vec::new(),
             ftetwild: None,
             crash_open: false,
@@ -381,6 +420,15 @@ impl SuturaApp {
         language: Language,
         options: StartupOptions,
     ) -> Self {
+        // A screenshot is a still, and egui eases every new window in over
+        // `animation_time` (0.2 s). A windowless run draws its frames in
+        // milliseconds, so the fade never finishes and every capture comes out a
+        // grey ghost -- which reads as a rendering bug and is not. Turning the
+        // animation off for `--screenshot` makes the image show the final state;
+        // an interactive run keeps its animation.
+        if options.screenshot_path.is_some() {
+            cc.egui_ctx.all_styles_mut(|style| style.animation_time = 0.0);
+        }
         let mut preview = Preview::new(cc);
         preview.heatmap = options.heatmap;
         // Saved state is a fallback, never an override: an explicit flag wins.
@@ -454,6 +502,7 @@ impl SuturaApp {
             auto_repair: options.auto_repair,
             auto_repair_started: false,
             ready_frames: 0,
+            wait_frames: 3,
             // Left empty on purpose: the first frame writes the current state
             // out, which creates the file and makes the load/save loop
             // observable. Seeding it with `state_json()` instead would mean a
@@ -461,6 +510,8 @@ impl SuturaApp {
             // unexercised until some control happened to change.
             persisted: String::new(),
             settings_open: true,
+            settings_scroll: options.settings_scroll,
+            pending_compare: false,
             method_health,
             ftetwild: sutura_core::ftetwild::find_binary(),
             crash_open: crate::crash::panic_recorded(),
@@ -472,6 +523,30 @@ impl SuturaApp {
         };
         for path in files {
             app.add_path(path);
+        }
+        if let Some(idx) = options.select {
+            if idx < app.files.len() {
+                app.selected = Some(idx);
+            }
+        }
+        // Views that need a loaded mesh are opened here rather than in the first
+        // frame: `ComparePair::build` uploads textures, which needs the context
+        // the constructor already has.
+        match options.open {
+            // Deferred to the first frame that has a repair result: building it
+            // here would capture the Before half before the repair runs, and the
+            // After panel would be a permanent "(not rendered)".
+            OpenOnStart::Compare => app.pending_compare = true,
+            OpenOnStart::DefectColors => {
+                app.preview.defect_colors = true;
+                app.preview.dirty = true;
+            }
+            OpenOnStart::RepeatPicker => app.open_repeat_picker(),
+            OpenOnStart::Changelog => {
+                app.changelog_open = true;
+                app.fetch_changelog();
+            }
+            OpenOnStart::None => {}
         }
         app
     }
@@ -1007,7 +1082,10 @@ impl SuturaApp {
             return;
         }
         self.ready_frames = self.ready_frames.saturating_add(1);
-        if self.ready_frames < 3 {
+        // 3 frames is enough for the main window, but not for an overlay:
+        // egui fades a new window in, and a capture taken mid-fade is a grey
+        // ghost of the view. `--wait-frames` lets a script ask for more.
+        if self.ready_frames < self.wait_frames {
             ctx.request_repaint_after(Duration::from_millis(50));
             return;
         }
@@ -1050,10 +1128,42 @@ impl eframe::App for SuturaApp {
                 self.add_path(path);
             }
         }
+        if self.pending_compare && self.compare.is_none() {
+            let ready = self
+                .selected
+                .and_then(|i| self.files.get(i))
+                .map(|e| e.result.is_some())
+                .unwrap_or(false);
+            if ready {
+                if let Some(entry) = self.selected.and_then(|i| self.files.get(i)) {
+                    if let Some(input) = entry.input.clone() {
+                        let title = entry
+                            .path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        self.compare = Some(ComparePair::build(
+                            &ctx,
+                            title,
+                            &input,
+                            entry.result.as_deref(),
+                            self.preview.heatmap,
+                        ));
+                        self.pending_compare = false;
+                    }
+                }
+            }
+        }
         if self.auto_repair && !self.auto_repair_started {
             if let Some(idx) = self.selected {
                 self.auto_repair_started = true;
-                self.start_repair(idx, false);
+                // With `--screenshot` there is no one to answer the overwrite
+                // prompt, so the run would sit on a dialog until the timeout --
+                // and the capture would show "Output already exists" over a
+                // half-drawn window. A scripted run states the intent up front,
+                // so it overwrites rather than asking an absent user.
+                let unattended = self.screenshot_path.is_some();
+                self.start_repair(idx, unattended);
             }
         }
         if self.auto_batch && !self.auto_batch_started && !self.files.is_empty() {
@@ -1368,17 +1478,11 @@ impl eframe::App for SuturaApp {
                 // and were unreachable. Same pattern as the other panels.
                 egui::ScrollArea::vertical()
                     .id_salt("settings_scroll")
-                    // Test hook, same spirit as `--screenshot`: the panel is
-                    // taller than any window, so proving a control
-                    // near its bottom (the analysis table, the method list)
-                    // requires starting the scroll somewhere other than 0.
-                    // Unset means normal behaviour; costs one env lookup a frame.
-                    .vertical_scroll_offset(
-                        std::env::var("SUTURA_GUI_SCROLL")
-                            .ok()
-                            .and_then(|v| v.parse::<f32>().ok())
-                            .unwrap_or(0.0),
-                    )
+                    // The panel is taller than any window, so a control near
+                    // its bottom (the analysis table, the file-method list) is
+                    // unreachable in a screenshot unless the scroll starts
+                    // somewhere other than 0. Same spirit as `--screenshot`.
+                    .vertical_scroll_offset(self.settings_scroll)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                     ui.heading(rust_i18n::t!("app.settings").to_string());
@@ -2218,6 +2322,18 @@ impl eframe::App for SuturaApp {
                                         // Bound the list: a shattered mesh can
                                         // have thousands, and the panel is a
                                         // summary, not a table to scroll.
+                                        //
+                                        // The bound is not enough on its own:
+                                        // twenty rows is ~500 px, which pushed
+                                        // everything below it (the 3MF object
+                                        // list) off the bottom of the window.
+                                        // A bounded inner scroll keeps the
+                                        // section a fixed height whatever the
+                                        // mesh.
+                                        egui::ScrollArea::vertical()
+                                            .id_salt("defects_scroll")
+                                            .max_height(160.0)
+                                            .show(ui, |ui| {
                                         const SHOWN: usize = 20;
                                         for hole in report.holes.iter().take(SHOWN) {
                                             let [x, y, z] = hole.centroid;
@@ -2254,6 +2370,7 @@ impl eframe::App for SuturaApp {
                                                 .weak(),
                                             );
                                         }
+                                        });
                                     });
                                 }
                                 Some(Err(e)) => {
@@ -2275,7 +2392,10 @@ impl eframe::App for SuturaApp {
                                         .to_string(),
                                     )
                                     .id_salt("objects_header")
-                                    .default_open(false)
+                                    // Open by default: a multi-object archive is
+                                    // opaque otherwise, and that is the whole
+                                    // reason the list exists.
+                                    .default_open(true)
                                     .show(ui, |ui| {
                                         egui::Grid::new("objects-grid")
                                             .num_columns(3)
@@ -4436,6 +4556,26 @@ mod tests {
             mesh.defect_colors.iter().any(|c| c.is_some()),
             "this fixture has defects, so some faces must be coloured"
         );
+    }
+
+    /// The screenshot hooks must be inert when not asked for.
+    ///
+    /// `--open-*`, `--select` and `--settings-scroll` exist so a script can reach
+    /// a view with no input device. An interactive launch passes the defaults, and
+    /// a default that opened a window or scrolled the panel would be a bug a user
+    /// sees immediately but a test would not catch without this.
+    #[test]
+    fn startup_defaults_open_nothing_and_scroll_nowhere() {
+        let default = OpenOnStart::default();
+        assert_eq!(default, OpenOnStart::None, "no overlay by default");
+
+        let app = SuturaApp::for_test();
+        assert_eq!(app.settings_scroll, 0.0, "the panel starts at the top");
+        assert_eq!(app.wait_frames, 3, "the settled-frame default");
+        assert!(!app.pending_compare, "no deferred before/after pair");
+        assert!(app.compare.is_none());
+        assert!(!app.preview.defect_colors);
+        assert!(app.changelog.is_none(), "no network at startup");
     }
 
     /// The settings panel must be inside a scroll area.
