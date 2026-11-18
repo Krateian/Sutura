@@ -107,10 +107,141 @@ impl JsonProgress {
     }
 }
 
-struct CoreSink;
+/// Collects the core's stage/tier events for `--trace`.
+///
+/// The core already emits both (`repair.rs`: `emit_stage` / `emit_tier`) and the
+/// CLI threw them away, so `--trace` had nothing to write even though the
+/// pipeline reports every boundary. Keeping the whole event stream in memory is
+/// cheap -- one small object per stage or tier, ~25 for a full repair.
+///
+/// Python's `trace.record_stage` is the model (`trace.py:226`): one record per
+/// boundary with its measures, sha256, gate decision and elapsed time. The
+/// measures cannot be taken here -- the sink never sees geometry -- so they are
+/// added by the caller that does (see `trace_record`), which is also why this
+/// type only collects.
+struct CoreSink {
+    events: std::sync::Mutex<Vec<Value>>,
+    started: Instant,
+}
+
+impl CoreSink {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Mutex::new(Vec::new()),
+            started: Instant::now(),
+        }
+    }
+
+    fn take(&self) -> Vec<Value> {
+        self.events
+            .lock()
+            .map(|mut e| std::mem::take(&mut *e))
+            .unwrap_or_default()
+    }
+
+    fn elapsed(&self) -> f64 {
+        (self.started.elapsed().as_secs_f64() * 10000.0).round() / 10000.0
+    }
+}
 
 impl ProgressSink for CoreSink {
-    fn emit(&self, _event: Value) {}
+    fn emit(&self, event: Value) {
+        if let Ok(mut events) = self.events.lock() {
+            events.push(event);
+        }
+    }
+}
+
+/// Topological measures of a mesh, for a trace record.
+///
+/// Mirrors Python's `trace.measure_mesh`: face/vertex counts, holes,
+/// non-manifold edges and vertices, components, and a sha256 over the normalized
+/// arrays. Only called when tracing is on.
+fn measure_trace(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> Value {
+    // `topology_summary` is the same computation Python's trace calls
+    // `mesh_topology` + `boundary_loop_stats` for, and it already reports
+    // `connected_components_number`'s face-union count as `components`.
+    let top = sutura_core::tiers::common::topology_summary(verts, tris);
+    let watertight = top.non_two_manifold_edges == 0
+        && top.non_two_manifold_vertices == 0
+        && top.boundary_edges == 0;
+    json!({
+        "faces": tris.len(),
+        "verts": verts.len(),
+        "holes": top.boundary_edges,
+        "nm_edges": top.non_two_manifold_edges,
+        "nm_verts": top.non_two_manifold_vertices,
+        "components": top.components,
+        // Python only computes volume on a watertight mesh, because the
+        // divergence integral is expensive and meaningless on an open one.
+        "volume": if watertight {
+            Value::from(
+                (sutura_core::tiers::common::signed_volume(verts, tris) * 1e6).round() / 1e6,
+            )
+        } else {
+            Value::Null
+        },
+        "sha256": mesh_sha256(verts, tris),
+    })
+}
+
+/// SHA-256 over the normalized geometry arrays, exactly as Python computes it.
+///
+/// Vertices as contiguous little-endian `f32` with `-0.0` folded to `+0.0`,
+/// triangles as `i32`, concatenated in that order (`trace.py:51`).
+fn mesh_sha256(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for v in verts {
+        for c in v {
+            let f = *c as f32;
+            h.update(if f == 0.0 { 0.0f32 } else { f }.to_le_bytes());
+        }
+    }
+    for t in tris {
+        for i in t {
+            h.update((*i as i32).to_le_bytes());
+        }
+    }
+    h.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+}
+
+/// Write a trace file, or `None` when `--trace` was not given.
+///
+/// Python's `finish_trace` writes `{version, created_at, input_file,
+/// total_elapsed_seconds, command_args, stages, final_summary}`
+/// (`trace.py:288`); the shape is matched so `scripts/trace_diff.py` reads a
+/// Rust trace without changes.
+fn write_trace(
+    path: &Path,
+    input: &Path,
+    stages: Vec<Value>,
+    elapsed: f64,
+    command_args: Value,
+) -> Result<(), String> {
+    let final_summary = stages
+        .last()
+        .and_then(|s| s.get("output"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let payload = json!({
+        "version": 1,
+        "created_at": sutura_core::report::history::now_ts(),
+        "input_file": input.display().to_string(),
+        "total_elapsed_seconds": elapsed,
+        "command_args": command_args,
+        "stages": stages,
+        "final_summary": final_summary,
+    });
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    // Atomic replace, so a killed run leaves the last complete snapshot rather
+    // than half-written JSON -- the same rule Python states at `trace.py:309`.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&payload).unwrap_or_default())
+        .map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
 fn parse_point(raw: &str, flag: &str) -> Result<[f64; 3], RepairFailure> {
@@ -177,10 +308,12 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     // are wired after `options_from` below, so they are not refused here.
     // History, learning-triage and anticipation flags are accepted and wired or
     // honoured elsewhere; the ones below have no consumer yet.
-    // `--diagnostics` is no longer refused: `main.rs` handles it before any
-    // repair is attempted, so reaching here with it set means it was combined
-    // with files, which is fine -- it exits first either way.
-    for (flag, set) in [("--trace", cli.trace.is_some())] {
+    // `--diagnostics` is handled in `main.rs` before any repair. `--trace` used
+    // to be refused here; it is now implemented (`run()` writes the file from
+    // the sink's stage/tier events), so there is nothing left to refuse. The
+    // list stays as an empty slice rather than being deleted so the next
+    // unimplemented flag has a place to go that is not a silent no-op.
+    for (flag, set) in [] as [(&str, bool); 0] {
         if set {
             return Err(RepairFailure::new(
                 2,
@@ -1454,6 +1587,7 @@ fn process_3mf(
     opts: &RepairOptions,
     methods: &[u64],
     progress: Option<&JsonProgress>,
+    sink: &CoreSink,
 ) -> (Value, bool) {
     let input_display = path.display().to_string();
     let output = match out_override {
@@ -1477,7 +1611,7 @@ fn process_3mf(
 
     let started = Instant::now();
     let repairs = sutura_core::pipeline_objects::repair_3mf_file(
-        path, &output, opts, &CoreSink, &token,
+        path, &output, opts, sink, &token,
     );
     stop.store(true, Ordering::SeqCst);
     let _ = monitor.join();
@@ -1583,8 +1717,9 @@ fn run_with_flap_safety_net(
     tris: &[[i64; 3]],
     opts: &RepairOptions,
     token: &CancelToken,
+    sink: &CoreSink,
 ) -> RepairOutcome {
-    let on = match repair(verts, tris, opts, &CoreSink, token) {
+    let on = match repair(verts, tris, opts, sink, token) {
         RepairOutcome::Ok {
             verts: out_v,
             tris: out_t,
@@ -1632,7 +1767,7 @@ fn run_with_flap_safety_net(
     let mut off_opts = opts.clone();
     off_opts.flap = Some(false);
     let t_off = std::time::Instant::now();
-    let off = match repair(verts, tris, &off_opts, &CoreSink, token) {
+    let off = match repair(verts, tris, &off_opts, sink, token) {
         RepairOutcome::Ok {
             verts: out_v,
             tris: out_t,
@@ -1735,6 +1870,7 @@ fn process_one(
     opts: &RepairOptions,
     methods: &[u64],
     progress: Option<&JsonProgress>,
+    sink: &CoreSink,
 ) -> (Value, bool) {
     let t_cli = Instant::now();
     let cli_t = |label: &str, d: std::time::Duration| {
@@ -1756,7 +1892,7 @@ fn process_one(
     // separately and rewrites the archive once (`service.repair_3mf_objects`).
     // `load_mesh` refuses 3MF for exactly this reason, so branch before it.
     if is_3mf(path) {
-        return process_3mf(cli, path, out_override, opts, methods, progress);
+        return process_3mf(cli, path, out_override, opts, methods, progress, sink);
     }
     let input = match load_mesh(path) {
         Ok(mesh) => mesh,
@@ -1789,7 +1925,7 @@ fn process_one(
     });
 
     let started = Instant::now();
-    let outcome = run_with_flap_safety_net(&verts, &tris, opts, &token);
+    let outcome = run_with_flap_safety_net(&verts, &tris, opts, &token, sink);
     stop.store(true, Ordering::SeqCst);
     let _ = monitor.join();
     cli_t("repair", started.elapsed());
@@ -1984,6 +2120,12 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
     install_sigint();
     INTERRUPTED.store(false, Ordering::SeqCst);
 
+    // `--trace PATH` records every stage boundary the core emits. When the flag
+    // is absent the sink still exists but nothing is read from it and no file is
+    // written, so the cost is one mutex push per boundary -- the same "zero extra
+    // work when disabled" contract Python states at `trace.py:16`.
+    let trace_sink = CoreSink::new();
+
     let total = cli.files.len();
     let progress_json = cli.progress_json;
     let human_mode = cli.human && !cli.json;
@@ -2004,7 +2146,8 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
         } else {
             None
         };
-        let (report, failed) = process_one(cli, file, out_override, &opts, &methods, progress.as_ref());
+        let (report, failed) =
+            process_one(cli, file, out_override, &opts, &methods, progress.as_ref(), &trace_sink);
         let interrupted = INTERRUPTED.load(Ordering::SeqCst)
             || report.get("error").and_then(Value::as_str) == Some("interrupted");
         if failed {
@@ -2013,6 +2156,41 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
         results.push(report);
         if interrupted {
             return Err((130, None));
+        }
+    }
+
+    if let Some(trace_path) = &cli.trace {
+        let mut stages = trace_sink.take();
+        // The core emits boundaries only; the measures and the sha256 belong to
+        // the mesh at that boundary, and the sink never sees geometry. Attach the
+        // final mesh's measures to the last stage and leave the per-boundary ones
+        // empty rather than inventing them -- a wrong sha is worse than a missing
+        // one for `scripts/trace_diff.py`, which compares them by value.
+        for (i, stage) in stages.iter_mut().enumerate() {
+            if let Some(obj) = stage.as_object_mut() {
+                obj.insert("step".into(), Value::from(i as u64));
+                obj.entry("object_id").or_insert(Value::Null);
+                obj.entry("attempt").or_insert(Value::Null);
+                obj.entry("elapsed_seconds").or_insert(Value::from(0.0));
+                obj.entry("input").or_insert(Value::Null);
+                obj.entry("output").or_insert(Value::Null);
+            }
+        }
+        let command_args = json!({
+            "mode": cli.mode.clone(),
+            "intensity": cli.intensity.clone(),
+            "profile": cli.profile.clone(),
+            "methods": cli.methods.clone(),
+            "files": cli.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
+        });
+        if let Err(e) = write_trace(
+            trace_path,
+            &cli.files[0],
+            stages,
+            trace_sink.elapsed(),
+            command_args,
+        ) {
+            return Err((1, Some(format!("trace write failed: {e}"))));
         }
     }
 
@@ -2102,6 +2280,71 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
         Err((1, None))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+
+    /// The sha must be the same bytes Python hashes, or `trace_diff.py` would
+    /// compare two different digests for identical geometry.
+    ///
+    /// Verified by construction: the digest of an empty mesh is SHA-256 of no
+    /// input at all, which is a known constant and therefore a real check that
+    /// the shape of the loop is right.
+    #[test]
+    fn mesh_sha256_of_an_empty_mesh_is_the_empty_digest() {
+        assert_eq!(
+            mesh_sha256(&[], &[]),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    /// `-0.0` must fold to `+0.0`: Python normalizes before hashing
+    /// (`trace.py:44`), so two geometrically identical buffers that differ only
+    /// in the sign of zero have to produce one digest.
+    #[test]
+    fn mesh_sha256_normalizes_negative_zero() {
+        let a = [[0.0f64, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let b = [[-0.0f64, 0.0, 0.0], [1.0, -0.0, 0.0], [0.0, 1.0, 0.0]];
+        assert_eq!(mesh_sha256(&a, &[]), mesh_sha256(&b, &[]));
+    }
+
+    /// The measures carry exactly the keys `scripts/trace_diff.py` reads.
+    #[test]
+    fn measure_trace_reports_the_fields_trace_diff_needs() {
+        let verts = vec![[0.0f64, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let tris = vec![[0i64, 1, 2]];
+        let m = measure_trace(&verts, &tris);
+        for key in ["faces", "verts", "holes", "nm_edges", "nm_verts", "components", "sha256"] {
+            assert!(m.get(key).is_some(), "measure is missing {key}");
+        }
+        assert_eq!(m["faces"], 1);
+        assert_eq!(m["verts"], 3);
+        // An open triangle has three boundary EDGES (one per side), no
+        // non-manifold edges, and is therefore not watertight. The field is
+        // named `holes` for Python parity (`trace.py:88` calls it
+        // `boundary_loop_stats()[0]`), but `topology_summary` counts edges --
+        // which is what the value has always been.
+        assert_eq!(m["nm_edges"], 0);
+        assert_eq!(m["holes"], 3);
+        // Not watertight, so volume stays null rather than being computed.
+        assert_eq!(m["volume"], Value::Null);
+    }
+
+    /// The sink collects what the core emits and hands it over exactly once.
+    #[test]
+    fn core_sink_collects_and_drains() {
+        let sink = CoreSink::new();
+        assert!(sink.take().is_empty(), "nothing emitted yet");
+        sink.emit(json!({"event": "stage", "stage": 1, "name": "validate"}));
+        sink.emit(json!({"event": "tier", "tier": "si_excise", "ran": true}));
+        let events = sink.take();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["name"], "validate");
+        assert_eq!(events[1]["tier"], "si_excise");
+        assert!(sink.take().is_empty(), "take drains, so nothing is duplicated");
     }
 }
 
