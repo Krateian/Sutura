@@ -33,6 +33,19 @@ app:
   default: Default
   engines: Engines
   engines_hint: Unticking an engine runs the others only. All ticked = default.
+  analysis: Analysis
+  an_type: Detected type
+  an_faces: Faces
+  an_vertices: Vertices
+  an_components: Components
+  an_boundary_loops: Boundary loops
+  an_non_manifold: Non-manifold edges
+  an_self_intersections: Self-intersections
+  an_open_area: Open area
+  objects: Objects (%{count})
+  ob_model: Model
+  ob_faces: Faces
+  ob_vertices: Vertices
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"

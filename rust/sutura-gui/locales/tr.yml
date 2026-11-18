@@ -33,6 +33,19 @@ app:
   default: Varsayılan
   engines: Motorlar
   engines_hint: Bir motorun işaretini kaldırmak yalnızca diğerlerini çalıştırır. Hepsi işaretli = varsayılan.
+  analysis: Analiz
+  an_type: Algılanan tür
+  an_faces: Yüzler
+  an_vertices: Köşeler
+  an_components: Bileşenler
+  an_boundary_loops: Sınır ilmekleri
+  an_non_manifold: Manifold olmayan kenarlar
+  an_self_intersections: Kendisiyle kesişim
+  an_open_area: Açık alan
+  objects: Nesneler (%{count})
+  ob_model: Model
+  ob_faces: Yüzler
+  ob_vertices: Köşeler
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"

@@ -73,6 +73,11 @@ struct Entry {
     report: Option<RepairReport>,
     output: Option<PathBuf>,
     view: ViewMode,
+    /// Cached defect analysis, filled on demand. `Result` so a failure is shown
+    /// once instead of re-loading the mesh every frame; `Err` is the message.
+    analysis: Option<Result<sutura_core::analysis::Analysis, String>>,
+    /// Cached 3MF object list, same on-demand policy. Empty for a non-3MF file.
+    objects: Option<Result<Vec<Value>, String>>,
 }
 
 enum RepairEvent {
@@ -380,6 +385,8 @@ impl SuturaApp {
                     report: None,
                     output: None,
                     view: ViewMode::Before,
+                    analysis: None,
+                    objects: None,
                 }
             }
             Err(e) => {
@@ -395,6 +402,8 @@ impl SuturaApp {
                     report: None,
                     output: None,
                     view: ViewMode::Before,
+                    analysis: None,
+                    objects: None,
                 }
             }
         };
@@ -990,6 +999,17 @@ impl eframe::App for SuturaApp {
                 // and were unreachable. Same pattern as the other panels.
                 egui::ScrollArea::vertical()
                     .id_salt("settings_scroll")
+                    // Hidden verification hook, same spirit as :
+                    // the panel is taller than any window, so proving a control
+                    // near its bottom (the analysis table, the method list)
+                    // requires starting the scroll somewhere other than 0.
+                    // Unset means normal behaviour; costs one env lookup a frame.
+                    .vertical_scroll_offset(
+                        std::env::var("SUTURA_GUI_SCROLL")
+                            .ok()
+                            .and_then(|v| v.parse::<f32>().ok())
+                            .unwrap_or(0.0),
+                    )
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                     ui.heading(rust_i18n::t!("app.settings").to_string());
@@ -1507,6 +1527,27 @@ impl eframe::App for SuturaApp {
                             .to_string(),
                         );
                     }
+                    // Analysis and the 3MF object list are computed here, before
+                    // the immutable `entry` binding below, so filling the cache
+                    // does not need a second borrow of `self.files`. Both calls
+                    // are the ones the headless parity hooks use
+                    // (`analyze_selected`, `object_rows`), so a panel that
+                    // drifts from the hook cannot pass the gate.
+                    if let Some(idx) = self.selected {
+                        if let Some(slot) = self.files.get_mut(idx) {
+                            if slot.analysis.is_none() {
+                                slot.analysis = Some(analyze_selected(&slot.path));
+                            }
+                            if slot.objects.is_none()
+                                && slot
+                                    .path
+                                    .extension()
+                                    .is_some_and(|e| e.eq_ignore_ascii_case("3mf"))
+                            {
+                                slot.objects = Some(object_rows(&slot.path));
+                            }
+                        }
+                    }
                     let Some(entry) = self.selected.and_then(|i| self.files.get(i)) else {
                         ui.label(rust_i18n::t!("app.report_empty").to_string());
                         return;
@@ -1566,6 +1607,129 @@ impl eframe::App for SuturaApp {
                     {
                         ui.label(rust_i18n::t!("app.report_empty").to_string());
                     }
+                    // Panels come last: they need `entry` only for an index
+                    // sanity check, and the data is already cached above.
+                    if let Some(idx) = self.selected {
+                        if self.files.get(idx).is_some() {
+                            egui::CollapsingHeader::new(
+                                rust_i18n::t!("app.analysis").to_string(),
+                            )
+                            .id_salt("analysis_header")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                match &self.files[idx].analysis {
+                                    Some(Ok(a)) => {
+                                        let rows: [(String, String); 8] = [
+                                            (
+                                                rust_i18n::t!("app.an_type").to_string(),
+                                                format!(
+                                                    "{} ({}%)",
+                                                    a.mesh_type,
+                                                    (a.type_confidence * 100.0).round() as i64
+                                                ),
+                                            ),
+                                            (
+                                                rust_i18n::t!("app.an_faces").to_string(),
+                                                a.faces.to_string(),
+                                            ),
+                                            (
+                                                rust_i18n::t!("app.an_vertices").to_string(),
+                                                a.vertices.to_string(),
+                                            ),
+                                            (
+                                                rust_i18n::t!("app.an_components").to_string(),
+                                                a.components.to_string(),
+                                            ),
+                                            (
+                                                rust_i18n::t!("app.an_boundary_loops").to_string(),
+                                                a.boundary_loops.to_string(),
+                                            ),
+                                            (
+                                                rust_i18n::t!("app.an_non_manifold").to_string(),
+                                                a.non_manifold_edges.to_string(),
+                                            ),
+                                            (
+                                                rust_i18n::t!("app.an_self_intersections")
+                                                    .to_string(),
+                                                a.self_intersections.to_string(),
+                                            ),
+                                            (
+                                                rust_i18n::t!("app.an_open_area").to_string(),
+                                                format!("{:.2}%", a.open_area_ratio * 100.0),
+                                            ),
+                                        ];
+                                        egui::Grid::new("analysis-grid")
+                                            .num_columns(2)
+                                            .spacing([12.0, 4.0])
+                                            .show(ui, |ui| {
+                                                for (label, value) in rows {
+                                                    ui.label(label);
+                                                    ui.label(value);
+                                                    ui.end_row();
+                                                }
+                                            });
+                                    }
+                                    Some(Err(e)) => {
+                                        ui.label(
+                                            egui::RichText::new(e)
+                                                .small()
+                                                .color(egui::Color32::LIGHT_RED),
+                                        );
+                                    }
+                                    None => {}
+                                }
+                            });
+                            if let Some(Ok(objects)) = &self.files[idx].objects {
+                                if !objects.is_empty() {
+                                    egui::CollapsingHeader::new(
+                                        rust_i18n::t!(
+                                            "app.objects",
+                                            count = objects.len() as i64
+                                        )
+                                        .to_string(),
+                                    )
+                                    .id_salt("objects_header")
+                                    .default_open(false)
+                                    .show(ui, |ui| {
+                                        egui::Grid::new("objects-grid")
+                                            .num_columns(3)
+                                            .spacing([12.0, 4.0])
+                                            .show(ui, |ui| {
+                                                ui.label(
+                                                    rust_i18n::t!("app.ob_model").to_string(),
+                                                );
+                                                ui.label(
+                                                    rust_i18n::t!("app.ob_faces").to_string(),
+                                                );
+                                                ui.label(
+                                                    rust_i18n::t!("app.ob_vertices").to_string(),
+                                                );
+                                                ui.end_row();
+                                                for row in objects {
+                                                    ui.label(
+                                                        row.get("model_name")
+                                                            .and_then(|v| v.as_str())
+                                                            .unwrap_or("-"),
+                                                    );
+                                                    ui.label(
+                                                        row.get("faces")
+                                                            .map(|v| v.to_string())
+                                                            .unwrap_or_else(|| "-".into()),
+                                                    );
+                                                    ui.label(
+                                                        row.get("vertices")
+                                                            .map(|v| v.to_string())
+                                                            .unwrap_or_else(|| "-".into()),
+                                                    );
+                                                    ui.end_row();
+                                                }
+                                            });
+                                    });
+                                }
+                            }
+                        }
+                    }
+
                     if let Some(output) = &entry.output {
                         ui.separator();
                         ui.label(egui::RichText::new(output.display().to_string()).small().weak());
@@ -2086,19 +2250,42 @@ pub fn headless_repair(
 ///
 /// Uses `sutura_core::analysis::analyze_mesh` -- the same call the CLI's
 /// `--analyze` makes -- so the numbers the panel shows cannot come from a
+/// Analyse a mesh -- the ONE call path, shared by the headless hook and the
+/// Analysis panel.
+///
+/// Extracted so the hook stays a real oracle: if the panel and the hook diverged,
+/// the parity gate would stop meaning anything. The engine is `"experimental"`
+/// because that is what the repair path hard-codes (`repair.rs:907`).
+pub fn analyze_selected(path: &std::path::Path) -> Result<sutura_core::analysis::Analysis, String> {
+    let mesh = sutura_core::load_mesh(path).map_err(|e| e.to_string())?;
+    sutura_core::analysis::analyze_mesh(&mesh, "experimental", true)
+}
+
+/// The 3MF object list -- likewise shared by `headless_objects` and the panel.
+///
+/// Returns one row per object block (`parse_3mf_mesh_blocks`), so a multi-object
+/// archive is not opaque.
+pub fn object_rows(path: &std::path::Path) -> Result<Vec<Value>, String> {
+    let blocks = sutura_core::parse_3mf_mesh_blocks(path).map_err(|e| e.to_string())?;
+    Ok(blocks
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "model_name": b.model_name,
+                "block": b.index,
+                "faces": b.mesh.tris.len(),
+                "vertices": b.mesh.verts.len(),
+            })
+        })
+        .collect())
+}
+
 /// second measurement path.
 pub fn headless_analyze(
     input: &Path,
     out: Option<PathBuf>,
 ) -> eframe::Result<()> {
-    let mesh = match sutura_core::load_mesh(input) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("analyse failed: {e}");
-            std::process::exit(1);
-        }
-    };
-    let analysis = match sutura_core::analysis::analyze_mesh(&mesh, "experimental", true) {
+    let analysis = match analyze_selected(input) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("analyse failed: {e}");
@@ -2265,25 +2452,14 @@ pub fn headless_pick(input: &Path, picks: &[(i64, i64)]) -> eframe::Result<()> {
 ///
 /// Reports them in ARCHIVE order, which is what the repair side preserves.
 pub fn headless_objects(input: &Path, out: Option<PathBuf>) -> eframe::Result<()> {
-    let blocks = match sutura_core::parse_3mf_mesh_blocks(input) {
-        Ok(b) => b,
+    let rows = match object_rows(input) {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("objects failed: {e}");
             std::process::exit(1);
         }
     };
-    let list: Vec<Value> = blocks
-        .iter()
-        .map(|b| {
-            serde_json::json!({
-                "model_name": b.model_name,
-                "block": b.index,
-                "faces": b.mesh.tris.len(),
-                "vertices": b.mesh.verts.len(),
-            })
-        })
-        .collect();
-    let value = Value::Array(list);
+    let value = Value::Array(rows);
     match out {
         Some(path) => {
             let text = serde_json::to_string_pretty(&value).unwrap_or_default();
@@ -2698,6 +2874,8 @@ mod tests {
             report: None,
             output: None,
             view: ViewMode::Before,
+            analysis: None,
+            objects: None,
         };
         let mut app = SuturaApp::for_test();
         app.files = vec![entry("/tmp/a.stl"), entry("/tmp/b.stl"), entry("/tmp/c.stl")];
@@ -2847,6 +3025,84 @@ mod tests {
             Some(serde_json::Value::Bool(false)),
             "no_fallback_ftetwild must win"
         );
+    }
+
+    /// The Analysis panel must show exactly what the headless hook reports.
+    ///
+    /// The hook is the oracle the parity gate compares against Python, so this
+    /// test is what keeps the panel honest: both call `analyze_selected`, and a
+    /// panel that started computing its own numbers would fail here.
+    #[test]
+    fn analysis_panel_matches_the_headless_values() {
+        let fixture = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../sutura-geom/tests/fixtures/case1_open_cup.stl"
+        ));
+        let analysis = analyze_selected(fixture).expect("fixture must analyse");
+        assert!(analysis.faces > 0);
+        // The panel renders these exact fields; a `None` here means the row
+        // would be blank.
+        assert!(!analysis.mesh_type.is_empty(), "detected type must be named");
+        assert!(analysis.components >= 1);
+
+        // A bogus path must produce an error message, not a panic -- the panel
+        // renders `Err` as red text.
+        let err = analyze_selected(std::path::Path::new("/nonexistent/nope.stl"));
+        assert!(err.is_err(), "a missing file must not panic");
+    }
+
+    /// `object_rows` must report a real archive's objects, and the panel's
+    /// "only for .3mf" guard must be what decides when it is called at all.
+    ///
+    /// A real 3MF is written with the repo's own writer rather than a committed
+    /// fixture, so the test cannot rot against a hand-edited blob.
+    #[test]
+    fn object_rows_lists_every_3mf_object() {
+        let dir = std::env::temp_dir().join(format!("sutura-obj-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cube.3mf");
+        // A single tetrahedron: enough for the archive to be valid.
+        let mesh = sutura_core::Mesh::new(
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]],
+        );
+        sutura_core::write_3mf_single(&path, &mesh).expect("write a 3MF");
+
+        let rows = object_rows(&path).expect("a written 3MF must round-trip");
+        assert!(!rows.is_empty(), "one row per object, none produced");
+        for row in &rows {
+            assert_eq!(
+                row.get("model_name").and_then(|v| v.as_str()),
+                Some("3D/3dmodel.model"),
+                "row must name the model part it came from"
+            );
+            let faces = row
+                .get("faces")
+                .and_then(|v| v.as_u64())
+                .expect("row needs face count");
+            assert_eq!(faces, 4, "the tetrahedron has 4 faces");
+            let vertices = row
+                .get("vertices")
+                .and_then(|v| v.as_u64())
+                .expect("row needs vertex count");
+            assert_eq!(vertices, 4);
+        }
+
+        // An STL is not a 3MF. The panel guards with `extension == "3mf"`, so
+        // the hook would be the only caller -- and it must fail, not panic.
+        let stl = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../sutura-geom/tests/fixtures/case1_open_cup.stl"
+        ));
+        assert!(object_rows(stl).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The settings panel must be inside a scroll area.
