@@ -152,6 +152,23 @@ impl Preview {
         self.error = None;
     }
 
+    /// Rasterise one mesh for a static side-by-side view.
+    ///
+    /// Uses the CPU renderer regardless of what the live preview picked: the
+    /// static pair is a still image, and forcing one renderer keeps the two
+    /// halves consistent with each other. Same `Camera::from_mesh` framing as
+    /// the live view, so the pictures match what the user was just looking at.
+    pub fn rasterize_for_still(
+        mesh: &DisplayMesh,
+        size: [u32; 2],
+        heatmap: bool,
+    ) -> Result<tiny_skia::Pixmap, String> {
+        let camera = Camera::from_mesh(mesh);
+        let aspect = size[0] as f32 / size[1].max(1) as f32;
+        let vp = camera.view_proj(aspect);
+        cpu_view::CpuViewer::new().rasterize(mesh, vp, size, heatmap)
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let rect = ui.available_rect_before_wrap();
         let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());

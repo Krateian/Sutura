@@ -72,6 +72,10 @@ app:
   changelog_offline: "Release notes could not be loaded (offline?)."
   changelog_empty: "No releases found."
   retry: "Retry"
+  compare: "Before / After"
+  compare_tip: "Static side-by-side image of the original and the repaired mesh"
+  compare_none: "(not rendered)"
+  compare_no_after: "No repair yet: the right panel shows the original."
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"

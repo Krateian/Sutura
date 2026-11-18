@@ -85,6 +85,61 @@ struct Entry {
     defects: Option<Result<sutura_core::report::defects::DefectReport, String>>,
 }
 
+/// A rasterised before/after pair, held as textures so the window can be drawn
+/// every frame without re-rendering.
+struct ComparePair {
+    title: String,
+    before: Option<egui::TextureHandle>,
+    after: Option<egui::TextureHandle>,
+    error: Option<String>,
+}
+
+impl ComparePair {
+    /// Rasterise both sides. `after` is the repaired mesh, absent until a repair
+    /// has run.
+    fn build(
+        ctx: &egui::Context,
+        title: String,
+        before: &DisplayMesh,
+        after: Option<&DisplayMesh>,
+        heatmap: bool,
+    ) -> Self {
+        // 384x288 each: side by side in a 900 px window, small enough that a
+        // 150k-triangle mesh still rasterises in one frame.
+        const SIZE: [u32; 2] = [384, 288];
+        let mut upload = |name: &str, mesh: &DisplayMesh| {
+            match crate::viewer::Preview::rasterize_for_still(mesh, SIZE, heatmap) {
+                Ok(pixmap) => {
+                    let image = egui::ColorImage::from_rgba_premultiplied(
+                        [pixmap.width() as usize, pixmap.height() as usize],
+                        pixmap.data(),
+                    );
+                    Some(ctx.load_texture(name, image, egui::TextureOptions::LINEAR))
+                }
+                Err(e) => {
+                    eprintln!("still render failed: {e}");
+                    None
+                }
+            }
+        };
+        let before_tex = upload("compare-before", before);
+        let after_tex = after.and_then(|m| upload("compare-after", m));
+        let error = if before_tex.is_none() {
+            Some("could not render the before image".to_string())
+        } else if after.is_some() && after_tex.is_none() {
+            Some("could not render the after image".to_string())
+        } else {
+            None
+        };
+        Self {
+            title,
+            before: before_tex,
+            after: after_tex,
+            error,
+        }
+    }
+}
+
 impl Entry {
     /// The short per-file decision shown next to the name: `(text, colour, tip)`.
     ///
@@ -253,6 +308,10 @@ pub struct SuturaApp {
     changelog: Option<Vec<(String, String)>>,
     changelog_open: bool,
     changelog_error: Option<String>,
+    /// Static before/after pair: two textures rasterised once when the window
+    /// opens. `None` while closed. Python's default view is static
+    /// (`gui.py:7373`); the live 3D preview is the interactive alternative.
+    compare: Option<ComparePair>,
 }
 
 impl SuturaApp {
@@ -305,6 +364,7 @@ impl SuturaApp {
             changelog: None,
             changelog_open: false,
             changelog_error: None,
+            compare: None,
         }
     }
 
@@ -401,6 +461,7 @@ impl SuturaApp {
             changelog: None,
             changelog_open: false,
             changelog_error: None,
+            compare: None,
         };
         for path in files {
             app.add_path(path);
@@ -1056,6 +1117,37 @@ impl eframe::App for SuturaApp {
                     }
                     if ui.button(rust_i18n::t!("app.repeat_pick").to_string()).clicked() {
                         self.open_repeat_picker();
+                    }
+                    // Python's static before/after pair is its default view
+                    // (`gui.py:7373`); here it is a window beside the live
+                    // preview rather than a replacement for it.
+                    if ui
+                        .add_enabled(
+                            self.selected
+                                .and_then(|i| self.files.get(i))
+                                .map(|e| e.input.is_some())
+                                .unwrap_or(false),
+                            egui::Button::new(rust_i18n::t!("app.compare").to_string()),
+                        )
+                        .on_hover_text(rust_i18n::t!("app.compare_tip").to_string())
+                        .clicked()
+                    {
+                        if let Some(entry) = self.selected.and_then(|i| self.files.get(i)) {
+                            if let Some(input) = entry.input.clone() {
+                                let title = entry
+                                    .path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                self.compare = Some(ComparePair::build(
+                                    &ctx,
+                                    title,
+                                    &input,
+                                    entry.result.as_deref(),
+                                    self.preview.heatmap,
+                                ));
+                            }
+                        }
                     }
                     if ui.button(rust_i18n::t!("app.about").to_string()).clicked() {
                         self.about_open = true;
@@ -2402,6 +2494,53 @@ impl eframe::App for SuturaApp {
                         }
                     });
                 });
+        }
+        if let Some(pair) = &self.compare {
+            let mut open = true;
+            egui::Window::new(pair.title.clone())
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(820.0)
+                .show(&ctx, |ui| {
+                    if let Some(err) = &pair.error {
+                        ui.label(egui::RichText::new(err).color(egui::Color32::LIGHT_RED));
+                    }
+                    ui.horizontal(|ui| {
+                        for (label, tex) in [
+                            ("app.before".to_string(), pair.before.as_ref()),
+                            ("app.after".to_string(), pair.after.as_ref()),
+                        ] {
+                            ui.vertical(|ui| {
+                                ui.label(rust_i18n::t!(label.as_str()).to_string());
+                                match tex {
+                                    Some(tex) => {
+                                        let [w, h] = tex.size();
+                                        ui.image((tex.id(), egui::vec2(w as f32, h as f32)));
+                                    }
+                                    None => {
+                                        ui.label(
+                                            egui::RichText::new(
+                                                rust_i18n::t!("app.compare_none").to_string(),
+                                            )
+                                            .small()
+                                            .weak(),
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    if pair.after.is_none() {
+                        ui.label(
+                            egui::RichText::new(rust_i18n::t!("app.compare_no_after").to_string())
+                                .small()
+                                .weak(),
+                        );
+                    }
+                });
+            if !open {
+                self.compare = None;
+            }
         }
         if self.crash_open {
             // Python shows one short dialog pointing at the export; this is the
@@ -4008,6 +4147,59 @@ mod tests {
         }
         // It reads the releases list, not `/latest`: a history needs the list.
         assert!(body.contains("/releases?per_page="), "reads the list endpoint");
+    }
+
+    /// The static before/after pair must render both sides from the same
+    /// renderer the live preview uses.
+    ///
+    /// `rasterize_for_still` and `Preview::show` both go through
+    /// `CpuViewer::rasterize`, so the still image cannot disagree with the live
+    /// one about shading, defect colouring or framing. This checks the pixels
+    /// actually differ between a broken and a repaired mesh -- two identical
+    /// images would mean the second render silently reused the first.
+    #[test]
+    fn still_pair_renders_distinct_before_and_after_images() {
+        let fixture = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../sutura-geom/tests/fixtures/case5_box_missing_face.stl"
+        ));
+        let broken = DisplayMesh::load(fixture).expect("fixture must load");
+
+        // A real second mesh, built from the soup fields the renderer actually
+        // reads: mutating `src_verts`/`src_tris` changed nothing, because
+        // `rasterize` draws `indices`/`positions`/`normals`. A tetrahedron at a
+        // different scale guarantees different pixels.
+        let mut repaired = broken.clone();
+        repaired.positions = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 2.0],
+        ];
+        repaired.normals = vec![
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ];
+        repaired.indices = vec![0, 1, 2, 0, 1, 3, 1, 2, 3, 0, 3, 2];
+        repaired.radius = 2.0;
+
+        let size = [128, 96];
+        let a = crate::viewer::Preview::rasterize_for_still(&broken, size, false)
+            .expect("before must rasterise");
+        let b = crate::viewer::Preview::rasterize_for_still(&repaired, size, false)
+            .expect("after must rasterise");
+
+        assert_eq!(a.data().len(), b.data().len(), "same canvas size");
+        assert_ne!(
+            a.data(),
+            b.data(),
+            "the two panels must not be the same picture"
+        );
+        // And the background is filled, not transparent: an empty pixmap would
+        // also compare unequal while showing nothing.
+        assert!(a.data().iter().any(|&c| c != 0), "the before image has content");
     }
 
     /// The settings panel must be inside a scroll area.

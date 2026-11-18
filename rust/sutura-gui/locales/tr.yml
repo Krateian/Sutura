@@ -72,6 +72,10 @@ app:
   changelog_offline: "Sürüm notları yüklenemedi (çevrimdışı mı?)."
   changelog_empty: "Sürüm bulunamadı."
   retry: "Yeniden dene"
+  compare: "Önce / Sonra"
+  compare_tip: "Orijinal ve onarılmış mesh'in statik yan yana görüntüsü"
+  compare_none: "(çizilemedi)"
+  compare_no_after: "Henüz onarım yok: sağ panel orijinali gösteriyor."
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"

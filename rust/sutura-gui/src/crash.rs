@@ -16,9 +16,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Once, per process: a panic loop would otherwise stack a dialog per iteration.
 static SHOWN: AtomicBool = AtomicBool::new(false);
 
-/// Install the panic hook. Idempotent-ish: calling it twice replaces the hook,
-/// which is harmless because the new one chains to the default handler the same
-/// way the old one did.
+/// Record one panic: the text, and the flag the dialog reads.
+///
+/// Split out of the hook so a test can exercise the *recording* without
+/// installing a process-global hook. That matters: `install_hooks` cannot be
+/// uninstalled, so a test that installs it makes every later panic in the same
+/// test process -- including a panic in an unrelated, parallel test -- write to
+/// `data_dir()`, which is the real `~/.local/share/sutura/data`. That is exactly
+/// how this file's first version scribbled on the developer's own crash log.
+pub fn record(location: &str, message: &str, thread: &str) {
+    sutura_core::diagnostics::append_crash_log(&format!(
+        "panic at {location} (thread {thread}): {message}"
+    ));
+    SHOWN.store(true, Ordering::SeqCst);
+}
+
+/// Install the panic hook. Call once, first thing in `main`.
 pub fn install_hooks() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -33,15 +46,15 @@ pub fn install_hooks() {
             .map(|s| (*s).to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "panic".to_string());
-        let thread = std::thread::current();
-        sutura_core::diagnostics::append_crash_log(&format!(
-            "panic at {location} (thread {:?}): {message}",
-            thread.name().unwrap_or("<unnamed>")
-        ));
+        let current = std::thread::current();
+        record(
+            &location,
+            &message,
+            &format!("{:?}", current.name().unwrap_or("<unnamed>")),
+        );
 
-        // The GUI shows this; a headless run has no window, so the flag just
-        // stays set and the default handler prints the usual message.
-        SHOWN.store(true, Ordering::SeqCst);
+        // The default handler still prints the usual message and unwinds; the
+        // GUI reads `panic_recorded` to decide whether to show its dialog.
         default(info);
     }));
 }
@@ -72,31 +85,31 @@ mod tests {
     /// covered by `diagnostics::archive_contains_no_personal_paths`, which
     /// checks the crash entry end to end.
     #[test]
-    fn hook_records_a_panic_and_sets_the_flag() {
-        assert!(!panic_recorded(), "no panic yet in this process");
-        // The hook writes to `data_dir()`, which defaults to the **real**
-        // ~/.local/share/sutura/data. The first version of this test did exactly
-        // that -- it appended two synthetic panics to the developer's own crash
-        // log. `SUTURA_DATA_DIR` is the supported override (learning.rs:21), and
-        // it is the only sandboxing a crash hook needs.
+    fn record_writes_the_log_and_sets_the_flag() {
+        assert!(!panic_recorded(), "nothing recorded yet in this process");
+
+        // A temp data dir, so nothing can reach the real ~/.local. No hook is
+        // installed: `record` is the piece under test, and installing the global
+        // hook in a test is what wrote to the developer's own crash log.
         let dir = std::env::temp_dir().join(format!("sutura-crash-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SUTURA_DATA_DIR", &dir);
+        std::env::set_var(sutura_core::config::learning::DATA_ENV, &dir);
 
-        install_hooks();
-        let _ = std::panic::catch_unwind(|| panic!("synthetic crash for the test"));
-        assert!(panic_recorded(), "the hook must record the panic");
+        record("src/x.rs:1:1", "synthetic crash", "main");
+        assert!(panic_recorded(), "recording must set the flag the dialog reads");
 
-        // And it stays set: a crash is not a transient state, and the dialog
-        // must not disappear if the app survives a second panic.
-        let _ = std::panic::catch_unwind(|| panic!("another synthetic crash"));
-        assert!(panic_recorded(), "sticky after any panic");
-
-        // The write really went to the sandbox, and is readable there.
         let log = dir.join("crash.log");
-        let text = std::fs::read_to_string(&log).expect("the hook must write crash.log");
-        assert!(text.contains("synthetic crash"), "the entry is in the log");
+        let text = std::fs::read_to_string(&log).expect("the entry must be written");
+        assert!(text.contains("synthetic crash"), "message recorded: {text}");
+        assert!(text.contains("src/x.rs:1:1"), "location recorded: {text}");
+
+        // A second recording appends rather than replacing.
+        record("src/y.rs:2:2", "second crash", "main");
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(text.lines().count(), 2, "both entries are kept");
+        assert!(panic_recorded(), "the flag is sticky");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

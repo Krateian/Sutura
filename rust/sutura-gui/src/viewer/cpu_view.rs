@@ -30,6 +30,34 @@ impl CpuViewer {
         size: [u32; 2],
         heatmap: bool,
     ) -> Result<(), String> {
+        let pixmap = self.rasterize(mesh, view_proj, size, heatmap)?;
+        let image = egui::ColorImage::from_rgba_premultiplied(
+            [pixmap.width() as usize, pixmap.height() as usize],
+            pixmap.data(),
+        );
+        match &mut self.texture {
+            Some(handle) => handle.set(image, egui::TextureOptions::LINEAR),
+            None => {
+                self.texture =
+                    Some(ctx.load_texture("sutura-cpu-mesh", image, egui::TextureOptions::LINEAR));
+            }
+        }
+        Ok(())
+    }
+
+    /// Draw the mesh into a pixmap without touching the texture.
+    ///
+    /// Split out of `render` so the static before/after view can rasterise the
+    /// same way the live preview does -- one renderer, so the two cannot show
+    /// different pictures of the same mesh.
+    pub fn rasterize(
+        &self,
+        mesh: &DisplayMesh,
+        view_proj: Mat4,
+        size: [u32; 2],
+        heatmap: bool,
+    ) -> Result<Pixmap, String> {
+
         let w = size[0].clamp(16, 1600) as usize;
         let h = size[1].clamp(16, 1200) as usize;
         let mut pixmap = Pixmap::new(w as u32, h as u32)
@@ -124,18 +152,7 @@ impl CpuViewer {
                 None,
             );
         }
-
-        let image = egui::ColorImage::from_rgba_premultiplied(
-            [w, h],
-            pixmap.data(),
-        );
-        match &mut self.texture {
-            Some(handle) => handle.set(image, egui::TextureOptions::LINEAR),
-            None => {
-                self.texture =
-                    Some(ctx.load_texture("sutura-cpu-mesh", image, egui::TextureOptions::LINEAR));
-            }
-        }
-        Ok(())
+        Ok(pixmap)
     }
 }
+
