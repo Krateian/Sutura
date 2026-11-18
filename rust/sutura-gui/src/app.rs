@@ -888,343 +888,351 @@ impl eframe::App for SuturaApp {
             .resizable(true)
             .default_size(280.0)
             .show(ui, |ui| {
-                ui.heading(rust_i18n::t!("app.settings").to_string());
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(rust_i18n::t!("app.intensity").to_string());
-                    egui::ComboBox::from_id_salt("intensity")
-                        .selected_text(self.intensity.label())
-                        .show_ui(ui, |ui| {
-                            for value in [
-                                Intensity::Quick,
-                                Intensity::Balanced,
-                                Intensity::Thorough,
-                                Intensity::Extreme,
-                            ] {
-                                ui.selectable_value(
-                                    &mut self.intensity,
-                                    value,
-                                    value.label(),
-                                );
-                            }
-                        });
-                });
-                // Every control below writes `self.settings` directly. Nothing
-                // here builds a RepairOptions by hand: `options_from` does that,
-                // in the core, for the CLI and the GUI alike.
-                ui.horizontal(|ui| {
-                    ui.label(rust_i18n::t!("app.deep_repair").to_string());
-                    let current = self
-                        .settings
-                        .deep_repair
-                        .clone()
-                        .unwrap_or_else(|| "full".to_string());
-                    egui::ComboBox::from_id_salt("deep_repair")
-                        .selected_text(current.clone())
-                        .show_ui(ui, |ui| {
-                            for value in ["off", "local", "full"] {
-                                if ui
-                                    .selectable_label(current == value, value)
-                                    .clicked()
-                                {
-                                    self.settings.deep_repair = Some(value.to_string());
-                                }
-                            }
-                        });
-                });
-
-                ui.separator();
-                ui.label(rust_i18n::t!("app.tiers").to_string());
-                let mut tamponade = self.settings.no_tamponade == false;
-                if ui
-                    .checkbox(&mut tamponade, rust_i18n::t!("app.tier_tamponade").to_string())
-                    .changed()
-                {
-                    self.settings.no_tamponade = !tamponade;
-                    self.settings.experimental_tamponade = false;
-                }
-                let mut flap = self.settings.no_flap == false;
-                if ui
-                    .checkbox(&mut flap, rust_i18n::t!("app.tier_flap").to_string())
-                    .changed()
-                {
-                    self.settings.no_flap = !flap;
-                    self.settings.experimental_flap = false;
-                }
-                let mut coaptation = self.settings.no_coaptation == false;
-                if ui
-                    .checkbox(
-                        &mut coaptation,
-                        rust_i18n::t!("app.tier_coaptation").to_string(),
-                    )
-                    .changed()
-                {
-                    self.settings.no_coaptation = !coaptation;
-                    self.settings.experimental_coaptation = false;
-                }
-                // Splint is OFF by default, so it is expressed as an opt-in.
-                ui.checkbox(
-                    &mut self.settings.experimental_splint,
-                    rust_i18n::t!("app.tier_splint").to_string(),
-                );
-                let mut dressing = self.settings.dressing;
-                if ui
-                    .checkbox(&mut dressing, rust_i18n::t!("app.tier_dressing").to_string())
-                    .changed()
-                {
-                    self.settings.dressing = dressing;
-                }
-                if self.settings.dressing {
-                    ui.checkbox(
-                        &mut self.settings.dressing_force_adopt,
-                        rust_i18n::t!("app.dressing_force_adopt").to_string(),
-                    );
-                }
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(rust_i18n::t!("app.si_mode").to_string());
-                    let current = self
-                        .settings
-                        .si_mode
-                        .clone()
-                        .unwrap_or_else(|| "report".to_string());
-                    egui::ComboBox::from_id_salt("si_mode")
-                        .selected_text(current.clone())
-                        .show_ui(ui, |ui| {
-                            for value in ["repair", "report", "off"] {
-                                if ui.selectable_label(current == value, value).clicked() {
-                                    self.settings.si_mode = Some(value.to_string());
-                                }
-                            }
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label(rust_i18n::t!("app.solid_engine").to_string());
-                    let current = self
-                        .settings
-                        .solid_engine
-                        .clone()
-                        .unwrap_or_else(|| "ftetwild".to_string());
-                    egui::ComboBox::from_id_salt("solid_engine")
-                        .selected_text(current.clone())
-                        .show_ui(ui, |ui| {
-                            for value in ["ftetwild", "cdt"] {
-                                if ui.selectable_label(current == value, value).clicked() {
-                                    self.settings.solid_engine = Some(value.to_string());
-                                }
-                            }
-                        });
-                });
-
-                ui.separator();
-                // Open by default: these replace the old "More settings will
-                // arrive with the core profiles API" placeholder, and a
-                // collapsed group nobody opens is the same as no group.
-                egui::CollapsingHeader::new(rust_i18n::t!("app.bounds").to_string())
-                    .default_open(true)
-                    .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(rust_i18n::t!("app.bounds_hint").to_string())
-                            .small()
-                            .weak(),
-                    );
-                    // Every field here is an `Option`, and blank means "keep the
-                    // intensity's value" -- so a cleared box must write `None`,
-                    // not zero. A zero timeout would cap the tier at no time.
-                    opt_f64(ui, "gui_max_risk", &mut self.settings.max_risk,
-                            &rust_i18n::t!("app.max_risk"));
-                    opt_f64(ui, "gui_max_geom", &mut self.settings.max_geometry_change,
-                            &rust_i18n::t!("app.max_geometry_change"));
-                    opt_i64(ui, "gui_graft_faces", &mut self.settings.graft_max_faces,
-                            &rust_i18n::t!("app.graft_max_faces"));
-                    opt_f64(ui, "gui_graft_to", &mut self.settings.graft_timeout,
-                            &rust_i18n::t!("app.graft_timeout"));
-                    opt_i64(ui, "gui_dense_ratio", &mut self.settings.dense_ratio,
-                            &rust_i18n::t!("app.dense_ratio"));
-                    opt_i64(ui, "gui_dense_min", &mut self.settings.dense_min_faces,
-                            &rust_i18n::t!("app.dense_min_faces"));
-                    opt_i64(ui, "gui_ft_faces", &mut self.settings.ftetwild_max_faces,
-                            &rust_i18n::t!("app.ftetwild_max_faces"));
-                    opt_f64(ui, "gui_ft_to", &mut self.settings.ftetwild_timeout,
-                            &rust_i18n::t!("app.ftetwild_timeout"));
-                    opt_f64(ui, "gui_ft_haus", &mut self.settings.ftetwild_max_hausdorff_rel,
-                            &rust_i18n::t!("app.ftetwild_max_hausdorff"));
-                    // Wall-thicken target. Setting a value turns the tier on,
-                    // matching the CLI (`--wall-min-thickness` IS the switch):
-                    // a target with the tier off would silently do nothing.
-                    opt_f64(ui, "gui_wall_min", &mut self.settings.wall_min_thickness,
-                            &rust_i18n::t!("app.wall_min_thickness"));
-                    self.settings.wall_thicken =
-                        self.settings.wall_min_thickness.is_some();
-                    ui.separator();
-                    ui.checkbox(
-                        &mut self.settings.join_components,
-                        rust_i18n::t!("app.join_components").to_string(),
-                    );
-                    // Bind a local, not `&mut option.unwrap_or(false)`: a
-                    // temporary has no place to write back to, so the checkbox
-                    // would accept the click and discard it.
-                    let mut optimize_retry =
-                        self.settings.ftetwild_optimize_retry.unwrap_or(false);
-                    if ui
-                        .checkbox(
-                            &mut optimize_retry,
-                            rust_i18n::t!("app.ftetwild_optimize_retry").to_string(),
-                        )
-                        .changed()
-                    {
-                        self.settings.ftetwild_optimize_retry =
-                            if optimize_retry { Some(true) } else { None };
-                    }
-                    let mut escalation = self.settings.auto_escalation.is_some();
-                    if ui
-                        .checkbox(
-                            &mut escalation,
-                            rust_i18n::t!("app.auto_escalation").to_string(),
-                        )
-                        .changed()
-                    {
-                        self.settings.auto_escalation =
-                            if escalation { Some(true) } else { None };
-                    }
-                });
-
-                ui.separator();
-                ui.label(rust_i18n::t!("app.methods").to_string());
-                // Multiple selection, not a sequence: `forced_methods` is a set
-                // in the core (membership only), so offering reordering would
-                // promise an order nothing honours.
-                let mut selected: Vec<u8> = self
-                    .settings
-                    .methods
-                    .as_deref()
-                    .map(|s| {
-                        s.split(',')
-                            .filter_map(|t| t.trim().parse::<u8>().ok())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let mut changed = false;
+                // Scrollable: on a 720-px window (the stated minimum)
+                // the per-run limits and the method list ran off the bottom
+                // and were unreachable. Same pattern as the other panels.
                 egui::ScrollArea::vertical()
-                    .id_salt("methods_scroll")
-                    .max_height(140.0)
+                    .id_salt("settings_scroll")
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (num, id, _category, name) in
-                            sutura_core::repair_settings::METHODS
-                        {
-                            let mut on = selected.contains(&num);
-                            if ui
-                                .checkbox(&mut on, format!("{num}. {name} ({id})"))
-                                .changed()
-                            {
-                                if on {
-                                    selected.push(num);
-                                } else {
-                                    selected.retain(|n| *n != num);
+                    ui.heading(rust_i18n::t!("app.settings").to_string());
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(rust_i18n::t!("app.intensity").to_string());
+                        egui::ComboBox::from_id_salt("intensity")
+                            .selected_text(self.intensity.label())
+                            .show_ui(ui, |ui| {
+                                for value in [
+                                    Intensity::Quick,
+                                    Intensity::Balanced,
+                                    Intensity::Thorough,
+                                    Intensity::Extreme,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.intensity,
+                                        value,
+                                        value.label(),
+                                    );
                                 }
-                                changed = true;
-                            }
+                            });
+                    });
+                    // Every control below writes `self.settings` directly. Nothing
+                    // here builds a RepairOptions by hand: `options_from` does that,
+                    // in the core, for the CLI and the GUI alike.
+                    ui.horizontal(|ui| {
+                        ui.label(rust_i18n::t!("app.deep_repair").to_string());
+                        let current = self
+                            .settings
+                            .deep_repair
+                            .clone()
+                            .unwrap_or_else(|| "full".to_string());
+                        egui::ComboBox::from_id_salt("deep_repair")
+                            .selected_text(current.clone())
+                            .show_ui(ui, |ui| {
+                                for value in ["off", "local", "full"] {
+                                    if ui
+                                        .selectable_label(current == value, value)
+                                        .clicked()
+                                    {
+                                        self.settings.deep_repair = Some(value.to_string());
+                                    }
+                                }
+                            });
+                    });
+
+                    ui.separator();
+                    ui.label(rust_i18n::t!("app.tiers").to_string());
+                    let mut tamponade = self.settings.no_tamponade == false;
+                    if ui
+                        .checkbox(&mut tamponade, rust_i18n::t!("app.tier_tamponade").to_string())
+                        .changed()
+                    {
+                        self.settings.no_tamponade = !tamponade;
+                        self.settings.experimental_tamponade = false;
+                    }
+                    let mut flap = self.settings.no_flap == false;
+                    if ui
+                        .checkbox(&mut flap, rust_i18n::t!("app.tier_flap").to_string())
+                        .changed()
+                    {
+                        self.settings.no_flap = !flap;
+                        self.settings.experimental_flap = false;
+                    }
+                    let mut coaptation = self.settings.no_coaptation == false;
+                    if ui
+                        .checkbox(
+                            &mut coaptation,
+                            rust_i18n::t!("app.tier_coaptation").to_string(),
+                        )
+                        .changed()
+                    {
+                        self.settings.no_coaptation = !coaptation;
+                        self.settings.experimental_coaptation = false;
+                    }
+                    // Splint is OFF by default, so it is expressed as an opt-in.
+                    ui.checkbox(
+                        &mut self.settings.experimental_splint,
+                        rust_i18n::t!("app.tier_splint").to_string(),
+                    );
+                    let mut dressing = self.settings.dressing;
+                    if ui
+                        .checkbox(&mut dressing, rust_i18n::t!("app.tier_dressing").to_string())
+                        .changed()
+                    {
+                        self.settings.dressing = dressing;
+                    }
+                    if self.settings.dressing {
+                        ui.checkbox(
+                            &mut self.settings.dressing_force_adopt,
+                            rust_i18n::t!("app.dressing_force_adopt").to_string(),
+                        );
+                    }
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(rust_i18n::t!("app.si_mode").to_string());
+                        let current = self
+                            .settings
+                            .si_mode
+                            .clone()
+                            .unwrap_or_else(|| "report".to_string());
+                        egui::ComboBox::from_id_salt("si_mode")
+                            .selected_text(current.clone())
+                            .show_ui(ui, |ui| {
+                                for value in ["repair", "report", "off"] {
+                                    if ui.selectable_label(current == value, value).clicked() {
+                                        self.settings.si_mode = Some(value.to_string());
+                                    }
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(rust_i18n::t!("app.solid_engine").to_string());
+                        let current = self
+                            .settings
+                            .solid_engine
+                            .clone()
+                            .unwrap_or_else(|| "ftetwild".to_string());
+                        egui::ComboBox::from_id_salt("solid_engine")
+                            .selected_text(current.clone())
+                            .show_ui(ui, |ui| {
+                                for value in ["ftetwild", "cdt"] {
+                                    if ui.selectable_label(current == value, value).clicked() {
+                                        self.settings.solid_engine = Some(value.to_string());
+                                    }
+                                }
+                            });
+                    });
+
+                    ui.separator();
+                    // Open by default: these replace the old "More settings will
+                    // arrive with the core profiles API" placeholder, and a
+                    // collapsed group nobody opens is the same as no group.
+                    egui::CollapsingHeader::new(rust_i18n::t!("app.bounds").to_string())
+                        .default_open(true)
+                        .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(rust_i18n::t!("app.bounds_hint").to_string())
+                                .small()
+                                .weak(),
+                        );
+                        // Every field here is an `Option`, and blank means "keep the
+                        // intensity's value" -- so a cleared box must write `None`,
+                        // not zero. A zero timeout would cap the tier at no time.
+                        opt_f64(ui, "gui_max_risk", &mut self.settings.max_risk,
+                                &rust_i18n::t!("app.max_risk"));
+                        opt_f64(ui, "gui_max_geom", &mut self.settings.max_geometry_change,
+                                &rust_i18n::t!("app.max_geometry_change"));
+                        opt_i64(ui, "gui_graft_faces", &mut self.settings.graft_max_faces,
+                                &rust_i18n::t!("app.graft_max_faces"));
+                        opt_f64(ui, "gui_graft_to", &mut self.settings.graft_timeout,
+                                &rust_i18n::t!("app.graft_timeout"));
+                        opt_i64(ui, "gui_dense_ratio", &mut self.settings.dense_ratio,
+                                &rust_i18n::t!("app.dense_ratio"));
+                        opt_i64(ui, "gui_dense_min", &mut self.settings.dense_min_faces,
+                                &rust_i18n::t!("app.dense_min_faces"));
+                        opt_i64(ui, "gui_ft_faces", &mut self.settings.ftetwild_max_faces,
+                                &rust_i18n::t!("app.ftetwild_max_faces"));
+                        opt_f64(ui, "gui_ft_to", &mut self.settings.ftetwild_timeout,
+                                &rust_i18n::t!("app.ftetwild_timeout"));
+                        opt_f64(ui, "gui_ft_haus", &mut self.settings.ftetwild_max_hausdorff_rel,
+                                &rust_i18n::t!("app.ftetwild_max_hausdorff"));
+                        // Wall-thicken target. Setting a value turns the tier on,
+                        // matching the CLI (`--wall-min-thickness` IS the switch):
+                        // a target with the tier off would silently do nothing.
+                        opt_f64(ui, "gui_wall_min", &mut self.settings.wall_min_thickness,
+                                &rust_i18n::t!("app.wall_min_thickness"));
+                        self.settings.wall_thicken =
+                            self.settings.wall_min_thickness.is_some();
+                        ui.separator();
+                        ui.checkbox(
+                            &mut self.settings.join_components,
+                            rust_i18n::t!("app.join_components").to_string(),
+                        );
+                        // Bind a local, not `&mut option.unwrap_or(false)`: a
+                        // temporary has no place to write back to, so the checkbox
+                        // would accept the click and discard it.
+                        let mut optimize_retry =
+                            self.settings.ftetwild_optimize_retry.unwrap_or(false);
+                        if ui
+                            .checkbox(
+                                &mut optimize_retry,
+                                rust_i18n::t!("app.ftetwild_optimize_retry").to_string(),
+                            )
+                            .changed()
+                        {
+                            self.settings.ftetwild_optimize_retry =
+                                if optimize_retry { Some(true) } else { None };
+                        }
+                        let mut escalation = self.settings.auto_escalation.is_some();
+                        if ui
+                            .checkbox(
+                                &mut escalation,
+                                rust_i18n::t!("app.auto_escalation").to_string(),
+                            )
+                            .changed()
+                        {
+                            self.settings.auto_escalation =
+                                if escalation { Some(true) } else { None };
                         }
                     });
-                if changed {
-                    self.settings.methods = if selected.is_empty() {
-                        None
-                    } else {
-                        selected.sort_unstable();
-                        Some(
-                            selected
-                                .iter()
-                                .map(|n| n.to_string())
-                                .collect::<Vec<_>>()
-                                .join(","),
-                        )
-                    };
-                }
-                ui.separator();
-                ui.heading(rust_i18n::t!("app.report").to_string());
-                if self.batch_active {
-                    ui.label(
-                        rust_i18n::t!(
-                            "app.batch_progress",
-                            done = self.batch_done as i64,
-                            total = self.batch_total as i64
-                        )
-                        .to_string(),
-                    );
-                }
-                let Some(entry) = self.selected.and_then(|i| self.files.get(i)) else {
-                    ui.label(rust_i18n::t!("app.report_empty").to_string());
-                    return;
-                };
-                if let RepairState::Running { step, total } = entry.repair {
-                    ui.add(
-                        egui::ProgressBar::new(step as f32 / total.max(1) as f32)
-                            .text(
-                                rust_i18n::t!(
-                                    "app.progress",
-                                    step = step as i64,
-                                    total = total as i64
-                                )
-                                .to_string(),
-                            ),
-                    );
-                    if ui.button(rust_i18n::t!("app.cancel").to_string()).clicked() {
-                        cancel_in_panel = true;
-                    }
-                }
-                if let RepairState::Failed(e) = &entry.repair {
-                    ui.label(egui::RichText::new(e).color(egui::Color32::LIGHT_RED));
-                }
-                if let Some(report) = &entry.report {
-                    egui::Grid::new("report-grid")
-                        .num_columns(2)
-                        .spacing([12.0, 6.0])
-                        .show(ui, |ui| {
-                            ui.label(rust_i18n::t!("app.health").to_string());
-                            ui.label(fmt_score(report.health));
-                            ui.end_row();
-                            ui.label(rust_i18n::t!("app.risk").to_string());
-                            ui.label(fmt_score(report.risk));
-                            ui.end_row();
-                            ui.label(rust_i18n::t!("app.fidelity").to_string());
-                            ui.label(fmt_score(report.fidelity));
-                            ui.end_row();
-                            ui.label(rust_i18n::t!("app.confidence").to_string());
-                            ui.label(fmt_score(report.confidence));
-                            ui.end_row();
-                        });
-                    let verdict = verdict_text(report);
-                    let color = verdict_color(&report.verdict_code);
-                    ui.add_space(6.0);
-                    ui.label(rust_i18n::t!("app.verdict").to_string());
-                    ui.label(egui::RichText::new(verdict).color(color));
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{}: {}",
-                            rust_i18n::t!("app.status"),
-                            status_text(&report.status_code)
-                        ))
-                        .weak(),
-                    );
-                } else if !matches!(entry.repair, RepairState::Running { .. })
-                    && !matches!(entry.repair, RepairState::Failed(_))
-                {
-                    ui.label(rust_i18n::t!("app.report_empty").to_string());
-                }
-                if let Some(output) = &entry.output {
+
                     ui.separator();
-                    ui.label(egui::RichText::new(output.display().to_string()).small().weak());
-                    if ui.button(rust_i18n::t!("app.open_result").to_string()).clicked() {
-                        open_action = Some((output.clone(), false));
+                    ui.label(rust_i18n::t!("app.methods").to_string());
+                    // Multiple selection, not a sequence: `forced_methods` is a set
+                    // in the core (membership only), so offering reordering would
+                    // promise an order nothing honours.
+                    let mut selected: Vec<u8> = self
+                        .settings
+                        .methods
+                        .as_deref()
+                        .map(|s| {
+                            s.split(',')
+                                .filter_map(|t| t.trim().parse::<u8>().ok())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let mut changed = false;
+                    egui::ScrollArea::vertical()
+                        .id_salt("methods_scroll")
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            for (num, id, _category, name) in
+                                sutura_core::repair_settings::METHODS
+                            {
+                                let mut on = selected.contains(&num);
+                                if ui
+                                    .checkbox(&mut on, format!("{num}. {name} ({id})"))
+                                    .changed()
+                                {
+                                    if on {
+                                        selected.push(num);
+                                    } else {
+                                        selected.retain(|n| *n != num);
+                                    }
+                                    changed = true;
+                                }
+                            }
+                        });
+                    if changed {
+                        self.settings.methods = if selected.is_empty() {
+                            None
+                        } else {
+                            selected.sort_unstable();
+                            Some(
+                                selected
+                                    .iter()
+                                    .map(|n| n.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(","),
+                            )
+                        };
                     }
-                    if ui
-                        .button(rust_i18n::t!("app.show_in_folder").to_string())
-                        .clicked()
+                    ui.separator();
+                    ui.heading(rust_i18n::t!("app.report").to_string());
+                    if self.batch_active {
+                        ui.label(
+                            rust_i18n::t!(
+                                "app.batch_progress",
+                                done = self.batch_done as i64,
+                                total = self.batch_total as i64
+                            )
+                            .to_string(),
+                        );
+                    }
+                    let Some(entry) = self.selected.and_then(|i| self.files.get(i)) else {
+                        ui.label(rust_i18n::t!("app.report_empty").to_string());
+                        return;
+                    };
+                    if let RepairState::Running { step, total } = entry.repair {
+                        ui.add(
+                            egui::ProgressBar::new(step as f32 / total.max(1) as f32)
+                                .text(
+                                    rust_i18n::t!(
+                                        "app.progress",
+                                        step = step as i64,
+                                        total = total as i64
+                                    )
+                                    .to_string(),
+                                ),
+                        );
+                        if ui.button(rust_i18n::t!("app.cancel").to_string()).clicked() {
+                            cancel_in_panel = true;
+                        }
+                    }
+                    if let RepairState::Failed(e) = &entry.repair {
+                        ui.label(egui::RichText::new(e).color(egui::Color32::LIGHT_RED));
+                    }
+                    if let Some(report) = &entry.report {
+                        egui::Grid::new("report-grid")
+                            .num_columns(2)
+                            .spacing([12.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.label(rust_i18n::t!("app.health").to_string());
+                                ui.label(fmt_score(report.health));
+                                ui.end_row();
+                                ui.label(rust_i18n::t!("app.risk").to_string());
+                                ui.label(fmt_score(report.risk));
+                                ui.end_row();
+                                ui.label(rust_i18n::t!("app.fidelity").to_string());
+                                ui.label(fmt_score(report.fidelity));
+                                ui.end_row();
+                                ui.label(rust_i18n::t!("app.confidence").to_string());
+                                ui.label(fmt_score(report.confidence));
+                                ui.end_row();
+                            });
+                        let verdict = verdict_text(report);
+                        let color = verdict_color(&report.verdict_code);
+                        ui.add_space(6.0);
+                        ui.label(rust_i18n::t!("app.verdict").to_string());
+                        ui.label(egui::RichText::new(verdict).color(color));
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}: {}",
+                                rust_i18n::t!("app.status"),
+                                status_text(&report.status_code)
+                            ))
+                            .weak(),
+                        );
+                    } else if !matches!(entry.repair, RepairState::Running { .. })
+                        && !matches!(entry.repair, RepairState::Failed(_))
                     {
-                        open_action = Some((output.clone(), true));
+                        ui.label(rust_i18n::t!("app.report_empty").to_string());
                     }
-                }
+                    if let Some(output) = &entry.output {
+                        ui.separator();
+                        ui.label(egui::RichText::new(output.display().to_string()).small().weak());
+                        if ui.button(rust_i18n::t!("app.open_result").to_string()).clicked() {
+                            open_action = Some((output.clone(), false));
+                        }
+                        if ui
+                            .button(rust_i18n::t!("app.show_in_folder").to_string())
+                            .clicked()
+                        {
+                            open_action = Some((output.clone(), true));
+                        }
+                    }
+                    });
             });
         if cancel_clicked || cancel_in_panel {
             self.cancel_repair();
@@ -2363,5 +2371,38 @@ mod tests {
         let mut app = SuturaApp::for_test();
         app.remove_file(7);
         assert!(app.files.is_empty());
+    }
+
+    /// The settings panel must be inside a scroll area.
+    ///
+    /// A static screenshot cannot show this: egui only paints the scrollbar
+    /// while hovering, and at scroll offset 0 the frame is identical either
+    /// way. The window is a fixed 1024x720 with a 720x480 minimum
+    /// (`main.rs:174-175`), so at the minimum size the panel is taller than the
+    /// window and the lower controls (wall thickness, join components, retries,
+    /// the whole method list) are unreachable without this.
+    #[test]
+    fn settings_panel_is_scrollable() {
+        let src = include_str!("app.rs");
+        let start = src
+            .find("Panel::right(\"settings\")")
+            .expect("settings panel exists");
+        let end = src[start..]
+            .find("\n            });")
+            .map(|i| start + i)
+            .expect("settings panel ends");
+        let panel = &src[start..end];
+        // `vertical()`, not `horizontal()`: only vertical scrolling makes the
+        // lower controls reachable, and a substring check for "ScrollArea"
+        // alone would pass either way.
+        assert!(
+            panel.contains("ScrollArea::vertical()"),
+            "the settings panel must scroll vertically, or its lower half is \
+             unreachable at 720x480"
+        );
+        assert!(
+            !panel.contains("ScrollArea::horizontal()"),
+            "horizontal scrolling does not make the lower controls reachable"
+        );
     }
 }
