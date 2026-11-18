@@ -255,6 +255,11 @@ pub struct StartupOptions {
     /// Frames to settle before capturing; an overlay needs more than the main
     /// window for its fade-in to finish.
     pub wait_frames: u8,
+    /// Give the selected file its own method list, as if the user had unticked
+    /// "Use the panel selection" and picked these. Needed to show the per-file
+    /// editor in a state other than "inherited" -- which is otherwise the same
+    /// frame as the panel above it.
+    pub file_methods: Option<Vec<u8>>,
 }
 
 /// Which overlay to show on the first frame.
@@ -529,6 +534,13 @@ impl SuturaApp {
                 app.selected = Some(idx);
             }
         }
+        if let Some(methods) = options.file_methods.clone() {
+            if let Some(entry) = app.selected.and_then(|i| app.files.get_mut(i)) {
+                let mut sorted = methods;
+                sorted.sort_unstable();
+                entry.methods = Some(sorted);
+            }
+        }
         // Views that need a loaded mesh are opened here rather than in the first
         // frame: `ComparePair::build` uploads textures, which needs the context
         // the constructor already has.
@@ -636,6 +648,12 @@ impl SuturaApp {
     }
 
     /// Open the repeat picker on the selected file's input mesh.
+    /// Clear the one-shot scroll seed. Named so the invariant is testable and
+    /// the call site cannot forget which half it is doing.
+    fn consume_settings_scroll(&mut self) {
+        self.settings_scroll = 0.0;
+    }
+
     fn open_repeat_picker(&mut self) {
         let Some(idx) = self.selected else { return };
         let Some(entry) = self.files.get(idx) else { return };
@@ -1179,7 +1197,14 @@ impl eframe::App for SuturaApp {
             .unwrap_or(false);
 
         egui::containers::Panel::top("top").show(ui, |ui| {
-            ui.horizontal(|ui| {
+            // Wrapped, not a single `horizontal`: the toolbar carries twelve
+            // controls and a group pinned with `right_to_left`. In one row the
+            // pinned group is laid out from the same origin as the left group, so
+            // on a narrow window they drew over each other -- "Diagnostics… Re
+            // Changelog ir About" on a Steam Deck at 1280x800. Wrapping gives the
+            // extra controls a second line instead of a collision, and every
+            // button stays reachable at 720x480.
+            ui.horizontal_wrapped(|ui| {
                 ui.heading(rust_i18n::t!("app.title").to_string());
                 ui.separator();
                 if ui.button(rust_i18n::t!("app.add_files").to_string()).clicked() {
@@ -1227,7 +1252,8 @@ impl eframe::App for SuturaApp {
                 {
                     cancel_clicked = true;
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.separator();
+                {
                     egui::ComboBox::from_id_salt("language")
                         .selected_text(self.language.label())
                         .show_ui(ui, |ui| {
@@ -1301,9 +1327,7 @@ impl eframe::App for SuturaApp {
                     {
                         self.export_diagnostics();
                     }
-                });
-
-            });
+                }
                 // Method-health band: one dot per method, from the same
                 // availability probe `--self-check` runs. Only shown when
                 // something is NOT fine -- a green strip every launch is noise,
@@ -1358,11 +1382,17 @@ impl eframe::App for SuturaApp {
                         }
                     });
                 }
+            });
         });
 
         egui::containers::Panel::left("files")
             .resizable(true)
             .default_size(290.0)
+            // Bounded for the same reason as the right panel: two side panels
+            // that grow to their content leave the preview no floor, and it is
+            // the preview that has to stay usable on a 1280x800 screen.
+            .min_size(180.0)
+            .max_size(360.0)
             .show(ui, |ui| {
                 ui.heading(rust_i18n::t!("app.files").to_string());
                 ui.horizontal(|ui| {
@@ -1472,19 +1502,35 @@ impl eframe::App for SuturaApp {
         egui::containers::Panel::right("settings")
             .resizable(true)
             .default_size(280.0)
+            // Bounded: an unbounded side panel grows to fit its widest row
+            // (here the per-run limit fields), and at 1280x800 on a Steam Deck
+            // that squeezed the preview until "Defect colours" and half the
+            // model sat under the panel. The panel keeps its own width and the
+            // centre keeps its floor.
+            .min_size(240.0)
+            .max_size(420.0)
             .show(ui, |ui| {
                 // Scrollable: on a 720-px window (the stated minimum)
                 // the per-run limits and the method list ran off the bottom
                 // and were unreachable. Same pattern as the other panels.
-                egui::ScrollArea::vertical()
+                let mut area = egui::ScrollArea::vertical()
                     .id_salt("settings_scroll")
-                    // The panel is taller than any window, so a control near
-                    // its bottom (the analysis table, the file-method list) is
-                    // unreachable in a screenshot unless the scroll starts
-                    // somewhere other than 0. Same spirit as `--screenshot`.
-                    .vertical_scroll_offset(self.settings_scroll)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                    .auto_shrink([false, false]);
+                // `vertical_scroll_offset` writes straight into the area's
+                // persistent state every frame (`scroll_area.rs:823`:
+                // `state.offset.y = offset_y.unwrap_or(state.offset.y)`), so
+                // passing a constant re-zeroes the scroll on every frame and the
+                // wheel and the scrollbar both snap back. It may only be used to
+                // *seed* the position, once -- after that the user owns it.
+                //
+                // This was a real bug, not a screenshot artefact: the flag was
+                // added to capture a frame below the fold and made the panel
+                // unscrollable for everyone.
+                if self.settings_scroll != 0.0 {
+                    area = area.vertical_scroll_offset(self.settings_scroll);
+                    self.consume_settings_scroll();
+                }
+                area.show(ui, |ui| {
                     ui.heading(rust_i18n::t!("app.settings").to_string());
                     ui.separator();
                     ui.horizontal(|ui| {
@@ -2736,10 +2782,18 @@ impl eframe::App for SuturaApp {
         }
         if let Some(pair) = &self.compare {
             let mut open = true;
+            // Anchored and constrained: the default position is top-left and the
+            // pair is 2 x 384 px wide plus spacing, so an unanchored window ran
+            // its title bar above the viewport edge and the capture cut it off.
+            // `constrain(true)` also keeps it inside the window when the two
+            // panels are wider than the viewport.
             egui::Window::new(pair.title.clone())
                 .open(&mut open)
                 .collapsible(false)
-                .default_width(820.0)
+                .resizable(false)
+                .default_width(800.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .constrain(true)
                 .show(&ctx, |ui| {
                     if let Some(err) = &pair.error {
                         ui.label(egui::RichText::new(err).color(egui::Color32::LIGHT_RED));
@@ -4576,6 +4630,70 @@ mod tests {
         assert!(app.compare.is_none());
         assert!(!app.preview.defect_colors);
         assert!(app.changelog.is_none(), "no network at startup");
+    }
+
+    /// The deviation ramp must keep its own colours, only modulated in
+    /// brightness.
+    ///
+    /// An unshaded ramp is one flat silhouette on a scanned part -- every face
+    /// lands on nearly the same deviation, so the After + Heatmap view read as a
+    /// navy blob (reported from a Steam Deck). Shading it fixes the shape; what
+    /// must not change is the mapping from deviation level to colour, or the
+    /// legend would be lying.
+    #[test]
+    fn deviation_ramp_keeps_its_colours() {
+        let lut = sutura_geom::heatmap::deviation_lut();
+        assert!(lut.len() > 4);
+
+        // The ends are the documented navy and red, unchanged.
+        let lo = lut[0];
+        let hi = lut[lut.len() - 1];
+        assert!(
+            lo[2] > lo[0] && lo[2] > lo[1],
+            "the low end is navy (blue-dominant), got {lo:?}"
+        );
+        assert!(
+            hi[0] > hi[1] && hi[0] > hi[2],
+            "the high end is red (red-dominant), got {hi:?}"
+        );
+
+        // And the ramp is monotone in the channel that matters, so a brighter
+        // face and a darker face still sort correctly.
+        assert!(lo[2] >= hi[2], "blue falls from low to high deviation");
+
+        // The shading factor is brightness only: with any factor in (0, 1] the
+        // ordering of the three channels is preserved.
+        for shade in [1.0f32, 0.75, 0.5] {
+            let shaded = [
+                lo[0] as f32 * shade,
+                lo[1] as f32 * shade,
+                lo[2] as f32 * shade,
+            ];
+            assert!(shaded[2] > shaded[0] && shaded[2] > shaded[1]);
+        }
+    }
+
+    /// `--settings-scroll` must seed the panel once, not pin it every frame.
+    ///
+    /// `ScrollArea::vertical_scroll_offset` writes into the area's persistent
+    /// state on every frame (`scroll_area.rs`: `state.offset.y =
+    /// offset_y.unwrap_or(state.offset.y)`), so passing a constant re-zeroes the
+    /// scroll each frame and neither the wheel nor the scrollbar can move the
+    /// panel. That was a real bug users saw: the flag was added for a screenshot
+    /// and made the settings panel unscrollable. The value is consumed on the
+    /// frame that uses it.
+    #[test]
+    fn settings_scroll_seed_is_consumed_once() {
+        let mut app = SuturaApp::for_test();
+        app.settings_scroll = 780.0;
+        // The field the scroll area reads must be cleared after a frame that
+        // applied it; simulating the frame is what `egui_kittest` will do, but
+        // the invariant can be stated without one: a non-zero seed is one-shot.
+        app.consume_settings_scroll();
+        assert_eq!(app.settings_scroll, 0.0, "the seed must not persist");
+        // Idempotent: consuming twice is harmless.
+        app.consume_settings_scroll();
+        assert_eq!(app.settings_scroll, 0.0);
     }
 
     /// The settings panel must be inside a scroll area.

@@ -44,6 +44,11 @@ fn main() -> eframe::Result<()> {
     let mut select: Option<usize> = None;
     let mut settings_scroll = 0.0f32;
     let mut wait_frames = 3u8;
+    let mut file_methods: Option<Vec<u8>> = None;
+    // Window size, so a capture can prove the layout at the small end (Steam
+    // Deck is 1280x800, the stated minimum 720x480). Not in `--help`: it exists
+    // for scripted captures and for reproducing a layout report.
+    let mut window_size: Option<[f32; 2]> = None;
     let mut intensity = app::Intensity::Balanced;
     let mut intensity_explicit = false;
     let mut language = i18n::Language::System;
@@ -105,6 +110,27 @@ fn main() -> eframe::Result<()> {
             "--open-changelog" => open = app::OpenOnStart::Changelog,
             "--defect-colors" => open = app::OpenOnStart::DefectColors,
             "--select" => select = args.next().and_then(|s| s.parse::<usize>().ok()),
+            "--file-methods" => {
+                file_methods = args.next().map(|spec| {
+                    spec.split(',')
+                        .filter_map(|t| t.trim().parse::<u8>().ok())
+                        .collect()
+                })
+            }
+            "--window-size" => {
+                window_size = args.next().and_then(|spec| {
+                    let mut it = spec.split('x');
+                    match (it.next(), it.next()) {
+                        (Some(w), Some(h)) => {
+                            match (w.trim().parse::<f32>(), h.trim().parse::<f32>()) {
+                                (Ok(w), Ok(h)) => Some([w, h]),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    }
+                })
+            }
             "--wait-frames" => {
                 wait_frames = args.next().and_then(|s| s.parse().ok()).unwrap_or(3)
             }
@@ -201,7 +227,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(rust_i18n::t!("app.title").to_string())
-            .with_inner_size([1024.0, 720.0])
+            .with_inner_size(window_size.unwrap_or([1024.0, 720.0]))
             .with_min_inner_size([720.0, 480.0])
             .with_drag_and_drop(true),
         ..Default::default()
@@ -230,6 +256,7 @@ fn main() -> eframe::Result<()> {
                     select,
                     settings_scroll,
                     wait_frames,
+                    file_methods,
                 },
             )))
         }),

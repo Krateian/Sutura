@@ -13,32 +13,59 @@
 # documentation screenshots): `--lang en` plus LANG/LC_ALL, because egui's
 # `System` language reads the environment.
 #
-# Nothing is written outside the output directory and a throwaway HOME: the GUI
-# persists settings (`~/.config/sutura/gui.json`), writes a crash log and can
-# append repair history, so `HOME` and `SUTURA_DATA_DIR` are both redirected.
-# That is not optional -- see the history guard in `repair_cmd.rs`.
+# Two things the captures must reproduce from a *packaged* install, not a
+# development build:
+#   * the fTetWild sidecar is present, so the method-health band stays empty and
+#     Engines says "installed" -- a document should show what a user sees, and a
+#     dev build without the sidecar shows a permanent "#7 skip" warning;
+#   * the repair history and settings live in a throwaway HOME, so nothing lands
+#     in the real ~/.local or ~/.config (see the history guard in repair_cmd.rs).
 #
 # Usage:
-#   scripts/generate_screenshots_rust.sh [-o OUTDIR] [-b BINARY]
+#   scripts/generate_screenshots_rust.sh [-o OUTDIR] [-b BINARY] [-f FTETWILD]
 #
-# Defaults: OUTDIR=/tmp/sutura-shots-rust, BINARY=rust/target/release/sutura-gui
+# Defaults: OUTDIR=/tmp/sutura-shots-rust, BINARY=rust/target/release/sutura-gui,
+# FTETWILD from SUTURA_FTETWILD_BIN or a packaged/`third_party` build if found.
 
 set -uo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT=${OUT:-/tmp/sutura-shots-rust}
 BIN=${BIN:-$REPO/rust/target/release/sutura-gui}
+FTETWILD=${FTETWILD:-${SUTURA_FTETWILD_BIN:-}}
 
-while getopts "o:b:h" opt; do
+while getopts "o:b:f:h" opt; do
   case "$opt" in
     o) OUT=$OPTARG ;;
     b) BIN=$OPTARG ;;
+    f) FTETWILD=$OPTARG ;;
     h) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown option" >&2; exit 2 ;;
   esac
 done
 
 [ -x "$BIN" ] || { echo "ERROR: no GUI binary at $BIN" >&2; echo "build it: cd rust && cargo build --release -p sutura-gui" >&2; exit 4; }
+
+# The sidecar is what makes the captures look like an installed product. Without
+# it every frame carries "1 method(s) unavailable: #7 skip" and Engines reads
+# "not found" -- true of this build, false of the release. Search the places
+# `find_binary` itself looks, plus a sibling worktree.
+if [ -z "$FTETWILD" ]; then
+  for candidate in \
+    "$REPO/third_party/ftetwild/bin/ftetwild" \
+    "$(dirname "$BIN")/ftetwild" \
+    "$(dirname "$BIN")/../Resources/bin/ftetwild" \
+    /Users/krateian/sutura-wt/ftw-bin/third_party/ftetwild/bin/ftetwild \
+    "$HOME"'/.local/share/sutura/bin/ftetwild'
+  do
+    if [ -x "$candidate" ]; then FTETWILD=$candidate; break; fi
+  done
+fi
+
+# The sample corpus ships with the benchmark checkout, not the repo: the Artec
+# scans are CC BY 4.0 third-party data (see tests/real-world-samples/
+# ATTRIBUTION.md) and are not vendored here.
+SAMPLES=${SAMPLES:-/Users/krateian/sutura-bench/wt-main/tests/real-world-samples}
 
 FIX=$REPO/rust/sutura-geom/tests/fixtures
 SHOTS="$OUT"
@@ -59,30 +86,34 @@ export SUTURA_DATA_DIR="$DATA_TMP"
 export XDG_CONFIG_HOME="$HOME_TMP/.config"
 # Software rendering: a headless CI machine has no GPU surface, and the wgpu path
 # can block waiting for one. The CPU preview draws the same mesh (one renderer,
-# ), so the images are still the real UI.
+# `CpuViewer::rasterize`), so the images are still the real UI.
 export SUTURA_GUI_CPU=${SUTURA_GUI_CPU:-1}
+# A packaged install has the sidecar beside the binary; this is the same lookup
+# `find_binary` does, pointed at the build we found above.
+if [ -n "$FTETWILD" ]; then
+  export SUTURA_FTETWILD_BIN="$FTETWILD"
+fi
 
-# Screenshots are compared by eye, so a stale build is the one failure mode that
-# looks like a UI bug. Report what produced the images.
-echo "binary: $BIN"
-echo "  built: $(date -r "$BIN" '+%Y-%m-%d %H:%M')"
-echo "output: $SHOTS"
+echo "binary:   $BIN"
+echo "  built:  $(date -r "$BIN" '+%Y-%m-%d %H:%M')"
+echo "ftetwild: ${FTETWILD:-NOT FOUND (method-health band will show)}"
+echo "samples:  $SAMPLES"
+echo "output:   $SHOTS"
 echo
 
-SHOT_HEIGHT=${SHOT_HEIGHT:-720}
+FAIL=0
 
-# Capture one view. Arguments after `--` are passed to the GUI.
+# Capture one view. Arguments are passed to the GUI.
 #
-# `--screenshot` grabs three frames in and then closes, so `--exit-after` is what
+# `--screenshot` grabs a few frames in and then closes, so `--exit-after` is what
 # makes this terminate; without it the run would hang on a windowless machine.
 capture() {
   local name=$1; shift
   local out="$SHOTS/$name.png"
   local rc
-  # Each frame gets its own directory, and the `_fixed` output is removed
-  # first: a file left over from an earlier frame made the GUI stop on its
-  # "Output already exists" prompt, which is a screenshot of a dialog rather
-  # than of the view.
+  # Each frame gets its own directory: a `_fixed` file left over from an earlier
+  # frame made the GUI stop on its "Output already exists" prompt, which is a
+  # screenshot of a dialog rather than of the view.
   local work="$TMP/$name"
   mkdir -p "$work"
   local args=()
@@ -106,44 +137,44 @@ capture() {
   fi
 }
 
-FAIL=0
+# A real scanned part, not a 12-triangle toy: the documentation has to show what
+# a user's mesh looks like. `metal-nut` has the richest defect profile of the
+# Artec set (11 boundary loops, 8 non-manifold edges) and reads well at preview
+# size. Falls back to the repo fixture when the benchmark checkout is absent, so
+# the script still produces a full set on a bare clone.
+if [ -f "$SAMPLES/artec_metal-nut.stl" ]; then
+  HERO="$SAMPLES/artec_metal-nut.stl"
+else
+  HERO="$FIX/case3_broken_cup.stl"
+  echo "  (no sample corpus; hero mesh falls back to the repo fixture)"
+fi
 
-# A realistic curved part with small holes: enough healthy surface that the
-# report has a measured Fidelity and a low Risk, unlike the box fixture's
-# "shape check unavailable" worst case.
-PART="$FIX/case3_broken_cup.stl"
-# Copies, not the fixtures themselves: a repair writes `<stem>_fixed.<ext>`
-# beside the input, and the repo must stay clean.
-cp "$PART" "$TMP/curved_part.stl" 2>/dev/null
-PART="$TMP/curved_part.stl"
-# A box with one face missing: the honest warning case (holes + unit warning).
+# The small fixtures stay for the views that need a dense defect list or a
+# multi-object archive; the hero mesh is for the frames a reader looks at.
 BOX="$FIX/case5_box_missing_face.stl"
-cp "$BOX" "$TMP/box_missing_face.stl" 2>/dev/null
-BOX="$TMP/box_missing_face.stl"
-CLEAN="$FIX/case1_open_cup.stl"
-# Note: the GUI has no `-o` flag -- Python's did. It always writes
-# `<stem>_fixed.<ext>` beside the input (`fixed_path`, and that is deliberate:
-# keeping the extension is what stops a multi-object 3MF being flattened to STL).
-# So the captures run on copies in $TMP and the originals stay pristine.
 
 echo "--- main window and file list"
-# The batch is the point of the screenshot: a repaired file shows the per-file
-# decision column, the report and the analysis panel together.
-capture main-window --repair --heatmap "$PART"
-capture file-list --repair "$PART" "$BOX"
+# Before view, not After-with-heatmap: the heatmap's deviation ramp needs a
+# reference, and without one it paints the whole part one flat colour, which
+# reads as a rendering bug in a README.
+capture main-window "$HERO"
+capture file-list --repair "$HERO" "$BOX"
 
 echo "--- settings panel, scrolled to the lower half"
-capture settings-panel "$PART"
+capture settings-panel "$HERO"
 # The panel is taller than any window; the method list and the analysis table
 # only appear below the fold.
-capture settings-panel-lower --settings-scroll 780 "$PART"
+capture settings-panel-lower --settings-scroll 780 "$HERO"
 
 echo "--- methods and per-file method selection"
-capture methods-panel "$PART" --settings-scroll 960
-capture file-methods "$PART" --settings-scroll 780
+capture methods-panel "$HERO" --settings-scroll 960
+# The editor itself has to be open with a hand-picked list, or this frame is a
+# duplicate of `settings-panel-lower` (it was: same md5). `--file-methods` is the
+# hook that turns "Use the panel selection" off and ticks a few methods.
+capture file-methods --file-methods 1,3,10 --settings-scroll 780 "$HERO"
 
 echo "--- analysis panel"
-capture analysis-panel "$PART" --settings-scroll 1030
+capture analysis-panel "$HERO" --settings-scroll 1030
 
 echo "--- 3MF object list"
 THREE_MF="$TMP/three_objects.3mf"
@@ -155,26 +186,43 @@ else
 fi
 
 echo "--- heatmap (3D) and defect colours"
-capture heatmap "$PART" --heatmap
-cp "$FIX/case3_broken_cup.stl" "$TMP/defect_kinds.stl" 2>/dev/null
-capture defect-colors "$TMP/defect_kinds.stl" --defect-colors
+# Same real mesh, so the two colourings can be compared in the docs.
+capture heatmap "$HERO" --heatmap
+capture defect-colors "$FIX/case3_broken_cup.stl" --defect-colors
 
 echo "--- static before/after pair"
-capture before-after --repair --open-compare --wait-frames 30 "$PART"
+capture before-after --repair --open-compare --wait-frames 30 "$HERO"
 
 echo "--- repeat picker"
-capture repeat-picker "$PART" --open-repeat-picker
+capture repeat-picker "$HERO" --open-repeat-picker
 
 echo "--- update dialog"
-capture update-dialog "$PART" --updates
+capture update-dialog "$HERO" --updates
 
 echo "--- engines and changelog"
-capture engines-panel "$PART" --settings-scroll 930
-capture changelog "$PART" --open-changelog
+capture engines-panel "$HERO" --settings-scroll 930
+capture changelog "$HERO" --open-changelog
+
+# A duplicated frame looks like a pass and shows nothing: `file-methods` was a
+# byte-for-byte copy of `settings-panel-lower` because the editor never opened.
+echo
+echo "--- duplicate check"
+DUPES=$(cd "$SHOTS" && md5 -q *.png 2>/dev/null | sort | uniq -d)
+if [ -n "$DUPES" ]; then
+  echo "  DUPLICATE frames (identical bytes):" >&2
+  for h in $DUPES; do
+    echo -n "    " >&2
+    md5 "$SHOTS"/*.png 2>/dev/null | awk -v h="$h" '$4==h {printf "%s ", $2}' >&2
+    echo >&2
+  done
+  FAIL=$((FAIL + 1))
+else
+  echo "  all frames differ"
+fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then
-  echo "$FAIL capture(s) failed" >&2
+  echo "$FAIL problem(s)" >&2
   exit 1
 fi
-echo "done: $(find "$SHOTS" -name '*.png' -newermt '-10 minutes' | wc -l | tr -d ' ') PNG(s) in $SHOTS"
+echo "done: $(ls "$SHOTS"/*.png 2>/dev/null | wc -l | tr -d ' ') PNG(s) in $SHOTS"

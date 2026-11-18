@@ -163,13 +163,25 @@ impl CpuViewer {
                 g = rgb[1] as f32;
                 b = rgb[2] as f32;
             } else if let Some(idx) = ramp {
-                // Verbatim, per `heatmap.draw_frame`: the ramp colour is not
-                // shaded, only the neutral body is. Shading it too made the
-                // already-dark navy end darker still and hurt legibility.
+                // Shaded by the same lambert term as the neutral body. The ramp
+                // alone maps every face of a scanned part to nearly the same
+                // deviation, so an unshaded ramp is one flat silhouette and the
+                // shape cannot be read at all -- that is what the After +
+                // Heatmap view looked like on a Steam Deck. Multiplying by
+                // `shade` keeps the ramp's own values (the legend still maps to
+                // the same colours) and only modulates their brightness, the
+                // standard way to keep a colour map legible.
+                // A gentler lambert term than the body's: the ramp's low end is
+                // navy `[10, 20, 80]`, and multiplying it by the body's 0.25
+                // floor gives `[3, 5, 20]` -- black, with the shape still
+                // unreadable and the colour meaningless. Keeping 55% ambient
+                // leaves the legend's colours recognisable while the remaining
+                // 45% still varies with the normal, so the form reads.
+                let ramp_shade = 0.75 + 0.25 * shade;
                 let c = dev_lut[idx as usize % dev_lut.len()];
-                r = c[0] as f32;
-                g = c[1] as f32;
-                b = c[2] as f32;
+                r = c[0] as f32 * ramp_shade;
+                g = c[1] as f32 * ramp_shade;
+                b = c[2] as f32 * ramp_shade;
             } else if heatmap && defect > 0.0 {
                 let k = defect.clamp(0.0, 1.0);
                 let hot = (242.0 * (0.45 + 0.55 * shade), 71.0 * (0.45 + 0.55 * shade), 31.0 * (0.45 + 0.55 * shade));

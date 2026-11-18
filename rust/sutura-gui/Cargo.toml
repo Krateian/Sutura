@@ -7,6 +7,12 @@ description = "Sutura desktop GUI (egui + eframe + wgpu)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Krateian/Sutura"
 
+[dev-dependencies]
+# Drives a real egui `Context` without opening a window: click, scroll, hover.
+# The whole point is that these tests never create a native window, so running
+# them cannot pop a GUI up on someone's screen.
+egui_kittest = { version = "0.37", features = ["wgpu"] }
+
 [dependencies]
 sutura-core = { path = "../sutura-core" }
 sutura-geom = { path = "../sutura-geom", default-features = false, features = ["decimate"] }
