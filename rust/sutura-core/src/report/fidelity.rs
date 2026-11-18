@@ -138,6 +138,7 @@ fn buried_face_mask(
     ti: &[[i32; 3]],
     defect: &[bool],
     delta: f64,
+    bvh: &MeshBvh,
 ) -> (Vec<bool>, Value) {
     let mut info = json!({
         "available": false, "faces": 0, "area_mm2": 0.0,
@@ -147,7 +148,14 @@ fn buried_face_mask(
         .iter()
         .map(|x| [x[0] as u32, x[1] as u32, x[2] as u32])
         .collect();
-    let res = shell::buried_face_mask(vi, &rt, delta);
+    let _t_buried = std::time::Instant::now();
+    let res = shell::buried_face_mask_with_bvh(vi, &rt, delta, bvh);
+    if std::env::var_os("SUTURA_FIDELITY_TIMES").is_some() {
+        eprintln!(
+            "[fidelity-time] buried_mask {:.3} ms",
+            _t_buried.elapsed().as_secs_f64() * 1000.0
+        );
+    }
     let mut mask = res.mask;
     for (m, d) in mask.iter_mut().zip(defect) {
         if *d {
@@ -617,8 +625,19 @@ pub fn compute_fidelity_value(
     if !mask_available {
         note.push("healthy mask skipped (large mesh)".into());
     }
+    let rt_i: Vec<[usize; 3]> = ti
+        .iter()
+        .map(|x| [x[0] as usize, x[1] as usize, x[2] as usize])
+        .collect();
+    let bvh = MeshBvh::from_arrays(vi, &rt_i);
     let (buried_mask, buried_info) = if mask_available {
-        buried_face_mask(vi, ti, &mask, num(cfg, "interior_wall_delta", 0.1))
+        buried_face_mask(
+            vi,
+            ti,
+            &mask,
+            num(cfg, "interior_wall_delta", 0.1),
+            &bvh,
+        )
     } else {
         (
             vec![false; ti.len()],
@@ -651,11 +670,6 @@ pub fn compute_fidelity_value(
         empty["repair_fidelity_note"] = Value::from("no samples");
         return empty;
     }
-    let rt_i: Vec<[usize; 3]> = ti
-        .iter()
-        .map(|x| [x[0] as usize, x[1] as usize, x[2] as usize])
-        .collect();
-    let bvh = MeshBvh::from_arrays(vi, &rt_i);
     let rows = bvh.closest_points_par(&pts);
     let mut d = Vec::with_capacity(pts.len());
     let mut nf = Vec::with_capacity(pts.len());

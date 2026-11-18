@@ -255,6 +255,10 @@ pub struct RepairOptions {
     /// (Python `ftetwild_params()`), including when the SI trigger forces it.
     #[serde(default)]
     pub ftetwild_optimize: bool,
+    /// `--classifier-engine classic|experimental`; the policy default is
+    /// experimental, matching Python.
+    #[serde(default)]
+    pub classifier_engine: Option<String>,
     /// Internal guard: depth of a nested auto-ladder attempt.  Not part of the
     /// Python-facing option JSON.
     #[serde(skip)]
@@ -308,6 +312,7 @@ impl Default for RepairOptions {
             indirect_autorefine: false,
             auto_reorder: false,
             ftetwild_optimize: false,
+            classifier_engine: None,
             ladder_depth: 0,
         }
     }
@@ -904,7 +909,12 @@ fn resolve_triage(
         .iter()
         .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
         .collect();
-    let cls = classify_mesh_with(verts, &tri_usize, "experimental", opts.extra_features);
+    let engine = opts
+        .classifier_engine
+        .as_deref()
+        .unwrap_or("experimental")
+        .to_string();
+    let cls = classify_mesh_with(verts, &tri_usize, &engine, opts.extra_features);
     let mesh_type = cls
         .get("type")
         .and_then(Value::as_str)
@@ -925,7 +935,7 @@ fn resolve_triage(
         return Triage {
             mesh_type,
             confidence,
-            engine: "experimental".to_string(),
+            engine,
             min_component,
             max_hole,
             tuning_applied: false,
@@ -937,7 +947,7 @@ fn resolve_triage(
         return Triage {
             mesh_type,
             confidence,
-            engine: "experimental".to_string(),
+            engine,
             min_component,
             max_hole,
             tuning_applied: false,
@@ -954,7 +964,7 @@ fn resolve_triage(
     Triage {
         mesh_type,
         confidence,
-        engine: "experimental".to_string(),
+        engine,
         min_component,
         max_hole,
         tuning_applied: applied,
@@ -2103,7 +2113,7 @@ fn stage_fp(v: &[[f64; 3]], t: &[[i64; 3]]) -> u64 {
     h
 }
 
-fn stage_fp_log(label: &str, v: &[[f64; 3]], t: &[[i64; 3]]) {
+pub fn stage_fp_log(label: &str, v: &[[f64; 3]], t: &[[i64; 3]]) {
     if std::env::var_os("SUTURA_STAGE_FP").is_some() {
         eprintln!(
             "[stage-fp] {} {} {} {}",
@@ -4400,7 +4410,49 @@ fn repair_impl(
             .iter()
             .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
             .collect();
-        let (_m, si, skipped) = sutura_geom::self_intersections_core(&cur_v, &ut);
+        // SI excise already measured the post-excision count.  Reuse it only
+        // when nothing after SI excise could have changed the mesh: no deep
+        // tier, no post-SI tamponade/closing/proxy/mirror/repeat/wall adoption
+        // and no pinch split.  Otherwise recompute exactly as before.
+        let post_si_adopted = |key: &str| {
+            stats
+                .get(key)
+                .map(|r| adopted(r))
+                .unwrap_or(false)
+        };
+        let deep_changed = stats
+            .get("deep_repair")
+            .and_then(|d| d.get("tiers_run"))
+            .and_then(Value::as_array)
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        let pinch_changed = stats
+            .get("pinched_vertices_split")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let reuse_si = stats
+            .get("si_excise")
+            .filter(|r| {
+                r.get("si_after").and_then(Value::as_i64).is_some()
+                    && !deep_changed
+                    && !pinch_changed
+                    && !post_si_adopted("tamponade")
+                    && !post_si_adopted("closing")
+                    && !post_si_adopted("proxy_template")
+                    && !post_si_adopted("mirror_complete")
+                    && !post_si_adopted("repeat")
+                    && !post_si_adopted("wall_thicken")
+            })
+            .and_then(|r| r.get("si_after"))
+            .and_then(Value::as_i64);
+        let (si, skipped) = match reuse_si {
+            Some(si) => (si, false),
+            None => {
+                let (_m, si, skipped) =
+                    sutura_geom::self_intersections_core(&cur_v, &ut);
+                (si, skipped)
+            }
+        };
         stage1.insert(
             "self_intersections_remaining".into(),
             if skipped || si < 0 {
@@ -4622,6 +4674,7 @@ fn repair_impl(
             }
         }
     }
+    stage_fp_log("after_flap_debris", &cur_v, &cur_t);
 
     crate::engines::run_and_replace(
         &selected_engines,
@@ -4632,6 +4685,7 @@ fn repair_impl(
         0.01,
         &mut engine_entries,
     );
+    stage_fp_log("after_final_fallback", &cur_v, &cur_t);
     let final_holes = boundary_loop_stats(&cur_t).0;
     let final_nm = common::topology_summary(&cur_v, &cur_t).non_two_manifold_edges;
     let reachable = common::is_two_manifold(cur_v.len(), &cur_t) && final_holes == 0;
@@ -4789,6 +4843,7 @@ fn repair_impl(
             }
         }
     }
+    stage_fp_log("after_auto_ladder", &cur_v, &cur_t);
 
     if allow_si_escalation && si_escalation_allowed(opts) {
         if let Some((adopted_v, adopted_t, adopted_report)) = apply_si_escalation(
@@ -4802,6 +4857,7 @@ fn repair_impl(
             stage1_snapshot.as_ref(),
             cancel,
         ) {
+            stage_fp_log("after_si_final", &adopted_v, &adopted_t);
             return RepairOutcome::Ok {
                 verts: adopted_v,
                 tris: adopted_t,
@@ -4809,6 +4865,7 @@ fn repair_impl(
             };
         }
     }
+    stage_fp_log("after_si_final", &cur_v, &cur_t);
 
     RepairOutcome::Ok {
         verts: cur_v,

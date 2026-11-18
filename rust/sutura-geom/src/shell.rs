@@ -149,6 +149,26 @@ pub fn buried_face_mask(
     tris: &[[u32; 3]],
     delta: f64,
 ) -> BuriedFaceMask {
+    if tris.is_empty() || verts.is_empty() {
+        return BuriedFaceMask { mask: vec![false; tris.len()], ..Default::default() };
+    }
+    let rt: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
+    let bvh = MeshBvh::from_arrays(verts, &rt);
+    buried_face_mask_with_bvh(verts, tris, delta, &bvh)
+}
+
+/// Same classification as [`buried_face_mask`], reusing a caller-owned BVH
+/// built from the same verts/tris.  The BVH is immutable, so values are
+/// bit-identical; this only avoids rebuilding it in the fidelity report.
+pub fn buried_face_mask_with_bvh(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    delta: f64,
+    bvh: &MeshBvh,
+) -> BuriedFaceMask {
     let mut out = BuriedFaceMask {
         mask: vec![false; tris.len()],
         ..Default::default()
@@ -156,12 +176,6 @@ pub fn buried_face_mask(
     if tris.is_empty() || verts.is_empty() {
         return out;
     }
-
-    let rt: Vec<[usize; 3]> = tris
-        .iter()
-        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
-        .collect();
-    let bvh = MeshBvh::from_arrays(verts, &rt);
 
     let mut lo = verts[0];
     let mut hi = verts[0];
@@ -176,9 +190,11 @@ pub fn buried_face_mask(
     let d = delta.max(0.0);
 
     // 0 = buried, 1 = debris, 2 = degenerate, 3 = other (outer/cavity/ambiguous).
+    // Standard WINDING_FAR_TOL only; the empirical 5e-2/2e-2 cut-offs are
+    // deliberately not reachable.
     let results: Vec<(u8, f64)> = (0..tris.len())
         .into_par_iter()
-        .map(|i| classify_buried_face(verts, tris, &bvh, eps, d, i))
+        .map(|i| classify_buried_face(verts, tris, &bvh, eps, d, i, 1e-2))
         .collect();
 
     for (i, (class, area)) in results.iter().enumerate() {
@@ -211,6 +227,7 @@ fn classify_buried_face(
     eps: f64,
     d: f64,
     i: usize,
+    tol: f64,
 ) -> (u8, f64) {
     let t = tris[i];
     let v0 = verts[t[0] as usize];
@@ -228,21 +245,19 @@ fn classify_buried_face(
 
     let front = add3(c, scale3(unorm, eps));
     let back = sub3(c, scale3(unorm, eps));
-    let w_front = bvh.winding_at(front);
+    let (w_front, w_back) = bvh.winding_at_pair_tol(front, back, tol);
     let integral = |w: f64| (w - w.round()).abs() <= d;
 
     // Exact short-circuits.  If the front side is not inside, the face cannot
     // be buried (w_min <= w_front); debris needs both sides below `d`, so a
-    // clear non-debris front side needs no back query.
+    // clear non-debris front side needs no back decision beyond the pair.
     if w_front < 1.0 - d {
         if w_front >= d {
             return (3u8, 0.0);
         }
-        let w_back = bvh.winding_at(back);
         let w_max = w_front.max(w_back);
         return if w_max < d { (1u8, area) } else { (3u8, 0.0) };
     }
-    let w_back = bvh.winding_at(back);
     let w_min = w_front.min(w_back);
     let w_max = w_front.max(w_back);
     if w_min >= 1.0 - d && integral(w_front) && integral(w_back) {
@@ -252,11 +267,14 @@ fn classify_buried_face(
         // other is queried; the classification is unchanged.
         for v in [v0, v1, v2] {
             let p = add3(scale3(v, 0.9), scale3(c, 0.1));
-            let w1 = bvh.winding_at(add3(p, scale3(unorm, eps)));
+            let (w1, w2) = bvh.winding_at_pair_tol(
+                add3(p, scale3(unorm, eps)),
+                sub3(p, scale3(unorm, eps)),
+                tol,
+            );
             if w1 < 1.0 - d || !integral(w1) {
                 return (3u8, 0.0);
             }
-            let w2 = bvh.winding_at(sub3(p, scale3(unorm, eps)));
             if w2 < 1.0 - d || !integral(w2) {
                 return (3u8, 0.0);
             }
@@ -327,7 +345,7 @@ impl BuriedMaskContext {
                 let i = fi as usize;
                 if i < self.tris.len() {
                     let (class, area) = classify_buried_face(
-                        &self.verts, &self.tris, &self.bvh, self.eps, self.d, i);
+                        &self.verts, &self.tris, &self.bvh, self.eps, self.d, i, 1e-2);
                     Some((i, class, area))
                 } else {
                     None
