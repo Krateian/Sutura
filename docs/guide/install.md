@@ -128,16 +128,34 @@ The macOS app is ad-hoc signed, not notarized, so the first launch shows the
 xattr -dr com.apple.quarantine ~/Applications/Sutura.app
 ```
 
-### Speed and size
+### Size
+
+Measured against the packages from build run
+[44181354813](https://github.com/Krateian/Sutura/actions/runs/44181354813)
+(`6ddf165`), the last green four-target build. Download size is the artifact
+itself; installed size is `du -sk` of the unpacked package (1 MiB = 1024 KiB).
+The Python column is v0.9.9's published release for comparison.
 
 | | Linux x86_64 | Linux aarch64 | macOS arm64 | macOS Intel |
 |---|---|---|---|---|
-| Download size | — | — | — | — |
-| Installed size | — | — | — | — |
-| Repair time, typical mesh | — | — | — | — |
+| **Rust** download | 21.8 MiB | 18.9 MiB | 18.4 MiB | 22.3 MiB |
+| **Rust** installed | 63.5 MiB | 49.8 MiB | 43.2 MiB | 51.0 MiB |
+| **Python 0.9.9** download | 195.3 MiB (AppImage) | not published | 203.0 MiB | 203.0 MiB (same universal package) |
+| **Python 0.9.9** installed | — | — | 459.5 MiB | 459.5 MiB (same universal package) |
 
-These figures are deliberately blank: they will be filled from measurements
-against the release package, and are not estimated here.
+Two things this table is honest about:
+
+- **The Python release never had a Linux aarch64 package**, so there is nothing
+  to measure there. The Rust build does ship one, so that platform gained a
+  package rather than losing one.
+- **Python's installed size is measured on macOS only.** The Linux AppImage is a
+  squashfs that only runs on Linux; extracting it on a case-insensitive
+  filesystem fails partway through the `terminfo` tree, so a `du` there would be
+  a number I cannot defend. It is left as `—` rather than estimated.
+
+Repair time for a typical mesh is deliberately blank. It is the number that
+matters most and the one that is not yet settled: it depends on the fidelity
+decision still being made, so filling it now would mean replacing it later.
 
 ## Updating
 

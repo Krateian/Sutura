@@ -128,16 +128,34 @@ açın, veya:
 xattr -dr com.apple.quarantine ~/Applications/Sutura.app
 ```
 
-### Hız ve boyut
+### Boyut
+
+Son dört hedefli yeşil derleme olan
+[44181354813](https://github.com/Krateian/Sutura/actions/runs/44181354813)
+(`6ddf165`) koşusunun paketlerine karşı ölçüldü. İndirme boyutu artifact'ın
+kendisi; kurulu boyut açılmış paketin `du -sk` değeri (1 MiB = 1024 KiB).
+Python sütunu karşılaştırma için v0.9.9'un yayımlanmış sürümüdür.
 
 | | Linux x86_64 | Linux aarch64 | macOS arm64 | macOS Intel |
 |---|---|---|---|---|
-| İndirme boyutu | — | — | — | — |
-| Kurulu boyut | — | — | — | — |
-| Tipik mesh onarım süresi | — | — | — | — |
+| **Rust** indirme | 21.8 MiB | 18.9 MiB | 18.4 MiB | 22.3 MiB |
+| **Rust** kurulu | 63.5 MiB | 49.8 MiB | 43.2 MiB | 51.0 MiB |
+| **Python 0.9.9** indirme | 195.3 MiB (AppImage) | yayımlanmadı | 203.0 MiB | 203.0 MiB (aynı universal paket) |
+| **Python 0.9.9** kurulu | — | — | 459.5 MiB | 459.5 MiB (aynı universal paket) |
 
-Bu değerler bilerek boştur: sürüm paketine karşı yapılan ölçümlerle
-doldurulacaktır ve burada tahmin edilmez.
+Bu tablonun dürüstçe söylediği iki şey:
+
+- **Python sürümünde hiçbir zaman Linux aarch64 paketi yoktu**, yani orada
+  ölçülecek bir şey yok. Rust derlemesi bu platforma paket veriyor, dolayısıyla
+  o platform bir paket kazandı, kaybetmedi.
+- **Python'un kurulu boyutu yalnız macOS'ta ölçüldü.** Linux AppImage'i yalnız
+  Linux'ta çalışan bir squashfs; büyük/küçük harf duyarsız bir dosya sisteminde
+  açmak `terminfo` ağacının ortasında başarısız oluyor, yani oradaki bir `du`
+  savunamayacağım bir sayı olurdu. Tahmin etmek yerine `—` bırakıldı.
+
+Tipik mesh onarım süresi bilerek boştur. En çok önem taşıyan sayı odur ve henüz
+kesinleşmemiştir: hâlâ verilen sadakat kararına bağlı, dolayısıyla şimdi
+doldurmak sonradan değiştirmek demek olurdu.
 
 ## Güncelleme
 
