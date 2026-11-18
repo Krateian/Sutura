@@ -56,6 +56,8 @@ app:
   crash_title: "Sutura crashed"
   crash_body: "Something went wrong and a crash log was written. Sending a diagnostics archive with your report makes it much easier to fix."
   close: "Close"
+  defects: "Defects (%{count})"
+  defects_more: "… and %{rest} more"
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"

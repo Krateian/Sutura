@@ -81,6 +81,8 @@ struct Entry {
     analysis: Option<Result<sutura_core::analysis::Analysis, String>>,
     /// Cached 3MF object list, same on-demand policy. Empty for a non-3MF file.
     objects: Option<Result<Vec<Value>, String>>,
+    /// Cached defect list, same on-demand policy as `analysis`.
+    defects: Option<Result<sutura_core::report::defects::DefectReport, String>>,
 }
 
 enum RepairEvent {
@@ -425,6 +427,7 @@ impl SuturaApp {
                     view: ViewMode::Before,
                     analysis: None,
                     objects: None,
+                    defects: None,
                 }
             }
             Err(e) => {
@@ -443,6 +446,7 @@ impl SuturaApp {
                     view: ViewMode::Before,
                     analysis: None,
                     objects: None,
+                    defects: None,
                 }
             }
         };
@@ -1685,6 +1689,9 @@ impl eframe::App for SuturaApp {
                             if slot.analysis.is_none() {
                                 slot.analysis = Some(analyze_selected(&slot.path));
                             }
+                            if slot.defects.is_none() {
+                                slot.defects = Some(defect_rows(&slot.path));
+                            }
                             if slot.objects.is_none()
                                 && slot
                                     .path
@@ -1826,6 +1833,73 @@ impl eframe::App for SuturaApp {
                                     None => {}
                                 }
                             });
+                            // Individual defects, as Python's plain-text panel
+                            // lists them (`gui.py:6755`): one line per hole and
+                            // per non-manifold region, with its centroid so the
+                            // user can locate it.
+                            match &self.files[idx].defects {
+                                Some(Ok(report))
+                                    if !report.holes.is_empty()
+                                        || !report.non_manifold.is_empty() =>
+                                {
+                                    let total = report.holes.len() + report.non_manifold.len();
+                                    egui::CollapsingHeader::new(
+                                        rust_i18n::t!("app.defects", count = total as i64)
+                                            .to_string(),
+                                    )
+                                    .id_salt("defects_header")
+                                    .default_open(true)
+                                    .show(ui, |ui| {
+                                        // Bound the list: a shattered mesh can
+                                        // have thousands, and the panel is a
+                                        // summary, not a table to scroll.
+                                        const SHOWN: usize = 20;
+                                        for hole in report.holes.iter().take(SHOWN) {
+                                            let [x, y, z] = hole.centroid;
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "hole  ({x:.1}, {y:.1}, {z:.1})  d={:.2}",
+                                                    hole.diameter
+                                                ))
+                                                .small()
+                                                .monospace(),
+                                            );
+                                        }
+                                        for nm in report.non_manifold.iter().take(SHOWN) {
+                                            let [x, y, z] = nm.centroid;
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "non-manifold  ({x:.1}, {y:.1}, {z:.1})  faces={}",
+                                                    nm.faces
+                                                ))
+                                                .small()
+                                                .monospace(),
+                                            );
+                                        }
+                                        if total > SHOWN {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    rust_i18n::t!(
+                                                        "app.defects_more",
+                                                        rest = (total - SHOWN) as i64
+                                                    )
+                                                    .to_string(),
+                                                )
+                                                .small()
+                                                .weak(),
+                                            );
+                                        }
+                                    });
+                                }
+                                Some(Err(e)) => {
+                                    ui.label(
+                                        egui::RichText::new(e)
+                                            .small()
+                                            .color(egui::Color32::LIGHT_RED),
+                                    );
+                                }
+                                _ => {}
+                            }
                             if let Some(Ok(objects)) = &self.files[idx].objects {
                                 if !objects.is_empty() {
                                     egui::CollapsingHeader::new(
@@ -2532,6 +2606,22 @@ pub fn analyze_selected(path: &std::path::Path) -> Result<sutura_core::analysis:
     sutura_core::analysis::analyze_mesh(&mesh, "experimental", true)
 }
 
+/// The selected mesh's individual defects: each hole and each non-manifold
+/// region, with its centroid so a user can find it.
+///
+/// Python renders this as a plain text panel (`gui.py:6755`); the values come
+/// from `report::defects::detect_defects`, the same call `analysis::analyze_mesh`
+/// already makes internally. Indices are not requested -- they are large vectors
+/// and the panel shows a summary line per defect, not a face list.
+pub fn defect_rows(path: &std::path::Path) -> Result<sutura_core::report::defects::DefectReport, String> {
+    let mesh = sutura_core::load_mesh(path).map_err(|e| e.to_string())?;
+    Ok(sutura_core::report::defects::detect_defects(
+        &mesh.verts,
+        &mesh.tris,
+        false,
+    ))
+}
+
 /// The 3MF object list -- likewise shared by `headless_objects` and the panel.
 ///
 /// Returns one row per object block (`parse_3mf_mesh_blocks`), so a multi-object
@@ -3190,6 +3280,7 @@ mod tests {
             view: ViewMode::Before,
             analysis: None,
             objects: None,
+            defects: None,
         };
         let mut app = SuturaApp::for_test();
         app.files = vec![entry("/tmp/a.stl"), entry("/tmp/b.stl"), entry("/tmp/c.stl")];
@@ -3558,6 +3649,40 @@ mod tests {
         let preview = crate::viewer::Preview::for_test();
         assert!(!preview.drop_active, "no drag in progress, so no highlight");
         assert!(preview.mesh.is_none());
+    }
+
+    /// The defect list must match what the report and the analysis agree on.
+    ///
+    /// `analysis` already fills `boundary_loops` from the same
+    /// `detect_defects` call, so a mismatch here means the panel is describing
+    /// a different mesh than the numbers above it.
+    #[test]
+    fn defect_panel_agrees_with_the_analysis_counts() {
+        // A box with one face removed: exactly one boundary loop, no
+        // non-manifold regions.
+        let fixture = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../sutura-geom/tests/fixtures/case5_box_missing_face.stl"
+        ));
+        let defects = defect_rows(fixture).expect("fixture must be readable");
+        assert_eq!(defects.holes.len(), 1, "one missing face, one hole");
+        assert!(defects.non_manifold.is_empty(), "a box has no bad edges");
+
+        let analysis = analyze_selected(fixture).expect("fixture must analyse");
+        assert_eq!(
+            analysis.boundary_loops,
+            defects.holes.len(),
+            "the count in the table and the rows in the panel must agree"
+        );
+
+        // The rows carry the fields the panel prints.
+        let hole = &defects.holes[0];
+        assert!(hole.diameter > 0.0, "a hole needs a diameter");
+        assert!(hole.centroid.iter().all(|c| c.is_finite()));
+
+        // A path that does not exist must be an error for the panel to render,
+        // not a panic.
+        assert!(defect_rows(std::path::Path::new("/nonexistent/x.stl")).is_err());
     }
 
     /// The settings panel must be inside a scroll area.
