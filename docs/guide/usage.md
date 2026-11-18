@@ -194,7 +194,7 @@ reusing metrics the repair already computes:
 
 When a budget is exceeded the output is **never saved silently**: on an
 interactive terminal you are prompted (`Save anyway? [y/N]`), and
-non-interactive runs (the GUI subprocess, scripts, file-manager integration)
+non-interactive runs (scripts, file-manager integration)
 decline the save with exit 1. The report then carries the explicit top-level
 `"status": "budget_declined"` marker (plus a `budget` block with the actual
 numbers vs. the budgets, and the issue `budget_exceeded`) — a distinct,
@@ -533,138 +533,104 @@ note. Nothing is shown when the input had no painted/seam/support attributes.
 GUI:
 
 ```sh
-~/.local/share/sutura/gui.py
+sutura-gui            # or: open the Sutura app
 ```
 
-The GUI supports batch repair: add any number of files, press **Repair**,
-and each one is processed in turn with its result listed per file. When the
-batch finishes, a summary strip appears above the log (`X watertight, Y with
-warnings, Z failed`) with a clickable **show issues** link that lists the
-warning/error types and how many files each affected. Selecting a file shows
-its input defects (holes with their diameter and non-manifold regions) in a
-panel below the log, separate from the batch summary strip. Files can be added
-with **Add files…** (native multi-select, rubber-band included), **Add
-folder…** (every `.stl`/`.3mf` in the folder, one level deep), or by dragging
-files or folders onto the window. **Stop** terminates the running repair and
-marks the remaining files as cancelled. Drag & drop works on native Wayland
-sessions (the GUI is a Qt application, not XWayland). The GUI ships its own
-dark Fusion theme (teal accent), so it looks the same on every platform and
-Qt version regardless of the system desktop theme. The batch-wide repair
-options — the fTetWild fallback tier, the last-resort **Solid engine** setting
-(*fTetWild*, the default, or *CDT (exact)*, experimental; also `--solid-engine`,
-saved in the Sutura settings file and inherited by the CLI and file-manager
-integrations) and the opt-in
-experimental passes — sit in a separate **Options** window (button next to **Mode**, or Ctrl+, /
-Cmd+,) that can stay open while repairing; the button label shows how many
-options differ from their defaults, e.g. *Options (2)*. Its tabs: *General*
-(anonymous usage history), *Repair* (fTetWild fallback plus the Triage
-intensity preset/profile selector and the profile editor), *Methods*
-(automatic deep-tier order and a manual per-file sequence), *Experimental*
-(opt-in passes), *Updates* (manual check, automatic updates, optional check
-on every start), *Changelog* (release notes from GitHub, with an offline
-fallback) and *Engines* (fTetWild install/remove and the configured
-external-engine list).
+The GUI is a native build (Rust + egui) with the repair running in the same
+process — there is no Python interpreter and no subprocess. Everything below
+reflects that: where the old Qt window had dialogs stacked over a main window,
+this one is a single window with four areas.
+
+**Layout.** The toolbar across the top carries **Add files**, **Repair**,
+**Repair all**, then the Utilities group on the right: **Diagnostics…**,
+**Changelog**, **About**, **Before / After**, **Pick repeat points**,
+**Updates**, and the language picker. Below it a method-health line appears
+**only when a method is unavailable** (for example an external engine that is
+not installed), naming each one and showing the reason on hover — the same
+availability probe `--self-check` runs. The left column is the file list, the
+centre is the 3D preview with **Before / After**, **Heatmap** and **Defect
+colours** switches, and the right column is the settings panel.
+
+**Files.** Add files with **Add files…** (native multi-select), by dropping
+them on the window, or add a folder and its `.stl`/`.obj`/`.ply`/`.3mf` files
+at one level. Each row shows the file name, its repair decision in the verdict's
+colour (truncated, with the full verdict and status on hover) and a **x** to
+remove it; **Clear list** empties the list. Both removal controls are disabled
+while a repair runs, because the worker holds the row's index.
+
+**Settings panel.** Everything that affects a repair lives here, and it is
+one scrolling column rather than a tabbed Options dialog:
+intensity, deep-repair mode, the **Mode** ladder (low/medium/auto/aggressive/
+extreme with a live one-line description), the **Profile** preset, the tier
+switches (Tamponade, Flap, Coaptation, Splint, Dressing with its four knobs),
+the advanced graft and fTetWild-fallback switches, SI mode, solid engine,
+per-run limits, the global method list, **Methods for this file**, and the
+Engines section showing whether fTetWild was found. Every control here is
+saved to `gui.json` beside the CLI's `config.json` and restored on the next
+launch; an explicit `--intensity` or `--lang` still wins. `Ctrl+,` (Cmd+, on
+macOS) shows or hides the panel; the shortcut does not fire while a text field
+has focus, so typing a comma is safe.
+
+**Per-file methods.** The global method list is the default. Ticking **Use the
+panel selection** off for one file gives it its own list, and that is what
+`--methods` receives for that file; the rest keep following the panel. The list
+is a set, not a sequence — the core only asks whether a method is present — so
+there is no reordering control to promise an order nothing honours.
 
 #### Pre-repair analysis
 
 ![Pre-repair analysis](../../assets/analyze-panel.png)
 
-Before repairing, **Analyze** runs the same read-only checks as the CLI's
-`validate` and `--dry-run` on every file, without writing anything: it
-reports the detected type and repair mode, the tuning status, the input's
-holes / self-intersections / non-manifold / debris counts, a watertight
-pre-verdict, and an **estimated confidence**
-(`Estimated confidence: X/100 (Label) — actual result may differ after
-repair`, because the post-repair signals are not known yet). Below that it
-lists a few **mode suggestions** (e.g. an aggressive/extreme step for
-scan-derived holes, a gentle "the current mode may be enough, but a step
-up can be tried if unsatisfied" tip whenever the input has at least one
-hole, a low-confidence step-up tip only while the current mode is still
-gentle, or a caveat when extreme could delete small parts).
-The suggestions are **informational only and never change the mode
-automatically — the decision stays with the user.** A non-blocking unit
-warning (model may be authored in inches/cm) is also shown when the heuristic
-fires.
+Selecting a file fills the **Analysis** section of the right column, without
+repairing anything: detected type and confidence, faces, vertices, components,
+boundary loops, non-manifold edges, self-intersections and open area. Below it,
+**Defects (n)** lists each hole and each non-manifold region with its centroid
+so you can locate it, and for a 3MF **Objects (n)** lists every model part with
+its face and vertex counts. Both lists are collapsed sections with their own
+scroll, so a shattered mesh cannot push the rest of the panel off screen.
 
-#### Defect detail panel
+#### Defect heatmap
 
-![Defect detail panel](../../assets/defect-panel.png)
+![Defect heatmap](../../assets/screenshot.png)
 
-When a file is selected, the panel below the log lists the defects found in
-its input mesh: each hole's centroid and diameter (in mm) and each
-non-manifold region. This complements the batch summary strip above the log —
-the strip is a per-batch count, this panel is per-file detail. After a repair,
-the panel header also shows the result's confidence as a
-`Confidence: X/100 — High/Medium/Low` segment. If the model may not be in
-millimetres, a non-blocking unit warning appears in the log and at the top of
-this panel (see the Unit warning section above).
+The **Heatmap** switch colours the preview: faces that touch a boundary or a
+non-manifold edge are painted hot against the neutral surface, and the preview
+reports how many faces and what fraction of the mesh they are. It is a live 3D
+view — drag to rotate, wheel to zoom — not a thumbnail.
 
-**Defect heatmap.** Below the defect list, **Show heatmap** renders the
-selected mesh with its defect regions (hole rims and non-manifold areas)
-highlighted red against the grey mesh, shown as a small thumbnail. Clicking
-the thumbnail opens a larger zoom dialog. Rendering is on-demand (never
-automatic, so a large batch doesn't stall) and cached per file. For a
-multi-object 3MF it renders the first object, matching the defect panel's
-existing first-object behaviour. The renderer is a CPU rasterizer (works
-headless, in the AppImage, and on macOS CI) that runs in a subprocess so the
-GUI stays responsive and crash-free; if a mesh can't be rendered it falls
-back silently to the text-only panel.
+**Defect colours** is the other colouring mode: each face is painted by its
+defect *kind*, using the same eight-colour palette as the Python viewer
+(non-manifold red, self-intersection magenta, duplicate cyan, noise grey,
+interior indigo, thin wall pink, degenerate yellow, flipped orange). A face with
+several kinds keeps the most severe. The two modes are mutually exclusive and
+the diagnosis is computed on the first switch, not at load.
 
-**Before/after comparison.** After a file is repaired, **Show before/after**
-renders the original and repaired meshes with the *same* camera framing and
-opens a dialog with the main image, a toggle button that flips between
-**Original** and **Repaired**, and — below the main image — a smaller
-**detail** close-up of the *worst original defect region* (the defect with
-the largest physical bounding-box diagonal). The camera is automatically
-directed toward that worst defect so it is never hidden behind the mesh;
-only a clean mesh (or a defect sitting at the mesh's bounding-box centre)
-falls back to the fixed isometric view. The repaired view uses a
-tri-state colour map: **grey** where the mesh was never broken, a vivid
-**green** `(46,204,113)` highlight where an original defect used to be and
-is now healthy, and **orange** `(255,140,60)` where a defect remains (the
-original view marks its defects in red `(235,60,70)`). Because repair changes the mesh
-topology (the before/after vertex indices don't correspond), the green
-classification is *spatial*: each repaired face is measured against the
-original defect centroids (their real extent from `defects.detect`), and
-only the largest defects (capped at 256) drive the highlight so a scan mesh
-with thousands of micro-cracks stays fast. The close-up uses the same zoomed
-camera for both sides, so the original vs repaired comparison is
-apples-to-apples. It is a static click-toggle, deliberately not an
-interactive 3D slider — same CPU-renderer constraint as the heatmap — and
+#### Before/after comparison
 
-![Before/after comparison dialog](../../assets/before-after-panel.png)
-runs in a subprocess on-demand, so it never slows a batch.
+![Before/after comparison](../../assets/before-after-panel.png)
 
-A **Static / Interactive** switch at the top of the dialog adds the
-interactive 3D view (built lazily the first time it is chosen, then cached
-for the dialog's lifetime): **drag** rotates the mesh, the **mouse wheel**
-zooms. While you drag, an interactive low-poly LOD is rasterized per frame
-on a background thread (latest frame wins, no mesh loading in the GUI
-process); ~300 ms after you stop, a full-resolution frame is drawn. The
-interactive view starts at the same defect-facing camera as the static
-comparison. A second toggle switches the repaired view between the
-**Repair status** colour map and a **Surface deviation** map: each face is
-coloured by the distance of the repaired surface to the original surface
-(quantile-scaled ramp, navy → cyan → yellow → red) with the still-broken
-defects drawn on top in orange and the global max deviation (Hausdorff
-distance) shown in the dialog.
+**Before / After** opens a window with two still images of the selected mesh —
+the original and the repaired result — rendered from the same camera, so the
+comparison is like for like. Both halves come from the same renderer the live
+preview uses. The right half is empty until a repair has produced a result, and
+says so rather than showing a blank panel.
 
-**Repair mode.** A **Mode: Auto** button next to the heatmap/before-after
-buttons opens a small dialog with a five-step slider —
-**Low / Medium / Auto / Aggressive / Extreme** — and a one-line description
-that updates live as the slider moves (the Extreme step warns it can delete
-objects smaller than 20 faces). The same dialog also carries the two
-**repair budgets** (max geometry change %, max repair risk 0–100; 0 = no
-limit). The mode is a **batch-wide** setting: it
-applies to the next Repair run for every file, not per file, and is passed to
-the CLI as `--mode <mode>` (the same five values as the CLI flag, default
-`auto`). The current mode is always shown on the button.
+The live preview's own **Before** / **After** switch is the interactive
+alternative: drag and zoom the repaired mesh, with a surface-deviation ramp
+against the original in the After view.
 
-When a repair exceeds a budget, the CLI declines the save (no output file)
-and reports `"status": "budget_declined"`; after the batch the GUI shows a
-confirmation dialog listing the affected files and their actual numbers, and
-**Save anyway?** re-runs exactly those files with `--force` (the declined
-rows are then overwritten by the forced results).
+#### Repair mode and budgets
+
+The **Mode** picker in the settings panel is the same five-step ladder as
+`--mode`, with a one-line description that updates as you choose (Extreme warns
+that it can delete objects smaller than 20 faces). It is batch-wide: it applies
+to the next repair for every file. **Max risk** and **Max geometry change** are
+the repair budgets; leaving them blank keeps the intensity's value.
+
+When a repair exceeds a budget the CLI declines the save (no output file) and
+reports `"status": "budget_declined"`; the GUI shows the affected file and its
+actual numbers and offers to run it again with **Overwrite**, which forces
+exactly that file.
 
 Dolphin: right-click an STL/OBJ/3MF file -> **Repair with Sutura**. With a single
 selection the GUI opens with the file loaded; with multiple selections each
