@@ -71,6 +71,9 @@ struct Entry {
     error: Option<String>,
     repair: RepairState,
     report: Option<RepairReport>,
+    /// The unparsed report, kept because `RepairReport` deliberately extracts
+    /// only the six verdict fields. The method ranking lives in here.
+    raw_report: Option<Value>,
     output: Option<PathBuf>,
     view: ViewMode,
     /// Cached defect analysis, filled on demand. `Result` so a failure is shown
@@ -86,7 +89,7 @@ enum RepairEvent {
     Stderr(String),
     Finished {
         output: PathBuf,
-        result: Result<(DisplayMesh, RepairReport), String>,
+        result: Result<(DisplayMesh, RepairReport, Value), String>,
         cancelled: bool,
     },
 }
@@ -383,6 +386,7 @@ impl SuturaApp {
                     error: None,
                     repair: RepairState::Idle,
                     report: None,
+                    raw_report: None,
                     output: None,
                     view: ViewMode::Before,
                     analysis: None,
@@ -400,6 +404,7 @@ impl SuturaApp {
                     error: Some(rust_i18n::t!("app.error_prefix", error = e).to_string()),
                     repair: RepairState::Idle,
                     report: None,
+                    raw_report: None,
                     output: None,
                     view: ViewMode::Before,
                     analysis: None,
@@ -692,10 +697,11 @@ impl SuturaApp {
                     return;
                 }
                 match result {
-                    Ok((mesh, report)) => {
+                    Ok((mesh, report, raw)) => {
                         let count = mesh.triangle_count();
                         self.files[idx].result = Some(Arc::new(mesh));
                         self.files[idx].report = Some(report);
+                        self.files[idx].raw_report = Some(raw);
                         self.files[idx].output = Some(output.clone());
                         self.files[idx].view = ViewMode::After;
                         self.files[idx].repair = RepairState::Done;
@@ -1730,6 +1736,95 @@ impl eframe::App for SuturaApp {
                         }
                     }
 
+                    // Recommended methods, from the report's own ranking
+                    // (`ranking::recommendations_json`). They live per object
+                    // (`object_reports[i].recommendations`), not at the top
+                    // level -- verified against the CLI's own JSON, where the
+                    // key is absent from the root but present three times for
+                    // this 3MF. Every object's list is shown, labelled, so a
+                    // multi-part file does not silently show only the first.
+                    //
+                    // Read-only, not checkboxes: tagging a method is per-file
+                    // work (İ5) that does not exist yet, and a checkbox that
+                    // cannot tag would be the dead-control bug class again.
+                    if let Some(objects) = self
+                        .selected
+                        .and_then(|i| self.files.get(i))
+                        .and_then(|e| e.raw_report.as_ref())
+                        .and_then(|r| r.get("object_reports"))
+                        .and_then(|v| v.as_array())
+                        .filter(|a| {
+                            // Two shapes: the 3MF path stores
+                            // `{model_name, report}`; the single-mesh report
+                            // stores the report directly under `object_reports`.
+                            a.iter().any(|o| {
+                                let report = o.get("report").unwrap_or(o);
+                                report
+                                    .get("recommendations")
+                                    .and_then(|r| r.as_array())
+                                    .is_some_and(|r| !r.is_empty())
+                            })
+                        })
+                    {
+                        egui::CollapsingHeader::new(
+                            rust_i18n::t!("app.recommended").to_string(),
+                        )
+                        .id_salt("recommended_header")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for (oi, object) in objects.iter().enumerate() {
+                                let report = object.get("report").unwrap_or(object);
+                                let recs = report
+                                    .get("recommendations")
+                                    .and_then(|v| v.as_array())
+                                    .cloned()
+                                    .unwrap_or_default();
+                                if recs.is_empty() {
+                                    continue;
+                                }
+                                if objects.len() > 1 {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            rust_i18n::t!(
+                                                "app.rec_object",
+                                                index = oi as i64 + 1
+                                            )
+                                            .to_string(),
+                                        )
+                                        .small()
+                                        .weak(),
+                                    );
+                                }
+                                for rec in &recs {
+                                    let num = rec
+                                        .get("num")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+                                    let name = rec
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("?");
+                                    let pct = rec
+                                        .get("score")
+                                        .and_then(|v| v.as_f64())
+                                        .map(|v| (v * 100.0).round() as i64)
+                                        .unwrap_or(0);
+                                    let reason = rec
+                                        .get("reason")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let row = ui.add(
+                                        egui::Label::new(format!("#{num}  {name}  {pct}%"))
+                                            .sense(egui::Sense::hover()),
+                                    );
+                                    if !reason.is_empty() {
+                                        row.on_hover_text(reason);
+                                    }
+                                }
+                            }
+                        });
+                    }
+
                     if let Some(output) = &entry.output {
                         ui.separator();
                         ui.label(egui::RichText::new(output.display().to_string()).small().weak());
@@ -2234,7 +2329,7 @@ pub fn headless_repair(
         }
     }
     match outcome {
-        Some(Ok((_mesh, _summary))) => Ok(()),
+        Some(Ok((_mesh, _summary, _raw))) => Ok(()),
         Some(Err(e)) => {
             eprintln!("headless repair failed: {e}");
             std::process::exit(1);
@@ -2581,8 +2676,27 @@ fn run_repair(
         let result = sutura_core::pipeline_objects::repair_3mf_file(
             input, output, &opts, &sink, &cancel,
         );
+        // A 3MF gets one report *per object*, and the recommendations only exist
+        // there (`object_reports[i].recommendations`); the single-mesh report has
+        // no such key at all. So carry the per-object reports through instead of
+        // dropping them -- otherwise the Recommended panel can never populate for
+        // the only format that has recommendations.
+        let object_reports = match &result {
+            Ok(repairs) => serde_json::json!({
+                "object_reports": repairs
+                    .iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "model_name": r.model_name,
+                            "report": r.report.clone(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            }),
+            Err(_) => Value::Null,
+        };
         let _ = match result {
-            Ok(_) => finish_from_output(output, &tx, &cancel),
+            Ok(_) => finish_from_output_with(output, &tx, &cancel, object_reports),
             Err(e) => tx.send(RepairEvent::Finished {
                 output: output.to_path_buf(),
                 result: Err(e.to_string()),
@@ -2720,7 +2834,7 @@ fn run_repair(
     let scored = Value::Object(scored);
     let _ = tx.send(RepairEvent::Finished {
         output: output.to_path_buf(),
-        result: Ok((mesh, RepairReport::from_value(&scored))),
+        result: Ok((mesh, RepairReport::from_value(&scored), scored)),
         cancelled: false,
     });
 }
@@ -2737,15 +2851,22 @@ fn is_3mf(path: &Path) -> bool {
 ///
 /// A container repair has no single per-object summary here, so the report is
 /// left at its default; the preview is what the GUI shows for `--repair`.
-fn finish_from_output(
+/// Send the finished event for a rebuilt output file.
+///
+/// `raw` carries whatever the caller knows that the parsed `RepairReport` drops.
+/// For a 3MF that is the per-object report list (the only place recommendations
+/// exist); for a single mesh the `repair` outcome's own value. The re-loaded mesh
+/// cannot supply it, because a report is not a property of the output file.
+fn finish_from_output_with(
     output: &Path,
     tx: &mpsc::Sender<RepairEvent>,
     cancel: &CancelToken,
+    raw: Value,
 ) -> Result<(), mpsc::SendError<RepairEvent>> {
     match DisplayMesh::load(output) {
         Ok(mesh) => tx.send(RepairEvent::Finished {
             output: output.to_path_buf(),
-            result: Ok((mesh, RepairReport::default())),
+            result: Ok((mesh, RepairReport::default(), raw)),
             cancelled: cancel.is_cancelled(),
         }),
         Err(e) => tx.send(RepairEvent::Finished {
@@ -2872,6 +2993,7 @@ mod tests {
             error: None,
             repair: RepairState::Idle,
             report: None,
+            raw_report: None,
             output: None,
             view: ViewMode::Before,
             analysis: None,
@@ -3103,6 +3225,50 @@ mod tests {
         assert!(object_rows(stl).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Recommendations live per object, and only in the multi-object report.
+    ///
+    /// Checked against the real shape rather than assumed: for a single mesh the
+    /// report has **no** `recommendations` key at all (verified against the CLI's
+    /// JSON for an STL: 52 top-level keys, none of them recommendations), while a
+    /// 3MF carries one list per object under `object_reports`. A lookup at the
+    /// report root therefore finds nothing for either format -- which is what the
+    /// first version of the panel did.
+    #[test]
+    fn recommendations_are_found_per_object() {
+        let report = serde_json::json!({
+            "object_reports": [
+                { "model_name": "a", "report": { "recommendations": [
+                    { "num": 3, "name": "Full Mend", "score": 1.0, "reason": "r" }
+                ]}},
+                { "model_name": "b", "report": { "recommendations": [] }},
+            ]
+        });
+        let objects = report
+            .get("object_reports")
+            .and_then(|v| v.as_array())
+            .expect("object_reports is an array");
+        let with_recs: Vec<&Value> = objects
+            .iter()
+            .filter(|o| {
+                let r = o.get("report").unwrap_or(o);
+                r.get("recommendations")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|v| !v.is_empty())
+            })
+            .collect();
+        assert_eq!(with_recs.len(), 1, "only object a has recommendations");
+        let first = with_recs[0]["report"]["recommendations"][0].clone();
+        assert_eq!(first["num"], 3);
+        assert_eq!(first["name"], "Full Mend");
+
+        // A single-mesh report: no recommendations anywhere near the root.
+        let single = serde_json::json!({ "repair_health": 0.9, "stage1": {} });
+        assert!(
+            single.get("recommendations").is_none(),
+            "this is why the root lookup found nothing"
+        );
     }
 
     /// The settings panel must be inside a scroll area.

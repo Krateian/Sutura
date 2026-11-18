@@ -46,6 +46,8 @@ app:
   ob_model: Model
   ob_faces: Yüzler
   ob_vertices: Köşeler
+  recommended: Önerilen yöntemler
+  rec_object: Nesne %{index}
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"
