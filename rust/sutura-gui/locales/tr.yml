@@ -18,6 +18,21 @@ app:
   profile: Profil
   profile_auto: Otomatik
   profile_tip: Stage 1 eşik ön ayarı. Otomatik, sınıflandırıcının varsayılanını kullanır.
+  dressing_drain: Drain
+  dressing_drain_hint: boş = varsayılan
+  dressing_defects: Kusurlar
+  dressing_defects_hint: boş = varsayılan
+  dressing_rmax_scale: Rmax ölçeği
+  dressing_sigma_scale: Sigma ölçeği
+  advanced: Gelişmiş
+  experimental_graft: Graft (deneysel)
+  no_graft: Graft yok
+  experimental_fallback_ftetwild: fTetWild yedeği (deneysel)
+  no_fallback_ftetwild: fTetWild yedeği yok
+  classifier_engine: Sınıflandırıcı
+  default: Varsayılan
+  engines: Motorlar
+  engines_hint: Bir motorun işaretini kaldırmak yalnızca diğerlerini çalıştırır. Hepsi işaretli = varsayılan.
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"

@@ -133,6 +133,7 @@ pub const MODES: [&str; 5] = ["low", "medium", "auto", "aggressive", "extreme"];
 /// `--profile` presets, from Python's picker (`gui.py:5422`). `None` is "Auto".
 pub const PROFILES: [&str; 5] = ["mechanical", "organic", "scan", "miniature", "fast"];
 
+
 pub struct StartupOptions {
     /// Test hook: force the deviation reference for the After view.
     pub deviation_reference: Option<PathBuf>,
@@ -1150,6 +1151,188 @@ impl eframe::App for SuturaApp {
                             &mut self.settings.dressing_force_adopt,
                             rust_i18n::t!("app.dressing_force_adopt").to_string(),
                         );
+                        // The four dressing knobs, previously CLI-only. Each is
+                        // tri-state (`None` = CLI default), so a blank field
+                        // means "leave it to the intensity", exactly like the
+                        // per-run limits above.
+                        ui.indent("dressing_knobs", |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(rust_i18n::t!("app.dressing_drain").to_string());
+                                let mut text = self
+                                    .settings
+                                    .dressing_drain
+                                    .as_ref()
+                                    .map(|v| match v {
+                                        serde_json::Value::String(s) => s.clone(),
+                                        other => other.to_string(),
+                                    })
+                                    .unwrap_or_default();
+                                if ui
+                                    .add(
+                                        egui::TextEdit::singleline(&mut text)
+                                            .hint_text(rust_i18n::t!("app.dressing_drain_hint")),
+                                    )
+                                    .changed()
+                                {
+                                    let t = text.trim();
+                                    self.settings.dressing_drain = if t.is_empty() {
+                                        None
+                                    } else {
+                                        Some(match t.parse::<f64>() {
+                                            // Same shape the CLI produces: a bare
+                                            // number stays a number.
+                                            Ok(n) => serde_json::json!(n),
+                                            Err(_) => {
+                                                serde_json::Value::String(t.to_lowercase())
+                                            }
+                                        })
+                                    };
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(rust_i18n::t!("app.dressing_defects").to_string());
+                                let mut text = self
+                                    .settings
+                                    .dressing_defects
+                                    .clone()
+                                    .unwrap_or_default();
+                                if ui
+                                    .add(
+                                        egui::TextEdit::singleline(&mut text)
+                                            .hint_text(rust_i18n::t!("app.dressing_defects_hint")),
+                                    )
+                                    .changed()
+                                {
+                                    let t = text.trim();
+                                    self.settings.dressing_defects = if t.is_empty() {
+                                        None
+                                    } else {
+                                        Some(t.to_string())
+                                    };
+                                }
+                            });
+                            let mut knob = |ui: &mut egui::Ui, label: &str, value: &mut Option<f64>| {
+                                ui.horizontal(|ui| {
+                                    ui.label(label);
+                                    let mut text =
+                                        value.map(|v| v.to_string()).unwrap_or_default();
+                                    if ui
+                                        .add(
+                                            egui::TextEdit::singleline(&mut text)
+                                                .desired_width(70.0),
+                                        )
+                                        .changed()
+                                    {
+                                        let t = text.trim();
+                                        *value = if t.is_empty() {
+                                            None
+                                        } else {
+                                            t.parse::<f64>().ok()
+                                        };
+                                    }
+                                });
+                            };
+                            knob(
+                                ui,
+                                &rust_i18n::t!("app.dressing_rmax_scale").to_string(),
+                                &mut self.settings.dressing_rmax_scale,
+                            );
+                            knob(
+                                ui,
+                                &rust_i18n::t!("app.dressing_sigma_scale").to_string(),
+                                &mut self.settings.dressing_sigma_scale,
+                            );
+                        });
+                    }
+
+                    ui.separator();
+                    // Graft and the fTetWild fallback: declared on the CLI since
+                    // the beginning, never reachable from the GUI.
+                    ui.label(rust_i18n::t!("app.advanced").to_string());
+                    ui.checkbox(
+                        &mut self.settings.experimental_graft,
+                        rust_i18n::t!("app.experimental_graft").to_string(),
+                    );
+                    // Python: the negative flag wins over the positive one, and
+                    // `options_from` keeps them as two independent booleans, so
+                    // the GUI must not let both be on.
+                    let mut no_graft = self.settings.no_graft;
+                    if ui
+                        .checkbox(&mut no_graft, rust_i18n::t!("app.no_graft").to_string())
+                        .changed()
+                    {
+                        self.settings.no_graft = no_graft;
+                    }
+                    ui.checkbox(
+                        &mut self.settings.experimental_fallback_ftetwild,
+                        rust_i18n::t!("app.experimental_fallback_ftetwild").to_string(),
+                    );
+                    let mut no_fallback = self.settings.no_fallback_ftetwild;
+                    if ui
+                        .checkbox(
+                            &mut no_fallback,
+                            rust_i18n::t!("app.no_fallback_ftetwild").to_string(),
+                        )
+                        .changed()
+                    {
+                        self.settings.no_fallback_ftetwild = no_fallback;
+                    }
+                    // `--classifier-engine` has NO control here on purpose:
+                    // `repair.rs:907` hard-codes "experimental", so writing
+                    // `settings.classifier_engine` would be a control that does
+                    // nothing -- the same bug class as a dead flag. It gets one
+                    // in İ6, where the analysis panel reads it.
+
+                    // External engines. `--engines` takes a list of *configured*
+                    // names (`repair_cmd.rs:145` rejects unknowns), so the only
+                    // sane control is a checkbox per configured engine. `None`
+                    // means "every configured engine", which is why unticking
+                    // one is what builds the list.
+                    {
+                        let (configured, _warnings) =
+                            sutura_core::config::load_all_engines(None);
+                        if !configured.is_empty() {
+                            ui.separator();
+                            ui.label(rust_i18n::t!("app.engines").to_string());
+                            ui.label(
+                                egui::RichText::new(rust_i18n::t!("app.engines_hint").to_string())
+                                    .small()
+                                    .weak(),
+                            );
+                            let selected: Vec<String> = self
+                                .settings
+                                .engines
+                                .clone()
+                                .unwrap_or_else(|| configured.keys().cloned().collect());
+                            for (name, engine) in &configured {
+                                let mut on = selected.iter().any(|s| s == name);
+                                let label = format!(
+                                    "{name}{}",
+                                    if engine.enabled { "" } else { " (disabled)" }
+                                );
+                                if ui.checkbox(&mut on, label).changed() {
+                                    let mut next = selected.clone();
+                                    if on {
+                                        if !next.iter().any(|s| s == name) {
+                                            next.push(name.clone());
+                                        }
+                                    } else {
+                                        next.retain(|s| s != name);
+                                    }
+                                    // The CLI rejects an empty list
+                                    // ("argument --engines: empty list"), so
+                                    // clearing every box means "default: all".
+                                    self.settings.engines = if next.is_empty()
+                                        || next.len() == configured.len()
+                                    {
+                                        None
+                                    } else {
+                                        next.sort();
+                                        Some(next)
+                                    };
+                                }
+                            }
+                        }
                     }
 
                     ui.separator();
@@ -2600,6 +2783,70 @@ mod tests {
         crate::state::sanitize(&mut state);
         assert_eq!(state.settings.profile, None, "stale profile must be dropped");
         assert_eq!(state.settings.mode, None, "stale mode must be dropped");
+    }
+
+    /// The settings the panel was missing must reach core, not just the struct.
+    ///
+    /// Each field is set exactly as the panel writes it, then read back out of
+    /// the resulting `RepairOptions` -- a control that assigns a field core
+    /// never reads is the dead-flag bug class, and only this direction catches
+    /// it.
+    ///
+    /// Two of the plan's thirteen are deliberately absent here:
+    /// * `time_budget_s` is `None` on the CLI too (`repair_cmd.rs:272`), so its
+    ///   absence is parity, not a gap.
+    /// * `classifier_engine` is a live field in `RepairSettings` that
+    ///   `options_from` never reads, and `repair.rs:907` hard-codes
+    ///   "experimental". The GUI has **no** control for it rather than a dead
+    ///   one; it returns in İ6 with the analysis panel as its consumer.
+    #[test]
+    fn previously_missing_settings_reach_core() {
+        use sutura_core::repair_settings::options_from;
+
+        let settings = RepairSettings {
+            experimental_graft: true,
+            no_graft: false,
+            no_fallback_ftetwild: false,
+            experimental_fallback_ftetwild: true,
+            dressing: true,
+            dressing_drain: Some(serde_json::json!("half")),
+            dressing_defects: Some("holes_nm".into()),
+            dressing_rmax_scale: Some(1.5),
+            dressing_sigma_scale: Some(0.75),
+            engines: Some(vec!["alpha".into()]),
+            ..Default::default()
+        };
+        let (opts, _, _) = options_from(&settings).expect("valid settings");
+
+        assert_eq!(opts.graft, Some(true), "experimental graft must reach core");
+        assert_eq!(
+            opts.ftetwild,
+            Some(serde_json::Value::Bool(true)),
+            "experimental fallback must reach core"
+        );
+        assert!(opts.dressing);
+        assert_eq!(opts.dressing_drain, Some(serde_json::json!("half")));
+        assert_eq!(opts.dressing_defects.as_deref(), Some("holes_nm"));
+        assert_eq!(opts.dressing_rmax_scale, Some(1.5));
+        assert_eq!(opts.dressing_sigma_scale, Some(0.75));
+        assert_eq!(opts.engines, Some(vec!["alpha".to_string()]));
+
+        // The negative flags must win when both are set, or the GUI could leave
+        // a user with a "no" that does nothing.
+        let both = RepairSettings {
+            experimental_graft: true,
+            no_graft: true,
+            experimental_fallback_ftetwild: true,
+            no_fallback_ftetwild: true,
+            ..Default::default()
+        };
+        let (opts, _, _) = options_from(&both).unwrap();
+        assert_eq!(opts.graft, Some(false), "no_graft must win");
+        assert_eq!(
+            opts.ftetwild,
+            Some(serde_json::Value::Bool(false)),
+            "no_fallback_ftetwild must win"
+        );
     }
 
     /// The settings panel must be inside a scroll area.

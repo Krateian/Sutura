@@ -18,6 +18,21 @@ app:
   profile: Profile
   profile_auto: Auto
   profile_tip: Stage 1 threshold preset. Auto uses the classifier-driven default.
+  dressing_drain: Drain
+  dressing_drain_hint: blank = default
+  dressing_defects: Defects
+  dressing_defects_hint: blank = default
+  dressing_rmax_scale: Rmax scale
+  dressing_sigma_scale: Sigma scale
+  advanced: Advanced
+  experimental_graft: Graft (experimental)
+  no_graft: No graft
+  experimental_fallback_ftetwild: fTetWild fallback (experimental)
+  no_fallback_ftetwild: No fTetWild fallback
+  classifier_engine: Classifier
+  default: Default
+  engines: Engines
+  engines_hint: Unticking an engine runs the others only. All ticked = default.
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"
