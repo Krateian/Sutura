@@ -138,7 +138,7 @@ app:
   defect_faces: "%{count} kusurlu yüz (%{pct}%)"
   about: Hakkında
   updates: Güncellemeler
-  about_body: Sutura, 3D baskı için bozuk mesh'leri onarır. Bu, Rust/egui GUI'sidir; bu fazda onarım çekirdeği hâlâ Python CLI üzerinden çalışır.
+  about_body: Sutura, 3D baskı için bozuk mesh'leri onarır. Onarım bu uygulamanın içinde, yerel olarak çalışır; Python devrede değildir.
   updater_title: Güncellemeler
   updater_current: "Geçerli sürüm: %{version}"
   updater_checking: Güncellemeler kontrol ediliyor...

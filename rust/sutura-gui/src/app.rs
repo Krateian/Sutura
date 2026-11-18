@@ -209,6 +209,10 @@ pub struct SuturaApp {
     /// settings panel mutates `self.settings` in a dozen places and hooking each
     /// one would drift.
     persisted: String,
+    /// `Ctrl+,` toggles the settings panel. Python's only shortcut opens its
+    /// options dialog; settings live in a permanent panel here, so the honest
+    /// equivalent is to show or hide that panel.
+    settings_open: bool,
 }
 
 impl SuturaApp {
@@ -253,6 +257,7 @@ impl SuturaApp {
             auto_repair_started: false,
             ready_frames: 0,
             persisted: String::new(),
+            settings_open: true,
         }
     }
 
@@ -329,6 +334,7 @@ impl SuturaApp {
             // first launch never wrote anything, and the whole path stayed
             // unexercised until some control happened to change.
             persisted: String::new(),
+            settings_open: true,
         };
         for path in files {
             app.add_path(path);
@@ -802,6 +808,10 @@ impl eframe::App for SuturaApp {
             ctx.request_repaint();
         }
 
+        if settings_shortcut_pressed(&ctx) {
+            self.settings_open = !self.settings_open;
+        }
+
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for file in dropped {
             let path = file.path().to_path_buf();
@@ -996,6 +1006,9 @@ impl eframe::App for SuturaApp {
 
         let mut open_action: Option<(PathBuf, bool)> = None;
         let mut cancel_in_panel = false;
+        // Not creating the panel is what hides it: the central preview then
+        // takes the space back on its own.
+        if self.settings_open {
         egui::containers::Panel::right("settings")
             .resizable(true)
             .default_size(280.0)
@@ -1005,8 +1018,8 @@ impl eframe::App for SuturaApp {
                 // and were unreachable. Same pattern as the other panels.
                 egui::ScrollArea::vertical()
                     .id_salt("settings_scroll")
-                    // Hidden verification hook, same spirit as :
-                    // the panel is taller than any window, so proving a control
+                    // Test hook, same spirit as `--screenshot`: the panel is
+                    // taller than any window, so proving a control
                     // near its bottom (the analysis table, the method list)
                     // requires starting the scroll somewhere other than 0.
                     // Unset means normal behaviour; costs one env lookup a frame.
@@ -1840,6 +1853,7 @@ impl eframe::App for SuturaApp {
                     }
                     });
             });
+        }
         if cancel_clicked || cancel_in_panel {
             self.cancel_repair();
         }
@@ -2877,6 +2891,22 @@ fn finish_from_output_with(
     }
 }
 
+/// `Ctrl+,` shows or hides the settings panel.
+///
+/// Scope matters: a comma is a character people type, so the shortcut must not
+/// fire while a text box has focus -- otherwise typing "a,b" would hide the
+/// panel mid-word. `consume_key` also stops egui re-handling the event.
+///
+/// A free function rather than inline so it can be exercised against a real
+/// `egui::Context`: an untested keyboard shortcut is one that silently stops
+/// working when egui changes its input API.
+fn settings_shortcut_pressed(ctx: &egui::Context) -> bool {
+    if ctx.memory(|m| m.focused()).is_some() {
+        return false;
+    }
+    ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma))
+}
+
 /// Forwards core progress events as GUI events.
 ///
 /// The core's `repair` emits nothing today (the CLI's sink is a no-op for the
@@ -3269,6 +3299,60 @@ mod tests {
             single.get("recommendations").is_none(),
             "this is why the root lookup found nothing"
         );
+    }
+
+    /// `Ctrl+,` must toggle the panel, and must NOT fire while a text box has
+    /// focus -- otherwise typing "a,b" would hide the panel mid-word.
+    ///
+    /// Driven through a real `egui::Context`, so this breaks if egui changes
+    /// where it stores focus or how `consume_key` behaves. The old test for the
+    /// tier flags was toothless three times over; a keyboard shortcut is even
+    /// easier to leave "passing" while it does nothing.
+    #[test]
+    fn settings_shortcut_requires_no_text_focus() {
+        use egui::{Context, Event, Key, Modifiers, RawInput};
+
+        // ONE context, two passes: a context owns texture deltas, and dropping
+        // one without consuming them panics inside epaint's `Drop`. Rewriting
+        // this as two contexts is what produced that panic, not a product bug.
+        let ctx = Context::default();
+
+        let press = |ctx: &Context| {
+            let mut input = RawInput::default();
+            input.events.push(Event::Key {
+                key: Key::Comma,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::COMMAND,
+            });
+            ctx.begin_pass(input);
+        };
+        let finish = |ctx: &Context| {
+            let mut out = ctx.end_pass();
+            out.textures_delta.clear();
+        };
+
+        // No focus: the shortcut fires.
+        press(&ctx);
+        assert!(
+            settings_shortcut_pressed(&ctx),
+            "Ctrl+, must work when nothing is focused"
+        );
+        finish(&ctx);
+
+        // A focused widget: it must not fire. `request_focus` is what a text box
+        // does when clicked.
+        let id = egui::Id::new("some_text_edit");
+        ctx.memory_mut(|m| m.request_focus(id));
+        assert!(ctx.memory(|m| m.focused()).is_some(), "focus was not taken");
+
+        press(&ctx);
+        assert!(
+            !settings_shortcut_pressed(&ctx),
+            "the shortcut must not steal a typed comma"
+        );
+        finish(&ctx);
     }
 
     /// The settings panel must be inside a scroll area.

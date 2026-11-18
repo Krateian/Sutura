@@ -138,7 +138,7 @@ app:
   defect_faces: "%{count} defect faces (%{pct}%)"
   about: About
   updates: Updates
-  about_body: Sutura repairs broken meshes for 3D printing. This is the Rust/egui GUI; the repair core still runs through the Python CLI in this phase.
+  about_body: Sutura repairs broken meshes for 3D printing. Repair runs natively, in this app; there is no Python involved.
   updater_title: Updates
   updater_current: "Current version: %{version}"
   updater_checking: Checking for updates...
