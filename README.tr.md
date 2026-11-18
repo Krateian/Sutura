@@ -106,6 +106,19 @@ sağlık kontrolünü geçmeden hiçbir şey silinmez. Son Python sürümü kend
 devredebilir veya doğrudan çalıştırabilirsiniz — bkz.
 [Python sürümünden geçiş](MIGRATE.tr.md).
 
+### Arka uç seçimi (geçiş)
+
+CLI, GUI ve tüm giriş noktaları varsayılan olarak Rust işlem hattını kullanır.
+Önceki Python arka ucu bir sürüm boyunca kullanılabilir kalır:
+
+```sh
+SUTURA_BACKEND=python sutura model.stl      # ortam değişkeni
+sutura --backend python model.stl          # CLI bayrağı (ortam değişkenini ezer)
+```
+
+Python arka ucu tek satırlık bir kullanımdan kaldırma notu basar ve sonraki
+sürümde kaldırılır.
+
 ## Kullanım
 
 ```sh

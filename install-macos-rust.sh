@@ -113,13 +113,21 @@ if [ -d "$STAGE/Sutura.app" ]; then
     fi
 fi
 
-# Terminal entry points. The bundle carries both binaries, so the PATH commands
-# and the Quick Action resolve to the same build.
-for bin in sutura sutura-gui ftetwild; do
-    if [ -x "$APPS_DIR/Sutura.app/Contents/MacOS/$bin" ]; then
+# Terminal entry points. The P10 launchers select the bundled Rust binaries by
+# default and honour SUTURA_BACKEND=python when a legacy install exists.
+APP_LAUNCHERS="$APPS_DIR/Sutura.app/Contents/Resources/share/launchers"
+for bin in sutura sutura-gui; do
+    if [ -f "$APP_LAUNCHERS/$bin" ]; then
+        run install -m 0755 "$APP_LAUNCHERS/$bin" "$BIN_DIR/$bin"
+    elif [ -f "$HERE/share/launchers/$bin" ]; then
+        run install -m 0755 "$HERE/share/launchers/$bin" "$BIN_DIR/$bin"
+    elif [ -x "$APPS_DIR/Sutura.app/Contents/MacOS/$bin" ]; then
         run ln -sf "$APPS_DIR/Sutura.app/Contents/MacOS/$bin" "$BIN_DIR/$bin"
     fi
 done
+if [ -x "$APPS_DIR/Sutura.app/Contents/MacOS/ftetwild" ]; then
+    run ln -sf "$APPS_DIR/Sutura.app/Contents/MacOS/ftetwild" "$BIN_DIR/ftetwild"
+fi
 
 # Finder Quick Action. The helper script lives in APP_DIR (not in the bundle) so
 # it can be updated without re-installing the workflow, exactly as

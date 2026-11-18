@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 SUTURA="$HOME/.local/bin/sutura"
-GUI_PY="$HOME/.local/share/sutura/gui.py"
-VENV_PY="$HOME/.local/share/sutura/venv/bin/python"
+GUI="$HOME/.local/bin/sutura-gui"
 
 # Multi-file repairs go straight to the CLI, bypassing the GUI, so honor the
 # GUI's history preference (default on) explicitly here.
@@ -12,7 +11,7 @@ if [ -f "$HOME/.config/sutura/config.json" ] && \
 fi
 
 if [ "$#" -eq 1 ]; then
-    exec "$VENV_PY" "$GUI_PY" "$1"
+    exec "$GUI" "$1"
 fi
 
 N="$#"

@@ -108,6 +108,10 @@ copy_payload() { # $1 = destination root
     if [ -f "$REPO_ROOT/MIGRATE.md" ]; then
         install -m 0644 "$REPO_ROOT/MIGRATE.md" "$root/MIGRATE.md"
     fi
+    # P10 launchers: Rust CLI/GUI by default, SUTURA_BACKEND=python legacy.
+    mkdir -p "$root/share/launchers"
+    install -m 0755 "$REPO_ROOT/bin/sutura" "$root/share/launchers/sutura"
+    install -m 0755 "$REPO_ROOT/bin/sutura-gui" "$root/share/launchers/sutura-gui"
     # Vendored third-party licences. These are the obligations ATTRIBUTION.md
     # points at, so they ship next to it rather than only in the repo.
     local lic
@@ -232,7 +236,7 @@ package_linux() {
     # share/sutura-app.desktop), with the venv python replaced by the binaries.
     sed 's#%HOME%/.local/share/sutura/open.sh#sutura#' \
         "$REPO_ROOT/share/sutura.desktop" > "$root/share/applications/sutura.desktop"
-    sed -e 's#%HOME%/.local/share/sutura/venv/bin/python %HOME%/.local/share/sutura/gui.py#sutura-gui#' \
+    sed -e 's#%HOME%/.local/bin/sutura-gui#sutura-gui#' \
         "$REPO_ROOT/share/sutura-app.desktop" > "$root/share/applications/sutura-app.desktop"
     if [ -f "$REPO_ROOT/assets/icon/sutura-256.png" ]; then
         install -m 0644 "$REPO_ROOT/assets/icon/sutura-256.png" \

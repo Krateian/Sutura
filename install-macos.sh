@@ -179,20 +179,20 @@ if [ -d "$REPO_DIR/.git/hooks" ] && [ -f "$REPO_DIR/scripts/pre-push-security-ch
     install -m 0755 "$REPO_DIR/scripts/pre-push-security-check.sh" "$REPO_DIR/.git/hooks/pre-push"
 fi
 
-# 8) CLI wrapper ------------------------------------------------------------
-cat > "$BIN_DIR/sutura" <<EOF
+# 8) CLI/GUI launchers (Rust default, SUTURA_BACKEND=python legacy) --------
+cat > "$APP_DIR/sutura-py" <<EOF
 #!/bin/bash
 exec "$CONDA_BIN" run -n "$ENV_NAME" python "$APP_DIR/repair.py" "\$@"
 EOF
-chmod 0755 "$BIN_DIR/sutura"
-
-# 9) GUI launcher -----------------------------------------------------------
-cat > "$BIN_DIR/sutura-gui" <<EOF
+chmod 0755 "$APP_DIR/sutura-py"
+cat > "$APP_DIR/sutura-gui-py" <<EOF
 #!/bin/bash
 export QT_PLUGIN_PATH="$QT_PLUGIN_PATH"
 exec "$CONDA_BIN" run -n "$ENV_NAME" python "$APP_DIR/gui.py" "\$@"
 EOF
-chmod 0755 "$BIN_DIR/sutura-gui"
+chmod 0755 "$APP_DIR/sutura-gui-py"
+install -m 0755 "$REPO_DIR/bin/sutura" "$BIN_DIR/sutura"
+install -m 0755 "$REPO_DIR/bin/sutura-gui" "$BIN_DIR/sutura-gui"
 
 # 9b) Native macOS app (Spotlight: Cmd+Space -> "Sutura") -------------------
 # Minimal .app wrapper around the sutura-gui launcher: a real .app bundle in
