@@ -6,6 +6,8 @@ mod state;
 mod updater_ui;
 mod viewer;
 mod crash;
+#[cfg(test)]
+mod interaction_tests;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -225,11 +227,21 @@ fn main() -> eframe::Result<()> {
     }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(rust_i18n::t!("app.title").to_string())
-            .with_inner_size(window_size.unwrap_or([1024.0, 720.0]))
-            .with_min_inner_size([720.0, 480.0])
-            .with_drag_and_drop(true),
+        viewport: {
+            let mut vp = egui::ViewportBuilder::default()
+                .with_title(rust_i18n::t!("app.title").to_string())
+                .with_inner_size(window_size.unwrap_or([1024.0, 720.0]))
+                .with_min_inner_size([720.0, 480.0])
+                .with_drag_and_drop(true);
+            if screenshot.is_some() {
+                // A scripted capture must not flash a window over whatever the
+                // user is doing. eframe still creates a native window -- there is
+                // no way around that without a different backend -- but it is
+                // placed off-screen and closed after a few frames.
+                vp = vp.with_position([-20000.0, -20000.0]);
+            }
+            vp
+        },
         ..Default::default()
     };
     eframe::run_native(

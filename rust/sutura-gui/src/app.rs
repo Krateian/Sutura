@@ -14,7 +14,7 @@ use crate::mesh::DisplayMesh;
 use crate::viewer::Preview;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ViewMode {
+pub enum ViewMode {
     Before,
     After,
 }
@@ -335,6 +335,11 @@ pub struct SuturaApp {
     /// Where the settings panel starts scrolled to. `--settings-scroll`, and 0
     /// (the top) unless a script asks otherwise.
     settings_scroll: f32,
+    /// Last drawn scroll offset of each area, for the interaction tests.
+    /// `Arc<AtomicU32>` rather than plain fields because the capture happens
+    /// inside the scroll-area closures while `self` is already borrowed.
+    settings_scroll_probe: Arc<std::sync::atomic::AtomicU32>,
+    file_scroll_probe: Arc<std::sync::atomic::AtomicU32>,
     /// Method availability, from `self_check::run`. Process-wide, so it is
     /// computed once at startup rather than per file -- and with
     /// `run_fixtures:false`, the same cheap availability probe `--self-check`
@@ -363,6 +368,125 @@ pub struct SuturaApp {
 }
 
 impl SuturaApp {
+    /// --- Test accessors ---
+    ///
+    /// Only compiled for tests. The interaction tests drive `frame_ui` directly,
+    /// so they need to read back what a click changed; keeping these together and
+    /// behind `cfg(test)` stops them becoming a second public surface.
+    #[cfg(test)]
+    pub fn preview_heatmap(&self) -> bool {
+        self.preview.heatmap
+    }
+
+    #[cfg(test)]
+    pub fn preview_defect_colors(&self) -> bool {
+        self.preview.defect_colors
+    }
+
+    #[cfg(test)]
+    pub fn view_mode(&self) -> ViewMode {
+        self.selected
+            .and_then(|i| self.files.get(i))
+            .map(|e| e.view)
+            .unwrap_or(ViewMode::Before)
+    }
+
+    #[cfg(test)]
+    pub fn settings_snapshot(&self) -> String {
+        serde_json::to_string(&self.settings).unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub fn intensity(&self) -> Intensity {
+        self.intensity
+    }
+
+    #[cfg(test)]
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Load a file the way `add_path` does, without the file dialog.
+    #[cfg(test)]
+    pub fn add_file_for_test(&mut self, path: PathBuf) {
+        self.add_path(path);
+    }
+
+    #[cfg(test)]
+    pub fn settings_panel_hidden(&self) -> bool {
+        !self.settings_open
+    }
+
+    #[cfg(test)]
+    pub fn settings_scroll_offset(&self) -> f32 {
+        f32::from_bits(self.settings_scroll_probe.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    #[cfg(test)]
+    pub fn file_list_scroll_offset(&self) -> f32 {
+        f32::from_bits(self.file_scroll_probe.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    #[cfg(test)]
+    pub fn about_open(&self) -> bool {
+        self.about_open
+    }
+
+    #[cfg(test)]
+    pub fn updater_open(&self) -> bool {
+        self.updater_open
+    }
+
+    #[cfg(test)]
+    pub fn changelog_open(&self) -> bool {
+        self.changelog_open
+    }
+
+    /// Open the Changelog without fetching: the fetch is a network call, and a
+    /// test that makes one is slow and flaky in a full run.
+    #[cfg(test)]
+    pub fn open_changelog_for_test(&mut self) {
+        self.changelog_open = true;
+    }
+
+    #[cfg(test)]
+    pub fn repeat_picker_open(&self) -> bool {
+        self.repeat_picker.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn close_modals_for_test(&mut self) {
+        self.about_open = false;
+        self.updater_open = false;
+        self.notes_open = false;
+        self.changelog_open = false;
+    }
+
+    #[cfg(test)]
+    pub fn selected_file_has_own_methods(&self) -> bool {
+        self.selected
+            .and_then(|i| self.files.get(i))
+            .map(|e| e.methods.is_some())
+            .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub fn selected_file_methods(&self) -> Option<Vec<u8>> {
+        self.selected
+            .and_then(|i| self.files.get(i))
+            .and_then(|e| e.methods.clone())
+    }
+
+    #[cfg(test)]
+    pub fn scroll_settings_to(&mut self, offset: f32) {
+        self.settings_scroll = offset;
+    }
+
+    #[cfg(test)]
+    pub fn diagnostics_note(&self) -> Option<String> {
+        self.diagnostics_note.clone()
+    }
+
     /// A CPU-only preview, for tests: building the real one needs an
     /// `eframe::CreationContext`, which cannot be constructed in a unit test.
     #[cfg(test)]
@@ -407,6 +531,8 @@ impl SuturaApp {
             persisted: String::new(),
             settings_open: true,
             settings_scroll: 0.0,
+            settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
             method_health: Vec::new(),
             ftetwild: None,
@@ -516,6 +642,8 @@ impl SuturaApp {
             persisted: String::new(),
             settings_open: true,
             settings_scroll: options.settings_scroll,
+            settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
             method_health,
             ftetwild: sutura_core::ftetwild::find_binary(),
@@ -711,10 +839,18 @@ impl SuturaApp {
     /// something even if the picker is dismissed.
     fn export_diagnostics(&mut self) {
         let suggested = sutura_core::config::data_dir().join("sutura-diagnostics.zip");
-        let target = rfd::FileDialog::new()
-            .set_file_name(suggested.file_name().unwrap_or_default().to_string_lossy())
-            .save_file()
-            .unwrap_or(suggested);
+        // The save dialog is the only part that cannot run headless: `rfd` needs a
+        // native file picker, and it panics when there is no window server. The
+        // archive itself is exercised either way, so the dialog is what a test
+        // replaces -- not the whole path.
+        let target = if cfg!(test) {
+            suggested
+        } else {
+            rfd::FileDialog::new()
+                .set_file_name(suggested.file_name().unwrap_or_default().to_string_lossy())
+                .save_file()
+                .unwrap_or(suggested)
+        };
         match sutura_core::diagnostics::create_archive(&target) {
             Ok(v) => {
                 let bytes = v.get("size_bytes").and_then(|b| b.as_u64()).unwrap_or(0);
@@ -755,6 +891,12 @@ impl SuturaApp {
     /// struct, then a file write only on an actual change. Saving
     /// unconditionally would touch the disk 60 times a second.
     fn persist_if_changed(&mut self) {
+        // Tests drive `frame_ui` in-process, so without this every test run would
+        // write `gui.json` into the real ~/.config/sutura -- which it did. A test
+        // is not a user changing a setting.
+        if cfg!(test) {
+            return;
+        }
         let now = self.state_json();
         if now == self.persisted {
             return;
@@ -1122,6 +1264,18 @@ impl SuturaApp {
 
 impl eframe::App for SuturaApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.frame_ui(ui);
+    }
+}
+
+impl SuturaApp {
+    /// One frame of the whole UI.
+    ///
+    /// Split out of `eframe::App::ui` because that takes an `eframe::Frame`,
+    /// which cannot be constructed in a test -- and the interaction tests need to
+    /// drive exactly the frame the user sees, not a hand-built approximation of
+    /// it. `_frame` was never read.
+    pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // Deferred so the panel closure can set it while `self.files` is borrowed.
         let mut clear_list = false;
@@ -1254,6 +1408,8 @@ impl eframe::App for SuturaApp {
                 }
                 ui.separator();
                 {
+                    let lang_label =
+                        labelled(ui, rust_i18n::t!("app.language").to_string());
                     egui::ComboBox::from_id_salt("language")
                         .selected_text(self.language.label())
                         .show_ui(ui, |ui| {
@@ -1268,8 +1424,9 @@ impl eframe::App for SuturaApp {
                                     ));
                                 }
                             }
-                        });
-                    ui.label(rust_i18n::t!("app.language").to_string());
+                        })
+                        .response
+                        .labelled_by(lang_label);
                     if ui.button(rust_i18n::t!("app.updates").to_string()).clicked() {
                         self.updater_open = true;
                     }
@@ -1410,7 +1567,7 @@ impl eframe::App for SuturaApp {
                 ui.separator();
                 let mut clicked = None;
                 let mut remove = None;
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                let files_out = egui::ScrollArea::vertical().show(ui, |ui| {
                     for (idx, entry) in self.files.iter().enumerate() {
                         let name = entry
                             .path
@@ -1482,6 +1639,11 @@ impl eframe::App for SuturaApp {
                         }
                     }
                 });
+                #[cfg(test)]
+                self.file_scroll_probe.store(
+                    files_out.state.clamped_offset().y.to_bits(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 if let Some(idx) = clicked {
                     self.selected = Some(idx);
                 }
@@ -1530,11 +1692,13 @@ impl eframe::App for SuturaApp {
                     area = area.vertical_scroll_offset(self.settings_scroll);
                     self.consume_settings_scroll();
                 }
-                area.show(ui, |ui| {
+                #[cfg(test)]
+                let probe = self.settings_scroll_probe.clone();
+                let settings_out = area.show(ui, |ui| {
                     ui.heading(rust_i18n::t!("app.settings").to_string());
                     ui.separator();
                     ui.horizontal(|ui| {
-                        ui.label(rust_i18n::t!("app.intensity").to_string());
+                        let label_id = labelled(ui, rust_i18n::t!("app.intensity").to_string());
                         egui::ComboBox::from_id_salt("intensity")
                             .selected_text(self.intensity.label())
                             .show_ui(ui, |ui| {
@@ -1550,13 +1714,14 @@ impl eframe::App for SuturaApp {
                                         value.label(),
                                     );
                                 }
-                            });
+                            })
+                            .response.labelled_by(label_id);
                     });
                     // Every control below writes `self.settings` directly. Nothing
                     // here builds a RepairOptions by hand: `options_from` does that,
                     // in the core, for the CLI and the GUI alike.
                     ui.horizontal(|ui| {
-                        ui.label(rust_i18n::t!("app.deep_repair").to_string());
+                        let deep_label = labelled(ui, rust_i18n::t!("app.deep_repair").to_string());
                         let current = self
                             .settings
                             .deep_repair
@@ -1573,14 +1738,15 @@ impl eframe::App for SuturaApp {
                                         self.settings.deep_repair = Some(value.to_string());
                                     }
                                 }
-                            });
+                            })
+                            .response.labelled_by(deep_label);
                     });
 
                     // Mode and profile change repair *results*, and neither was
                     // reachable from the GUI at all -- a GUI user could not
                     // reproduce what the CLI does with `--mode` or `--profile`.
                     ui.horizontal(|ui| {
-                        ui.label(rust_i18n::t!("app.mode").to_string());
+                        let mode_label = labelled(ui, rust_i18n::t!("app.mode").to_string());
                         let current = self
                             .settings
                             .mode
@@ -1597,7 +1763,8 @@ impl eframe::App for SuturaApp {
                                         self.settings.mode = Some(value.to_string());
                                     }
                                 }
-                            });
+                            })
+                            .response.labelled_by(mode_label);
                     });
                     // Live description, as Python's dialog shows: it must follow
                     // the combo. `t!` returns a `Cow`, so convert before styling.
@@ -1610,7 +1777,7 @@ impl eframe::App for SuturaApp {
                         egui::Label::new(egui::RichText::new(desc).small().weak()).wrap(),
                     );
                     ui.horizontal(|ui| {
-                        ui.label(rust_i18n::t!("app.profile").to_string());
+                        let label_id = labelled(ui, rust_i18n::t!("app.profile").to_string());
                         let current = self.settings.profile.clone();
                         egui::ComboBox::from_id_salt("profile")
                             .selected_text(
@@ -1876,7 +2043,7 @@ impl eframe::App for SuturaApp {
 
                     ui.separator();
                     ui.horizontal(|ui| {
-                        ui.label(rust_i18n::t!("app.si_mode").to_string());
+                        let si_label = labelled(ui, rust_i18n::t!("app.si_mode").to_string());
                         let current = self
                             .settings
                             .si_mode
@@ -1890,10 +2057,11 @@ impl eframe::App for SuturaApp {
                                         self.settings.si_mode = Some(value.to_string());
                                     }
                                 }
-                            });
+                            })
+                            .response.labelled_by(si_label);
                     });
                     ui.horizontal(|ui| {
-                        ui.label(rust_i18n::t!("app.solid_engine").to_string());
+                        let solid_label = labelled(ui, rust_i18n::t!("app.solid_engine").to_string());
                         let current = self
                             .settings
                             .solid_engine
@@ -1907,7 +2075,8 @@ impl eframe::App for SuturaApp {
                                         self.settings.solid_engine = Some(value.to_string());
                                     }
                                 }
-                            });
+                            })
+                            .response.labelled_by(solid_label);
                     });
 
                     ui.separator();
@@ -2585,6 +2754,11 @@ impl eframe::App for SuturaApp {
                         }
                     }
                     });
+                #[cfg(test)]
+                probe.store(
+                    settings_out.state.clamped_offset().y.to_bits(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             });
         }
         if cancel_clicked || cancel_in_panel {
@@ -3497,8 +3671,17 @@ fn opt_f64(ui: &mut egui::Ui, id: &str, value: &mut Option<f64>, label: &str) {
     ui.horizontal(|ui| {
         ui.label(label);
         let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
+        // `hint_text` is the accessible name here: egui's TextEdit does not take
+        // its name from `labelled_by`, which is why the accessibility check still
+        // listed ten anonymous boxes. A hint also tells a sighted user what an
+        // empty field expects.
         if ui
-            .add(egui::TextEdit::singleline(&mut text).id_salt(id).desired_width(90.0))
+            .add(
+                egui::TextEdit::singleline(&mut text)
+                    .id_salt(id)
+                    .hint_text(label)
+                    .desired_width(90.0),
+            )
             .changed()
         {
             *value = if text.trim().is_empty() {
@@ -3515,8 +3698,17 @@ fn opt_i64(ui: &mut egui::Ui, id: &str, value: &mut Option<i64>, label: &str) {
     ui.horizontal(|ui| {
         ui.label(label);
         let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
+        // `hint_text` is the accessible name here: egui's TextEdit does not take
+        // its name from `labelled_by`, which is why the accessibility check still
+        // listed ten anonymous boxes. A hint also tells a sighted user what an
+        // empty field expects.
         if ui
-            .add(egui::TextEdit::singleline(&mut text).id_salt(id).desired_width(90.0))
+            .add(
+                egui::TextEdit::singleline(&mut text)
+                    .id_salt(id)
+                    .hint_text(label)
+                    .desired_width(90.0),
+            )
             .changed()
         {
             *value = if text.trim().is_empty() {
@@ -3774,6 +3966,17 @@ fn finish_from_output_with(
             cancelled: false,
         }),
     }
+}
+
+/// Draw a form label and return its id, so the control beside it can point at it.
+///
+/// Without this the combos and text fields are anonymous to a screen reader --
+/// `egui_kittest` turned that into a hard failure listing sixteen unnamed
+/// widgets. `labelled_by` is the standard way to associate a label with a
+/// control, and it costs one id.
+fn labelled(ui: &mut egui::Ui, text: String) -> egui::Id {
+    let response = ui.label(text);
+    response.id
 }
 
 /// Truncate a verdict for the narrow file column without cutting mid-word.
