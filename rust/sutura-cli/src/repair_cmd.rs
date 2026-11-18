@@ -2074,6 +2074,14 @@ fn process_one(
     // `--no-history` is the switch, matching Python. Failures and declined saves
     // are not recorded -- Python records a successful repair only, and a record
     // for a mesh that was never written would corrupt the learning stats.
+    //
+    // WARNING for anyone writing a gate or a benchmark around this binary: this
+    // write is ON by default and lands in `$HOME/.local/share/sutura/data`.
+    // A gate that runs 26 meshes per pass therefore appends 26 records to the
+    // real user directory on a machine that may have no installation at all --
+    // which happened, twice, before the runner was fenced off with
+    // `SUTURA_DATA_DIR` plus `--no-history`. Both are applied by
+    // `/tmp/p10-io-gate.sh`; a new gate must do the same.
     if !cli.no_history && !failed {
         let wrote_output = report.get("status").and_then(Value::as_str) != Some("budget_declined");
         if wrote_output {
@@ -2280,6 +2288,43 @@ pub fn run(cli: &crate::Cli) -> Result<(), (u8, Option<String>)> {
         Err((1, None))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod history_guard_tests {
+    /// `SUTURA_DATA_DIR` must redirect the history write away from the real
+    /// home directory.
+    ///
+    /// This is the guard the gates depend on: the CLI records history by
+    /// default, so a gate that forgets the variable appends to
+    /// `$HOME/.local/share/sutura/data/history.jsonl` on a machine that may have
+    /// no installation. That happened twice before the gates were fenced; this
+    /// test makes the redirect a pinned invariant rather than a convention.
+    ///
+    /// Sets the process-global variable, which is why there is exactly one test
+    /// here -- two would race under the parallel harness.
+    #[test]
+    fn data_dir_env_redirects_history() {
+        let dir = std::env::temp_dir().join(format!("sutura-hist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var(sutura_core::config::learning::DATA_ENV, &dir);
+
+        let path = sutura_core::report::history::history_path();
+        assert!(
+            path.starts_with(&dir),
+            "history must land under SUTURA_DATA_DIR, got {path:?}"
+        );
+        assert!(!path.starts_with(std::env::var("HOME").unwrap_or_default() + "/.local"));
+
+        // And an actual append goes there.
+        let mut record = serde_json::json!({"format": "stl", "faces_before": 1});
+        sutura_core::report::history::append_record(&mut record);
+        let text = std::fs::read_to_string(&path).expect("the record must be written");
+        assert!(text.contains("\"format\": \"stl\""), "got {text}");
+        assert!(text.ends_with('\n'), "one record per line");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
