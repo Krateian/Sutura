@@ -26,9 +26,76 @@ pub struct DisplayMesh {
     /// kept here rather than reconstructed.
     pub src_verts: Vec<[f32; 3]>,
     pub src_tris: Vec<[i32; 3]>,
+    /// Per-face defect-kind colour from `diagnose_core`'s `face_mask`. Empty
+    /// until requested: the diagnosis is much heavier than the surface check the
+    /// preview needs, so it is opt-in (the "Defect colours" toggle).
+    pub defect_colors: Vec<Option<[u8; 3]>>,
+}
+
+/// Per-face defect-kind colours, from the diagnosis `face_mask` bits.
+///
+/// The palette is Python's `DEFECT_COLORS`, verbatim (`defects.py:262`) -- it is
+/// described there as "the SINGLE source of truth", so copying the exact RGB
+/// values is the point: two viewers showing different colours for the same defect
+/// would be a parity failure. Bit assignments come from `_V2_FACE_BITS`.
+///
+/// `(0, 0, 0)` means "no defect colour", as in Python; a face with several kinds
+/// keeps the most severe, and the order below is that precedence.
+pub const DEFECT_COLORS: [(&str, u8, [u8; 3]); 8] = [
+    ("non_manifold", 2, [235, 60, 70]),
+    ("self_intersection", 16, [200, 60, 200]),
+    ("duplicate", 4, [40, 180, 200]),
+    ("noise", 32, [140, 140, 140]),
+    ("interior", 64, [110, 80, 200]),
+    ("thin_wall", 128, [245, 120, 180]),
+    ("degenerate", 8, [250, 210, 60]),
+    ("orientation", 1, [255, 140, 60]),
+];
+
+/// Resolve one face's `face_mask` byte to an RGB colour.
+pub fn defect_kind_color(byte: u8) -> Option<[u8; 3]> {
+    DEFECT_COLORS
+        .iter()
+        .find(|(_, bit, _)| byte & bit != 0)
+        .map(|(_, _, rgb)| *rgb)
 }
 
 impl DisplayMesh {
+    /// Compute per-face defect-kind colours, once.
+    ///
+    /// Optical because `diagnose_core` is a full topological diagnosis -- far
+    /// more work than the surface check the preview always does. Idempotent, so
+    /// toggling the mode twice does not recompute.
+    pub fn ensure_defect_colors(&mut self) -> Result<(), String> {
+        if !self.defect_colors.is_empty() || self.src_tris.is_empty() {
+            return Ok(());
+        }
+        let verts: Vec<[f64; 3]> = self
+            .src_verts
+            .iter()
+            .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+            .collect();
+        let tris: Vec<[usize; 3]> = self
+            .src_tris
+            .iter()
+            .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+            .collect();
+        let report = sutura_geom::diagnosis::diagnose_core(&verts, &tris, "summary");
+        if report.face_mask.len() != self.src_tris.len() {
+            return Err(format!(
+                "diagnosis returned {} face masks for {} faces",
+                report.face_mask.len(),
+                self.src_tris.len()
+            ));
+        }
+        self.defect_colors = report
+            .face_mask
+            .iter()
+            .map(|&b| defect_kind_color(b))
+            .collect();
+        Ok(())
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         let mesh = load_mesh(path).map_err(|e| e.to_string())?;
         if mesh.is_empty() {
@@ -124,6 +191,7 @@ impl DisplayMesh {
             deviation: Vec::new(),
             src_verts: mesh.verts.clone(),
             src_tris: mesh.tris.clone(),
+            defect_colors: Vec::new(),
         })
     }
 

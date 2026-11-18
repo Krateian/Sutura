@@ -67,6 +67,9 @@ pub struct Preview {
     /// Python has no such feedback (`gui.py:6059` only accepts the event), so
     /// this is an addition, not a port.
     pub drop_active: bool,
+    /// Paint each face by its defect kind instead of by shading. The palette is
+    /// Python's (`mesh::DEFECT_COLORS`); this is its "defect-colour" view mode.
+    pub defect_colors: bool,
 }
 
 impl Preview {
@@ -103,6 +106,7 @@ impl Preview {
             error: None,
             heatmap: false,
             drop_active: false,
+            defect_colors: false,
         }
     }
 
@@ -125,6 +129,7 @@ impl Preview {
             error: None,
             heatmap: false,
             drop_active: false,
+            defect_colors: false,
         }
     }
 
@@ -196,15 +201,36 @@ impl Preview {
             self.dirty = true;
         }
 
+        if self.defect_colors {
+            // Fill the palette on first use rather than at load: the diagnosis is
+            // the expensive part and most sessions never ask for this view.
+            if let Some(mesh) = &self.mesh {
+                if mesh.defect_colors.is_empty() {
+                    let mut copy = (**mesh).clone();
+                    if let Err(e) = copy.ensure_defect_colors() {
+                        self.error = Some(e);
+                    } else {
+                        self.mesh = Some(std::sync::Arc::new(copy));
+                        self.dirty = true;
+                    }
+                }
+            }
+        }
+
         if let Some(mesh) = self.mesh.clone() {
             if self.dirty {
                 let aspect = size[0] as f32 / size[1].max(1) as f32;
                 let vp = self.camera.view_proj(aspect);
                 let result = match &mut self.viewer {
                     Viewer::Wgpu(v) => v.render(&mesh, vp, self.size, self.heatmap),
-                    Viewer::Cpu(v) => {
-                        v.render(ui.ctx(), &mesh, vp, self.size, self.heatmap)
-                    }
+                    Viewer::Cpu(v) => v.render_with(
+                        ui.ctx(),
+                        &mesh,
+                        vp,
+                        self.size,
+                        self.heatmap,
+                        self.defect_colors,
+                    ),
                 };
                 if let Err(e) = result {
                     self.error = Some(e);

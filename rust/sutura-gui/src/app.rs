@@ -2471,6 +2471,22 @@ impl eframe::App for SuturaApp {
                         self.preview.heatmap = heat;
                         self.preview.dirty = true;
                     }
+                    // Python's "defect-colour" view mode (`gui.py:7512`): each
+                    // face painted by its defect kind. Mutually exclusive with
+                    // the heatmap -- both colour faces, and two colourings at
+                    // once is not a mode anyone asked for.
+                    let mut kinds = self.preview.defect_colors;
+                    if ui
+                        .checkbox(&mut kinds, rust_i18n::t!("app.defect_colors").to_string())
+                        .on_hover_text(rust_i18n::t!("app.defect_colors_tip").to_string())
+                        .changed()
+                    {
+                        self.preview.defect_colors = kinds;
+                        if kinds {
+                            self.preview.heatmap = false;
+                        }
+                        self.preview.dirty = true;
+                    }
                 });
             }
             self.preview.show(ui);
@@ -4367,6 +4383,59 @@ mod tests {
         let (_, given, methods) = options_from(&unspecified).unwrap();
         assert!(!given);
         assert!(methods.is_empty());
+    }
+
+    /// The defect-colour palette must match Python's and the mask must decode.
+    ///
+    /// The RGB values come from `DEFECT_COLORS` in `defects.py:262`, described
+    /// there as the single source of truth; a viewer painting different colours
+    /// for the same defect would be a parity failure, so they are asserted rather
+    /// than trusted.
+    #[test]
+    fn defect_palette_matches_python_and_decodes() {
+        use crate::mesh::DEFECT_COLORS;
+        assert_eq!(DEFECT_COLORS.len(), 8, "eight kinds in Python's table");
+        assert_eq!(
+            DEFECT_COLORS[0],
+            ("non_manifold", 2, [235, 60, 70]),
+            "non_manifold is red and bit 2"
+        );
+        // Every bit is distinct, or two kinds would colour the same faces.
+        let mut bits: Vec<u8> = DEFECT_COLORS.iter().map(|(_, b, _)| *b).collect();
+        bits.sort_unstable();
+        bits.dedup();
+        assert_eq!(bits.len(), DEFECT_COLORS.len(), "bit assignments collide");
+
+        // A byte with several kinds resolves to the most severe, in table order.
+        assert_eq!(
+            crate::mesh::defect_kind_color(2 | 4),
+            Some([235, 60, 70]),
+            "non_manifold wins over duplicate"
+        );
+        assert_eq!(crate::mesh::defect_kind_color(0), None, "clean face");
+        assert_eq!(
+            crate::mesh::defect_kind_color(128),
+            Some([245, 120, 180]),
+            "thin wall is pink"
+        );
+
+        // And a real diagnosis produces masks of the right length, which is what
+        // makes the per-face lookup safe.
+        let fixture = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../sutura-geom/tests/fixtures/case3_broken_cup.stl"
+        ));
+        let mut mesh = DisplayMesh::load(fixture).expect("fixture must load");
+        mesh.ensure_defect_colors().expect("diagnosis must run");
+        assert_eq!(
+            mesh.defect_colors.len(),
+            mesh.src_tris.len(),
+            "one colour slot per face"
+        );
+        assert!(
+            mesh.defect_colors.iter().any(|c| c.is_some()),
+            "this fixture has defects, so some faces must be coloured"
+        );
     }
 
     /// The settings panel must be inside a scroll area.

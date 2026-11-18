@@ -79,6 +79,8 @@ app:
   file_methods: "Bu dosyanın yöntemleri"
   file_methods_inherit: "Panel seçimini kullan"
   file_methods_count: "%{count} yöntem uygulanıyor"
+  defect_colors: "Kusur renkleri"
+  defect_colors_tip: "Her yüzü kusur türüne göre boya (manifold olmayan, kopya, dejenere…). İlk kullanımda tam teşhis gerekir."
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"

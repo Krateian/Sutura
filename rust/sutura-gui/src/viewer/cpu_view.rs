@@ -30,7 +30,19 @@ impl CpuViewer {
         size: [u32; 2],
         heatmap: bool,
     ) -> Result<(), String> {
-        let pixmap = self.rasterize(mesh, view_proj, size, heatmap)?;
+        self.render_with(ctx, mesh, view_proj, size, heatmap, false)
+    }
+
+    pub fn render_with(
+        &mut self,
+        ctx: &egui::Context,
+        mesh: &DisplayMesh,
+        view_proj: Mat4,
+        size: [u32; 2],
+        heatmap: bool,
+        defect_colors: bool,
+    ) -> Result<(), String> {
+        let pixmap = self.rasterize_with(mesh, view_proj, size, heatmap, defect_colors)?;
         let image = egui::ColorImage::from_rgba_premultiplied(
             [pixmap.width() as usize, pixmap.height() as usize],
             pixmap.data(),
@@ -57,6 +69,17 @@ impl CpuViewer {
         size: [u32; 2],
         heatmap: bool,
     ) -> Result<Pixmap, String> {
+        self.rasterize_with(mesh, view_proj, size, heatmap, false)
+    }
+
+    pub fn rasterize_with(
+        &self,
+        mesh: &DisplayMesh,
+        view_proj: Mat4,
+        size: [u32; 2],
+        heatmap: bool,
+        defect_colors: bool,
+    ) -> Result<Pixmap, String> {
 
         let w = size[0].clamp(16, 1600) as usize;
         let h = size[1].clamp(16, 1200) as usize;
@@ -67,7 +90,9 @@ impl CpuViewer {
         let stride = (mesh.triangle_count() / MAX_TRIS).max(1);
         let light = Vec3::new(0.45, 0.75, 0.5).normalize();
         // (depth, screen, shade, defect weight, deviation-ramp index)
-        let mut tris: Vec<(f32, [[f32; 2]; 3], f32, f32, Option<u16>)> =
+        // The face id is carried so the painter can look up the defect-kind
+        // colour; `dev_idx` is already indexed by it.
+        let mut tris: Vec<(f32, [[f32; 2]; 3], f32, f32, Option<u16>, usize)> =
             Vec::with_capacity((mesh.triangle_count() / stride).max(1));
         let dev_lut = sutura_geom::heatmap::deviation_lut();
         for (tri_idx, tri) in mesh.indices.chunks_exact(3).enumerate() {
@@ -107,11 +132,11 @@ impl CpuViewer {
             // The ramp is indexed by the ORIGINAL face id, which is the soup's
             // face id because the soup is built one triangle at a time in order.
             let dev = mesh.dev_idx.get(tri_idx).copied();
-            tris.push((depth / 3.0, screen, shade, defect, dev));
+            tris.push((depth / 3.0, screen, shade, defect, dev, tri_idx));
         }
         tris.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        for (_, screen, shade, defect, dev) in tris {
+        for (_, screen, shade, defect, dev, tri_idx) in tris {
             let mut pb = PathBuilder::new();
             pb.move_to(screen[0][0], screen[0][1]);
             pb.line_to(screen[1][0], screen[1][1]);
@@ -122,8 +147,22 @@ impl CpuViewer {
             let (mut r, mut g, mut b) = (61.0 * shade, 158.0 * shade, 148.0 * shade);
             // Same precedence as `heatmap.draw_frame`: an available deviation
             // ramp wins over the defect blend, which wins over neutral grey.
+            // Defect-kind colour wins over everything: Python's `defects` view
+            // is a mode of its own, not an overlay on the deviation ramp.
+            let kind = if defect_colors {
+                mesh.defect_colors
+                    .get(tri_idx)
+                    .copied()
+                    .flatten()
+            } else {
+                None
+            };
             let ramp = if heatmap { dev } else { None };
-            if let Some(idx) = ramp {
+            if let Some(rgb) = kind {
+                r = rgb[0] as f32;
+                g = rgb[1] as f32;
+                b = rgb[2] as f32;
+            } else if let Some(idx) = ramp {
                 // Verbatim, per `heatmap.draw_frame`: the ramp colour is not
                 // shaded, only the neutral body is. Shading it too made the
                 // already-dark navy end darker still and hurt legibility.

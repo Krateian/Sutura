@@ -79,6 +79,8 @@ app:
   file_methods: "Methods for this file"
   file_methods_inherit: "Use the panel selection"
   file_methods_count: "%{count} method(s) applied"
+  defect_colors: "Defect colours"
+  defect_colors_tip: "Paint each face by its defect kind (non-manifold, duplicate, degenerate…). Needs a full diagnosis on first use."
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"
