@@ -39,6 +39,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+from sutura_engine import backend as _backend  # noqa: E402
+_backend.apply_engine_defaults()
+_backend.note_deprecated()
+
 import updater
 import triage
 # method registry / per-object recommendations (stdlib+numpy at import time;

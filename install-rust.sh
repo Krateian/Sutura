@@ -107,15 +107,22 @@ if [ -d "$STAGE/keep-data/data" ]; then
     run cp -a "$STAGE/keep-data/data" "$APP_DIR/data"
 fi
 
-# Symlinks, not copies: the updater replaces $APP_DIR, so the PATH entry follows.
-# `ftetwild` is the fTetWild fallback CLI the package bundles; linking it keeps
-# the tier findable through PATH as well as through the bundled path
-# `sutura_core::ftetwild::find_binary` checks (`$APP_DIR/bin/ftetwild`).
-for bin in sutura sutura-gui ftetwild; do
-    if [ -f "$APP_DIR/bin/$bin" ]; then
+# PATH entry points: the P10 launchers select the Rust binary by default and
+# honour SUTURA_BACKEND=python when a legacy Python install exists.  The
+# launchers survive an updater swap because they live under $APP_DIR/share.
+for bin in sutura sutura-gui; do
+    if [ -f "$APP_DIR/share/launchers/$bin" ]; then
+        run install -m 0755 "$APP_DIR/share/launchers/$bin" "$BIN_DIR/$bin"
+    elif [ -f "$APP_DIR/bin/$bin" ]; then
         run ln -sf "$APP_DIR/bin/$bin" "$BIN_DIR/$bin"
     fi
 done
+# `ftetwild` is the fTetWild fallback CLI the package bundles; linking it keeps
+# the tier findable through PATH as well as through the bundled path
+# `sutura_core::ftetwild::find_binary` checks (`$APP_DIR/bin/ftetwild`).
+if [ -f "$APP_DIR/bin/ftetwild" ]; then
+    run ln -sf "$APP_DIR/bin/ftetwild" "$BIN_DIR/ftetwild"
+fi
 
 # Dolphin ServiceMenu. The packaged tarball ships it under share/applications,
 # but Dolphin only reads kio/servicemenus, so it is installed there explicitly
