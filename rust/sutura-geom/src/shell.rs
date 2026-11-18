@@ -194,7 +194,7 @@ pub fn buried_face_mask_with_bvh(
     let results: Vec<(u8, f64)> = (0..tris.len())
         .into_par_iter()
         .map(|i| {
-            let approx = classify_buried_face(verts, tris, &bvh, eps, d, i, 5e-2);
+            let approx = classify_buried_face(verts, tris, &bvh, eps, d, i, 1e-2);
             if verify {
                 let exact = classify_buried_face(verts, tris, &bvh, eps, d, i, 1e-2);
                 assert_eq!(approx.0, exact.0,
@@ -352,7 +352,7 @@ impl BuriedMaskContext {
                 let i = fi as usize;
                 if i < self.tris.len() {
                     let (class, area) = classify_buried_face(
-                        &self.verts, &self.tris, &self.bvh, self.eps, self.d, i, 5e-2);
+                        &self.verts, &self.tris, &self.bvh, self.eps, self.d, i, 1e-2);
                     Some((i, class, area))
                 } else {
                     None
