@@ -148,7 +148,14 @@ fn buried_face_mask(
         .iter()
         .map(|x| [x[0] as u32, x[1] as u32, x[2] as u32])
         .collect();
+    let _t_buried = std::time::Instant::now();
     let res = shell::buried_face_mask_with_bvh(vi, &rt, delta, bvh);
+    if std::env::var_os("SUTURA_FIDELITY_TIMES").is_some() {
+        eprintln!(
+            "[fidelity-time] buried_mask {:.3} ms",
+            _t_buried.elapsed().as_secs_f64() * 1000.0
+        );
+    }
     let mut mask = res.mask;
     for (m, d) in mask.iter_mut().zip(defect) {
         if *d {

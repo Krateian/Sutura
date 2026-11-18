@@ -238,6 +238,10 @@ pub fn apply_chain_with_cancel_errors(
                 }));
             }
         }
+        let _t_step = std::time::Instant::now();
+        let _f_before = t.len();
+        let _t_step = std::time::Instant::now();
+        let _f_before = t.len();
         let res: Result<(), String> = (|| {
             match name {
                 "meshing_remove_duplicate_faces" => {
@@ -320,6 +324,15 @@ pub fn apply_chain_with_cancel_errors(
             }
             Ok(())
         })();
+        if std::env::var_os("SUTURA_STAGE_TIMES").is_some() {
+            eprintln!(
+                "[stage1-time] {} {:.3} ms faces {}->{}",
+                name,
+                _t_step.elapsed().as_secs_f64() * 1000.0,
+                _f_before,
+                t.len()
+            );
+        }
         let failed = res.is_err();
         match res {
             Ok(()) => applied += 1,
