@@ -58,6 +58,14 @@ app:
   close: "Close"
   defects: "Defects (%{count})"
   defects_more: "… and %{rest} more"
+  engines_section: "Engines"
+  engines_ftetwild: "fTetWild"
+  engines_installed: "installed"
+  engines_missing: "not found"
+  engines_missing_tip: "Set FTETWILD_BIN or reinstall; the solid-engine fallback will be used."
+  engines_none: "No external engines configured."
+  engines_enabled: "enabled"
+  engines_disabled: "disabled"
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"

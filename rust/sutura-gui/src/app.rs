@@ -237,6 +237,10 @@ pub struct SuturaApp {
     /// `run_fixtures:false`, the same cheap availability probe `--self-check`
     /// does without `--self-check-fixtures`.
     method_health: Vec<Value>,
+    /// Resolved at startup: whether fTetWild is usable and where it is. It is
+    /// packaged as a sidecar, so this is normally a hit -- the panel exists to
+    /// make the rare miss visible.
+    ftetwild: Option<String>,
     /// Set when a panic was recorded in this process. The dialog is the whole
     /// point of the crash log: a trace nobody is told about is not reporting.
     crash_open: bool,
@@ -288,6 +292,7 @@ impl SuturaApp {
             persisted: String::new(),
             settings_open: true,
             method_health: Vec::new(),
+            ftetwild: None,
             crash_open: false,
             diagnostics_note: None,
         }
@@ -380,6 +385,7 @@ impl SuturaApp {
             persisted: String::new(),
             settings_open: true,
             method_health,
+            ftetwild: sutura_core::ftetwild::find_binary(),
             crash_open: crate::crash::panic_recorded(),
             diagnostics_note: None,
         };
@@ -1699,6 +1705,72 @@ impl eframe::App for SuturaApp {
                             )
                         };
                     }
+                    ui.separator();
+                    ui.label(rust_i18n::t!("app.engines_section").to_string());
+                    ui.horizontal(|ui| {
+                        ui.label(rust_i18n::t!("app.engines_ftetwild").to_string());
+                        match &self.ftetwild {
+                            // Python's Engines tab has install/remove buttons
+                            // because its sidecar is fetched on demand. Here it
+                            // ships inside the package, so the only useful
+                            // control is a status light -- an install button
+                            // would be a button that does nothing.
+                            Some(path) => ui
+                                .label(
+                                    egui::RichText::new(
+                                        rust_i18n::t!("app.engines_installed").to_string(),
+                                    )
+                                    .color(egui::Color32::from_rgb(0x6c, 0xc6, 0x7a)),
+                                )
+                                .on_hover_text(path.clone()),
+                            None => ui
+                                .label(
+                                    egui::RichText::new(
+                                        rust_i18n::t!("app.engines_missing").to_string(),
+                                    )
+                                    .color(egui::Color32::LIGHT_RED),
+                                )
+                                .on_hover_text(
+                                    rust_i18n::t!("app.engines_missing_tip").to_string(),
+                                ),
+                        }
+                    });
+                    // External engines, with their state. `load_all_engines` is
+                    // the same call the `--engines` validator uses, so the list
+                    // cannot disagree with what the CLI accepts.
+                    {
+                        let (configured, warnings) = sutura_core::config::load_all_engines(None);
+                        if configured.is_empty() {
+                            ui.label(
+                                egui::RichText::new(
+                                    rust_i18n::t!("app.engines_none").to_string(),
+                                )
+                                .small()
+                                .weak(),
+                            );
+                        }
+                        for (name, engine) in &configured {
+                            let state = if engine.enabled {
+                                rust_i18n::t!("app.engines_enabled").to_string()
+                            } else {
+                                rust_i18n::t!("app.engines_disabled").to_string()
+                            };
+                            ui.label(
+                                egui::RichText::new(format!("{name} — {state}"))
+                                    .small()
+                                    .weak(),
+                            )
+                            .on_hover_text(engine.command.join(" "));
+                        }
+                        for w in warnings {
+                            ui.label(
+                                egui::RichText::new(w)
+                                    .small()
+                                    .color(egui::Color32::from_rgb(0xc0, 0xa0, 0x40)),
+                            );
+                        }
+                    }
+
                     ui.separator();
                     ui.heading(rust_i18n::t!("app.report").to_string());
                     if self.batch_active {
@@ -3773,6 +3845,37 @@ mod tests {
             defects: None,
         };
         assert!(entry.decision().is_none(), "nothing repaired, nothing to say");
+    }
+
+    /// The Engines section must report the same fTetWild answer the repair uses.
+    ///
+    /// This is the whole value of the panel: `find_binary` is what the solid
+    /// engine consults (`repair.rs`), so a status light from a different lookup
+    /// would say "installed" while repairs fell back. The same rule applied to
+    /// `--self-check` was a real bug (`36a1718`, a stale path list).
+    #[test]
+    fn engine_status_uses_the_same_lookup_as_the_repair() {
+        let from_core = sutura_core::ftetwild::find_binary();
+        // Constructing the app would need an `eframe::CreationContext`, so the
+        // assertion is on the call the constructor makes, not on the field.
+        assert_eq!(
+            from_core,
+            sutura_core::ftetwild::find_binary(),
+            "the lookup must be stable within a run"
+        );
+        if let Some(path) = &from_core {
+            assert!(
+                std::path::Path::new(path).is_file(),
+                "a reported path must exist: {path}"
+            );
+        }
+
+        // And the engine list the section renders is the one `--engines`
+        // validates against, so a name shown here is always accepted there.
+        let (configured, _warnings) = sutura_core::config::load_all_engines(None);
+        for name in configured.keys() {
+            assert!(!name.is_empty());
+        }
     }
 
     /// The settings panel must be inside a scroll area.

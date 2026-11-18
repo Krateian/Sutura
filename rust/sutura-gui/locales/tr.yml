@@ -58,6 +58,14 @@ app:
   close: "Kapat"
   defects: "Kusurlar (%{count})"
   defects_more: "… ve %{rest} tane daha"
+  engines_section: "Motorlar"
+  engines_ftetwild: "fTetWild"
+  engines_installed: "kurulu"
+  engines_missing: "bulunamadı"
+  engines_missing_tip: "FTETWILD_BIN ayarlayın veya yeniden kurun; katı motor yedeği kullanılacak."
+  engines_none: "Yapılandırılmış dış motor yok."
+  engines_enabled: "etkin"
+  engines_disabled: "devre dışı"
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"
