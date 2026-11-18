@@ -665,3 +665,55 @@ fn defect_kind_palette_is_available_for_the_vertex_upload() {
         .count();
     assert!(sentinel_maps_to_negative > 0, "some faces are clean");
 }
+
+
+/// A repair must finish even if the UI never draws another frame.
+///
+/// This is the Steam Deck failure: the worker completed and wrote its output at
+/// 52 s while the UI still said "repair started" at 62 s, and would have said it
+/// forever. Progress is read from a channel inside a frame, and an idle window
+/// produces no frames, so the `Finished` event was never picked up.
+///
+/// Two fixes, both required: the worker wakes the UI when it is done, and a
+/// running repair keeps requesting frames. This test drives **no frames** after
+/// starting the repair -- if the worker ever needed the UI to make progress, the
+/// receive below times out and the test fails.
+#[test]
+fn repair_completes_without_the_ui_drawing() {
+    let _serial = serial();
+
+    let dir = std::env::temp_dir().join(format!("sutura-nodraw-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // It runs a real repair, which records history; sandbox it.
+    let previous = std::env::var_os(sutura_core::config::learning::DATA_ENV);
+    std::env::set_var(sutura_core::config::learning::DATA_ENV, &dir);
+
+    let input = temp_box("nodraw");
+    let mut app = SuturaApp::for_test();
+    app.add_file_for_test(input);
+    let rx = app.start_repair_without_frames(0, true);
+
+    // Deliberately no `harness.step()`: the worker must not need one.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    let mut saw_finished = false;
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(std::time::Duration::from_secs(180)) {
+            Ok(crate::app::RepairEvent::Finished { .. }) => {
+                // The event's payload types are private to the app module; what
+                // this test is about is that the event ARRIVES without frames.
+                saw_finished = true;
+                break;
+            }
+            Ok(_) => continue,
+            Err(e) => panic!("no completion without frames: {e}"),
+        }
+    }
+    assert!(saw_finished, "the repair never reported completion");
+
+    match previous {
+        Some(v) => std::env::set_var(sutura_core::config::learning::DATA_ENV, v),
+        None => std::env::remove_var(sutura_core::config::learning::DATA_ENV),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

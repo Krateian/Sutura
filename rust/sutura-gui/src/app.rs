@@ -164,7 +164,7 @@ impl Entry {
     }
 }
 
-enum RepairEvent {
+pub(crate) enum RepairEvent {
     Started(u32),
     Progress { step: u8, total: u8 },
     Stderr(String),
@@ -332,6 +332,9 @@ pub struct SuturaApp {
     /// `--open-compare` asked for the pair, but the repair had not finished when
     /// the window opened. Opened from the frame that has the result.
     pending_compare: bool,
+    /// The current egui context, refreshed each frame. A repair worker holds a
+    /// clone so it can wake the UI when it finishes -- see `start_repair_mode`.
+    ctx: Option<egui::Context>,
     /// One-shot: size the window to the screen on the first frame, when the
     /// monitor's dimensions are finally known.
     fit_to_screen_pending: bool,
@@ -489,6 +492,18 @@ impl SuturaApp {
         self.settings_scroll = offset;
     }
 
+    /// Start a repair and hand back the channel it reports on, so a test can wait
+    /// for completion WITHOUT driving a frame.
+    #[cfg(test)]
+    pub fn start_repair_without_frames(
+        &mut self,
+        idx: usize,
+        force: bool,
+    ) -> mpsc::Receiver<RepairEvent> {
+        self.start_repair_mode(idx, force, false);
+        self.repair_rx.take().expect("start_repair opens a channel")
+    }
+
     #[cfg(test)]
     pub fn diagnostics_note(&self) -> Option<String> {
         self.diagnostics_note.clone()
@@ -541,6 +556,7 @@ impl SuturaApp {
             settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
+            ctx: None,
             fit_to_screen_pending: false,
             method_health: Vec::new(),
             ftetwild: None,
@@ -653,6 +669,7 @@ impl SuturaApp {
             settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
+            ctx: None,
             fit_to_screen_pending: true,
             method_health,
             ftetwild: sutura_core::ftetwild::find_binary(),
@@ -1067,8 +1084,19 @@ impl SuturaApp {
                     .join(","),
             );
         }
+        // The worker owns a `Context` handle so it can wake the UI when it
+        // finishes. Without this the repair thread completes, writes its output,
+        // and the event sits unread in the channel until the user happens to move
+        // the mouse: `poll_repair` only runs inside a frame, and an idle window
+        // produces none. On a Steam Deck that looked like "stuck at Step 4/8" --
+        // measured here, the output file appeared at 52 s while the UI still said
+        // "repair started" at 62 s.
+        let ctx_for_worker = self.ctx.clone();
         std::thread::spawn(move || {
             run_repair(&input, &output, settings, tx, cancel);
+            if let Some(ctx) = ctx_for_worker {
+                ctx.request_repaint();
+            }
         });
     }
 
@@ -1291,6 +1319,7 @@ impl SuturaApp {
     /// it. `_frame` was never read.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.ctx = Some(ctx.clone());
         // Deferred so the panel closure can set it while `self.files` is borrowed.
         let mut clear_list = false;
         // Deferred so a panel closure can set them while `self` is borrowed.
@@ -3341,6 +3370,13 @@ impl SuturaApp {
                     ));
                 }
             }
+        }
+
+        // Progress is read from a channel inside a frame, so a running repair needs
+        // frames even when nothing is happening in the window. `request_repaint_after`
+        // keeps the loop alive without spinning at full rate.
+        if self.busy() || self.pending_batch.is_some() || self.pending_overwrite.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
 
         self.apply_selection();
