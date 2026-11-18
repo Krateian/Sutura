@@ -12,6 +12,7 @@ pub mod autorefine;
 pub mod cache;
 pub mod classify;
 pub mod config;
+pub mod diagnostics;
 pub mod error;
 pub mod fmt;
 pub mod http;

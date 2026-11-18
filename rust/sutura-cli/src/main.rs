@@ -322,6 +322,36 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
     if cli.migrate_from_python {
         return migrate_command(&cli);
     }
+    // `--diagnostics PATH` writes the support archive and exits. It was declared
+    // and then refused as "not implemented" (`repair_cmd.rs:181`), which was
+    // honest but left the one thing a bug report needs unavailable.
+    if let Some(path) = &cli.diagnostics {
+        let result = sutura_core::diagnostics::create_archive(path);
+        return match result {
+            Ok(v) => {
+                if cli.json {
+                    outln!("{}", crate::repair_cmd::py_json(&v));
+                } else {
+                    outln!(
+                        "Diagnostics written: {} ({} bytes, {} methods{})",
+                        v.get("path").and_then(|p| p.as_str()).unwrap_or("?"),
+                        v.get("size_bytes").and_then(|b| b.as_u64()).unwrap_or(0),
+                        v.get("methods_count").and_then(|m| m.as_u64()).unwrap_or(0),
+                        if v.get("crash_log_included")
+                            .and_then(|c| c.as_bool())
+                            .unwrap_or(false)
+                        {
+                            ", crash log included"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+                Ok(())
+            }
+            Err(e) => Err((1, Some(format!("diagnostics failed: {e}")))),
+        };
+    }
     if cli.self_check {
         let report = sutura_core::self_check::run(true);
         if cli.json {

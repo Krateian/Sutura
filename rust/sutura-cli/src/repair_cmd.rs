@@ -177,10 +177,10 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     // are wired after `options_from` below, so they are not refused here.
     // History, learning-triage and anticipation flags are accepted and wired or
     // honoured elsewhere; the ones below have no consumer yet.
-    for (flag, set) in [
-        ("--diagnostics", cli.diagnostics.is_some()),
-        ("--trace", cli.trace.is_some()),
-    ] {
+    // `--diagnostics` is no longer refused: `main.rs` handles it before any
+    // repair is attempted, so reaching here with it set means it was combined
+    // with files, which is fine -- it exits first either way.
+    for (flag, set) in [("--trace", cli.trace.is_some())] {
         if set {
             return Err(RepairFailure::new(
                 2,
