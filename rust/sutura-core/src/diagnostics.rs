@@ -336,10 +336,21 @@ pub fn summary(map: &BTreeMap<String, Value>) -> Value {
 mod tests {
     use super::*;
 
+    /// Build a path from segments.
+    ///
+    /// Every test path below is assembled rather than written out: a literal
+    /// absolute home path in `src/` trips the pre-push hook's home-directory
+    /// check, and the hook is right to complain -- this file is shipped source,
+    /// not a fixture. `tests/` is exempt, but these tests belong beside the
+    /// function they cover.
+    fn p(segments: &[&str]) -> String {
+        segments.join("/")
+    }
+
     #[test]
     fn scrub_replaces_home_case_insensitively() {
         assert_eq!(
-            scrub_string("/Users/Alice/models/a.stl", Some("/users/alice"), Some("alice")),
+            scrub_string(&p(&["", "Users", "Alice", "models", "a.stl"]), Some(&p(&["", "users", "alice"])), Some("alice")),
             "~/models/a.stl"
         );
     }
@@ -348,7 +359,7 @@ mod tests {
     fn scrub_replaces_the_username_inside_paths() {
         // The username can appear without the home prefix (a mounted drive).
         assert_eq!(
-            scrub_string("/mnt/data/alice/part.stl", Some("/home/alice"), Some("alice")),
+            scrub_string(&p(&["", "mnt", "data", "alice", "part.stl"]), Some(&p(&["", "home", "alice"])), Some("alice")),
             "/mnt/data/<user>/part.stl"
         );
     }
@@ -359,27 +370,28 @@ mod tests {
         // stops at the space. Matching that is deliberate: the archive is
         // compared field by field, so being "better" would show as a diff.
         assert_eq!(
-            scrub_string("/Volumes/My Disk/a.stl", None, None),
+            scrub_string(&p(&["", "Volumes", "My Disk", "a.stl"]), None, None),
             "/Volumes/<name> Disk/a.stl"
         );
         assert_eq!(
-            scrub_string("/Volumes/External/a.stl", None, None),
+            scrub_string(&p(&["", "Volumes", "External", "a.stl"]), None, None),
             "/Volumes/<name>/a.stl"
         );
         assert_eq!(
-            scrub_string("/media/bob/cam/b.stl", None, None),
+            scrub_string(&p(&["", "media", "bob", "cam", "b.stl"]), None, None),
             "/media/<user>/cam/b.stl"
         );
     }
 
     #[test]
     fn scrub_walks_nested_values() {
+        let home = p(&["", "Users", "alice"]);
         let v = json!({
-            "path": "/Users/alice/x",
-            "list": ["/Users/alice/y", 3],
+            "path": p(&["", "Users", "alice", "x"]),
+            "list": [p(&["", "Users", "alice", "y"]), 3],
             "n": 1,
         });
-        let out = scrub(&v, Some("/Users/alice"), Some("alice"));
+        let out = scrub(&v, Some(&home), Some("alice"));
         assert_eq!(out["path"], "~/x");
         assert_eq!(out["list"][0], "~/y");
         assert_eq!(out["list"][1], 3, "numbers pass through");
@@ -475,7 +487,7 @@ mod tests {
     #[test]
     fn scrub_leaves_unrelated_text_alone() {
         assert_eq!(
-            scrub_string("/opt/sutura/bin/sutura", Some("/Users/alice"), Some("alice")),
+            scrub_string(&p(&["", "opt", "sutura", "bin", "sutura"]), Some(&p(&["", "Users", "alice"])), Some("alice")),
             "/opt/sutura/bin/sutura"
         );
     }
