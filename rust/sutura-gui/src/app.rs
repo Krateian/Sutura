@@ -83,6 +83,13 @@ struct Entry {
     objects: Option<Result<Vec<Value>, String>>,
     /// Cached defect list, same on-demand policy as `analysis`.
     defects: Option<Result<sutura_core::report::defects::DefectReport, String>>,
+    /// Methods for THIS file, in the CLI's `--methods` order. `None` means "use
+    /// the panel's global selection", which is what a file that was never
+    /// customised should do -- so a change to the panel still applies to it.
+    ///
+    /// Python keeps the same per-file list (`gui.py:5093`) and lets the Methods
+    /// tab edit the *selected* file's sequence.
+    methods: Option<Vec<u8>>,
 }
 
 /// A rasterised before/after pair, held as textures so the window can be drawn
@@ -525,6 +532,7 @@ impl SuturaApp {
                     analysis: None,
                     objects: None,
                     defects: None,
+                    methods: None,
                 }
             }
             Err(e) => {
@@ -544,6 +552,7 @@ impl SuturaApp {
                     analysis: None,
                     objects: None,
                     defects: None,
+                    methods: None,
                 }
             }
         };
@@ -795,7 +804,20 @@ impl SuturaApp {
         if force {
             self.settings.force = true;
         }
-        let settings = self.settings.clone();
+        let mut settings = self.settings.clone();
+        // Per-file methods win over the panel's global selection, exactly as
+        // Python lets the Methods tab edit the selected file's sequence
+        // (`gui.py:5093`). `None` keeps the global one, so a file that was never
+        // customised follows later changes to the panel.
+        if let Some(methods) = self.files[idx].methods.as_ref() {
+            settings.methods = Some(
+                methods
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
         std::thread::spawn(move || {
             run_repair(&input, &output, settings, tx, cancel);
         });
@@ -1810,6 +1832,87 @@ impl eframe::App for SuturaApp {
                                 if escalation { Some(true) } else { None };
                         }
                     });
+
+                    ui.separator();
+                    // Per-file methods (İ5). Python's Methods tab edits the
+                    // *selected* file's sequence (`gui.py:5093`); here the global
+                    // list stays the fallback and this overrides it for one file,
+                    // so customising one file does not change the next.
+                    //
+                    // No up/down reordering, deliberately: `forced_methods` is a
+                    // `Vec<u8>` that core only ever tests with `contains`
+                    // (`repair.rs:3727`), so an order control would promise
+                    // something nothing honours.
+                    ui.label(rust_i18n::t!("app.file_methods").to_string());
+                    if let Some(idx) = self.selected {
+                        if self.files.get(idx).is_some() {
+                            let global: Vec<u8> = self
+                                .settings
+                                .methods
+                                .as_deref()
+                                .map(|s| {
+                                    s.split(',')
+                                        .filter_map(|t| t.trim().parse::<u8>().ok())
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let mut local = self.files[idx].methods.clone();
+                            let mut inherited = local.is_none();
+                            ui.horizontal(|ui| {
+                                ui.checkbox(
+                                    &mut inherited,
+                                    rust_i18n::t!("app.file_methods_inherit").to_string(),
+                                );
+                                if inherited && local.is_some() {
+                                    local = None;
+                                } else if !inherited && local.is_none() {
+                                    local = Some(global.clone());
+                                }
+                            });
+                            let effective = local.clone().unwrap_or_else(|| global.clone());
+                            if local.is_some() {
+                                let mut edited = effective.clone();
+                                let mut changed = false;
+                                egui::ScrollArea::vertical()
+                                    .id_salt("file_methods_scroll")
+                                    .max_height(110.0)
+                                    .show(ui, |ui| {
+                                        for (num, id, _cat, name) in
+                                            sutura_core::repair_settings::METHODS
+                                        {
+                                            let mut on = edited.contains(&num);
+                                            if ui
+                                                .checkbox(&mut on, format!("{num}. {name} ({id})"))
+                                                .changed()
+                                            {
+                                                if on {
+                                                    edited.push(num);
+                                                } else {
+                                                    edited.retain(|n| *n != num);
+                                                }
+                                                changed = true;
+                                            }
+                                        }
+                                    });
+                                if changed {
+                                    edited.sort_unstable();
+                                    local = Some(edited);
+                                }
+                            }
+                            if local != self.files[idx].methods {
+                                self.files[idx].methods = local;
+                            }
+                            ui.label(
+                                egui::RichText::new(rust_i18n::t!(
+                                    "app.file_methods_count",
+                                    count = effective.len() as i64
+                                )
+                                .to_string())
+                                .small()
+                                .weak(),
+                            );
+                        }
+                    }
 
                     ui.separator();
                     ui.label(rust_i18n::t!("app.methods").to_string());
@@ -3638,6 +3741,7 @@ mod tests {
             analysis: None,
             objects: None,
             defects: None,
+            methods: None,
         };
         let mut app = SuturaApp::for_test();
         app.files = vec![entry("/tmp/a.stl"), entry("/tmp/b.stl"), entry("/tmp/c.stl")];
@@ -4078,6 +4182,7 @@ mod tests {
             analysis: None,
             objects: None,
             defects: None,
+            methods: None,
         };
         assert!(entry.decision().is_none(), "nothing repaired, nothing to say");
     }
@@ -4200,6 +4305,68 @@ mod tests {
         // And the background is filled, not transparent: an empty pixmap would
         // also compare unequal while showing nothing.
         assert!(a.data().iter().any(|&c| c != 0), "the before image has content");
+    }
+
+    /// A per-file method list must reach `options_from` intact, and `None` must
+    /// mean "the panel's selection" rather than "no methods".
+    ///
+    /// The distinction is the whole feature: a file that was never customised has
+    /// to keep following the panel, or changing the global selection would leave
+    /// every previously-loaded file behind.
+    #[test]
+    fn per_file_methods_override_the_global_selection() {
+        use sutura_core::repair_settings::options_from;
+
+        // What `start_repair_mode` builds: global selection, then the file's own.
+        let build = |file: Option<Vec<u8>>| {
+            let mut settings = RepairSettings {
+                methods: Some("2,3".into()),
+                ..Default::default()
+            };
+            if let Some(methods) = file.as_ref() {
+                settings.methods = Some(
+                    methods
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            }
+            settings
+        };
+
+        // `None` -> the global list is used.
+        let (_, given, methods) = options_from(&build(None)).unwrap();
+        assert!(given, "the global selection is a real selection");
+        assert_eq!(methods, vec![2, 3]);
+
+        // A per-file list wins, and the order in the string does not matter.
+        let (_, given, methods) = options_from(&build(Some(vec![15]))).unwrap();
+        assert!(given);
+        assert_eq!(methods, vec![15], "the file's list must replace the global one");
+
+        // An empty selection is NOT an error in the core: it yields
+        // `methods_given = true` with an empty list, i.e. "run no forced
+        // methods". That is why the UI uses an inherit checkbox instead of
+        // "untick everything": unticking every box would mean "force nothing",
+        // which is not the same as "use the panel's selection".
+        let empty = RepairSettings {
+            methods: Some(String::new()),
+            ..Default::default()
+        };
+        let (_, given, methods) = options_from(&empty).unwrap();
+        assert!(given, "an empty string still counts as an explicit selection");
+        assert!(methods.is_empty(), "and selects no methods");
+
+        // `None`, by contrast, is "not specified": the deep-repair mode stays
+        // whatever the intensity chose and nothing is forced.
+        let unspecified = RepairSettings {
+            methods: None,
+            ..Default::default()
+        };
+        let (_, given, methods) = options_from(&unspecified).unwrap();
+        assert!(!given);
+        assert!(methods.is_empty());
     }
 
     /// The settings panel must be inside a scroll area.

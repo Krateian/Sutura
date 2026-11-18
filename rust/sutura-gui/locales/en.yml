@@ -76,6 +76,9 @@ app:
   compare_tip: "Static side-by-side image of the original and the repaired mesh"
   compare_none: "(not rendered)"
   compare_no_after: "No repair yet: the right panel shows the original."
+  file_methods: "Methods for this file"
+  file_methods_inherit: "Use the panel selection"
+  file_methods_count: "%{count} method(s) applied"
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"

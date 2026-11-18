@@ -76,6 +76,9 @@ app:
   compare_tip: "Orijinal ve onarılmış mesh'in statik yan yana görüntüsü"
   compare_none: "(çizilemedi)"
   compare_no_after: "Henüz onarım yok: sağ panel orijinali gösteriyor."
+  file_methods: "Bu dosyanın yöntemleri"
+  file_methods_inherit: "Panel seçimini kullan"
+  file_methods_count: "%{count} yöntem uygulanıyor"
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"
