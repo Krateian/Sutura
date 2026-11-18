@@ -339,12 +339,6 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
             ));
         }
     }
-    if cli.classifier_engine.as_deref() == Some("classic") {
-        return Err(RepairFailure::new(
-            2,
-            "the classic classifier is not available in the Rust CLI",
-        ));
-    }
 
     // Everything below is resolved by `options_from` from the settings table --
     // including validation, with the same messages and the same exit code
@@ -1729,6 +1723,7 @@ fn run_with_flap_safety_net(
         other => return other,
     };
 
+    sutura_core::repair::stage_fp_log("after_flap_primary", &on.0, &on.1);
     // Only a Flap-adopted run can be worse *because of* Flap.
     let flap_adopted = on
         .2
@@ -1737,6 +1732,7 @@ fn run_with_flap_safety_net(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if !flap_adopted || opts.flap != Some(true) {
+        sutura_core::repair::stage_fp_log("after_flap_net_choice", &on.0, &on.1);
         return RepairOutcome::Ok {
             verts: on.0,
             tris: on.1,
@@ -1755,6 +1751,7 @@ fn run_with_flap_safety_net(
         verts, tris, &on.0, &on.1, si_rise, si_rise,
     );
     let Some(on_reason) = on_reason else {
+        sutura_core::repair::stage_fp_log("after_flap_net_choice", &on.0, &on.1);
         return RepairOutcome::Ok {
             verts: on.0,
             tris: on.1,
@@ -1785,6 +1782,7 @@ fn run_with_flap_safety_net(
                 );
             }
             let _ = other;
+            sutura_core::repair::stage_fp_log("after_flap_net_choice", &on.0, &on.1);
             return RepairOutcome::Ok {
                 verts: on.0,
                 tris: on.1,
@@ -1793,6 +1791,7 @@ fn run_with_flap_safety_net(
         }
     };
 
+    sutura_core::repair::stage_fp_log("after_flap_off_rerun", &off.0, &off.1);
     let (_, off_metrics) = sutura_core::tiers::flap::final_off(verts, tris, &off.0, &off.1, si_rise, false);
     let use_off = sutura_core::tiers::flap::off_preferred(
         &on_reason,
@@ -1814,6 +1813,11 @@ fn run_with_flap_safety_net(
         "tamponade_skipped": tamponade_skipped,
     });
 
+    sutura_core::repair::stage_fp_log(
+        "after_flap_net_choice",
+        if use_off { &off.0 } else { &on.0 },
+        if use_off { &off.1 } else { &on.1 },
+    );
     if use_off {
         // Report the primary run's Flap verdict, marked as not adopted in the
         // end, together with the fallback record.
@@ -1971,6 +1975,7 @@ fn process_one(
         Some(out) => out.to_path_buf(),
         None => unique_output(path),
     };
+    sutura_core::repair::stage_fp_log("before_write", &out_v, &out_t);
     let out_mesh = to_mesh(&out_v, &out_t);
     // Python treats 0 as "budget disabled" (``args.max_risk or None``).
     let max_geom = cli.max_geometry_change.filter(|v| *v > 0.0);
@@ -1981,7 +1986,9 @@ fn process_one(
     } else {
         output.clone()
     };
-    if let Err(e) = save_mesh(&save_path, &out_mesh) {
+    let write_result = save_mesh(&save_path, &out_mesh);
+    sutura_core::repair::stage_fp_log("after_write", &out_v, &out_t);
+    if let Err(e) = write_result {
         if let Some(progress) = progress {
             progress.end();
         }

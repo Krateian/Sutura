@@ -299,6 +299,7 @@ pub fn options_from(
             "--methods 12 requires --repeat-source X,Y,Z and --repeat-target Y,Z",
         ));
     }
+    let classifier_engine = settings.classifier_engine.clone();
     let repeat = if settings.repeat_source.is_some() || settings.repeat_target.is_some() {
         Some(RepeatMode::Manual)
     } else {
@@ -349,6 +350,7 @@ pub fn options_from(
         wall_thicken: settings.wall_thicken,
         wall_min_thickness: settings.wall_min_thickness,
         repeat,
+        classifier_engine,
         repeat_source: settings.repeat_source,
         repeat_target: settings.repeat_target,
         solid_engine,

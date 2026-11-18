@@ -907,7 +907,33 @@ pub struct TopologySummary {
     pub faces: usize,
 }
 
+thread_local! {
+    static TOPO_CACHE: std::cell::RefCell<Vec<(u64, TopologySummary)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub fn topology_summary(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> TopologySummary {
+    let key = sutura_geom::mesh_hash_i64(verts, tris);
+    if let Some(hit) = TOPO_CACHE.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, s)| *s)
+    }) {
+        return hit;
+    }
+    let out = topology_summary_uncached(verts, tris);
+    TOPO_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 8 {
+            c.remove(0);
+        }
+        c.push((key, out));
+    });
+    out
+}
+
+fn topology_summary_uncached(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> TopologySummary {
     let nv = verts.len();
     let nf = tris.len();
     if nf == 0 {
