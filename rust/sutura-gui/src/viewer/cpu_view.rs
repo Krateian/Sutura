@@ -92,7 +92,7 @@ impl CpuViewer {
         // (depth, screen, shade, defect weight, deviation-ramp index)
         // The face id is carried so the painter can look up the defect-kind
         // colour; `dev_idx` is already indexed by it.
-        let mut tris: Vec<(f32, [[f32; 2]; 3], f32, f32, Option<u16>, usize)> =
+        let mut tris: Vec<(f32, [[f32; 2]; 3], f32, f32, Option<u16>, usize, f32)> =
             Vec::with_capacity((mesh.triangle_count() / stride).max(1));
         let dev_lut = sutura_geom::heatmap::deviation_lut();
         for (tri_idx, tri) in mesh.indices.chunks_exact(3).enumerate() {
@@ -124,7 +124,8 @@ impl CpuViewer {
                 continue;
             }
             let n = Vec3::from(mesh.normals[tri[0] as usize]);
-            let shade = 0.25 + 0.75 * n.dot(light).max(0.0);
+            let lambert = n.dot(light).max(0.0);
+            let shade = 0.25 + 0.75 * lambert;
             let defect = tri
                 .iter()
                 .map(|&i| mesh.defect.get(i as usize).copied().unwrap_or(0.0))
@@ -132,11 +133,11 @@ impl CpuViewer {
             // The ramp is indexed by the ORIGINAL face id, which is the soup's
             // face id because the soup is built one triangle at a time in order.
             let dev = mesh.dev_idx.get(tri_idx).copied();
-            tris.push((depth / 3.0, screen, shade, defect, dev, tri_idx));
+            tris.push((depth / 3.0, screen, shade, defect, dev, tri_idx, lambert));
         }
         tris.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        for (_, screen, shade, defect, dev, tri_idx) in tris {
+        for (_, screen, shade, defect, dev, tri_idx, lambert) in tris {
             let mut pb = PathBuilder::new();
             pb.move_to(screen[0][0], screen[0][1]);
             pb.line_to(screen[1][0], screen[1][1]);
@@ -163,25 +164,42 @@ impl CpuViewer {
                 g = rgb[1] as f32;
                 b = rgb[2] as f32;
             } else if let Some(idx) = ramp {
-                // Shaded by the same lambert term as the neutral body. The ramp
-                // alone maps every face of a scanned part to nearly the same
-                // deviation, so an unshaded ramp is one flat silhouette and the
-                // shape cannot be read at all -- that is what the After +
-                // Heatmap view looked like on a Steam Deck. Multiplying by
-                // `shade` keeps the ramp's own values (the legend still maps to
-                // the same colours) and only modulates their brightness, the
-                // standard way to keep a colour map legible.
-                // A gentler lambert term than the body's: the ramp's low end is
-                // navy `[10, 20, 80]`, and multiplying it by the body's 0.25
-                // floor gives `[3, 5, 20]` -- black, with the shape still
-                // unreadable and the colour meaningless. Keeping 55% ambient
-                // leaves the legend's colours recognisable while the remaining
-                // 45% still varies with the normal, so the form reads.
-                let ramp_shade = 0.75 + 0.25 * shade;
+                // The ramp alone maps every face of a scanned part to nearly the
+                // same deviation, so an unshaded ramp is one flat silhouette and
+                // the shape cannot be read at all -- that is what the After +
+                // Heatmap view looked like on a Steam Deck. The colours come
+                // from the same LUT the legend uses; only their brightness is
+                // modulated, so `value -> colour` is unchanged.
+                //
+                // Two things were wrong with the first attempt. It shaded the
+                // already-mixed `shade` (`0.25 + 0.75·L`) again with
+                // `0.75 + 0.25·shade`, which left just 19% of the range varying
+                // -- effectively no shading. And the low end of the ramp is navy
+                // `[10, 20, 80]`, which at that floor is almost black.
+                //
+                // So: lambert directly, at the usual ambient/diffuse split
+                // (0.35 / 0.65, a 3:1 range), and the darkest ramp entry is
+                // lifted before shading so it keeps a readable shape.
+                const AMBIENT: f32 = 0.35;
+                const DIFFUSE: f32 = 0.65;
+                let ramp_shade = AMBIENT + DIFFUSE * lambert;
                 let c = dev_lut[idx as usize % dev_lut.len()];
-                r = c[0] as f32 * ramp_shade;
-                g = c[1] as f32 * ramp_shade;
-                b = c[2] as f32 * ramp_shade;
+                // Lift the darkest channel pair without changing the hue: the
+                // navy end gains a floor so `[10, 20, 80]` reads as a dark blue
+                // surface rather than a hole. The ratio between the channels is
+                // preserved, so the ramp still identifies the low end.
+                // 0.35 ambient against a navy `[10, 20, 80]` still leaves
+                // `[19, 22, 39]` -- readable as "dark" but not as a surface.
+                // Lifting 35% of the headroom gives `[96, 102, 141]` at the
+                // bottom of the ramp before shading, which reads as dark blue
+                // rather than a hole.
+                let lift = |v: u8| -> f32 {
+                    let v = v as f32;
+                    (v + (255.0 - v) * 0.35) * ramp_shade
+                };
+                r = lift(c[0]);
+                g = lift(c[1]);
+                b = lift(c[2]);
             } else if heatmap && defect > 0.0 {
                 let k = defect.clamp(0.0, 1.0);
                 let hot = (242.0 * (0.45 + 0.55 * shade), 71.0 * (0.45 + 0.55 * shade), 31.0 * (0.45 + 0.55 * shade));

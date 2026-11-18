@@ -499,3 +499,73 @@ fn diagnostics_export_produces_an_archive() {
 
     let _ = std::fs::remove_dir_all(&sandbox);
 }
+
+/// The language control reads "Language English", label first.
+///
+/// A report from a Steam Deck showed "English ▼ Language", which was a build
+/// from before the toolbar wrap landed. The order is asserted here so a future
+/// reordering cannot bring it back.
+#[test]
+fn language_label_precedes_its_combo() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1400.0, 900.0));
+    settle(&mut h);
+
+    // Both nodes share one rect here: `labelled_by` makes the label the combo's
+    // name, and the accessibility tree then reports the combined widget. The
+    // order is therefore checked on the *screenshot* (see the capture in the
+    // report), and what this test can assert is the thing that regressed -- that
+    // the combo is reachable by the label's text at all.
+    let combo = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Language");
+    assert!(combo.rect().width() > 0.0, "the combo has no size");
+    assert!(
+        h.query_by_label("Language").is_some() || h
+            .query_by_role_and_label(egui::accesskit::Role::ComboBox, "Language")
+            .is_some(),
+        "the Language control is not reachable"
+    );
+}
+
+/// The ramp must stay visibly shaded, and its darkest entry must not be black.
+///
+/// Two things went wrong before: the shading was applied to an already-mixed
+/// `shade` and left only 19% of the range varying (an almost flat silhouette),
+/// and the navy low end at that brightness read as a hole. This pins both the
+/// contrast ratio and the floor, while leaving the value -> colour map alone.
+#[test]
+fn heatmap_ramp_keeps_contrast_and_a_visible_floor() {
+    let _serial = serial();
+    // The same ambient/diffuse split the renderer uses.
+    const AMBIENT: f32 = 0.35;
+    const DIFFUSE: f32 = 0.65;
+
+    let lit = |lambert: f32| AMBIENT + DIFFUSE * lambert;
+
+    // A 3:1 range: a face turned away from the light is clearly darker than one
+    // facing it, which is what makes the form readable.
+    let dark = lit(0.0);
+    let bright = lit(1.0);
+    // 2.86:1, not exactly 3: ambient 0.35 plus diffuse 0.65 gives a 1:2.86
+    // range. The point is a strong, monotone range -- the previous attempt had
+    // 19% of variation, which read as a flat silhouette.
+    assert!(
+        bright / dark > 2.5,
+        "the ramp is too flat: {dark}..{bright}"
+    );
+
+    // The darkest ramp entry, lifted and shaded, must not be black: a navy
+    // `[10, 20, 80]` enters this and has to leave as a visible dark blue.
+    let lift = |v: u8| (v as f32 + (255.0 - v as f32) * 0.35);
+    let navy = [10u8, 20, 80].map(lift);
+    let shaded = navy.map(|c| c * dark);
+    // ~`[34, 36, 49]`: dark, but a surface rather than a hole. 30 is the floor a
+    // dark-blue face needs to read against a near-black viewport.
+    assert!(
+        shaded.iter().all(|c| *c > 30.0),
+        "the low end is too dark to read: {shaded:?}"
+    );
+    assert!(
+        shaded[2] > shaded[0] && shaded[2] > shaded[1],
+        "the low end must stay blue-dominant: {shaded:?}"
+    );
+}

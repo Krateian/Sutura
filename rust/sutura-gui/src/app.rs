@@ -3669,19 +3669,21 @@ pub fn fixed_path(input: &Path) -> PathBuf {
 /// gets no time at all, which is not what an empty field means.
 fn opt_f64(ui: &mut egui::Ui, id: &str, value: &mut Option<f64>, label: &str) {
     ui.horizontal(|ui| {
-        ui.label(label);
+        let label_id = ui.label(label).id;
         let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
-        // `hint_text` is the accessible name here: egui's TextEdit does not take
-        // its name from `labelled_by`, which is why the accessibility check still
-        // listed ten anonymous boxes. A hint also tells a sighted user what an
-        // empty field expects.
+        // `hint_text` gives the box an accessible name -- egui's TextEdit does not
+        // take one from `labelled_by`, which is why the accessibility check listed
+        // ten anonymous boxes. It is set to a single space rather than the label:
+        // with the label as the hint, an empty field rendered "Max risk Max risk"
+        // beside its own caption.
         if ui
             .add(
                 egui::TextEdit::singleline(&mut text)
                     .id_salt(id)
-                    .hint_text(label)
+                    .hint_text(" ")
                     .desired_width(90.0),
             )
+            .labelled_by(label_id)
             .changed()
         {
             *value = if text.trim().is_empty() {
@@ -3696,19 +3698,21 @@ fn opt_f64(ui: &mut egui::Ui, id: &str, value: &mut Option<f64>, label: &str) {
 /// The integer twin of [`opt_f64`].
 fn opt_i64(ui: &mut egui::Ui, id: &str, value: &mut Option<i64>, label: &str) {
     ui.horizontal(|ui| {
-        ui.label(label);
+        let label_id = ui.label(label).id;
         let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
-        // `hint_text` is the accessible name here: egui's TextEdit does not take
-        // its name from `labelled_by`, which is why the accessibility check still
-        // listed ten anonymous boxes. A hint also tells a sighted user what an
-        // empty field expects.
+        // `hint_text` gives the box an accessible name -- egui's TextEdit does not
+        // take one from `labelled_by`, which is why the accessibility check listed
+        // ten anonymous boxes. It is set to a single space rather than the label:
+        // with the label as the hint, an empty field rendered "Max risk Max risk"
+        // beside its own caption.
         if ui
             .add(
                 egui::TextEdit::singleline(&mut text)
                     .id_salt(id)
-                    .hint_text(label)
+                    .hint_text(" ")
                     .desired_width(90.0),
             )
+            .labelled_by(label_id)
             .changed()
         {
             *value = if text.trim().is_empty() {
