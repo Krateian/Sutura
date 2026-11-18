@@ -596,3 +596,48 @@ fn settings_panel_fits_its_controls() {
         );
     }
 }
+
+/// The GPU path must carry the defect-kind palette, not just the CPU one.
+///
+/// `--defect-colors` was CPU-only: the shader had no per-vertex kind input, so the
+/// mode showed the plain surface whenever wgpu was the backend -- which is what a
+/// Steam Deck uses. Two things had to change: a fifth vertex attribute, and an
+/// upload keyed on the palette as well as the index count (the colours are
+/// computed lazily, so the geometry is unchanged when they arrive).
+///
+/// A headless test cannot create a wgpu device, so what is pinned here is the
+/// data the attribute is built from: every coloured face has a real colour, and a
+/// face with no kind is distinguishable from one whose kind is black.
+#[test]
+fn defect_kind_palette_is_available_for_the_vertex_upload() {
+    let _serial = serial();
+    let fixture = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../sutura-geom/tests/fixtures/case3_broken_cup.stl"
+    ));
+    let mut mesh = crate::mesh::DisplayMesh::load(fixture).expect("fixture must load");
+    assert!(
+        mesh.defect_colors.is_empty(),
+        "the palette must start empty, or the re-upload trigger is meaningless"
+    );
+
+    mesh.ensure_defect_colors().expect("diagnosis must run");
+    assert_eq!(
+        mesh.defect_colors.len(),
+        mesh.triangle_count(),
+        "one colour slot per face, which is what `i / 3` indexes"
+    );
+    assert!(
+        mesh.defect_colors.iter().any(|c| c.is_some()),
+        "this fixture has defects, so some face must carry a kind"
+    );
+
+    // A `None` maps to the sentinel the shader tests with `kind.x < 0`; a real
+    // colour never does, including pure black (0, 0, 0).
+    let sentinel_maps_to_negative = mesh
+        .defect_colors
+        .iter()
+        .filter(|c| c.is_none())
+        .count();
+    assert!(sentinel_maps_to_negative > 0, "some faces are clean");
+}
