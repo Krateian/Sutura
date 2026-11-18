@@ -125,6 +125,14 @@ impl Intensity {
     }
 }
 
+/// `--mode` ladder, in Python's order and spelling
+/// (`gui.py`: `RepairModeDialog.MODES`), so the value strings match `parse_mode`
+/// exactly.
+pub const MODES: [&str; 5] = ["low", "medium", "auto", "aggressive", "extreme"];
+
+/// `--profile` presets, from Python's picker (`gui.py:5422`). `None` is "Auto".
+pub const PROFILES: [&str; 5] = ["mechanical", "organic", "scan", "miniature", "fast"];
+
 pub struct StartupOptions {
     /// Test hook: force the deviation reference for the After view.
     pub deviation_reference: Option<PathBuf>,
@@ -1026,6 +1034,74 @@ impl eframe::App for SuturaApp {
                                     }
                                 }
                             });
+                    });
+
+                    // Mode and profile change repair *results*, and neither was
+                    // reachable from the GUI at all -- a GUI user could not
+                    // reproduce what the CLI does with `--mode` or `--profile`.
+                    ui.horizontal(|ui| {
+                        ui.label(rust_i18n::t!("app.mode").to_string());
+                        let current = self
+                            .settings
+                            .mode
+                            .clone()
+                            .unwrap_or_else(|| "auto".to_string());
+                        egui::ComboBox::from_id_salt("mode")
+                            .selected_text(current.clone())
+                            .show_ui(ui, |ui| {
+                                for value in crate::app::MODES {
+                                    if ui
+                                        .selectable_label(current == value, value)
+                                        .clicked()
+                                    {
+                                        self.settings.mode = Some(value.to_string());
+                                    }
+                                }
+                            });
+                    });
+                    // Live description, as Python's dialog shows: it must follow
+                    // the combo. `t!` returns a `Cow`, so convert before styling.
+                    let desc = rust_i18n::t!(format!(
+                        "app.mode_desc_{}",
+                        self.settings.mode.as_deref().unwrap_or("auto")
+                    ))
+                    .to_string();
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(desc).small().weak()).wrap(),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label(rust_i18n::t!("app.profile").to_string());
+                        let current = self.settings.profile.clone();
+                        egui::ComboBox::from_id_salt("profile")
+                            .selected_text(
+                                current
+                                    .clone()
+                                    .unwrap_or_else(|| rust_i18n::t!("app.profile_auto").to_string()),
+                            )
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(
+                                        current.is_none(),
+                                        rust_i18n::t!("app.profile_auto").to_string(),
+                                    )
+                                    .clicked()
+                                {
+                                    self.settings.profile = None;
+                                }
+                                for value in PROFILES {
+                                    if ui
+                                        .selectable_label(
+                                            current.as_deref() == Some(value),
+                                            value,
+                                        )
+                                        .clicked()
+                                    {
+                                        self.settings.profile = Some((*value).to_string());
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text(rust_i18n::t!("app.profile_tip").to_string());
                     });
 
                     ui.separator();
@@ -2460,6 +2536,70 @@ mod tests {
         let mut app = SuturaApp::for_test();
         app.remove_file(7);
         assert!(app.files.is_empty());
+    }
+
+    /// Every value the Mode combo offers must be one `options_from` accepts.
+    ///
+    /// This is the invariant that matters: a combo entry that core rejects makes
+    /// the repair fail with "invalid --mode value", and a value core accepts but
+    /// the combo never offers is unreachable from the GUI. Checked against
+    /// `options_from` itself rather than a copy of the accepted list.
+    #[test]
+    fn every_mode_in_the_combo_is_accepted_by_core() {
+        for mode in MODES {
+            let settings = RepairSettings {
+                mode: Some(mode.to_string()),
+                ..Default::default()
+            };
+            assert!(
+                sutura_core::repair_settings::options_from(&settings).is_ok(),
+                "core rejects --mode {mode}"
+            );
+        }
+        // The value shown when nothing is chosen must be acceptable too.
+        assert!(sutura_core::repair_settings::options_from(&RepairSettings::default()).is_ok());
+
+        // And a value outside the list must be rejected, proving the check has
+        // teeth rather than accepting anything.
+        let bad = RepairSettings {
+            mode: Some("nonsense".into()),
+            ..Default::default()
+        };
+        assert!(sutura_core::repair_settings::options_from(&bad).is_err());
+    }
+
+    /// Every profile the combo offers must round-trip through core, and a stale
+    /// name in a hand-edited `gui.json` must not survive the load.
+    ///
+    /// Note what this does *not* claim: `options_from` does not validate
+    /// `profile`. The CLI rejects a bad name at the clap layer (`choices`), but
+    /// `repair.rs:934` would happily apply an unknown profile with the fallback
+    /// thresholds `(8, 1000)` -- so for the GUI, whose settings come from a JSON
+    /// file a user can edit, sanitizing on load is what closes the hole.
+    #[test]
+    fn profiles_round_trip_and_stale_names_are_dropped() {
+        for profile in PROFILES {
+            let settings = RepairSettings {
+                profile: Some(profile.to_string()),
+                ..Default::default()
+            };
+            assert!(
+                sutura_core::repair_settings::options_from(&settings).is_ok(),
+                "core rejects --profile {profile}"
+            );
+        }
+
+        let mut state = crate::state::GuiState {
+            settings: RepairSettings {
+                profile: Some("does-not-exist".into()),
+                mode: Some("nonsense".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        crate::state::sanitize(&mut state);
+        assert_eq!(state.settings.profile, None, "stale profile must be dropped");
+        assert_eq!(state.settings.mode, None, "stale mode must be dropped");
     }
 
     /// The settings panel must be inside a scroll area.

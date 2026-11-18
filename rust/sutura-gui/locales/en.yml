@@ -9,6 +9,15 @@ app:
   settings: Settings
   log: Log
   language: Language
+  mode: Mode
+  mode_desc_low: "Low - the most conservative: closes only small holes, minimal debris removal."
+  mode_desc_medium: Medium - the historical default thresholds.
+  mode_desc_auto: Auto - the mesh classifier and confidence gate pick per-type thresholds (default).
+  mode_desc_aggressive: Aggressive - more debris removed, larger holes closed.
+  mode_desc_extreme: Extreme - the most aggressive; can delete a whole object whose connected part has fewer than 20 faces.
+  profile: Profile
+  profile_auto: Auto
+  profile_tip: Stage 1 threshold preset. Auto uses the classifier-driven default.
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"

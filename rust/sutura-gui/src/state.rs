@@ -42,7 +42,39 @@ pub fn load() -> GuiState {
     let Ok(text) = std::fs::read_to_string(state_path()) else {
         return GuiState::default();
     };
-    serde_json::from_str(&text).unwrap_or_default()
+    let mut state: GuiState = serde_json::from_str(&text).unwrap_or_default();
+    sanitize(&mut state);
+    state
+}
+
+/// Drop values a hand-edited or stale file can carry but the program cannot
+/// honour.
+///
+/// `options_from` validates `mode` (it returns an error), but it does **not**
+/// validate `profile`: `repair.rs:934` applies an unknown profile with the
+/// fallback thresholds `(8, 1000)`. The CLI cannot hit that because clap
+/// rejects a bad `--profile` via `choices`; the GUI's settings come from a JSON
+/// file, so this is the only place the hole can be closed without changing core
+/// semantics that go's code depends on.
+pub fn sanitize(state: &mut GuiState) {
+    let modes = crate::app::MODES;
+    if state
+        .settings
+        .mode
+        .as_deref()
+        .is_some_and(|m| !modes.contains(&m))
+    {
+        state.settings.mode = None;
+    }
+    let profiles = crate::app::PROFILES;
+    if state
+        .settings
+        .profile
+        .as_deref()
+        .is_some_and(|p| !profiles.contains(&p))
+    {
+        state.settings.profile = None;
+    }
 }
 
 /// Write the state atomically.
@@ -189,6 +221,15 @@ mod tests {
         state.settings.no_flap = false;
         save(&state).unwrap();
         assert!(!load().settings.no_flap, "second save must replace the first");
+
+        // A stale name in the file is dropped on load, not applied.
+        let mut stale = GuiState::default();
+        stale.settings.mode = Some("nonsense".into());
+        stale.settings.profile = Some("nonsense".into());
+        save(&stale).unwrap();
+        let loaded = load();
+        assert_eq!(loaded.settings.mode, None, "load must sanitize mode");
+        assert_eq!(loaded.settings.profile, None, "load must sanitize profile");
 
         // A missing file is defaults, not an error.
         std::fs::remove_dir_all(&dir).unwrap();

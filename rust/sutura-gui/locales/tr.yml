@@ -9,6 +9,15 @@ app:
   settings: Ayarlar
   log: Günlük
   language: Dil
+  mode: Mod
+  mode_desc_low: "Düşük - en tutucu: yalnızca küçük delikleri kapatır, en az moloz temizler."
+  mode_desc_medium: Orta - tarihsel varsayılan eşikler.
+  mode_desc_auto: Otomatik - ağ sınıflandırıcısı ve güven eşiği türe göre eşik seçer (varsayılan).
+  mode_desc_aggressive: Agresif - daha çok moloz temizlenir, daha büyük delikler kapanır.
+  mode_desc_extreme: Ekstrem - en agresif; bağlı parçası 20 yüzden az olan bir nesnenin tamamını silebilir.
+  profile: Profil
+  profile_auto: Otomatik
+  profile_tip: Stage 1 eşik ön ayarı. Otomatik, sınıflandırıcının varsayılanını kullanır.
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"
