@@ -332,6 +332,9 @@ pub struct SuturaApp {
     /// `--open-compare` asked for the pair, but the repair had not finished when
     /// the window opened. Opened from the frame that has the result.
     pending_compare: bool,
+    /// One-shot: size the window to the screen on the first frame, when the
+    /// monitor's dimensions are finally known.
+    fit_to_screen_pending: bool,
     /// `Ctrl+,` toggles the settings panel. Python's only shortcut opens its
     /// options dialog; settings live in a permanent panel here, so the honest
     /// equivalent is to show or hide that panel.
@@ -538,6 +541,7 @@ impl SuturaApp {
             settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
+            fit_to_screen_pending: false,
             method_health: Vec::new(),
             ftetwild: None,
             crash_open: false,
@@ -649,6 +653,7 @@ impl SuturaApp {
             settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
+            fit_to_screen_pending: true,
             method_health,
             ftetwild: sutura_core::ftetwild::find_binary(),
             crash_open: crate::crash::panic_recorded(),
@@ -1288,6 +1293,9 @@ impl SuturaApp {
         let ctx = ui.ctx().clone();
         // Deferred so the panel closure can set it while `self.files` is borrowed.
         let mut clear_list = false;
+        // Deferred so a panel closure can set them while `self` is borrowed.
+        let mut open_action: Option<(PathBuf, bool)> = None;
+        let mut cancel_in_panel = false;
         self.poll_repair();
         // Updater events drive its panel; a change means a repaint.
         if self.updater.poll() {
@@ -1551,14 +1559,42 @@ impl SuturaApp {
             });
         });
 
+        // The centre preview has to keep a usable width at every window size.
+        // Two side panels that each take their content width leave it none, and at
+        // ~800 px on a Steam Deck egui drew the settings panel *over* the preview:
+        // the model was clipped and "Defect colours" was hidden.
+        //
+        // The budget is explicit and checked: centre >= CENTRE_MIN, and the side
+        // columns share what is left. Below the sum of the three floors the layout
+        // drops to the preview alone -- three columns that do not fit cannot be
+        // made to fit by squeezing, and overlapping is not an option.
+        const CENTRE_MIN: f32 = 360.0;
+        const FILES_MIN: f32 = 150.0;
+        const SETTINGS_MIN: f32 = 220.0;
+        let total = ui.available_width();
+        let panels_fit = total >= CENTRE_MIN + FILES_MIN + SETTINGS_MIN;
+        // Split the side budget so the settings column, whose controls clip first,
+        // keeps its floor and the files list takes the remainder.
+        let side_budget = (total - CENTRE_MIN).max(FILES_MIN + SETTINGS_MIN);
+        let files_w = (side_budget - SETTINGS_MIN).max(FILES_MIN).min(290.0);
+        let settings_w = (side_budget - files_w).max(SETTINGS_MIN).min(320.0);
+        let compact = settings_w < 260.0;
+        if std::env::var_os("SUTURA_LAYOUT_LOG").is_some() {
+            eprintln!(
+                "[layout] total={total:.0} files={files_w:.0} settings={settings_w:.0} centre={:.0} fit={panels_fit} compact={compact}",
+                total - files_w - settings_w
+            );
+        }
+
+        if panels_fit {
         egui::containers::Panel::left("files")
             .resizable(true)
-            .default_size(290.0)
+            .default_size(files_w)
             // Bounded for the same reason as the right panel: two side panels
             // that grow to their content leave the preview no floor, and it is
             // the preview that has to stay usable on a 1280x800 screen.
-            .min_size(180.0)
-            .max_size(360.0)
+            .min_size(FILES_MIN)
+            .max_size(files_w.max(FILES_MIN))
             .show(ui, |ui| {
                 ui.heading(rust_i18n::t!("app.files").to_string());
                 ui.horizontal(|ui| {
@@ -1665,8 +1701,6 @@ impl SuturaApp {
             self.clear_files();
         }
 
-        let mut open_action: Option<(PathBuf, bool)> = None;
-        let mut cancel_in_panel = false;
         // Not creating the panel is what hides it: the central preview then
         // takes the space back on its own.
         if self.settings_open {
@@ -2778,6 +2812,7 @@ impl SuturaApp {
                 );
             });
         }
+        }
         if cancel_clicked || cancel_in_panel {
             self.cancel_repair();
         }
@@ -2799,7 +2834,11 @@ impl SuturaApp {
                         )
                     })
                     .unwrap_or((true, false, false));
-                ui.horizontal(|ui| {
+                // Wrapped: the centre column can be as narrow as 360 px, and the
+                // three switches plus their labels are wider than that. In one
+                // row "Defect colours" was the part that fell off the right edge
+                // -- exactly the control the Steam Deck report said was missing.
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .selectable_label(before, rust_i18n::t!("app.before").to_string())
                         .clicked()
@@ -3276,6 +3315,32 @@ impl SuturaApp {
                         }
                     });
                 });
+        }
+
+        // Size the window to the screen on the first frame. The builder cannot do
+        // this: the monitor's size is only known once the viewport exists, so a
+        // fixed 1024x720 opened small on a 1280x800 Steam Deck and in the middle of
+        // a large desktop. 90% of the available area, clamped to the minimum.
+        //
+        // Skipped for a capture, which asks for an exact size.
+        if self.fit_to_screen_pending && self.screenshot_path.is_none() {
+            self.fit_to_screen_pending = false;
+            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+                if monitor.x > 1.0 && monitor.y > 1.0 {
+                    let want = egui::vec2(
+                        (monitor.x * 0.9).max(720.0),
+                        (monitor.y * 0.9).max(480.0),
+                    );
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+                    if let Some(center) = egui::ViewportCommand::center_on_screen(&ctx) {
+                        ctx.send_viewport_cmd(center);
+                    }
+                    self.log(format!(
+                        "window sized to {:.0}x{:.0} (screen {}x{})",
+                        want.x, want.y, monitor.x, monitor.y
+                    ));
+                }
+            }
         }
 
         self.apply_selection();

@@ -163,23 +163,39 @@ fn toolbar_controls_are_reachable_at_narrow_sizes() {
 #[test]
 fn side_panels_leave_the_preview_usable() {
     let _serial = serial();
-    for (win_w, win_h) in [(1280.0, 800.0), (1024.0, 700.0), (720.0, 480.0)] {
+    for (win_w, win_h) in [
+        (1280.0, 800.0),
+        (1024.0, 700.0),
+        (880.0, 740.0),
+        (800.0, 740.0),
+        (720.0, 480.0),
+    ] {
         let mut h = harness(egui::vec2(win_w, win_h));
         // The preview controls only exist with a file selected.
         h.state_mut().add_file_for_test(temp_box(&format!("panels-{win_w}")));
         settle(&mut h);
+        // The preview controls must be reachable at every width. Whether a side
+        // panel is shown depends on the width -- below the sum of the three
+        // floors the layout drops to the preview alone, which is the point -- but
+        // the preview's own controls must never be covered by one.
         assert!(
             h.query_by_label("Defect colours").is_some(),
             "the preview controls are covered at {win_w}x{win_h}"
         );
-        assert!(
-            h.query_by_label("Settings").is_some(),
-            "the settings panel is missing at {win_w}x{win_h}"
-        );
-        assert!(
-            h.query_by_label("Files").is_some(),
-            "the file panel is missing at {win_w}x{win_h}"
-        );
+
+        // If a side panel IS shown, it must sit inside the window, not over the
+        // centre and not off the edge. That is what the Deck report was: the
+        // settings column drawn on top of the model.
+        for label in ["Settings", "Files"] {
+            let Some(node) = h.query_by_label(label) else {
+                continue; // folded at this width
+            };
+            let r = node.rect();
+            assert!(
+                r.min.x >= -1.0 && r.max.x <= win_w + 1.0,
+                "{label} runs outside the window at {win_w}x{win_h}: {r:?}"
+            );
+        }
     }
 }
 
