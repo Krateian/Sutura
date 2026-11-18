@@ -85,6 +85,23 @@ struct Entry {
     defects: Option<Result<sutura_core::report::defects::DefectReport, String>>,
 }
 
+impl Entry {
+    /// The short per-file decision shown next to the name: `(text, colour, tip)`.
+    ///
+    /// A file that was never repaired has no decision to show at all (`None`),
+    /// rather than a "pending" label -- Python writes an empty string there
+    /// (`gui.py:6086`), and omitting the widget is the egui equivalent.
+    fn decision(&self) -> Option<(String, egui::Color32, String)> {
+        if matches!(self.repair, RepairState::Running { .. }) {
+            return None;
+        }
+        let report = self.report.as_ref()?;
+        let text = verdict_text(report);
+        let status = status_text(&report.status_code);
+        Some((text.clone(), verdict_color(&report.verdict_code), status))
+    }
+}
+
 enum RepairEvent {
     Started(u32),
     Progress { step: u8, total: u8 },
@@ -1083,6 +1100,22 @@ impl eframe::App for SuturaApp {
                         ui.horizontal(|ui| {
                             if ui.selectable_label(selected, text).clicked() {
                                 clicked = Some(idx);
+                            }
+                            // Per-file decision, Python's third column
+                            // (`gui.py:5181`). Shown in the list so a 20-file
+                            // batch can be judged without clicking through each
+                            // one, which is what the column is for.
+                            if let Some(decision) = entry.decision() {
+                                // Truncated to the column: the full sentence is
+                                // ~55 chars and the file panel is 290 px, so
+                                // untruncated it overflows into the preview.
+                                // The hover text always carries the whole
+                                // verdict and status, so nothing is lost.
+                                let short = truncate_decision(&decision.0, 22);
+                                ui.add(egui::Label::new(
+                                    egui::RichText::new(short).small().color(decision.1),
+                                ))
+                                .on_hover_text(decision.2);
                             }
                             // Removing the file being repaired would orphan the
                             // worker's index, so it is disabled while busy.
@@ -3143,6 +3176,23 @@ fn finish_from_output_with(
     }
 }
 
+/// Truncate a verdict for the narrow file column without cutting mid-word.
+///
+/// The full text lives in the hover tooltip, so this only has to be
+/// recognisable: "Repaired, shape changed…" beats a horizontal scrollbar in a
+/// 290 px panel.
+fn truncate_decision(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max_chars).collect();
+    if let Some(cut) = out.rfind([' ', ',']) {
+        out.truncate(cut);
+    }
+    out.push('…');
+    out
+}
+
 /// `Ctrl+,` shows or hides the settings panel.
 ///
 /// Scope matters: a comma is a character people type, so the shortcut must not
@@ -3683,6 +3733,46 @@ mod tests {
         // A path that does not exist must be an error for the panel to render,
         // not a panic.
         assert!(defect_rows(std::path::Path::new("/nonexistent/x.stl")).is_err());
+    }
+
+    /// The per-file decision column must not overflow the 290 px file panel.
+    ///
+    /// A raw verdict is ~55 characters and pushed the preview off the row when it
+    /// was first added; this pins the shortening, including that it never cuts
+    /// mid-word and never grows the text.
+    #[test]
+    fn decision_text_is_shortened_for_the_column() {
+        let long = "Repaired, shape changed in 1 guessed area(s) - check";
+        let short = truncate_decision(long, 22);
+        assert!(short.chars().count() <= 23, "must fit: {short:?}");
+        assert!(short.ends_with('…'), "truncated text ends with one: {short:?}");
+        assert!(!short.contains("shapechanged"), "must not cut mid-word");
+        assert!(long.starts_with(short.trim_end_matches('…')), "prefix of the original");
+
+        // Text that already fits is untouched -- no stray ellipsis.
+        assert_eq!(truncate_decision("Preserved", 22), "Preserved");
+        assert_eq!(truncate_decision("", 22), "");
+    }
+
+    /// A file that was never repaired shows no decision at all, rather than an
+    /// empty or "pending" label.
+    #[test]
+    fn unrepaired_files_have_no_decision() {
+        let entry = Entry {
+            path: std::path::PathBuf::from("/tmp/a.stl"),
+            input: None,
+            result: None,
+            error: None,
+            repair: RepairState::Idle,
+            report: None,
+            raw_report: None,
+            output: None,
+            view: ViewMode::Before,
+            analysis: None,
+            objects: None,
+            defects: None,
+        };
+        assert!(entry.decision().is_none(), "nothing repaired, nothing to say");
     }
 
     /// The settings panel must be inside a scroll area.
