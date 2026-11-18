@@ -67,6 +67,9 @@ fi
 # ATTRIBUTION.md) and are not vendored here.
 SAMPLES=${SAMPLES:-/Users/krateian/sutura-bench/wt-main/tests/real-world-samples}
 
+# The injector needs numpy and the Rust geom extension; the repo venv has both.
+PY=${PY:-/tmp/p10fx-venv/bin/python}
+
 FIX=$REPO/rust/sutura-geom/tests/fixtures
 SHOTS="$OUT"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/sutura-shots-XXXXXX")
@@ -144,10 +147,28 @@ capture() {
 # benchmark checkout is absent, so the script still produces a full set on a
 # bare clone.
 if [ -f "$SAMPLES/artec_copper-key.stl" ]; then
-  HERO="$SAMPLES/artec_copper-key.stl"
+  CLEAN="$SAMPLES/artec_copper-key.stl"
 else
-  HERO="$FIX/case3_broken_cup.stl"
+  CLEAN="$FIX/case3_broken_cup.stl"
   echo "  (no sample corpus; hero mesh falls back to the repo fixture)"
+fi
+
+# The repair frames need defects a reader can SEE. `defect_injector --hole` drops
+# random faces, which on a 90k scan is 1121 pinholes and a visibly identical
+# before/after; the patch variant opens ten contiguous holes instead. Measured on
+# the result: 17 boundary loops, 3 non-manifold edges, 7 components, 5.4% open
+# area, and the repair takes it to 0 / 0 / 0.
+#
+# Derived third-party data, so it stays in the temp tree and never in the repo --
+# the sample corpus must stay pristine for the gates.
+HERO="$TMP/hero-broken.stl"
+if [ -f "$CLEAN" ] && [ -x "$PY" ]; then
+  "$PY" "$REPO/scripts/build_broken_sample.py" "$CLEAN" "$HERO" \
+      --patches 10 --radius 700 --flipped 4 --non-manifold 3 --seed 42 \
+      >/dev/null 2>&1 \
+    || { echo "  (broken-sample generation failed; using the clean mesh)"; HERO=$CLEAN; }
+else
+  HERO="$CLEAN"
 fi
 
 # The small fixtures stay for the views that need a dense defect list or a
@@ -197,7 +218,9 @@ echo "--- heatmap (3D) and defect colours"
 # only exists on the repaired side -- a Before+Heatmap frame shows no colouring
 # at all and would document nothing.
 capture heatmap --repair --show-after --heatmap "$HERO"
-capture defect-colors "$FIX/case3_broken_cup.stl" --defect-colors
+# The same hero derivative, so the defect-kind palette is shown on the mesh a
+# reader has just seen in the other frames -- not on a 316-face fixture.
+capture defect-colors "$HERO" --defect-colors
 
 echo "--- static before/after pair"
 capture before-after --repair --open-compare --wait-frames 30 "$HERO"
