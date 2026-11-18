@@ -271,6 +271,10 @@ pub enum OpenOnStart {
     RepeatPicker,
     Changelog,
     DefectColors,
+    /// Show the repaired result (`After`) rather than the input. The deviation
+    /// ramp only exists on the repaired side, so the heatmap's colouring can only
+    /// be documented there.
+    After,
 }
 
 pub struct SuturaApp {
@@ -680,6 +684,11 @@ impl SuturaApp {
             OpenOnStart::DefectColors => {
                 app.preview.defect_colors = true;
                 app.preview.dirty = true;
+            }
+            OpenOnStart::After => {
+                if let Some(entry) = app.selected.and_then(|i| app.files.get_mut(i)) {
+                    entry.view = ViewMode::After;
+                }
             }
             OpenOnStart::RepeatPicker => app.open_repeat_picker(),
             OpenOnStart::Changelog => {

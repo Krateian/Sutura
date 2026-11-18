@@ -110,6 +110,7 @@ fn main() -> eframe::Result<()> {
             "--open-compare" => open = app::OpenOnStart::Compare,
             "--open-repeat-picker" => open = app::OpenOnStart::RepeatPicker,
             "--open-changelog" => open = app::OpenOnStart::Changelog,
+            "--show-after" => open = app::OpenOnStart::After,
             "--defect-colors" => open = app::OpenOnStart::DefectColors,
             "--select" => select = args.next().and_then(|s| s.parse::<usize>().ok()),
             "--file-methods" => {

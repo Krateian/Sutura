@@ -138,12 +138,13 @@ capture() {
 }
 
 # A real scanned part, not a 12-triangle toy: the documentation has to show what
-# a user's mesh looks like. `metal-nut` has the richest defect profile of the
-# Artec set (11 boundary loops, 8 non-manifold edges) and reads well at preview
-# size. Falls back to the repo fixture when the benchmark checkout is absent, so
-# the script still produces a full set on a bare clone.
-if [ -f "$SAMPLES/artec_metal-nut.stl" ]; then
-  HERO="$SAMPLES/artec_metal-nut.stl"
+# a user's mesh looks like. `copper-key` is the one the Deck review picked: it
+# reads at preview size (a recognisable object, not a blob) and has real defects
+# (4 boundary loops, 5 components). Falls back to the repo fixture when the
+# benchmark checkout is absent, so the script still produces a full set on a
+# bare clone.
+if [ -f "$SAMPLES/artec_copper-key.stl" ]; then
+  HERO="$SAMPLES/artec_copper-key.stl"
 else
   HERO="$FIX/case3_broken_cup.stl"
   echo "  (no sample corpus; hero mesh falls back to the repo fixture)"
@@ -157,24 +158,29 @@ echo "--- main window and file list"
 # Before view, not After-with-heatmap: the heatmap's deviation ramp needs a
 # reference, and without one it paints the whole part one flat colour, which
 # reads as a rendering bug in a README.
+# The main frame is the Before view exactly as a launch shows it (no scroll),
+# which is why it is the only frame without `--settings-scroll`.
 capture main-window "$HERO"
-capture file-list --repair "$HERO" "$BOX"
+# , not : the capture waits for the *selected* file under
+# , so a second file still repairing kept the window from closing and
+# the frame timed out. Batch repair is what a two-file frame shows anyway.
+capture file-list --repair-all "$HERO" "$BOX"
 
 echo "--- settings panel, scrolled to the lower half"
-capture settings-panel "$HERO"
+capture settings-panel --settings-scroll 200 "$HERO"
 # The panel is taller than any window; the method list and the analysis table
-# only appear below the fold.
-capture settings-panel-lower --settings-scroll 780 "$HERO"
+# only appear below the fold. ~380 px is the first screenful past the tiers.
+capture settings-panel-lower --settings-scroll 380 "$HERO"
 
 echo "--- methods and per-file method selection"
-capture methods-panel "$HERO" --settings-scroll 960
+capture methods-panel "$HERO" --settings-scroll 520
 # The editor itself has to be open with a hand-picked list, or this frame is a
 # duplicate of `settings-panel-lower` (it was: same md5). `--file-methods` is the
 # hook that turns "Use the panel selection" off and ticks a few methods.
-capture file-methods --file-methods 1,3,10 --settings-scroll 780 "$HERO"
+capture file-methods --file-methods 1,3,10 --settings-scroll 420 "$HERO"
 
 echo "--- analysis panel"
-capture analysis-panel "$HERO" --settings-scroll 1030
+capture analysis-panel "$HERO" --settings-scroll 650
 
 echo "--- 3MF object list"
 THREE_MF="$TMP/three_objects.3mf"
@@ -187,7 +193,10 @@ fi
 
 echo "--- heatmap (3D) and defect colours"
 # Same real mesh, so the two colourings can be compared in the docs.
-capture heatmap "$HERO" --heatmap
+# After, not Before: the deviation ramp is computed against the original, so it
+# only exists on the repaired side -- a Before+Heatmap frame shows no colouring
+# at all and would document nothing.
+capture heatmap --repair --show-after --heatmap "$HERO"
 capture defect-colors "$FIX/case3_broken_cup.stl" --defect-colors
 
 echo "--- static before/after pair"
@@ -200,7 +209,7 @@ echo "--- update dialog"
 capture update-dialog "$HERO" --updates
 
 echo "--- engines and changelog"
-capture engines-panel "$HERO" --settings-scroll 930
+capture engines-panel "$HERO" --settings-scroll 760
 capture changelog "$HERO" --open-changelog
 
 # A duplicated frame looks like a pass and shows nothing: `file-methods` was a
