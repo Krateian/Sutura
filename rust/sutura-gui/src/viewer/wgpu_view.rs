@@ -395,11 +395,22 @@ fn fs(input: VsOut) -> @location(0) vec4<f32> {
     // Precedence, as `heatmap.draw_frame`: an available deviation ramp wins over
     // the binary defect blend. `input.ramp < 0` means the ramp was not computed
     // (the Before view), so the defect tint still applies there.
+    // The ramp is shaded the same way `CpuViewer::rasterize_with` shades it, and
+    // for the same reason: every face of a scanned part lands on nearly the same
+    // deviation, so an unshaded ramp is one flat silhouette with no readable
+    // shape. That is what the After + Heatmap view looked like on a Steam Deck --
+    // the CPU path had been fixed and this one had not, so the two renderers
+    // disagreed about the same frame.
+    //
+    // Same constants as the CPU path: 0.35 / 0.65 ambient/diffuse, and the same
+    // 35% lift on the ramp's own entries so the navy low end stays a surface
+    // rather than a hole. The value -> colour map is untouched.
     let ramp_rgb = deviation_colour(input.ramp);
+    let ramp_shade = 0.35 + 0.65 * d;
+    let ramp_lifted = ramp_rgb + (vec3<f32>(1.0) - ramp_rgb) * 0.35;
+    let ramp_rgb_shaded = ramp_lifted * ramp_shade;
     let defect_c = mix(base, hot, clamp(input.defect, 0.0, 1.0) * u.heat.x);
-    // The ramp is NOT shaded (Python uses `dev_lut[idx]` verbatim); only the
-    // neutral body takes the diffuse term. Shading it dimmed the dark navy end.
-    let c = select(defect_c, ramp_rgb, input.ramp >= 0.0);
+    let c = select(defect_c, ramp_rgb_shaded, input.ramp >= 0.0);
     return vec4<f32>(c, 1.0);
 }
 "#;

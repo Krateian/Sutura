@@ -86,6 +86,13 @@ mod tests {
     /// checks the crash entry end to end.
     #[test]
     fn record_writes_the_log_and_sets_the_flag() {
+        // Serialised with the interaction tests: `SUTURA_DATA_DIR` is
+        // process-global, and one of those tests points it at its own sandbox. Run
+        // in parallel, this test can see that sandbox, write there, and the other
+        // test's `remove_dir_all` deletes it mid-run -- or this one falls back to
+        // the real home when the variable is briefly unset. One lock for every test
+        // that touches it.
+        let _serial = crate::interaction_tests::serial();
         assert!(!panic_recorded(), "nothing recorded yet in this process");
 
         // A temp data dir, so nothing can reach the real ~/.local. No hook is

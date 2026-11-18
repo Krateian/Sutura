@@ -78,11 +78,11 @@ fn click_checkbox(h: &mut Harness<'_, SuturaApp>, text: &str) {
 /// Turkish changes what every other test in the same process sees. Running the
 /// suite with `--test-threads=1` hides it but does not fix it; a mutex around the
 /// whole test body does, and it keeps the default parallel run.
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(super) static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Take the serialisation lock, ignoring poisoning (a panicking test would
 /// otherwise turn every later test into a "poisoned lock" failure).
-fn serial() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -568,4 +568,31 @@ fn heatmap_ramp_keeps_contrast_and_a_visible_floor() {
         shaded[2] > shaded[0] && shaded[2] > shaded[1],
         "the low end must stay blue-dominant: {shaded:?}"
     );
+}
+
+#[test]
+fn settings_panel_fits_its_controls() {
+    let _serial = serial();
+    for w in [720.0, 880.0, 1024.0, 1280.0] {
+        let mut h = harness(egui::vec2(w, 720.0));
+        h.state_mut().add_file_for_test(temp_box(&format!("fits-{w}")));
+        settle(&mut h);
+
+        // The heading is the panel's own text: if the panel is too narrow its
+        // left edge is clipped, and the heading is what the Deck report showed
+        // cut in half.
+        let heading = match h.query_by_label("Settings") {
+            Some(n) => n.rect(),
+            None => continue, // folded at this width
+        };
+        assert!(
+            heading.min.x >= 0.0,
+            "at {w} the Settings heading starts off-screen at x={}",
+            heading.min.x
+        );
+        assert!(
+            heading.min.x + heading.width() <= w,
+            "at {w} the Settings heading runs past the window edge"
+        );
+    }
 }

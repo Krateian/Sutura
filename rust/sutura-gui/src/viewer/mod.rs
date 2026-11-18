@@ -62,6 +62,9 @@ pub struct Preview {
     pub size: [u32; 2],
     pub error: Option<String>,
     pub heatmap: bool,
+    /// Last backend/heatmap combination logged, so the note prints on a change
+    /// rather than every frame.
+    logged_backend: Option<String>,
     /// A file is being dragged over the window. Purely cosmetic: the drop hint
     /// turns into an accent-coloured frame so the target is unmistakable.
     /// Python has no such feedback (`gui.py:6059` only accepts the event), so
@@ -105,6 +108,7 @@ impl Preview {
             size: [0, 0],
             error: None,
             heatmap: false,
+            logged_backend: None,
             drop_active: false,
             defect_colors: false,
         }
@@ -128,6 +132,7 @@ impl Preview {
             size: [0, 0],
             error: None,
             heatmap: false,
+            logged_backend: None,
             drop_active: false,
             defect_colors: false,
         }
@@ -221,6 +226,24 @@ impl Preview {
             if self.dirty {
                 let aspect = size[0] as f32 / size[1].max(1) as f32;
                 let vp = self.camera.view_proj(aspect);
+                // Which path drew this frame, printed once so a rendering report
+                // ("flat on RADV, shaded on macOS") can be traced to a renderer
+                // instead of guessed at. The two paths are separate code and have
+                // already diverged once.
+                if std::env::var_os("SUTURA_GUI_BACKEND_LOG").is_some() {
+                    let name = match &self.viewer {
+                        Viewer::Wgpu(_) => "wgpu",
+                        Viewer::Cpu(_) => "cpu",
+                    };
+                    let key = format!("{name}-{}", self.heatmap);
+                    if self.logged_backend.as_deref() != Some(key.as_str()) {
+                        eprintln!(
+                            "preview backend: {name} (heatmap={})",
+                            self.heatmap
+                        );
+                        self.logged_backend = Some(key);
+                    }
+                }
                 let result = match &mut self.viewer {
                     Viewer::Wgpu(v) => v.render(&mesh, vp, self.size, self.heatmap),
                     Viewer::Cpu(v) => v.render_with(
