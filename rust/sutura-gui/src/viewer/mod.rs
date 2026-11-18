@@ -62,6 +62,11 @@ pub struct Preview {
     pub size: [u32; 2],
     pub error: Option<String>,
     pub heatmap: bool,
+    /// A file is being dragged over the window. Purely cosmetic: the drop hint
+    /// turns into an accent-coloured frame so the target is unmistakable.
+    /// Python has no such feedback (`gui.py:6059` only accepts the event), so
+    /// this is an addition, not a port.
+    pub drop_active: bool,
 }
 
 impl Preview {
@@ -97,6 +102,7 @@ impl Preview {
             size: [0, 0],
             error: None,
             heatmap: false,
+            drop_active: false,
         }
     }
 
@@ -118,6 +124,7 @@ impl Preview {
             size: [0, 0],
             error: None,
             heatmap: false,
+            drop_active: false,
         }
     }
 
@@ -234,12 +241,26 @@ impl Preview {
                 );
             }
         } else {
+            if self.drop_active {
+                // A frame inside the panel, so it reads as a target rather than
+                // as a border of the window.
+                ui.painter().rect_stroke(
+                    rect.shrink(6.0),
+                    6.0,
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(90, 170, 230)),
+                    egui::StrokeKind::Inside,
+                );
+            }
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 rust_i18n::t!("app.drop_hint").to_string(),
                 egui::FontId::proportional(16.0),
-                egui::Color32::from_gray(160),
+                if self.drop_active {
+                    egui::Color32::from_rgb(120, 190, 245)
+                } else {
+                    egui::Color32::from_gray(160)
+                },
             );
         }
         if let Some(e) = &self.error {

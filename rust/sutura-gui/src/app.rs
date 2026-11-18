@@ -831,6 +831,10 @@ impl eframe::App for SuturaApp {
             self.settings_open = !self.settings_open;
         }
 
+        // A drag in progress: `hovered_files` is populated between enter and
+        // drop, `dropped_files` only at the drop itself.
+        self.preview.drop_active = ctx.input(|i| !i.raw.hovered_files.is_empty());
+
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for file in dropped {
             let path = file.path().to_path_buf();
@@ -3457,6 +3461,19 @@ mod tests {
                 assert!(m.get("name").is_some(), "{id} needs a name");
             }
         }
+    }
+
+    /// The drop highlight is driven by `hovered_files`, not by `dropped_files`.
+    ///
+    /// That distinction is the whole feature: `dropped_files` is only populated
+    /// at the drop, by which time a highlight is pointless. A test cannot
+    /// simulate a real drag (egui's input is built by the windowing backend), so
+    /// what is pinned here is the flag's wiring and its default-off state.
+    #[test]
+    fn drop_highlight_defaults_off_and_is_independent_of_the_mesh() {
+        let preview = crate::viewer::Preview::for_test();
+        assert!(!preview.drop_active, "no drag in progress, so no highlight");
+        assert!(preview.mesh.is_none());
     }
 
     /// The settings panel must be inside a scroll area.
