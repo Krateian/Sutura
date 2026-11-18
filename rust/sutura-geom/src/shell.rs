@@ -190,18 +190,11 @@ pub fn buried_face_mask_with_bvh(
     let d = delta.max(0.0);
 
     // 0 = buried, 1 = debris, 2 = degenerate, 3 = other (outer/cavity/ambiguous).
-    let verify = std::env::var_os("SUTURA_WINDING_VERIFY").is_some();
+    // Standard WINDING_FAR_TOL only; the empirical 5e-2/2e-2 cut-offs are
+    // deliberately not reachable.
     let results: Vec<(u8, f64)> = (0..tris.len())
         .into_par_iter()
-        .map(|i| {
-            let approx = classify_buried_face(verts, tris, &bvh, eps, d, i, 2e-2);
-            if verify {
-                let exact = classify_buried_face(verts, tris, &bvh, eps, d, i, 2e-2);
-                assert_eq!(approx.0, exact.0,
-                    "winding verify mismatch face {i}: approx {} exact {}", approx.0, exact.0);
-            }
-            approx
-        })
+        .map(|i| classify_buried_face(verts, tris, &bvh, eps, d, i, 1e-2))
         .collect();
 
     for (i, (class, area)) in results.iter().enumerate() {
@@ -352,7 +345,7 @@ impl BuriedMaskContext {
                 let i = fi as usize;
                 if i < self.tris.len() {
                     let (class, area) = classify_buried_face(
-                        &self.verts, &self.tris, &self.bvh, self.eps, self.d, i, 2e-2);
+                        &self.verts, &self.tris, &self.bvh, self.eps, self.d, i, 1e-2);
                     Some((i, class, area))
                 } else {
                     None
