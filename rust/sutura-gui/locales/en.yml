@@ -3,8 +3,10 @@ app:
   add_files: Add files
   repair: Repair
   files: Files
+  clear_list: Clear list
+  remove_file_tip: Remove this file from the list
+  clear_while_running: Cannot clear the list while a repair is running
   settings: Settings
-  settings_coming: Settings panel placeholder (coming soon)
   log: Log
   language: Language
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here

@@ -174,6 +174,49 @@ pub struct SuturaApp {
 }
 
 impl SuturaApp {
+    /// A CPU-only preview, for tests: building the real one needs an
+    /// `eframe::CreationContext`, which cannot be constructed in a unit test.
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        Self {
+            files: Vec::new(),
+            selected: None,
+            loaded: None,
+            language: Language::System,
+            preview: Preview::for_test(),
+            log: Vec::new(),
+            repair_rx: None,
+            repair_index: None,
+            cancel_token: None,
+            pending_overwrite: None,
+            pending_batch: None,
+            intensity: Intensity::Balanced,
+            settings: sutura_core::repair_settings::RepairSettings::from_intensity(
+                Intensity::Balanced.value(),
+                false,
+            ),
+            batch: Vec::new(),
+            batch_active: false,
+            batch_total: 0,
+            batch_done: 0,
+            batch_force: false,
+            auto_batch: false,
+            auto_batch_started: false,
+            about_open: false,
+            updater_open: false,
+            repeat_picker: None,
+            deviation_reference: None,
+            updater: crate::updater_ui::Updater::new(),
+            notes_open: false,
+            screenshot_path: None,
+            screenshot_requested: false,
+            exit_after_screenshot: false,
+            auto_repair: false,
+            auto_repair_started: false,
+            ready_frames: 0,
+        }
+    }
+
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         files: Vec<PathBuf>,
@@ -302,6 +345,42 @@ impl SuturaApp {
         let Some(entry) = self.files.get(idx) else { return };
         let Some(mesh) = entry.input.clone() else { return };
         self.repeat_picker = Some(crate::repeat_picker::RepeatPicker::new(&mesh));
+    }
+
+    /// Drop one entry from the list, keeping `selected` and the preview
+    /// consistent.
+    ///
+    /// `selected` and `loaded` are **indices** into `files`, so a removal
+    /// invalidates every entry after it: the preview would otherwise show the
+    /// previous file. Cleared outright rather than re-pointed, because guessing
+    /// which file the user meant next is worse than showing nothing.
+    fn remove_file(&mut self, idx: usize) {
+        if idx >= self.files.len() {
+            return;
+        }
+        self.files.remove(idx);
+        self.selected = None;
+        self.loaded = None;
+        self.preview.clear_mesh();
+    }
+
+    /// Empty the list. Refused while a repair runs: the in-flight worker holds
+    /// an index into `files` and would land its result on the wrong entry.
+    fn clear_files(&mut self) {
+        if self.busy() {
+            self.log(rust_i18n::t!("app.clear_while_running").to_string());
+            return;
+        }
+        self.files.clear();
+        self.selected = None;
+        self.loaded = None;
+        self.preview.clear_mesh();
+        self.batch.clear();
+    }
+
+    /// True while any repair is in flight (single file or batch).
+    fn busy(&self) -> bool {
+        self.repair_rx.is_some() || self.batch_active
     }
 
     fn apply_selection(&mut self) {
@@ -603,6 +682,8 @@ impl SuturaApp {
 impl eframe::App for SuturaApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Deferred so the panel closure can set it while `self.files` is borrowed.
+        let mut clear_list = false;
         self.poll_repair();
         // Updater events drive its panel; a change means a repaint.
         if self.updater.poll() {
@@ -718,8 +799,21 @@ impl eframe::App for SuturaApp {
             .default_size(290.0)
             .show(ui, |ui| {
                 ui.heading(rust_i18n::t!("app.files").to_string());
+                ui.horizontal(|ui| {
+                    let can_clear = !self.files.is_empty() && !self.busy();
+                    if ui
+                        .add_enabled(
+                            can_clear,
+                            egui::Button::new(rust_i18n::t!("app.clear_list").to_string()),
+                        )
+                        .clicked()
+                    {
+                        clear_list = true;
+                    }
+                });
                 ui.separator();
                 let mut clicked = None;
+                let mut remove = None;
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (idx, entry) in self.files.iter().enumerate() {
                         let name = entry
@@ -732,9 +826,24 @@ impl eframe::App for SuturaApp {
                         if entry.error.is_some() {
                             text = text.color(egui::Color32::LIGHT_RED);
                         }
-                        if ui.selectable_label(selected, text).clicked() {
-                            clicked = Some(idx);
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(selected, text).clicked() {
+                                clicked = Some(idx);
+                            }
+                            // Removing the file being repaired would orphan the
+                            // worker's index, so it is disabled while busy.
+                            // Plain "x": egui's bundled font has no U+2715, so
+                            // "✕" rendered as a missing-glyph box.
+                            if ui
+                                .add_enabled(!self.busy(), egui::Button::new(" x "))
+                                .on_hover_text(
+                                    rust_i18n::t!("app.remove_file_tip").to_string(),
+                                )
+                                .clicked()
+                            {
+                                remove = Some(idx);
+                            }
+                        });
                         match &entry.repair {
                             RepairState::Running { step, total } => {
                                 ui.add(
@@ -764,7 +873,14 @@ impl eframe::App for SuturaApp {
                 if let Some(idx) = clicked {
                     self.selected = Some(idx);
                 }
+                if let Some(idx) = remove {
+                    self.remove_file(idx);
+                }
             });
+
+        if clear_list {
+            self.clear_files();
+        }
 
         let mut open_action: Option<(PathBuf, bool)> = None;
         let mut cancel_in_panel = false;
@@ -2208,5 +2324,44 @@ mod tests {
             fixed_path(Path::new("/tmp/v1.2.part.stl")),
             PathBuf::from("/tmp/v1.2.part_fixed.stl")
         );
+    }
+
+    /// `selected` and `loaded` are indices into `files`, so removing an entry
+    /// must clear both — otherwise the preview keeps showing the removed file,
+    /// or shows whichever file slid into that index.
+    #[test]
+    fn removal_clears_the_selection_and_preview_key() {
+        use std::path::PathBuf;
+
+        let entry = |name: &str| Entry {
+            path: PathBuf::from(name),
+            input: None,
+            result: None,
+            error: None,
+            repair: RepairState::Idle,
+            report: None,
+            output: None,
+            view: ViewMode::Before,
+        };
+        let mut app = SuturaApp::for_test();
+        app.files = vec![entry("/tmp/a.stl"), entry("/tmp/b.stl"), entry("/tmp/c.stl")];
+        app.selected = Some(2);
+        app.loaded = Some((2, ViewMode::Before));
+
+        app.remove_file(1);
+
+        assert_eq!(app.files.len(), 2, "one entry removed");
+        assert_eq!(app.files[1].path, PathBuf::from("/tmp/c.stl"), "c slid to 1");
+        assert!(app.selected.is_none(), "selection must not point at a stale index");
+        assert!(app.loaded.is_none(), "preview key must be invalidated");
+        assert!(app.preview.mesh.is_none(), "preview must be cleared");
+    }
+
+    /// Out-of-range removal is a no-op rather than a panic.
+    #[test]
+    fn removal_out_of_range_is_ignored() {
+        let mut app = SuturaApp::for_test();
+        app.remove_file(7);
+        assert!(app.files.is_empty());
     }
 }

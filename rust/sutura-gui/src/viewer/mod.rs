@@ -100,6 +100,27 @@ impl Preview {
         }
     }
 
+    /// A CPU-only preview, for tests: building the real one needs an
+    /// `eframe::CreationContext`, which cannot be constructed in a unit test.
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        Self {
+            camera: Camera {
+                yaw: -0.55,
+                pitch: 0.32,
+                zoom: 1.0,
+                target: Vec3::ZERO,
+                radius: 1.0,
+            },
+            viewer: Viewer::Cpu(cpu_view::CpuViewer::new()),
+            mesh: None,
+            dirty: true,
+            size: [0, 0],
+            error: None,
+            heatmap: false,
+        }
+    }
+
     pub fn set_mesh(&mut self, mesh: std::sync::Arc<DisplayMesh>) {
         self.camera = Camera::from_mesh(&mesh);
         match &mut self.viewer {
@@ -107,6 +128,19 @@ impl Preview {
             Viewer::Cpu(v) => v.set_mesh(mesh.clone()),
         }
         self.mesh = Some(mesh);
+        self.dirty = true;
+        self.error = None;
+    }
+
+    /// Drop the displayed mesh (the file list was emptied or the selection was
+    /// removed). Without this the preview would keep showing a file that is no
+    /// longer in the list.
+    ///
+    /// Clearing `Preview.mesh` is enough: the viewer is handed this mesh every
+    /// frame, so there is no per-backend copy to clear (and `cpu_view`'s
+    /// `set_mesh` is a no-op — it reads from here).
+    pub fn clear_mesh(&mut self) {
+        self.mesh = None;
         self.dirty = true;
         self.error = None;
     }

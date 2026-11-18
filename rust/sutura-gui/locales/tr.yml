@@ -3,8 +3,10 @@ app:
   add_files: Dosya ekle
   repair: Onar
   files: Dosyalar
+  clear_list: Listeyi temizle
+  remove_file_tip: Bu dosyayı listeden kaldır
+  clear_while_running: Onarım sürerken liste temizlenemez
   settings: Ayarlar
-  settings_coming: Ayarlar paneli yer tutucusu (yakında)
   log: Günlük
   language: Dil
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
