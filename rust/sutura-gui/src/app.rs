@@ -218,6 +218,11 @@ pub struct SuturaApp {
     /// `run_fixtures:false`, the same cheap availability probe `--self-check`
     /// does without `--self-check-fixtures`.
     method_health: Vec<Value>,
+    /// Set when a panic was recorded in this process. The dialog is the whole
+    /// point of the crash log: a trace nobody is told about is not reporting.
+    crash_open: bool,
+    /// Result message of the last diagnostics export, shown in the dialog.
+    diagnostics_note: Option<String>,
 }
 
 impl SuturaApp {
@@ -264,6 +269,8 @@ impl SuturaApp {
             persisted: String::new(),
             settings_open: true,
             method_health: Vec::new(),
+            crash_open: false,
+            diagnostics_note: None,
         }
     }
 
@@ -354,6 +361,8 @@ impl SuturaApp {
             persisted: String::new(),
             settings_open: true,
             method_health,
+            crash_open: crate::crash::panic_recorded(),
+            diagnostics_note: None,
         };
         for path in files {
             app.add_path(path);
@@ -447,6 +456,40 @@ impl SuturaApp {
         let Some(entry) = self.files.get(idx) else { return };
         let Some(mesh) = entry.input.clone() else { return };
         self.repeat_picker = Some(crate::repeat_picker::RepeatPicker::new(&mesh));
+    }
+
+    /// Write a diagnostics archive wherever the user says.
+    ///
+    /// Same builder the CLI's `--diagnostics` uses (`diagnostics::create_archive`),
+    /// so a report from the GUI and one from the terminal contain the same
+    /// files. Defaulted to the data directory so the button always produces
+    /// something even if the picker is dismissed.
+    fn export_diagnostics(&mut self) {
+        let suggested = sutura_core::config::data_dir().join("sutura-diagnostics.zip");
+        let target = rfd::FileDialog::new()
+            .set_file_name(suggested.file_name().unwrap_or_default().to_string_lossy())
+            .save_file()
+            .unwrap_or(suggested);
+        match sutura_core::diagnostics::create_archive(&target) {
+            Ok(v) => {
+                let bytes = v.get("size_bytes").and_then(|b| b.as_u64()).unwrap_or(0);
+                self.diagnostics_note = Some(
+                    rust_i18n::t!(
+                        "app.diagnostics_written",
+                        path = target.display().to_string(),
+                        bytes = bytes as i64
+                    )
+                    .to_string(),
+                );
+                self.log(self.diagnostics_note.clone().unwrap_or_default());
+            }
+            Err(e) => {
+                self.diagnostics_note = Some(
+                    rust_i18n::t!("app.diagnostics_failed", error = e).to_string(),
+                );
+                self.log(self.diagnostics_note.clone().unwrap_or_default());
+            }
+        }
     }
 
     /// Current state in its persisted form. Comparing strings is how change
@@ -934,6 +977,13 @@ impl eframe::App for SuturaApp {
                     }
                     if ui.button(rust_i18n::t!("app.about").to_string()).clicked() {
                         self.about_open = true;
+                    }
+                    if ui
+                        .button(rust_i18n::t!("app.diagnostics").to_string())
+                        .on_hover_text(rust_i18n::t!("app.diagnostics_tip").to_string())
+                        .clicked()
+                    {
+                        self.export_diagnostics();
                     }
                 });
 
@@ -2077,6 +2127,40 @@ impl eframe::App for SuturaApp {
                     ui.label(rust_i18n::t!("app.about_body").to_string());
                 });
             self.about_open = open;
+        }
+        if self.crash_open {
+            // Python shows one short dialog pointing at the export; this is the
+            // same, and it is the only reason the crash log is worth writing.
+            let mut open = self.crash_open;
+            egui::Window::new(rust_i18n::t!("app.crash_title").to_string())
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(&ctx, |ui| {
+                    ui.label(rust_i18n::t!("app.crash_body").to_string());
+                    ui.label(
+                        egui::RichText::new(
+                            sutura_core::diagnostics::crash_log_path().display().to_string(),
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(rust_i18n::t!("app.diagnostics").to_string())
+                            .clicked()
+                        {
+                            self.export_diagnostics();
+                        }
+                        if ui.button(rust_i18n::t!("app.close").to_string()).clicked() {
+                            self.crash_open = false;
+                        }
+                    });
+                    if let Some(note) = &self.diagnostics_note {
+                        ui.label(egui::RichText::new(note).small().weak());
+                    }
+                });
         }
         if self.updater_open {
             let mut open = self.updater_open;

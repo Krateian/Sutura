@@ -49,6 +49,13 @@ app:
   recommended: Recommended methods
   rec_object: Object %{index}
   method_health: "%{count} method(s) unavailable:"
+  diagnostics: "Diagnostics…"
+  diagnostics_tip: "Write an archive to attach to a bug report"
+  diagnostics_written: "Diagnostics written: %{path} (%{bytes} bytes)"
+  diagnostics_failed: "Diagnostics failed: %{error}"
+  crash_title: "Sutura crashed"
+  crash_body: "Something went wrong and a crash log was written. Sending a diagnostics archive with your report makes it much easier to fix."
+  close: "Close"
   drop_hint: Drop an STL / OBJ / PLY / 3MF file here
   repair_running: Repairing…
   triangles: "%{count} triangles"

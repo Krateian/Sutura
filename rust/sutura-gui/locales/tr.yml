@@ -49,6 +49,13 @@ app:
   recommended: Önerilen yöntemler
   rec_object: Nesne %{index}
   method_health: "%{count} yöntem kullanılamıyor:"
+  diagnostics: "Teşhis"
+  diagnostics_tip: "Hata raporuna eklemek için bir arşiv yaz"
+  diagnostics_written: "Teşhis yazıldı: %{path} (%{bytes} bayt)"
+  diagnostics_failed: "Teşhis başarısız: %{error}"
+  crash_title: "Sutura çöktü"
+  crash_body: "Bir şeyler ters gitti ve çökme günlüğü yazıldı. Raporunuzla bir teşhis arşivi göndermek sorunu düzeltmeyi çok kolaylaştırır."
+  close: "Kapat"
   drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"

@@ -5,10 +5,15 @@ mod repeat_picker;
 mod state;
 mod updater_ui;
 mod viewer;
+mod crash;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
 fn main() -> eframe::Result<()> {
+    // First thing: anything that panics from here on leaves a trace, including
+    // a failure while parsing arguments or creating the window.
+    crash::install_hooks();
+
     let mut args = std::env::args().skip(1);
     let mut files = Vec::new();
     let mut screenshot = None;
