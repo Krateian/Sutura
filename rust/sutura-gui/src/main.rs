@@ -2,6 +2,7 @@ mod app;
 mod i18n;
 mod mesh;
 mod repeat_picker;
+mod state;
 mod updater_ui;
 mod viewer;
 
@@ -33,7 +34,9 @@ fn main() -> eframe::Result<()> {
     let mut about = false;
     let mut updater = false;
     let mut intensity = app::Intensity::Balanced;
+    let mut intensity_explicit = false;
     let mut language = i18n::Language::System;
+    let mut language_explicit = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--screenshot" => screenshot = args.next().map(std::path::PathBuf::from),
@@ -87,6 +90,7 @@ fn main() -> eframe::Result<()> {
             "--about" => about = true,
             "--updates" => updater = true,
             "--intensity" => {
+                intensity_explicit = true;
                 intensity = match args.next().as_deref() {
                     Some("quick") => app::Intensity::Quick,
                     Some("thorough") => app::Intensity::Thorough,
@@ -95,6 +99,7 @@ fn main() -> eframe::Result<()> {
                 }
             }
             "--lang" => {
+                language_explicit = true;
                 language = match args.next().as_deref() {
                     Some("en") => i18n::Language::En,
                     Some("tr") => i18n::Language::Tr,
@@ -194,6 +199,8 @@ fn main() -> eframe::Result<()> {
                     about,
                     updater,
                     intensity,
+                    intensity_explicit,
+                    language_explicit,
                 },
             )))
         }),

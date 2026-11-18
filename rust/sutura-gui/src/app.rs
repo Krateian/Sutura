@@ -112,6 +112,17 @@ impl Intensity {
             Intensity::Extreme => rust_i18n::t!("app.intensity_extreme").to_string(),
         }
     }
+
+    /// Inverse of [`Self::value`], for restoring saved state. Unknown strings
+    /// fall back to the default rather than failing to start.
+    pub fn from_value(value: &str) -> Self {
+        match value {
+            "quick" => Intensity::Quick,
+            "thorough" => Intensity::Thorough,
+            "extreme" => Intensity::Extreme,
+            _ => Intensity::Balanced,
+        }
+    }
 }
 
 pub struct StartupOptions {
@@ -125,6 +136,11 @@ pub struct StartupOptions {
     pub about: bool,
     pub updater: bool,
     pub intensity: Intensity,
+    /// True when `--intensity` was given. Saved state must not override an
+    /// explicit flag, and without this the two are indistinguishable.
+    pub intensity_explicit: bool,
+    /// True when `--lang` was given.
+    pub language_explicit: bool,
 }
 
 pub struct SuturaApp {
@@ -171,6 +187,11 @@ pub struct SuturaApp {
     auto_repair: bool,
     auto_repair_started: bool,
     ready_frames: u8,
+    /// Serialized form of the last persisted state. Compared at the end of every
+    /// frame so a write happens only when something actually changed -- the
+    /// settings panel mutates `self.settings` in a dozen places and hooking each
+    /// one would drift.
+    persisted: String,
 }
 
 impl SuturaApp {
@@ -214,6 +235,7 @@ impl SuturaApp {
             auto_repair: false,
             auto_repair_started: false,
             ready_frames: 0,
+            persisted: String::new(),
         }
     }
 
@@ -225,6 +247,32 @@ impl SuturaApp {
     ) -> Self {
         let mut preview = Preview::new(cc);
         preview.heatmap = options.heatmap;
+        // Saved state is a fallback, never an override: an explicit flag wins.
+        let saved = crate::state::load();
+        let intensity = if options.intensity_explicit {
+            options.intensity
+        } else {
+            saved
+                .intensity
+                .as_deref()
+                .map(Intensity::from_value)
+                .unwrap_or(options.intensity)
+        };
+        let language = if options.language_explicit {
+            language
+        } else {
+            match saved.language.as_deref() {
+                Some("en") => Language::En,
+                Some("tr") => Language::Tr,
+                _ => language,
+            }
+        };
+        i18n::apply(language);
+        let settings = if options.intensity_explicit {
+            RepairSettings::from_intensity(intensity.value(), false)
+        } else {
+            saved.settings.clone()
+        };
         let mut app = Self {
             files: Vec::new(),
             selected: None,
@@ -237,8 +285,8 @@ impl SuturaApp {
             cancel_token: None,
             pending_overwrite: None,
             pending_batch: None,
-            intensity: options.intensity,
-            settings: RepairSettings::from_intensity(options.intensity.value(), false),
+            intensity,
+            settings,
             batch: Vec::new(),
             batch_total: 0,
             batch_done: 0,
@@ -258,6 +306,12 @@ impl SuturaApp {
             auto_repair: options.auto_repair,
             auto_repair_started: false,
             ready_frames: 0,
+            // Left empty on purpose: the first frame writes the current state
+            // out, which creates the file and makes the load/save loop
+            // observable. Seeding it with `state_json()` instead would mean a
+            // first launch never wrote anything, and the whole path stayed
+            // unexercised until some control happened to change.
+            persisted: String::new(),
         };
         for path in files {
             app.add_path(path);
@@ -345,6 +399,40 @@ impl SuturaApp {
         let Some(entry) = self.files.get(idx) else { return };
         let Some(mesh) = entry.input.clone() else { return };
         self.repeat_picker = Some(crate::repeat_picker::RepeatPicker::new(&mesh));
+    }
+
+    /// Current state in its persisted form. Comparing strings is how change
+    /// detection works without deriving `PartialEq` on `RepairSettings` (and
+    /// without missing a field that only some other code path sets).
+    fn state_json(&self) -> String {
+        let state = crate::state::GuiState {
+            settings: self.settings.clone(),
+            intensity: Some(self.intensity.value().to_string()),
+            language: Some(self.language.code().to_string()),
+        };
+        serde_json::to_string(&state).unwrap_or_default()
+    }
+
+    /// Write the settings out when they differ from what was last written.
+    ///
+    /// Called once per frame, so it must be cheap: `to_string` on a small
+    /// struct, then a file write only on an actual change. Saving
+    /// unconditionally would touch the disk 60 times a second.
+    fn persist_if_changed(&mut self) {
+        let now = self.state_json();
+        if now == self.persisted {
+            return;
+        }
+        let state = crate::state::GuiState {
+            settings: self.settings.clone(),
+            intensity: Some(self.intensity.value().to_string()),
+            language: Some(self.language.code().to_string()),
+        };
+        match crate::state::save(&state) {
+            Ok(()) => self.persisted = now,
+            // Logged, not fatal: a read-only config dir must not break the UI.
+            Err(e) => self.log(format!("could not save GUI settings: {e}")),
+        }
     }
 
     /// Drop one entry from the list, keeping `selected` and the preview
@@ -1600,6 +1688,7 @@ impl eframe::App for SuturaApp {
 
         self.apply_selection();
         self.maybe_screenshot(&ctx);
+        self.persist_if_changed();
     }
 }
 

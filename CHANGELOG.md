@@ -23,6 +23,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- **The GUI remembers its settings.** It previously started from scratch every
+  time: intensity, language and every control in the settings panel were lost on
+  quit. They are now saved to `gui.json` beside the CLI's `config.json` (two
+  separate files, so neither can clobber the other's keys) and restored on
+  launch. Deliberately stricter than the Python GUI, which persisted twelve keys
+  and kept the tier switches in memory only: the whole settings struct
+  round-trips here. An explicit `--intensity` or `--lang` still wins over the
+  saved value.
 - **`--wall-min-thickness` now does something.** The flag was documented,
   accepted, and completely inert: it set a target but never turned the Wall
   Thicken tier on, and nothing in the pipeline read it. Passing it now enables

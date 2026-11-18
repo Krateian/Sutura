@@ -3927,6 +3927,7 @@ dependencies = [
  "libc",
  "rfd",
  "rust-i18n",
+ "serde",
  "serde_json",
  "sutura-core",
  "sutura-geom",

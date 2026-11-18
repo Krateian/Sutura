@@ -19,8 +19,8 @@ pub use external_engines::{
 };
 
 pub use intensity::{
-    build_spec, effective_spec, format_intensities, list_intensities, load_profiles,
-    name_error, normalize_entry, preset_from_policy, presets, profile_overrides,
+    build_spec, config_intensity_path, effective_spec, format_intensities, list_intensities,
+    load_profiles, name_error, normalize_entry, preset_from_policy, presets, profile_overrides,
     resolve_intensity, resolve_intensity_detail, save_profiles, triage_report_fields,
     unique_profile_name, IntensitySpec, LadderEntry, ProfileEntry, DEFAULT_INTENSITY,
     DEEP_REPAIR_MODES, HAUSDORFF_FLOOR, INTENSITIES, INTENSITY_ENV,
