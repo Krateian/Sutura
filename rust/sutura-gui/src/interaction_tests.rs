@@ -134,7 +134,15 @@ fn temp_box(tag: &str) -> std::path::PathBuf {
 #[test]
 fn toolbar_controls_are_reachable_at_narrow_sizes() {
     let _serial = serial();
-    for (win_w, win_h) in [(1280.0, 800.0), (1024.0, 700.0), (720.0, 480.0)] {
+    // The widths a report has named: 1280x800 is the Steam Deck's screen, 880 and
+    // 800 were its window, 1024 the old default, 720 the stated minimum.
+    for (win_w, win_h) in [
+        (1280.0, 800.0),
+        (1024.0, 700.0),
+        (880.0, 740.0),
+        (800.0, 740.0),
+        (720.0, 480.0),
+    ] {
         let mut h = harness(egui::vec2(win_w, win_h));
         settle(&mut h);
         for label in [
