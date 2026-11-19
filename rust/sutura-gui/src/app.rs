@@ -3578,36 +3578,39 @@ impl SuturaApp {
 
         let mut apply: Option<&'static str> = None;
         for sug in &list {
+            // Text takes the width the button does not need, then the button
+            // sits at the right edge. A plain `right_to_left` layout drew the
+            // button over the last line of text: the label had already claimed
+            // the full width before the button asked for its own.
+            const BUTTON_W: f32 = 76.0;
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(rust_i18n::t!(sug.reason_key).to_string())
-                            .size(crate::theme::FONT_BODY)
-                            .color(crate::theme::TEXT),
-                    )
-                    .wrap(),
+                let text_w = (ui.available_width() - BUTTON_W - crate::theme::GAP_8).max(120.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(text_w, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(
+                                    rust_i18n::t!(sug.reason_key).to_string(),
+                                )
+                                .size(crate::theme::FONT_BODY)
+                                .color(crate::theme::TEXT),
+                            )
+                            .wrap(),
+                        );
+                    },
                 );
                 if let Some(mode) = sug.mode {
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            if ui
-                                .add(secondary_button(
-                                    rust_i18n::t!("app.apply").to_string(),
-                                ))
-                                .on_hover_text(
-                                    rust_i18n::t!(
-                                        "app.apply_mode_tip",
-                                        mode = mode
-                                    )
-                                    .to_string(),
-                                )
-                                .clicked()
-                            {
-                                apply = Some(mode);
-                            }
-                        },
-                    );
+                    if ui
+                        .add(secondary_button(rust_i18n::t!("app.apply").to_string()))
+                        .on_hover_text(
+                            rust_i18n::t!("app.apply_mode_tip", mode = mode).to_string(),
+                        )
+                        .clicked()
+                    {
+                        apply = Some(mode);
+                    }
                 }
             });
         }
