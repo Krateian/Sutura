@@ -1,6 +1,7 @@
 mod app;
 mod i18n;
 mod mesh;
+mod options;
 mod repeat_picker;
 mod state;
 mod updater_ui;

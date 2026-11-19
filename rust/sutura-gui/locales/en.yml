@@ -194,3 +194,25 @@ app:
   repeat_pick_state: "source: %{source}    target: %{target}"
   repeat_pick_apply: Use these points
   repeat_pick_cancel: Cancel
+  col_file: File
+  col_method: Method
+  col_result: Result
+  add_folder: Add folder...
+  remove: Remove selected
+  no_files: No files yet.
+  method_auto: Auto
+  status_working: Working...
+  ready: Ready
+  show_heatmap: Show heatmap
+  show_before_after: Show before/after
+  methods_btn: Methods
+  options_btn: Options
+  analyze: Analyze
+  mode_btn: "Mode: %{mode}"
+  tab_general: General
+  tab_repair: Repair
+  tab_methods: Methods
+  tab_experimental: Experimental
+  tab_updates: Updates
+  tab_changelog: Changelog
+  tab_engines: Engines

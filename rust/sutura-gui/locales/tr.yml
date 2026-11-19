@@ -194,3 +194,25 @@ app:
   repeat_pick_state: "kaynak: %{source}    hedef: %{target}"
   repeat_pick_apply: Bu noktaları kullan
   repeat_pick_cancel: İptal
+  col_file: Dosya
+  col_method: Yöntem
+  col_result: Sonuç
+  add_folder: Klasör ekle...
+  remove: Seçileni kaldır
+  no_files: Henüz dosya yok.
+  method_auto: Otomatik
+  status_working: Çalışıyor...
+  ready: Hazır
+  show_heatmap: Isı haritasını göster
+  show_before_after: Önce/sonra göster
+  methods_btn: Yöntemler
+  options_btn: Seçenekler
+  analyze: Analiz et
+  mode_btn: "Kip: %{mode}"
+  tab_general: Genel
+  tab_repair: Onarım
+  tab_methods: Yöntemler
+  tab_experimental: Deneysel
+  tab_updates: Güncellemeler
+  tab_changelog: Değişiklikler
+  tab_engines: Motorlar
