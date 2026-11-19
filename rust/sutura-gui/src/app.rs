@@ -147,6 +147,34 @@ impl ComparePair {
     }
 }
 
+/// Whether the repaired output is actually watertight.
+///
+/// **The one field everything colour-codes on**: `stage1.two_manifold` is true
+/// and `stage1.holes_remaining` is zero, which is also exactly what
+/// `report::classify` calls `watertight`. Three places used to disagree --
+/// the table cell painted green from `repair_verdict_code`, the verdict was
+/// amber because `brief` could not see a written `output`, and the summary
+/// counted `preserved_notes` as watertight -- with one repaired, open mesh
+/// showing green in the table and "the model is still not closed" right below it.
+///
+/// `None` when the report has no topology at all (a container, or a run that
+/// never reached stage 1); callers keep the code's own colour then.
+fn output_watertight(raw: &Value) -> Option<bool> {
+    let s1 = raw.get("stage1")?;
+    let two_manifold = s1.get("two_manifold").map(truthy)?;
+    let holes_remaining = s1.get("holes_remaining").and_then(|v| v.as_i64()).unwrap_or(0);
+    Some(two_manifold && holes_remaining == 0)
+}
+
+fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().unwrap_or(0.0) != 0.0,
+        Value::String(s) => !s.is_empty(),
+        _ => false,
+    }
+}
+
 impl Entry {
     /// The short per-file decision shown next to the name: `(text, colour, tip)`.
     ///
@@ -160,7 +188,13 @@ impl Entry {
         let report = self.report.as_ref()?;
         let text = verdict_text(report);
         let status = status_text(&report.status_code);
-        Some((text.clone(), verdict_color(&report.verdict_code), status))
+        // Same rule as the verdict and the summary: green only when the output
+        // is watertight, whatever the verdict string says.
+        let colour = match self.raw_report.as_ref().and_then(output_watertight) {
+            Some(false) => crate::theme::WARN,
+            _ => verdict_color(&report.verdict_code),
+        };
+        Some((text.clone(), colour, status))
     }
 }
 
@@ -237,7 +271,11 @@ fn collect_recs(recs: &[Value], out: &mut Vec<(u8, String, f64)>) {
 fn score_bar_widget(ui: &mut egui::Ui, score: Option<f64>, higher_is_better: bool) {
     const H: f32 = 6.0;
     let w = crate::theme::SCORE_BAR_W;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, H), egui::Sense::hover());
+    // Centre the 6 px bar in the cell's full height rather than drawing it at
+    // the cell's top, which is what `allocate_exact_size` would do.
+    let cell_h = ui.available_height().max(H);
+    let (outer, _) = ui.allocate_exact_size(egui::vec2(w, cell_h), egui::Sense::hover());
+    let rect = egui::Rect::from_center_size(outer.center(), egui::vec2(w, H));
     // The trough, so an empty score still reads as a bar and not as a gap.
     ui.painter().rect_filled(rect, H / 2.0, crate::theme::TRACK);
     let Some(score) = score else { return };
@@ -3424,26 +3462,42 @@ impl SuturaApp {
                 .spacing([crate::theme::GAP_16, crate::theme::GAP_8])
                 .min_col_width(84.0)
                 .show(ui, |ui| {
+                    // Every cell is given the row's height and centred inside
+                    // it: a grid row aligns to the top, and a 6 px bar next to
+                    // a 16 px label made the number sit low against both.
+                    const ROW_H: f32 = 22.0;
                     let mut row = |ui: &mut egui::Ui,
                                    label: String,
                                    score: Option<f64>,
                                    higher_is_better: bool| {
-                        ui.label(label);
                         ui.allocate_ui_with_layout(
-                            egui::vec2(crate::theme::SCORE_BAR_W, 0.0),
+                            egui::vec2(84.0, ROW_H),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.label(label);
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(crate::theme::SCORE_BAR_W, ROW_H),
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
                                 score_bar_widget(ui, score, higher_is_better);
                             },
                         );
+                        // Normal text, right-aligned in a fixed column. The
+                        // bundled font has proportional digits, so a monospace
+                        // family was the only way to get tabular figures -- and
+                        // monospace read as code. Right-aligning in one column
+                        // lines the digits up without it.
                         ui.allocate_ui_with_layout(
-                            egui::vec2(44.0, 0.0),
+                            egui::vec2(44.0, ROW_H),
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
-                                ui.label(crate::theme::number(
-                                    fmt_score(score),
-                                    crate::theme::TEXT,
-                                ));
+                                ui.label(
+                                    egui::RichText::new(fmt_score(score))
+                                        .size(crate::theme::FONT_BODY)
+                                        .color(crate::theme::TEXT),
+                                );
                             },
                         );
                         ui.end_row();
@@ -3459,16 +3513,15 @@ impl SuturaApp {
             // not closed" contradicts itself, so green is reserved for an output
             // that is actually watertight. The brief decides that, not a string
             // match on the verdict.
-            let watertight = self
+            let color = match self
                 .selected
                 .and_then(|i| self.files.get(i))
                 .and_then(|e| e.raw_report.as_ref())
-                .map(|raw| sutura_core::report::brief::brief(raw).verdict == "ready");
-            let color = match watertight {
+                .and_then(output_watertight)
+            {
                 Some(false) => crate::theme::WARN,
-                Some(true) => verdict_color(&report.verdict_code),
                 // No report to judge by: keep the code's own colour.
-                None => verdict_color(&report.verdict_code),
+                _ => verdict_color(&report.verdict_code),
             };
             ui.add_space(6.0);
             ui.label(rust_i18n::t!("app.verdict").to_string());
@@ -4170,11 +4223,24 @@ impl SuturaApp {
         let mut issue_counts: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
         for entry in &self.files {
-            match entry.report.as_ref().map(|r| r.verdict_code.as_str()) {
-                Some("preserved") | Some("preserved_notes") => watertight += 1,
-                Some("not_repaired") => failed += 1,
-                Some(_) => warning += 1,
-                None => failed += 1,
+            // Counted from the output's topology, like every other colour on
+            // screen. Two repaired open meshes used to count as "watertight"
+            // here while the verdict under them said "still not closed".
+            match entry.raw_report.as_ref().and_then(output_watertight) {
+                Some(true) => watertight += 1,
+                Some(false) => {
+                    if entry.report.as_ref().is_some_and(|r| r.verdict_code == "not_repaired") {
+                        failed += 1;
+                    } else {
+                        warning += 1;
+                    }
+                }
+                None => match entry.report.as_ref().map(|r| r.verdict_code.as_str()) {
+                    Some("preserved") | Some("preserved_notes") => watertight += 1,
+                    Some("not_repaired") => failed += 1,
+                    Some(_) => warning += 1,
+                    None => failed += 1,
+                },
             }
             if let Some(raw) = entry.raw_report.as_ref() {
                 let (_, issues, _) = sutura_core::report::classify::classify_value(raw);
@@ -6383,6 +6449,14 @@ fn run_repair(
         .map(|f| [f[0] as i32, f[1] as i32, f[2] as i32])
         .collect();
     sutura_core::report::add_scores(&mut scored, &in_f64, &in_i32, &out_f64, &out_i32);
+    // The CLI's report builder adds `output`; the core's own `repair` report does
+    // not. Without it `report::brief` reads this as a run that wrote nothing and
+    // appends "the model is still not closed" to a file that was written and is
+    // closed -- which is exactly the contradiction this fixes.
+    scored.insert(
+        "output".into(),
+        Value::from(output.display().to_string()),
+    );
     let scored = Value::Object(scored);
     let _ = tx.send(RepairEvent::Finished {
         output: output.to_path_buf(),
