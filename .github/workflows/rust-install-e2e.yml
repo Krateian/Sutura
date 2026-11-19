@@ -49,13 +49,17 @@ jobs:
         run: |
           D=$(mktemp -d); SUTURA_DATA_DIR="$D" ~/.local/bin/sutura --diagnostics >/dev/null
           SUTURA_UPDATE_API=http://127.0.0.1:9 SUTURA_DATA_DIR="$D" ~/.local/bin/sutura --check-update --json
+      - name: Desktop tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y desktop-file-utils
       - name: Desktop integration (Linux)
         if: runner.os == 'Linux'
         run: |
           desktop-file-validate ~/.local/share/applications/*.desktop
           ! grep -rE 'python|venv' ~/.local/share/applications/*.desktop
-          test -f ~/.local/share/kio/servicemenus/*.desktop || \
-            test -f ~/.local/share/kservices5/ServiceMenus/*.desktop
+          MENUS=$(compgen -G "$HOME/.local/share/kio/servicemenus/*.desktop" || true)
+          MENUS="$MENUS $(compgen -G "$HOME/.local/share/kservices5/ServiceMenus/*.desktop" || true)"
+          test -n "$(echo "$MENUS" | tr -d '[:space:]')"
       - name: Quick Action (macOS)
         if: runner.os == 'macOS'
         run: |
