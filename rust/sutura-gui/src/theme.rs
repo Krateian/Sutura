@@ -78,13 +78,24 @@ pub fn apply(ctx: &egui::Context) {
     style.spacing.scroll.bar_width = 10.0;
     style.spacing.scroll.bar_inner_margin = 2.0;
     style.spacing.scroll.bar_outer_margin = 2.0;
-    // Floating stays on (a solid bar in `floating = false` paints its handle
-    // almost white -- egui raises the contrast itself), but the resting width is
-    // widened so the bar is visible without hovering. The visibility is forced
-    // per `ScrollArea` with `AlwaysVisible`, which is the part macOS needs.
-    style.spacing.scroll.floating = true;
-    style.spacing.scroll.floating_width = 6.0;
+    // The bar must be visible without hovering. This is the third thing that was
+    // wrong, and the one that explains "the scrollbar still does not show":
+    // `AlwaysVisible` only decides whether the bar is *allocated*, and in
+    // floating mode (`dormant_handle_opacity` defaults to 0.0) the handle is
+    // fully transparent until the pointer is inside the area. A screenshot has no
+    // pointer, so every capture showed no bar at all.
+    // Not floating: a floating bar halves the allocated width, hides the handle
+    // until hover, and its trough competes with the dialog behind it. A solid
+    // bar allocates its space and paints at opacity 1.0 unconditionally.
+    style.spacing.scroll.floating = false;
+    style.spacing.scroll.bar_width = 10.0;
     style.spacing.scroll.handle_min_length = 40.0;
+    style.spacing.scroll.dormant_handle_opacity = 0.55;
+    style.spacing.scroll.active_handle_opacity = 0.75;
+    style.spacing.scroll.interact_handle_opacity = 1.0;
+    // And a visible trough, so the bar reads as a track rather than a smudge.
+    style.spacing.scroll.dormant_background_opacity = 0.25;
+    style.spacing.scroll.active_background_opacity = 0.35;
 
     // --- colours -----------------------------------------------------------
     let mut visuals = egui::Visuals::dark();

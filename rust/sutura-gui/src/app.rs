@@ -3305,13 +3305,7 @@ impl SuturaApp {
                 .small()
                 .weak(),
         );
-        ui.add_space(SPACE_8);
-        if ui
-            .button(rust_i18n::t!("app.profile_save_as_new").to_string())
-            .clicked()
-        {
-            self.profile_action = Some(ProfileAction::SaveAsNew);
-        }
+
 
         ui.separator();
         Self::option_section(ui, rust_i18n::t!("app.tiers_section").to_string());
@@ -3514,10 +3508,10 @@ impl SuturaApp {
                 .response.labelled_by(solid_label);
         });
 
-        ui.separator();
-        // Open by default: these replace the old "More settings will
-        // arrive with the core profiles API" placeholder, and a
-        // collapsed group nobody opens is the same as no group.
+        // The eleven per-run limits the profile saves. Qt called this group
+        // "Profile settings"; the button above pointed at "the per-run limits
+        // below" while this was headed "Per-run limits", so a reader saw neither.
+        Self::option_section(ui, rust_i18n::t!("app.profile_settings").to_string());
         egui::CollapsingHeader::new(rust_i18n::t!("app.bounds").to_string())
             .default_open(true)
             .show(ui, |ui| {
@@ -3788,11 +3782,12 @@ impl SuturaApp {
         ui.horizontal(|ui| {
             ui.label(rust_i18n::t!("app.engines_ftetwild").to_string());
             match &self.ftetwild {
-                // Python's Engines tab has install/remove buttons
-                // because its sidecar is fetched on demand. Here it
-                // ships inside the package, so the only useful
-                // control is a status light -- an install button
-                // would be a button that does nothing.
+                // The status light, plus Qt's two buttons. Install copies a
+                // binary the user picked into the managed directory and Remove
+                // deletes it; neither downloads anything, because the Rust build
+                // ships the sidecar in the package and there is no release asset
+                // to fetch. Both stay disabled when they could not apply:
+                // Install hides once a binary is found, Remove when none is.
                 Some(path) => ui
                     .label(
                         egui::RichText::new(
@@ -3811,6 +3806,48 @@ impl SuturaApp {
                     .on_hover_text(
                         rust_i18n::t!("app.engines_missing_tip").to_string(),
                     ),
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_W);
+            let installed = self.ftetwild.is_some();
+            if ui
+                .add_enabled(
+                    !installed,
+                    egui::Button::new(rust_i18n::t!("app.engines_install").to_string()),
+                )
+                .on_hover_text(rust_i18n::t!("app.engines_install_tip").to_string())
+                .clicked()
+            {
+                if let Some(src) = rfd::FileDialog::new()
+                    .set_title(rust_i18n::t!("app.engines_install").to_string())
+                    .pick_file()
+                {
+                    match sutura_core::ftetwild::install_binary(&src) {
+                        Ok(dest) => {
+                            self.log(format!("installed fTetWild at {}", dest.display()));
+                            self.ftetwild = sutura_core::ftetwild::find_binary();
+                        }
+                        Err(e) => self.log(format!("could not install fTetWild: {e}")),
+                    }
+                }
+            }
+            if ui
+                .add_enabled(
+                    installed,
+                    egui::Button::new(rust_i18n::t!("app.engines_remove").to_string()),
+                )
+                .on_hover_text(rust_i18n::t!("app.engines_remove_tip").to_string())
+                .clicked()
+            {
+                match sutura_core::ftetwild::remove_binary() {
+                    Ok(true) => {
+                        self.log("removed fTetWild".to_string());
+                        self.ftetwild = sutura_core::ftetwild::find_binary();
+                    }
+                    Ok(false) => self.log("no managed fTetWild binary to remove".to_string()),
+                    Err(e) => self.log(format!("could not remove fTetWild: {e}")),
+                }
             }
         });
         // External engines, with their state. `load_all_engines` is
@@ -3916,15 +3953,18 @@ impl SuturaApp {
             &mut self.settings.join_components,
             rust_i18n::t!("app.join_components").to_string(),
         );
+        let dressing_on = self.settings.dressing;
         ui.checkbox(
             &mut self.settings.dressing,
             rust_i18n::t!("app.tier_dressing").to_string(),
         );
         ui.indent("dressing_extra", |ui| {
-            ui.checkbox(
-                &mut self.settings.dressing_force_adopt,
-                rust_i18n::t!("app.dressing_force_adopt").to_string(),
-            );
+            ui.add_enabled_ui(dressing_on, |ui| {
+                ui.checkbox(
+                    &mut self.settings.dressing_force_adopt,
+                    rust_i18n::t!("app.dressing_force_adopt").to_string(),
+                );
+            });
         });
         ui.checkbox(
             &mut self.settings.experimental_splint,
@@ -3934,7 +3974,11 @@ impl SuturaApp {
         // The four Dressing knobs, as combos: Drain, Defects, Bridge radius,
         // Influence width. The two scale factors map to `rmax_scale` and
         // `sigma_scale`; the other two are fixed vocabularies.
-        ui.add_space(SPACE_16);
+        ui.add_space(SPACE_8);
+        // Indented, and inert while Dressing is off: these four only configure
+        // it, so leaving them live would be four controls that do nothing.
+        ui.indent("dressing-knobs", |ui| {
+        ui.add_enabled_ui(dressing_on, |ui| {
         let mut choice = |ui: &mut egui::Ui,
                           key: &str,
                           salt: &str,
@@ -4039,6 +4083,8 @@ impl SuturaApp {
             "dressing-sigma",
             &mut self.settings.dressing_sigma_scale,
         );
+        });
+        });
     }
 
     /// The repeat points, rendered in Options -> Methods.

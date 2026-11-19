@@ -22,8 +22,8 @@ app:
   dressing_drain_hint: boş = varsayılan
   dressing_defects: Kusurlar
   dressing_defects_hint: boş = varsayılan
-  dressing_rmax_scale: Rmax ölçeği
-  dressing_sigma_scale: Sigma ölçeği
+  dressing_rmax_scale: Köprü yarıçapı
+  dressing_sigma_scale: Etki genişliği
   advanced: Gelişmiş
   experimental_graft: Graft (deneysel)
   no_graft: Graft yok
@@ -276,3 +276,8 @@ app:
   profile_name: Profil adı
   profile_name_hint: ör. tara-1
   profile_save: Kaydet
+  opt_last_check: "Son kontrol: %{when}"
+  engines_install: Kur...
+  engines_install_tip: "Bir fTetWild ikilisi seç ve yönetilen klasöre kopyala. İndirme yok: sürüm onu uygulamanın yanında getirir."
+  engines_remove: Kaldır...
+  engines_remove_tip: Yönetilen fTetWild ikilisini sil.

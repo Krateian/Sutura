@@ -300,7 +300,13 @@ impl SuturaApp {
                 format!("{}d {:02}:{:02}", days, rem / 3600, (rem % 3600) / 60)
             })
             .unwrap_or_else(|| rust_i18n::t!("app.opt_never").to_string());
-        ui.label(egui::RichText::new(last).small().weak());
+        ui.label(
+            egui::RichText::new(
+                rust_i18n::t!("app.opt_last_check", when = last).to_string(),
+            )
+            .small()
+            .weak(),
+        );
 
         let mut check_now = false;
         let mut auto = self.prefs.check_for_updates.unwrap_or(false);
@@ -319,17 +325,21 @@ impl SuturaApp {
                 self.prefs.check_for_updates = Some(auto);
             }
         });
+        // A sub-option of Automatic updates, which is what Qt's indented row
+        // meant: indented under it, and inert while Automatic is off.
         ui.horizontal(|ui| {
-            ui.add_space(22.0);
-            if ui
-                .checkbox(
-                    &mut on_start,
-                    rust_i18n::t!("app.opt_check_on_start").to_string(),
-                )
-                .changed()
-            {
-                self.prefs.check_on_startup = Some(on_start);
-            }
+            ui.add_space(24.0);
+            ui.add_enabled_ui(auto, |ui| {
+                if ui
+                    .checkbox(
+                        &mut on_start,
+                        rust_i18n::t!("app.opt_check_on_start").to_string(),
+                    )
+                    .changed()
+                {
+                    self.prefs.check_on_startup = Some(on_start);
+                }
+            });
         });
         ui.add(egui::Label::new(
             egui::RichText::new(rust_i18n::t!("app.opt_auto_note").to_string())
