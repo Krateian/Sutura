@@ -75,7 +75,16 @@ pub fn apply(ctx: &egui::Context) {
     style.spacing.indent = SPACE_16;
     style.spacing.window_margin = egui::Margin::same(SPACE_16 as i8);
     style.spacing.interact_size.y = 24.0;
-    style.spacing.scroll.bar_width = SPACE_8;
+    style.spacing.scroll.bar_width = 10.0;
+    style.spacing.scroll.bar_inner_margin = 2.0;
+    style.spacing.scroll.bar_outer_margin = 2.0;
+    // Floating stays on (a solid bar in `floating = false` paints its handle
+    // almost white -- egui raises the contrast itself), but the resting width is
+    // widened so the bar is visible without hovering. The visibility is forced
+    // per `ScrollArea` with `AlwaysVisible`, which is the part macOS needs.
+    style.spacing.scroll.floating = true;
+    style.spacing.scroll.floating_width = 6.0;
+    style.spacing.scroll.handle_min_length = 40.0;
 
     // --- colours -----------------------------------------------------------
     let mut visuals = egui::Visuals::dark();
@@ -118,6 +127,14 @@ pub fn apply(ctx: &egui::Context) {
     visuals.widgets.open.weak_bg_fill = BUTTON;
     visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, TEXT);
     visuals.widgets.open.corner_radius = rounded;
+
+    // The scroll handle must read as a control, not as a smudge. The first
+    // attempt reused `Button`, which the widget states also paint, so the handle
+    // went white -- every control has its own role for this.
+    visuals.widgets.inactive.bg_fill = BUTTON;
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(0x5a, 0x5f, 0x66);
+    visuals.widgets.active.bg_fill = COLOR_ACCENT;
+    visuals.widgets.noninteractive.bg_fill = WINDOW;
 
     visuals.striped = false;
     style.visuals = visuals;

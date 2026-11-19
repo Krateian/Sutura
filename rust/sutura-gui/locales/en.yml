@@ -77,7 +77,7 @@ app:
   compare_none: "(not rendered)"
   compare_no_after: "No repair yet: the right panel shows the original."
   file_methods: "Methods for this file"
-  file_methods_inherit: "Use the panel selection"
+  file_methods_inherit: "Use the global method settings"
   file_methods_count: "%{count} method(s) applied"
   defect_colors: "Defect colours"
   defect_colors_tip: "Paint each face by its defect kind (non-manifold, duplicate, degenerate…). Needs a full diagnosis on first use."
@@ -249,3 +249,30 @@ app:
   opt_learning: "Learning triage: rank methods from the local repair history"
   tiers_section: Repair tiers
   advanced_section: Advanced
+  opt_version: "Installed version: %{version}"
+  opt_never: never
+  opt_auto_updates: Automatic updates
+  opt_check_on_start: Check on every start
+  opt_auto_note: Automatic updates check every 7 days. With "Check on every start" they check each time Sutura opens. A new version is only installed after you confirm it.
+  engines_reload: Reload
+  engines_open_folder: Open engines folder
+  engines_docs: Engine documentation
+  autorefine_label: Autorefine self-intersections
+  indirect_autorefine_label: Indirect autorefine (exact)
+  dressing_preset: Preset default
+  dressing_drain_off: Off
+  dressing_drain_half: Half
+  dressing_drain_full: Full
+  dressing_drain_deep: Deep
+  dressing_defects_all: All defects
+  dressing_defects_holes_nm: Holes and non-manifold
+  profile_new: New
+  profile_duplicate: Duplicate
+  profile_rename: Rename
+  profile_delete: Delete
+  profile_settings: Profile settings
+  profile_settings_body: These are the per-run limits below, saved under this profile's name.
+  profile_save_as_new: Save as new profile
+  profile_name: Profile name
+  profile_name_hint: e.g. my-scan
+  profile_save: Save

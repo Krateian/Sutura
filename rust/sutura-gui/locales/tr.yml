@@ -77,7 +77,7 @@ app:
   compare_none: "(çizilemedi)"
   compare_no_after: "Henüz onarım yok: sağ panel orijinali gösteriyor."
   file_methods: "Bu dosyanın yöntemleri"
-  file_methods_inherit: "Panel seçimini kullan"
+  file_methods_inherit: "Genel yöntem ayarlarını kullan"
   file_methods_count: "%{count} yöntem uygulanıyor"
   defect_colors: "Kusur renkleri"
   defect_colors_tip: "Her yüzü kusur türüne göre boya (manifold olmayan, kopya, dejenere…). İlk kullanımda tam teşhis gerekir."
@@ -249,3 +249,30 @@ app:
   opt_learning: "Öğrenme sıralaması: yöntemleri yerel onarım geçmişinden sırala"
   tiers_section: Onarım katları
   advanced_section: Gelişmiş
+  opt_version: "Kurulu sürüm: %{version}"
+  opt_never: hiç
+  opt_auto_updates: Otomatik güncelleme
+  opt_check_on_start: Her açılışta kontrol et
+  opt_auto_note: Otomatik güncelleme 7 günde bir kontrol eder. "Her açılışta kontrol et" ile Sutura her açıldığında kontrol edilir. Yeni sürüm yalnız sen onayladıktan sonra kurulur.
+  engines_reload: Yeniden yükle
+  engines_open_folder: Motor klasörünü aç
+  engines_docs: Motor belgeleri
+  autorefine_label: Kendi kendine iyileştir (self-intersection)
+  indirect_autorefine_label: Dolaylı otomatik iyileştirme (tam)
+  dressing_preset: Ön ayar varsayılanı
+  dressing_drain_off: Kapalı
+  dressing_drain_half: Yarım
+  dressing_drain_full: Tam
+  dressing_drain_deep: Derin
+  dressing_defects_all: Tüm kusurlar
+  dressing_defects_holes_nm: Delikler ve non-manifold
+  profile_new: Yeni
+  profile_duplicate: Çoğalt
+  profile_rename: Yeniden adlandır
+  profile_delete: Sil
+  profile_settings: Profil ayarları
+  profile_settings_body: Aşağıdaki çalıştırma başına sınırlar bu profilin adıyla kaydedilir.
+  profile_save_as_new: Yeni profil olarak kaydet
+  profile_name: Profil adı
+  profile_name_hint: ör. tara-1
+  profile_save: Kaydet

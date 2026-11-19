@@ -46,6 +46,12 @@ pub struct GuiState {
     pub cache_enabled: Option<bool>,
     pub fidelity_enabled: Option<bool>,
     pub learning_enabled: Option<bool>,
+    /// Updates tab: Qt persisted these in `config.json`, and the Rust updater
+    /// reads `check_on_startup` when it decides whether to check on launch.
+    pub check_for_updates: Option<bool>,
+    pub check_on_startup: Option<bool>,
+    /// Unix seconds of the last update check, for the "Last check" line.
+    pub last_check: Option<i64>,
 }
 
 /// `<config dir>/gui.json`, beside the CLI's `config.json`.
@@ -152,6 +158,9 @@ mod tests {
             cache_enabled: Some(false),
             fidelity_enabled: Some(false),
             learning_enabled: Some(false),
+            check_for_updates: Some(true),
+            check_on_startup: Some(false),
+            last_check: Some(1_700_000_000),
         };
         let text = serde_json::to_string(&state).unwrap();
         let back: GuiState = serde_json::from_str(&text).unwrap();
@@ -184,6 +193,11 @@ mod tests {
             ),
             (Some(false), Some(false), Some(false), Some(false)),
             "the General tab's switches must round-trip too"
+        );
+        assert_eq!(
+            (back.check_for_updates, back.check_on_startup, back.last_check),
+            (Some(true), Some(false), Some(1_700_000_000)),
+            "the Updates tab's settings must round-trip"
         );
     }
 

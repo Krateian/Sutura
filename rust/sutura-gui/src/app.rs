@@ -164,6 +164,16 @@ impl Entry {
     }
 }
 
+/// What the Repair tab's profile buttons asked for, applied after the frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileAction {
+    New,
+    Duplicate,
+    Rename,
+    Delete,
+    SaveAsNew,
+}
+
 /// The palette. Three semantic colours, one accent, and nothing else (rule g).
 ///
 /// Taken from Qt's `apply_dark_theme` so the two windows agree; a control that
@@ -468,6 +478,11 @@ pub struct SuturaApp {
     /// `RepairOptions` has no field for. They are applied around the repair in
     /// `run_repair`, the same switches the CLI's `--no-*` flags set.
     pub(crate) prefs: crate::state::GuiState,
+    /// A profile edit requested from the Repair tab. Applied after the frame,
+    /// because the dialog needs `&mut self.files`-free access to write the file.
+    profile_action: Option<ProfileAction>,
+    /// Pending name prompt for the profile buttons, and what to do with it.
+    profile_prompt: Option<(ProfileAction, String)>,
     /// The Options window: Qt's 7-tab dialog, which replaced the settings
     /// column. `None` while hidden.
     pub(crate) options_open: bool,
@@ -725,6 +740,8 @@ impl SuturaApp {
             options_open: false,
             options_tab: OptionsTab::Repair,
             prefs: crate::state::GuiState::default(),
+            profile_action: None,
+            profile_prompt: None,
         }
     }
 
@@ -847,6 +864,8 @@ impl SuturaApp {
             focus: options.focus,
             options_open: options.options_tab.is_some(),
             options_tab: options.options_tab.unwrap_or(OptionsTab::Repair),
+            profile_action: None,
+            profile_prompt: None,
             prefs: crate::state::GuiState::default(),
         };
         for path in files {
@@ -1092,6 +1111,9 @@ impl SuturaApp {
             cache_enabled: self.prefs.cache_enabled,
             fidelity_enabled: self.prefs.fidelity_enabled,
             learning_enabled: self.prefs.learning_enabled,
+            check_for_updates: self.prefs.check_for_updates,
+            check_on_startup: self.prefs.check_on_startup,
+            last_check: self.prefs.last_check,
         };
         serde_json::to_string(&state).unwrap_or_default()
     }
@@ -2000,7 +2022,7 @@ impl SuturaApp {
                 .resizable(false)
                 .show(&ctx, |ui| {
                     ui.heading("Sutura");
-                    ui.label(format!("v{}", env!("CARGO_PKG_VERSION")));
+                    ui.label(format!("v{}", SUTURA_VERSION));
                     ui.separator();
                     ui.label(rust_i18n::t!("app.about_body").to_string());
                 });
@@ -2363,6 +2385,132 @@ impl SuturaApp {
                     Some(_) => self.user_resized = true,
                     None => self.open_size = Some([w, h]),
                 }
+            }
+        }
+
+        if let Some(action) = self.profile_action.take() {
+            match action {
+                ProfileAction::Delete => {
+                    if let Some(name) = self.settings.profile.clone() {
+                        let mut profiles = sutura_core::config::intensity::load_profiles(None);
+                        if profiles.remove(&name).is_some() {
+                            match sutura_core::config::intensity::save_profiles(&profiles, None) {
+                                Ok(()) => {
+                                    self.log(format!("deleted profile {name}"));
+                                    self.settings.profile = None;
+                                }
+                                Err(e) => self.log(format!("could not delete profile: {e}")),
+                            }
+                        }
+                    }
+                }
+                // The rest need a name, so they open the prompt below.
+                other => {
+                    let seed = match other {
+                        ProfileAction::Duplicate | ProfileAction::Rename => self
+                            .settings
+                            .profile
+                            .clone()
+                            .unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    self.profile_prompt = Some((other, seed));
+                }
+            }
+        }
+        if let Some((action, mut name)) = self.profile_prompt.clone() {
+            let mut open = true;
+            let mut accept = false;
+            let mut cancel = false;
+            egui::Window::new(rust_i18n::t!("app.profile_new").to_string())
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(&ctx, |ui| {
+                    ui.label(rust_i18n::t!("app.profile_name").to_string());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut name)
+                            .hint_text(rust_i18n::t!("app.profile_name_hint")),
+                    );
+                    ui.horizontal(|ui| {
+                        let ok = !name.trim().is_empty();
+                        if ui
+                            .add_enabled(
+                                ok,
+                                egui::Button::new(rust_i18n::t!("app.profile_save").to_string()),
+                            )
+                            .clicked()
+                        {
+                            accept = true;
+                        }
+                        if ui.button(rust_i18n::t!("app.cancel").to_string()).clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if accept {
+                let name = name.trim().to_string();
+                let mut profiles = sutura_core::config::intensity::load_profiles(None);
+                match action {
+                    // A new profile starts as a copy of the current selection's
+                    // base, which is what Qt's editor did.
+                    ProfileAction::New => {
+                        let base = self
+                            .settings
+                            .profile
+                            .clone()
+                            .or_else(|| Some(self.intensity.value().to_string()))
+                            .unwrap_or_else(|| "balanced".to_string());
+                        profiles.insert(
+                            name.clone(),
+                            sutura_core::config::intensity::ProfileEntry {
+                                base,
+                                overrides: Default::default(),
+                            },
+                        );
+                    }
+                    ProfileAction::Duplicate => {
+                        if let Some(src) = self
+                            .settings
+                            .profile
+                            .as_ref()
+                            .and_then(|n| profiles.get(n))
+                            .cloned()
+                        {
+                            profiles.insert(name.clone(), src);
+                        }
+                    }
+                    ProfileAction::Rename => {
+                        if let Some(old) = self.settings.profile.clone() {
+                            if let Some(entry) = profiles.remove(&old) {
+                                profiles.insert(name.clone(), entry);
+                            }
+                        }
+                    }
+                    ProfileAction::SaveAsNew => {
+                        let base = self.intensity.value().to_string();
+                        profiles.insert(
+                            name.clone(),
+                            sutura_core::config::intensity::ProfileEntry {
+                                base,
+                                overrides: Default::default(),
+                            },
+                        );
+                    }
+                    ProfileAction::Delete => {}
+                }
+                match sutura_core::config::intensity::save_profiles(&profiles, None) {
+                    Ok(()) => {
+                        self.log(format!("saved profile {name}"));
+                        self.settings.profile = Some(name);
+                    }
+                    Err(e) => self.log(format!("could not save profile: {e}")),
+                }
+                self.profile_prompt = None;
+            } else if cancel || !open {
+                self.profile_prompt = None;
+            } else {
+                self.profile_prompt = Some((action, name));
             }
         }
 
@@ -3105,6 +3253,66 @@ impl SuturaApp {
                 .on_hover_text(rust_i18n::t!("app.profile_tip").to_string());
         });
 
+        // Qt's profile management row. The user profiles live in the same
+        // `profiles.json` the CLI reads (`config::intensity`), so a profile
+        // created here is usable from `--intensity <name>`.
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_W);
+            let user_profiles = sutura_core::config::intensity::load_profiles(None);
+            let selected = self.settings.profile.clone();
+            let can_edit = selected
+                .as_ref()
+                .map(|n| user_profiles.contains_key(n))
+                .unwrap_or(false);
+            if ui.button(rust_i18n::t!("app.profile_new").to_string()).clicked() {
+                self.profile_action = Some(ProfileAction::New);
+            }
+            if ui
+                .add_enabled(
+                    can_edit,
+                    egui::Button::new(rust_i18n::t!("app.profile_duplicate").to_string()),
+                )
+                .clicked()
+            {
+                self.profile_action = Some(ProfileAction::Duplicate);
+            }
+            if ui
+                .add_enabled(
+                    can_edit,
+                    egui::Button::new(rust_i18n::t!("app.profile_rename").to_string()),
+                )
+                .clicked()
+            {
+                self.profile_action = Some(ProfileAction::Rename);
+            }
+            if ui
+                .add_enabled(
+                    can_edit,
+                    egui::Button::new(rust_i18n::t!("app.profile_delete").to_string()),
+                )
+                .clicked()
+            {
+                self.profile_action = Some(ProfileAction::Delete);
+            }
+        });
+
+        // The profile editor's fields. Qt put eleven here; eight of them are the
+        // per-run limits already in `RepairSettings`, so the group is the box
+        // around them rather than a second copy of the same numbers.
+        Self::option_section(ui, rust_i18n::t!("app.profile_settings").to_string());
+        ui.label(
+            egui::RichText::new(rust_i18n::t!("app.profile_settings_body").to_string())
+                .small()
+                .weak(),
+        );
+        ui.add_space(SPACE_8);
+        if ui
+            .button(rust_i18n::t!("app.profile_save_as_new").to_string())
+            .clicked()
+        {
+            self.profile_action = Some(ProfileAction::SaveAsNew);
+        }
+
         ui.separator();
         Self::option_section(ui, rust_i18n::t!("app.tiers_section").to_string());
         let mut tamponade = self.settings.no_tamponade == false;
@@ -3456,29 +3664,34 @@ impl SuturaApp {
                         selected.contains(&num)
                     };
                     if automatic {
-                        // A disabled checkbox draws its tick almost invisibly
-                        // against Qt's dark `Button` colour, so the ladder read
-                        // as "only #2 is on" when all six were. Draw the mark as
-                        // text instead -- and ASCII, because egui's bundled font
-                        // has no U+2713 either (the same reason the per-row
-                        // remove button is " x ").
-                        let mark = if on { "[x]" } else { "[ ]" };
-                        ui.add(egui::Label::new(egui::RichText::new(format!(
-                            "{mark} {num}. {name} ({id})"
-                        ))
-                        .monospace()));
-                    } else {
-                        if ui
-                            .checkbox(&mut on, format!("{num}. {name} ({id})"))
-                            .changed()
-                        {
-                            if on {
-                                selected.push(num);
-                            } else {
-                                selected.retain(|n| *n != num);
-                            }
-                            changed = true;
+                        // A real checkbox, disabled: Qt's ladder was exactly
+                        // that. egui fades the tick with the *disabled* visuals,
+                        // which on this dark `Button` colour left six ticked rows
+                        // looking like one -- so the disabled style is raised
+                        // just for this row instead of drawing the mark by hand.
+                        let mut checked = on;
+                        ui.scope(|ui| {
+                            let v = &mut ui.style_mut().visuals.widgets;
+                            v.inactive.fg_stroke.color = COLOR_ACCENT;
+                            v.noninteractive.fg_stroke.color = COLOR_ACCENT;
+                            ui.add_enabled(
+                                false,
+                                egui::Checkbox::new(
+                                    &mut checked,
+                                    format!("{num}. {name} ({id})"),
+                                ),
+                            );
+                        });
+                    } else if ui
+                        .checkbox(&mut on, format!("{num}. {name} ({id})"))
+                        .changed()
+                    {
+                        if on {
+                            selected.push(num);
+                        } else {
+                            selected.retain(|n| *n != num);
                         }
+                        changed = true;
                     }
                 }
             });
@@ -3569,7 +3782,9 @@ impl SuturaApp {
 
     /// fTetWild and the external engines, rendered in Options -> Engines.
     pub(crate) fn engines_controls(&mut self, ui: &mut egui::Ui) {
-        ui.label(rust_i18n::t!("app.engines_section").to_string());
+        // One heading style for every tab (rule f): this used to be a plain
+        // label, so "Engines" was smaller than "Repair tiers" and the rest.
+        Self::option_section(ui, rust_i18n::t!("app.engines_section").to_string());
         ui.horizontal(|ui| {
             ui.label(rust_i18n::t!("app.engines_ftetwild").to_string());
             match &self.ftetwild {
@@ -3629,130 +3844,201 @@ impl SuturaApp {
                 ui.label(
                     egui::RichText::new(w)
                         .small()
-                        .color(egui::Color32::from_rgb(0xc0, 0xa0, 0x40)),
+                        .color(COLOR_WARN),
                 );
             }
+
+            // Qt's three actions under the list. Install / Remove are absent on
+            // purpose: the fTetWild sidecar ships inside the package, so both
+            // would be buttons that cannot do anything.
+            ui.add_space(SPACE_8);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(rust_i18n::t!("app.engines_reload").to_string())
+                    .clicked()
+                {
+                    self.method_health = sutura_core::self_check::run(false)
+                        .get("methods")
+                        .and_then(|m| m.as_object())
+                        .map(|m| {
+                            let mut v: Vec<Value> = m.values().cloned().collect();
+                            v.sort_by_key(|e| {
+                                e.get("num").and_then(|n| n.as_u64()).unwrap_or(0)
+                            });
+                            v
+                        })
+                        .unwrap_or_default();
+                    self.log("external engines reloaded".to_string());
+                }
+                if ui
+                    .button(rust_i18n::t!("app.engines_open_folder").to_string())
+                    .clicked()
+                {
+                    open_path(&sutura_core::config::engines_dir(), false);
+                }
+                if ui
+                    .button(rust_i18n::t!("app.engines_docs").to_string())
+                    .on_hover_text("docs/guide/engines.md")
+                    .clicked()
+                {
+                    open_path(
+                        std::path::Path::new(
+                            "https://github.com/Krateian/Sutura/blob/main/docs/guide/engines.md",
+                        ),
+                        false,
+                    );
+                }
+            });
         }
     }
 
     /// The opt-in passes, rendered in Options -> Experimental.
     pub(crate) fn experimental_controls(&mut self, ui: &mut egui::Ui) {
-        // The opt-in passes, which Qt kept on this tab.
-        ui.label(
+        // Qt's Experimental tab: the opt-in passes, then the four Dressing
+        // knobs. Every pass below is a `RepairOptions` field, so each reaches
+        // the repair -- an opt-in that wrote nothing would be a dead control.
+        ui.add(egui::Label::new(
             egui::RichText::new(rust_i18n::t!("app.experimental_hint").to_string())
                 .small()
                 .weak(),
-        );
-        // Splint is OFF by default, so it is expressed as an opt-in.
+        ));
+        ui.add_space(SPACE_8);
+
         ui.checkbox(
-            &mut self.settings.experimental_splint,
-            rust_i18n::t!("app.tier_splint").to_string(),
+            &mut self.settings.autorefine,
+            rust_i18n::t!("app.autorefine_label").to_string(),
         );
-        let mut dressing = self.settings.dressing;
-        if ui
-            .checkbox(&mut dressing, rust_i18n::t!("app.tier_dressing").to_string())
-            .changed()
-        {
-            self.settings.dressing = dressing;
-        }
-        if self.settings.dressing {
+        ui.checkbox(
+            &mut self.settings.indirect_autorefine,
+            rust_i18n::t!("app.indirect_autorefine_label").to_string(),
+        );
+        ui.checkbox(
+            &mut self.settings.join_components,
+            rust_i18n::t!("app.join_components").to_string(),
+        );
+        ui.checkbox(
+            &mut self.settings.dressing,
+            rust_i18n::t!("app.tier_dressing").to_string(),
+        );
+        ui.indent("dressing_extra", |ui| {
             ui.checkbox(
                 &mut self.settings.dressing_force_adopt,
                 rust_i18n::t!("app.dressing_force_adopt").to_string(),
             );
-            // The four dressing knobs, previously CLI-only. Each is
-            // tri-state (`None` = CLI default), so a blank field
-            // means "leave it to the intensity", exactly like the
-            // per-run limits above.
-            ui.indent("dressing_knobs", |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(rust_i18n::t!("app.dressing_drain").to_string());
-                    let mut text = self
-                        .settings
-                        .dressing_drain
-                        .as_ref()
-                        .map(|v| match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        })
-                        .unwrap_or_default();
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut text)
-                                .hint_text(rust_i18n::t!("app.dressing_drain_hint")),
-                        )
-                        .changed()
-                    {
-                        let t = text.trim();
-                        self.settings.dressing_drain = if t.is_empty() {
-                            None
-                        } else {
-                            Some(match t.parse::<f64>() {
-                                // Same shape the CLI produces: a bare
-                                // number stays a number.
-                                Ok(n) => serde_json::json!(n),
-                                Err(_) => {
-                                    serde_json::Value::String(t.to_lowercase())
-                                }
-                            })
-                        };
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(rust_i18n::t!("app.dressing_defects").to_string());
-                    let mut text = self
-                        .settings
-                        .dressing_defects
-                        .clone()
-                        .unwrap_or_default();
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut text)
-                                .hint_text(rust_i18n::t!("app.dressing_defects_hint")),
-                        )
-                        .changed()
-                    {
-                        let t = text.trim();
-                        self.settings.dressing_defects = if t.is_empty() {
-                            None
-                        } else {
-                            Some(t.to_string())
-                        };
-                    }
-                });
-                let mut knob = |ui: &mut egui::Ui, label: &str, value: &mut Option<f64>| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(label);
-                        let mut text =
-                            value.map(|v| v.to_string()).unwrap_or_default();
-                        if ui
-                            .add(
-                                egui::TextEdit::singleline(&mut text)
-                                    .desired_width(70.0),
-                            )
-                            .changed()
-                        {
-                            let t = text.trim();
-                            *value = if t.is_empty() {
-                                None
-                            } else {
-                                t.parse::<f64>().ok()
-                            };
+        });
+        ui.checkbox(
+            &mut self.settings.experimental_splint,
+            rust_i18n::t!("app.tier_splint").to_string(),
+        );
+
+        // The four Dressing knobs, as combos: Drain, Defects, Bridge radius,
+        // Influence width. The two scale factors map to `rmax_scale` and
+        // `sigma_scale`; the other two are fixed vocabularies.
+        ui.add_space(SPACE_16);
+        let mut choice = |ui: &mut egui::Ui,
+                          key: &str,
+                          salt: &str,
+                          options: &[(&str, &str)],
+                          current: Option<String>,
+                          set: &mut dyn FnMut(Option<String>)|
+        {
+            ui.horizontal(|ui| {
+                let id = labelled(ui, rust_i18n::t!(key).to_string());
+                let preset = rust_i18n::t!("app.dressing_preset").to_string();
+                let shown = current.clone().unwrap_or_else(|| preset.clone());
+                egui::ComboBox::from_id_salt(salt)
+                    .selected_text(shown.clone())
+                    .show_ui(ui, |ui| {
+                        for (value, label_key) in options {
+                            let label = rust_i18n::t!(*label_key).to_string();
+                            if ui.selectable_label(shown == label, label).clicked() {
+                                set(if value.is_empty() {
+                                    None
+                                } else {
+                                    Some((*value).to_string())
+                                });
+                            }
                         }
-                    });
-                };
-                knob(
-                    ui,
-                    &rust_i18n::t!("app.dressing_rmax_scale").to_string(),
-                    &mut self.settings.dressing_rmax_scale,
-                );
-                knob(
-                    ui,
-                    &rust_i18n::t!("app.dressing_sigma_scale").to_string(),
-                    &mut self.settings.dressing_sigma_scale,
-                );
+                    })
+                    .response
+                    .labelled_by(id);
             });
-        }
+        };
+        let drain_options: [(&str, &str); 5] = [
+            ("", "app.dressing_preset"),
+            ("off", "app.dressing_drain_off"),
+            ("half", "app.dressing_drain_half"),
+            ("full", "app.dressing_drain_full"),
+            ("deep", "app.dressing_drain_deep"),
+        ];
+        let mut drain = self
+            .settings
+            .dressing_drain
+            .as_ref()
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            });
+        choice(
+            ui,
+            "app.dressing_drain",
+            "dressing-drain",
+            &drain_options,
+            drain.clone(),
+            &mut |v| {
+                self.settings.dressing_drain =
+                    v.map(|s| serde_json::json!(s)).or(None)
+            },
+        );
+        let defect_options: [(&str, &str); 3] = [
+            ("", "app.dressing_preset"),
+            ("all", "app.dressing_defects_all"),
+            ("holes_nm", "app.dressing_defects_holes_nm"),
+        ];
+        let defects = self.settings.dressing_defects.clone();
+        choice(
+            ui,
+            "app.dressing_defects",
+            "dressing-defects",
+            &defect_options,
+            defects,
+            &mut |v| self.settings.dressing_defects = v,
+        );
+
+        let mut scale = |ui: &mut egui::Ui, key: &str, salt: &str, value: &mut Option<f64>| {
+            ui.horizontal(|ui| {
+                let id = labelled(ui, rust_i18n::t!(key).to_string());
+                let preset = rust_i18n::t!("app.dressing_preset").to_string();
+                let current = value.map(|v| format!("x{}", trim_float(v))).unwrap_or(preset.clone());
+                egui::ComboBox::from_id_salt(salt)
+                    .selected_text(current.clone())
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current == preset, preset.clone()).clicked() {
+                            *value = None;
+                        }
+                        for factor in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0] {
+                            let label = format!("x{}", trim_float(factor));
+                            if ui.selectable_label(current == label, label.clone()).clicked() {
+                                *value = Some(factor);
+                            }
+                        }
+                    })
+                    .response
+                    .labelled_by(id);
+            });
+        };
+        scale(
+            ui,
+            "app.dressing_rmax_scale",
+            "dressing-rmax",
+            &mut self.settings.dressing_rmax_scale,
+        );
+        scale(
+            ui,
+            "app.dressing_sigma_scale",
+            "dressing-sigma",
+            &mut self.settings.dressing_sigma_scale,
+        );
     }
 
     /// The repeat points, rendered in Options -> Methods.
@@ -4523,6 +4809,13 @@ fn finish_from_output_with(
 /// `egui_kittest` turned that into a hard failure listing sixteen unnamed
 /// widgets. `labelled_by` is the standard way to associate a label with a
 /// control, and it costs one id.
+/// `%g`-ish: no trailing zeros, so a scale factor reads "x1" not "x1.000".
+pub(crate) fn trim_float(v: f64) -> String {
+    let s = format!("{v:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    s.to_string()
+}
+
 pub(crate) fn labelled(ui: &mut egui::Ui, text: String) -> egui::Id {
     // A fixed label column, so every control in a tab starts at the same x
     // (rule h). `add_sized` rather than `label`: the latter takes its natural

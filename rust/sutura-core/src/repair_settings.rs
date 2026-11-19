@@ -122,6 +122,10 @@ pub struct RepairSettings {
     /// Opt-in Stage-1 `meshing_join_components` pass (`--experimental-join-
     /// components`). A per-run override of the deep-repair chain.
     pub join_components: bool,
+    /// Opt-in `--experimental-autorefine` snap-rounding pass.
+    pub autorefine: bool,
+    /// Opt-in `--experimental-indirect-autorefine` exact arrangement split.
+    pub indirect_autorefine: bool,
     /// Per-run fTetWild limits (`--ftetwild-max-faces`, `--ftetwild-timeout`,
     /// `--ftetwild-max-hausdorff`). `None` keeps the intensity's value.
     pub ftetwild_max_faces: Option<i64>,
@@ -368,6 +372,8 @@ pub fn options_from(
         // not reach them; going through the shared table makes both front ends
         // agree by construction.
         join_components: settings.join_components,
+        autorefine: settings.autorefine,
+        indirect_autorefine: settings.indirect_autorefine,
         ftetwild_max_faces: settings.ftetwild_max_faces,
         ftetwild_timeout: settings.ftetwild_timeout,
         ftetwild_max_hausdorff_rel: settings.ftetwild_max_hausdorff_rel,

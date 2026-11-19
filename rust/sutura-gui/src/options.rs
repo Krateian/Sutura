@@ -46,19 +46,34 @@ impl SuturaApp {
         // Profile buttons looked like empty boxes behind an ordinary window, and
         // a click could land on them. `Modal` dims the backdrop and blocks input
         // to the rest of the UI, which is what a tabbed options dialog is.
+        // Dim the whole viewport, not just the dialog's rect: `Modal` paints its
+        // own area, which made the dialog brighter than the window behind it and
+        // read as "no backdrop at all".
+        let screen = ctx.content_rect();
+        ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Middle,
+            egui::Id::new("options-backdrop"),
+        ))
+        .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(140));
+
         let mut close = false;
-        let modal = egui::Modal::new(egui::Id::new("options-modal")).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::new("options-modal"))
+            .backdrop_color(egui::Color32::TRANSPARENT)
+            .show(ctx, |ui| {
             ui.set_width(580.0);
-            // A fixed height, so the scroll area inside knows how much room it
-            // has; without it the modal grew to fit the content and nothing
-            // scrolled -- "Advanced" was simply cut off at the window edge.
-            ui.set_min_height(640.0);
+            // No `set_min_height`: reserving 640 px before the heading pushed
+            // the title and the tab strip on top of each other. The scroll area
+            // below gets its own fixed height instead.
             ui.horizontal(|ui| {
                 ui.heading(rust_i18n::t!("app.options_btn").to_string());
                 ui.with_layout(
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
-                        if ui.button("x").clicked() {
+                        if ui
+                            .button(egui::RichText::new("×").size(18.0))
+                            .on_hover_text(rust_i18n::t!("app.close").to_string())
+                            .clicked()
+                        {
                             close = true;
                         }
                     },
@@ -90,7 +105,8 @@ impl SuturaApp {
             let scroll = egui::ScrollArea::vertical()
                 .id_salt("options-scroll")
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                .max_height(560.0)
+                .max_height(500.0)
+                .min_scrolled_height(500.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.set_max_width(ui.available_width());
@@ -264,21 +280,70 @@ impl SuturaApp {
     fn tab_updates(&mut self, ui: &mut egui::Ui) {
         use crate::updater_ui::Phase;
 
-        Self::option_section(ui, rust_i18n::t!("app.tab_updates").to_string());
-        let u = &mut self.updater;
+        // Qt's order: installed version, last check, [Check now] [Automatic
+        // updates], [Check on every start], then the note.
         ui.label(
             egui::RichText::new(
-                rust_i18n::t!("app.updater_current", version = env!("CARGO_PKG_VERSION"))
-                    .to_string(),
+                rust_i18n::t!("app.opt_version", version = crate::app::SUTURA_VERSION).to_string(),
             )
-            .small()
-            .weak(),
+            .strong(),
         );
-        ui.add_space(SPACE_8);
-        match &u.phase {
-            Phase::Idle => {
-                ui.label(rust_i18n::t!("app.updater_body").to_string());
+        let last = self
+            .prefs
+            .last_check
+            .map(|ts| {
+                // `%Y-%m-%d %H:%M` without pulling in a date crate: the value is
+                // only ever shown, never parsed back.
+                let secs = ts.max(0) as u64;
+                let days = secs / 86_400;
+                let rem = secs % 86_400;
+                format!("{}d {:02}:{:02}", days, rem / 3600, (rem % 3600) / 60)
+            })
+            .unwrap_or_else(|| rust_i18n::t!("app.opt_never").to_string());
+        ui.label(egui::RichText::new(last).small().weak());
+
+        let mut check_now = false;
+        let mut auto = self.prefs.check_for_updates.unwrap_or(false);
+        let mut on_start = self.prefs.check_on_startup.unwrap_or(false);
+        ui.horizontal(|ui| {
+            if ui
+                .button(rust_i18n::t!("app.updater_check").to_string())
+                .clicked()
+            {
+                check_now = true;
             }
+            if ui
+                .checkbox(&mut auto, rust_i18n::t!("app.opt_auto_updates").to_string())
+                .changed()
+            {
+                self.prefs.check_for_updates = Some(auto);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(22.0);
+            if ui
+                .checkbox(
+                    &mut on_start,
+                    rust_i18n::t!("app.opt_check_on_start").to_string(),
+                )
+                .changed()
+            {
+                self.prefs.check_on_startup = Some(on_start);
+            }
+        });
+        ui.add(egui::Label::new(
+            egui::RichText::new(rust_i18n::t!("app.opt_auto_note").to_string())
+                .small()
+                .weak(),
+        ));
+
+        ui.add_space(SPACE_16);
+        ui.separator();
+        ui.add_space(SPACE_8);
+        // The live phase, so the tab says what a check is doing.
+        let u = &mut self.updater;
+        match &u.phase {
+            Phase::Idle => {}
             Phase::Checking => {
                 ui.label(rust_i18n::t!("app.updater_checking").to_string());
             }
@@ -305,8 +370,14 @@ impl SuturaApp {
                 ui.colored_label(COLOR_ERROR, msg);
             }
         }
-        ui.add_space(SPACE_8);
-        if ui.button(rust_i18n::t!("app.updater_check").to_string()).clicked() {
+
+        if check_now {
+            self.prefs.last_check = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0),
+            );
             self.updater.start_check(true);
         }
     }
