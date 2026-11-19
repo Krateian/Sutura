@@ -4,6 +4,7 @@ mod mesh;
 mod options;
 mod repeat_picker;
 mod state;
+mod suggestions;
 mod theme;
 mod updater_ui;
 mod viewer;

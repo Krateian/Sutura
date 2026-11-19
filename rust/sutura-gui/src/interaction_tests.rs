@@ -705,3 +705,35 @@ fn repair_completes_without_the_ui_drawing() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+
+/// Suggestions appear under the analysis, and Apply sets the mode.
+///
+/// The rules live in `suggestions.rs` with their own unit tests; this pins the
+/// wiring -- that the block is drawn and that a click reaches `settings.mode`.
+#[test]
+fn suggestions_apply_sets_the_mode() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1100.0, 900.0));
+    h.state_mut().add_file_for_test(temp_box("suggestions"));
+    h.state_mut().select_first_for_test();
+    settle(&mut h);
+
+    // The fixture is a 4-face watertight tetrahedron, so the suggestion is
+    // "Quick is probably enough" -- one row with an Apply button.
+    assert!(
+        h.query_all_by_label("SUGGESTIONS").next().is_some(),
+        "the Suggestions section is missing"
+    );
+    let before = h.state().settings_snapshot();
+    h.query_all_by_label("Apply")
+        .next()
+        .expect("no Apply button on a suggestion")
+        .click();
+    settle(&mut h);
+    assert_ne!(
+        before,
+        h.state().settings_snapshot(),
+        "Apply did not change the settings"
+    );
+}

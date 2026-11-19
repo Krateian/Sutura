@@ -287,3 +287,16 @@ app:
   repairing_stage: "Repairing %{name} — stage %{step}/%{total}"
   drop_hint_alt: or use Add files
   not_repaired: Not repaired yet
+  suggestions: Suggestions
+  apply: Apply
+  apply_mode_tip: "Use %{mode} for the next repair"
+  sug_si_many: "Extreme mode's extra cleanup passes may help with these self-intersections."
+  sug_si_few: "A few self-intersections were found; Thorough is a safe step up."
+  sug_holes_many: "Probably scan-derived; Aggressive or Extreme close large holes more easily."
+  sug_holes_few: "A few holes were found; the Medium mode closes these more readily."
+  sug_nm: "Complex geometry may leave a few micro-cracks."
+  sug_cc: "If this is an assembly, the current mode's debris cutoff may remove small parts."
+  sug_unknown: "The type was not determined; default thresholds will be used."
+  sug_watertight: "The input is already watertight - the Quick mode is probably enough."
+  sug_low_conf: "Trying the next mode up and comparing results could help."
+  sug_extreme_caveat: "Extreme can delete parts with fewer than 20 faces entirely - be careful with assemblies."

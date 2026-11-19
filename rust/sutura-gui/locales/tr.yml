@@ -287,3 +287,16 @@ app:
   repairing_stage: "%{name} onarılıyor — aşama %{step}/%{total}"
   drop_hint_alt: ya da Dosya ekle kullan
   not_repaired: Henüz onarılmadı
+  suggestions: Öneriler
+  apply: Uygula
+  apply_mode_tip: "Sonraki onarımda %{mode} kullan"
+  sug_si_many: "Extreme modun ekstra temizleme adımları bu self-intersection'lara yardımcı olabilir."
+  sug_si_few: "Birkaç self-intersection bulundu; Thorough güvenli bir üst adım."
+  sug_holes_many: "Muhtemelen tarama kaynaklı; Aggressive veya Extreme büyük delikleri daha kolay kapatır."
+  sug_holes_few: "Birkaç delik bulundu; Medium modu bunları daha rahat kapatır."
+  sug_nm: "Karmaşık geometri birkaç mikro çatlak bırakabilir."
+  sug_cc: "Bu bir montajsa, mevcut modun moloz eşiği küçük parçaları kaldırabilir."
+  sug_unknown: "Tür belirlenemedi; varsayılan eşikler kullanılacak."
+  sug_watertight: "Girdi zaten su geçirmez - Quick modu muhtemelen yeterli."
+  sug_low_conf: "Bir üst modu deneyip sonucu karşılaştırmak faydalı olabilir."
+  sug_extreme_caveat: "Extreme, 20'den az yüzlü parçaları tamamen silebilir - montajlarda dikkatli olun."

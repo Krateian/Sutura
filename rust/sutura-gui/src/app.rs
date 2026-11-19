@@ -2590,20 +2590,10 @@ impl SuturaApp {
                       can_repair: bool,
                       running: bool,
                       cancel: &mut bool| {
-            // Multi-file: the batch action is the bigger decision, so it keeps
-            // the fill and the single-file one is an outline beside it.
+            // The group is laid out right-to-left, so the FIRST widget added is
+            // the rightmost. "Repair" is the filled primary and sits at the far
+            // right; "Repair all" is the outline beside it.
             if multi {
-                // Repair all is offered beside it, as an outline: the filled
-                // button is always "Repair".
-                if ui
-                    .add_enabled(
-                        can_repair && !app.batch_active && app.repair_rx.is_none(),
-                        secondary_button(rust_i18n::t!("app.repair_all").to_string()),
-                    )
-                    .clicked()
-                {
-                    app.enqueue_all();
-                }
                 if ui
                     .add_enabled(
                         can_repair,
@@ -2614,6 +2604,15 @@ impl SuturaApp {
                     if let Some(idx) = app.selected {
                         app.start_repair(idx, false);
                     }
+                }
+                if ui
+                    .add_enabled(
+                        can_repair && !app.batch_active && app.repair_rx.is_none(),
+                        secondary_button(rust_i18n::t!("app.repair_all").to_string()),
+                    )
+                    .clicked()
+                {
+                    app.enqueue_all();
                 }
             } else if ui
                 .add_enabled(
@@ -2652,6 +2651,7 @@ impl SuturaApp {
         crate::theme::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             self.report_and_logs(ui, &mut None);
+            self.suggestions_block(ui);
             // This call was missing: `defects_panel` existed but nothing drew it,
             // which is why the hairline and "N defects >" row never appeared.
             self.defects_panel(ui);
@@ -3280,6 +3280,67 @@ impl SuturaApp {
             {
                 *open_action = Some((output.clone(), true));
             }
+        }
+    }
+
+    /// "Suggestions": what to try next, from the analysis.
+    ///
+    /// One row per suggestion with an Apply button, at the bottom of the Analysis
+    /// card. Applying sets the mode; it never starts a repair, because a mode is
+    /// a choice, not an action.
+    fn suggestions_block(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.selected else { return };
+        let Some(Ok(a)) = self.files.get(idx).and_then(|e| e.analysis.as_ref()) else {
+            return;
+        };
+        let list = crate::suggestions::suggestions(a);
+        if list.is_empty() {
+            return;
+        }
+        ui.add_space(crate::theme::GAP_16);
+        ui.separator();
+        ui.add_space(crate::theme::GAP_8);
+        crate::theme::section_label(ui, rust_i18n::t!("app.suggestions").to_string());
+        ui.add_space(crate::theme::GAP_8);
+
+        let mut apply: Option<&'static str> = None;
+        for sug in &list {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(rust_i18n::t!(sug.reason_key).to_string())
+                            .size(crate::theme::FONT_BODY)
+                            .color(crate::theme::TEXT),
+                    )
+                    .wrap(),
+                );
+                if let Some(mode) = sug.mode {
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui
+                                .add(secondary_button(
+                                    rust_i18n::t!("app.apply").to_string(),
+                                ))
+                                .on_hover_text(
+                                    rust_i18n::t!(
+                                        "app.apply_mode_tip",
+                                        mode = mode
+                                    )
+                                    .to_string(),
+                                )
+                                .clicked()
+                            {
+                                apply = Some(mode);
+                            }
+                        },
+                    );
+                }
+            });
+        }
+        if let Some(mode) = apply {
+            self.settings.mode = Some(mode.to_string());
+            self.log(format!("mode set to {mode} from a suggestion"));
         }
     }
 
