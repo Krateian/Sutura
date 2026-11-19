@@ -355,3 +355,4 @@ app:
   notice_part_missing: "%{count} isteğe bağlı bileşen eksik, bazı onarımlar zayıf yolu kullanacak."
   install_dots: Kur…
   install_dots_tip: Seçenekler > Motorlar
+  input_analysis: Girdi analizi

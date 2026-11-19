@@ -355,3 +355,4 @@ app:
   notice_part_missing: "%{count} optional part(s) are missing, so some repairs will take the weaker path."
   install_dots: Install…
   install_dots_tip: Open Options > Engines
+  input_analysis: Input analysis

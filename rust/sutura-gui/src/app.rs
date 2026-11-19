@@ -229,6 +229,49 @@ fn collect_recs(recs: &[Value], out: &mut Vec<(u8, String, f64)>) {
 }
 
 /// A menu item, styled like the rest of the app.
+/// A real score bar: 6 px, rounded, coloured by how good the score is.
+///
+/// `higher_is_better` is the whole reason this is not a one-liner: a risk of 5
+/// is excellent and a risk of 90 is not, while a health of 5 is the opposite.
+/// Green / amber / red are the only three meanings this app uses.
+fn score_bar_widget(ui: &mut egui::Ui, score: Option<f64>, higher_is_better: bool) {
+    const H: f32 = 6.0;
+    let w = crate::theme::SCORE_BAR_W;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, H), egui::Sense::hover());
+    // The trough, so an empty score still reads as a bar and not as a gap.
+    ui.painter().rect_filled(rect, H / 2.0, crate::theme::TRACK);
+    let Some(score) = score else { return };
+    // Reports carry 0..100; the bar works in fractions.
+    let fraction = (score / 100.0).clamp(0.0, 1.0) as f32;
+    let goodness = if higher_is_better { fraction } else { 1.0 - fraction };
+    let colour = if goodness >= 0.66 {
+        crate::theme::OK
+    } else if goodness >= 0.33 {
+        crate::theme::WARN
+    } else {
+        crate::theme::ERROR
+    };
+    let filled = egui::Rect::from_min_size(rect.min, egui::vec2(w * fraction, H));
+    ui.painter().rect_filled(filled, H / 2.0, colour);
+}
+
+/// Shorten a path from the middle, keeping both ends readable.
+///
+/// The end of a path names the file and the start names the folder it is in;
+/// both matter, and a naive truncation keeps only one of them.
+fn shorten_path(path: &str, max_width: f32) -> String {
+    // ~7 px per character at this size; enough to decide, not exact.
+    let max_chars = ((max_width / 7.0).floor() as usize).max(16);
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= max_chars {
+        return path.to_string();
+    }
+    let keep = max_chars.saturating_sub(1) / 2;
+    let head: String = chars[..keep].iter().collect();
+    let tail: String = chars[chars.len() - keep..].iter().collect();
+    format!("{head}…{tail}")
+}
+
 /// Blend `t` of `top` into `base`: the one way this app tints a surface.
 fn lerp_color(base: egui::Color32, top: egui::Color32, t: f32) -> egui::Color32 {
     let t = t.clamp(0.0, 1.0);
@@ -3369,36 +3412,64 @@ impl SuturaApp {
             ui.label(egui::RichText::new(e).color(egui::Color32::LIGHT_RED));
         }
         if let Some(report) = &entry.report {
+            // Three columns: label | bar | number. The bar is the point of the
+            // row -- eight ASCII blocks in a monospace font read as a debug
+            // dump -- and the number stays because a bar cannot be precise.
+            //
+            // Risk is inverted: on the other three a high score is good, and a
+            // risk of 5 is the best anything can be. Painting it red like a
+            // failure would be a lie.
             egui::Grid::new("report-grid")
-                .num_columns(2)
-                .spacing([12.0, 6.0])
+                .num_columns(3)
+                .spacing([crate::theme::GAP_16, crate::theme::GAP_8])
                 .min_col_width(84.0)
                 .show(ui, |ui| {
-                    // A column of numbers has to line up; a bar in two rows and
-                    // not the other two made the grid as wide as its widest cell
-                    // and pushed the short rows' values left.
-                    let mut row = |ui: &mut egui::Ui, label: String, value: String| {
+                    let mut row = |ui: &mut egui::Ui,
+                                   label: String,
+                                   score: Option<f64>,
+                                   higher_is_better: bool| {
                         ui.label(label);
-                        // Right-aligned in a fixed column: the rows that
-                        // carry a bar are wider, so left-aligning put their
-                        // number past the rows that do not, and a column of
-                        // numbers that does not line up is just text.
                         ui.allocate_ui_with_layout(
-                            egui::vec2(124.0, 0.0),
+                            egui::vec2(crate::theme::SCORE_BAR_W, 0.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                score_bar_widget(ui, score, higher_is_better);
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(44.0, 0.0),
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
-                                ui.label(crate::theme::number(value, crate::theme::TEXT));
+                                ui.label(crate::theme::number(
+                                    fmt_score(score),
+                                    crate::theme::TEXT,
+                                ));
                             },
                         );
                         ui.end_row();
                     };
-                    row(ui, rust_i18n::t!("app.health").to_string(), fmt_score_with_bar(report.health));
-                    row(ui, rust_i18n::t!("app.risk").to_string(), fmt_score(report.risk));
-                    row(ui, rust_i18n::t!("app.fidelity").to_string(), fmt_score_with_bar(report.fidelity));
-                    row(ui, rust_i18n::t!("app.confidence").to_string(), fmt_score(report.confidence));
+                    row(ui, rust_i18n::t!("app.health").to_string(), report.health, true);
+                    row(ui, rust_i18n::t!("app.risk").to_string(), report.risk, false);
+                    row(ui, rust_i18n::t!("app.fidelity").to_string(), report.fidelity, true);
+                    row(ui, rust_i18n::t!("app.confidence").to_string(), report.confidence, true);
                 });
             let verdict = verdict_text(report);
-            let color = verdict_color(&report.verdict_code);
+            // The text comes from the core and is not ours to change. Its COLOUR
+            // is: "Repaired, shape preserved" in green over "the model is still
+            // not closed" contradicts itself, so green is reserved for an output
+            // that is actually watertight. The brief decides that, not a string
+            // match on the verdict.
+            let watertight = self
+                .selected
+                .and_then(|i| self.files.get(i))
+                .and_then(|e| e.raw_report.as_ref())
+                .map(|raw| sutura_core::report::brief::brief(raw).verdict == "ready");
+            let color = match watertight {
+                Some(false) => crate::theme::WARN,
+                Some(true) => verdict_color(&report.verdict_code),
+                // No report to judge by: keep the code's own colour.
+                None => verdict_color(&report.verdict_code),
+            };
             ui.add_space(6.0);
             ui.label(rust_i18n::t!("app.verdict").to_string());
             ui.label(egui::RichText::new(verdict).color(color));
@@ -3441,7 +3512,12 @@ impl SuturaApp {
         if let Some(idx) = self.selected {
             if self.files.get(idx).is_some() {
                 ui.add_space(crate::theme::GAP_8);
-                crate::theme::section_label(ui, rust_i18n::t!("app.analysis").to_string());
+                // "Input analysis": the grid below describes the file that was
+                // dropped in, not the repaired output above it.
+                crate::theme::section_label(
+                    ui,
+                    rust_i18n::t!("app.input_analysis").to_string(),
+                );
                 ui.add_space(crate::theme::GAP_8);
                 {
                     match &self.files[idx].analysis {
@@ -3681,16 +3757,52 @@ impl SuturaApp {
 
         if let Some(output) = &entry.output {
             ui.separator();
-            ui.label(egui::RichText::new(output.display().to_string()).small().weak());
-            if ui.button(rust_i18n::t!("app.open_result").to_string()).clicked() {
-                *open_action = Some((output.clone(), false));
-            }
-            if ui
-                .button(rust_i18n::t!("app.show_in_folder").to_string())
-                .clicked()
-            {
-                *open_action = Some((output.clone(), true));
-            }
+            // One line: the path, then the two buttons at the right edge. It was
+            // three stacked rows, and the second button fell off the card.
+            ui.horizontal(|ui| {
+                let full = output.display().to_string();
+                let mut open_result = false;
+                let mut reveal = false;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(secondary_button(
+                            rust_i18n::t!("app.show_in_folder").to_string(),
+                        ))
+                        .clicked()
+                    {
+                        reveal = true;
+                    }
+                    if ui
+                        .add(secondary_button(
+                            rust_i18n::t!("app.open_result").to_string(),
+                        ))
+                        .clicked()
+                    {
+                        open_result = true;
+                    }
+                    // The path takes whatever the two buttons leave, and is
+                    // shortened in the middle when that is not enough. The
+                    // tooltip carries the full path, because a truncated path
+                    // without one is a dead end.
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(shorten_path(&full, ui.available_width()))
+                                    .size(crate::theme::FONT_SECTION)
+                                    .color(crate::theme::TEXT_MUTED),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(full.clone());
+                    });
+                });
+                if open_result {
+                    *open_action = Some((output.clone(), false));
+                }
+                if reveal {
+                    *open_action = Some((output.clone(), true));
+                }
+            });
         }
     }
 

@@ -21,6 +21,11 @@ pub const PANEL: egui::Color32 = egui::Color32::from_rgb(0x1f, 0x20, 0x23);
 /// A card inside the panel -- deliberately darker than the panel, as in the
 /// target.
 pub const CARD: egui::Color32 = egui::Color32::from_rgb(0x1a, 0x1b, 0x1d);
+/// The unfilled track behind a score bar -- one step up from the card, so an
+/// empty bar still reads as a bar.
+pub const TRACK: egui::Color32 = egui::Color32::from_rgb(0x2e, 0x30, 0x34);
+/// The width every score bar is drawn at, so four rows line up.
+pub const SCORE_BAR_W: f32 = 112.0;
 /// A control at rest; an outline button is transparent and shows the card.
 pub const CONTROL: egui::Color32 = egui::Color32::from_rgb(0x24, 0x25, 0x28);
 pub const CONTROL_HOVER: egui::Color32 = egui::Color32::from_rgb(0x2c, 0x2e, 0x32);
