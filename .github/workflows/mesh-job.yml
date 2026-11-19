@@ -11,6 +11,7 @@ on:
       shards:        { description: 'Shard count override (per set)', required: false, default: '' }
       extra_args:    { description: 'Repair CLI args for both sides, space separated, e.g. --methods 14 or --deep-repair full', required: false, default: '' }
       stage_fingerprints: { description: 'Set to 1 to add per-stage geometry hashes (and face/vertex counts) to every mesh row, to localise a platform difference to a stage. Costs one extra repair per mesh.', required: false, default: '' }
+      report_only:   { description: 'Set to 1 for a diagnostic run: write the board but do not fail the run on differences (no failure e-mail)', required: false, default: '' }
 permissions:
   contents: read
 jobs:
@@ -345,4 +346,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: board, path: board.md, retention-days: 7 }
       - name: Verdict check (fails on WORSE/ERROR/MISSING/TIMEOUT)
+        if: inputs.report_only != '1'
         run: python3 scripts/gh_mesh_board.py --check --plan plan.json summaries
