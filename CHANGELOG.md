@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Deprecated
+
+- **The Python backend.** `SUTURA_BACKEND=python` and `--backend python` still
+  work in this release and print a one-line note on stderr; they will be
+  removed in the next release. The default is the Rust backend.
+
 ### Added
 
 - **`sutura --update` and `sutura --rollback`.** Until now an update could only
