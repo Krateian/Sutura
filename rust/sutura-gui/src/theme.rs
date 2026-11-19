@@ -88,7 +88,7 @@ pub fn apply(ctx: &egui::Context) {
     // until hover, and its trough competes with the dialog behind it. A solid
     // bar allocates its space and paints at opacity 1.0 unconditionally.
     style.spacing.scroll.floating = false;
-    style.spacing.scroll.bar_width = 10.0;
+    style.spacing.scroll.bar_width = 7.0;
     style.spacing.scroll.handle_min_length = 40.0;
     style.spacing.scroll.dormant_handle_opacity = 0.55;
     style.spacing.scroll.active_handle_opacity = 0.75;

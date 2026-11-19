@@ -281,3 +281,6 @@ app:
   engines_install_tip: "Copy an fTetWild binary into the managed folder. There is no download: the release ships it beside the app."
   engines_remove: Remove...
   engines_remove_tip: Delete the managed fTetWild binary.
+  manual_sequence_empty: No methods selected yet. Tick them in the list above.
+  manual_move_up: Move up
+  manual_move_down: Move down

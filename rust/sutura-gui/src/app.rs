@@ -302,6 +302,10 @@ pub struct StartupOptions {
     pub focus: Option<([f32; 3], Option<f32>)>,
     /// Capture hook: open Options on this tab as soon as the window appears.
     pub options_tab: Option<OptionsTab>,
+    /// Capture hook: start the Methods tab on Manual with this sequence.
+    pub methods_manual: Option<String>,
+    /// Capture hook: where the Options body starts scrolled to.
+    pub options_scroll: Option<f32>,
     /// Give the selected file its own method list, as if the user had unticked
     /// "Use the panel selection" and picked these. Needed to show the per-file
     /// editor in a state other than "inherited" -- which is otherwise the same
@@ -487,6 +491,10 @@ pub struct SuturaApp {
     /// column. `None` while hidden.
     pub(crate) options_open: bool,
     pub(crate) options_tab: OptionsTab,
+    /// Capture hook: where the Options body starts scrolled to.
+    pub(crate) options_scroll: Option<f32>,
+    /// Capture hook: start the Methods tab on Manual with this sequence.
+    pub methods_manual: Option<String>,
 }
 
 impl SuturaApp {
@@ -739,6 +747,8 @@ impl SuturaApp {
             focus: None,
             options_open: false,
             options_tab: OptionsTab::Repair,
+            options_scroll: None,
+            methods_manual: None,
             prefs: crate::state::GuiState::default(),
             profile_action: None,
             profile_prompt: None,
@@ -864,12 +874,18 @@ impl SuturaApp {
             focus: options.focus,
             options_open: options.options_tab.is_some(),
             options_tab: options.options_tab.unwrap_or(OptionsTab::Repair),
+            options_scroll: options.options_scroll,
+            methods_manual: options.methods_manual.clone(),
             profile_action: None,
             profile_prompt: None,
             prefs: crate::state::GuiState::default(),
         };
         for path in files {
             app.add_path(path);
+        }
+        // Capture hook: a Manual selection, so the Up/Down rows can be seen.
+        if let Some(seq) = &app.methods_manual {
+            app.settings.methods = Some(seq.clone());
         }
         if let Some(idx) = options.select {
             if idx < app.files.len() {
@@ -3641,6 +3657,11 @@ impl SuturaApp {
             .unwrap_or_default();
         let automatic = self.settings.methods.is_none();
         let mut changed = false;
+        // Up/Down on the manual list. The sequence is what the core runs, so
+        // reordering is a real edit, not a display preference.
+        let mut reordered = false;
+        let mut move_up: Option<usize> = None;
+        let mut move_down: Option<usize> = None;
         egui::ScrollArea::vertical()
             .id_salt("methods_ladder")
             .max_height(170.0)
@@ -3689,8 +3710,9 @@ impl SuturaApp {
                     }
                 }
             });
-        if changed {
-            selected.sort_unstable();
+        if reordered || changed {
+            // Order preserved, not sorted: the core takes the FIRST method as
+            // the deep-repair mode, so 1,3 and 3,1 repair differently.
             self.settings.methods = Some(
                 selected
                     .iter()
@@ -3712,6 +3734,64 @@ impl SuturaApp {
                     .small()
                     .weak(),
             );
+        } else {
+            // Qt's Up/Down pair under the manual list. The sequence is what the
+            // core runs -- `parse_methods_text` takes the first method as the
+            // deep-repair mode -- so this is a real edit, and it is why the list
+            // must not be sorted anywhere.
+            if selected.is_empty() {
+                ui.label(
+                    egui::RichText::new(rust_i18n::t!("app.manual_sequence_empty").to_string())
+                        .small()
+                        .weak(),
+                );
+            } else {
+                // One row per method, with its own arrows: a whole-list Up/Down
+                // would need a further selection UI to say which row moves.
+                let mut index = 0;
+                while index < selected.len() {
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            [24.0, 18.0],
+                            egui::Label::new(
+                                egui::RichText::new(format!("{}", index + 1)).small().weak(),
+                            ),
+                        );
+                        let n = selected[index];
+                        let name = sutura_core::repair_settings::METHODS
+                            .iter()
+                            .find(|m| m.0 == n)
+                            .map(|m| m.3)
+                            .unwrap_or("?");
+                        ui.label(format!("{n}. {name}"));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add_enabled(index + 1 < selected.len(), egui::Button::new("v"))
+                                .on_hover_text(rust_i18n::t!("app.manual_move_down").to_string())
+                                .clicked()
+                            {
+                                move_down = Some(index);
+                            }
+                            if ui
+                                .add_enabled(index > 0, egui::Button::new("^"))
+                                .on_hover_text(rust_i18n::t!("app.manual_move_up").to_string())
+                                .clicked()
+                            {
+                                move_up = Some(index);
+                            }
+                        });
+                    });
+                    index += 1;
+                }
+            }
+            if let Some(i) = move_up {
+                selected.swap(i, i - 1);
+                reordered = true;
+            }
+            if let Some(i) = move_down {
+                selected.swap(i, i + 1);
+                reordered = true;
+            }
         }
 
         // The per-file editor sits here too: Qt edited the selected file's
@@ -3756,7 +3836,9 @@ impl SuturaApp {
                             }
                         });
                     if dirty {
-                        next.sort_unstable();
+                        // Order preserved, for the same reason the global list
+                        // is: this list becomes `forced_methods`, which the core
+                        // runs in order.
                         local = Some(next);
                     }
                 }
@@ -3779,38 +3861,35 @@ impl SuturaApp {
         // One heading style for every tab (rule f): this used to be a plain
         // label, so "Engines" was smaller than "Repair tiers" and the rest.
         Self::option_section(ui, rust_i18n::t!("app.engines_section").to_string());
+        // One row: name, status, then the two buttons to the right of the
+        // status (rule d's grouping). They were on a second row indented to the
+        // label column, which read as an unrelated block.
         ui.horizontal(|ui| {
             ui.label(rust_i18n::t!("app.engines_ftetwild").to_string());
+            let installed = self.ftetwild.is_some();
             match &self.ftetwild {
-                // The status light, plus Qt's two buttons. Install copies a
-                // binary the user picked into the managed directory and Remove
-                // deletes it; neither downloads anything, because the Rust build
-                // ships the sidecar in the package and there is no release asset
-                // to fetch. Both stay disabled when they could not apply:
-                // Install hides once a binary is found, Remove when none is.
-                Some(path) => ui
-                    .label(
+                Some(path) => {
+                    ui.label(
                         egui::RichText::new(
                             rust_i18n::t!("app.engines_installed").to_string(),
                         )
-                        .color(egui::Color32::from_rgb(0x6c, 0xc6, 0x7a)),
+                        .color(COLOR_OK),
                     )
-                    .on_hover_text(path.clone()),
-                None => ui
-                    .label(
-                        egui::RichText::new(
-                            rust_i18n::t!("app.engines_missing").to_string(),
-                        )
-                        .color(egui::Color32::LIGHT_RED),
+                    .on_hover_text(path.clone());
+                }
+                None => {
+                    ui.label(
+                        egui::RichText::new(rust_i18n::t!("app.engines_missing").to_string())
+                            .color(COLOR_ERROR),
                     )
-                    .on_hover_text(
-                        rust_i18n::t!("app.engines_missing_tip").to_string(),
-                    ),
+                    .on_hover_text(rust_i18n::t!("app.engines_missing_tip").to_string());
+                }
             }
-        });
-        ui.horizontal(|ui| {
-            ui.add_space(LABEL_W);
-            let installed = self.ftetwild.is_some();
+            ui.add_space(SPACE_8);
+            // Install copies a binary the user picked into the managed
+            // directory; Remove deletes it. Neither downloads anything: the Rust
+            // build ships the sidecar in the package, so the alternative to this
+            // pair was no pair at all. Each is disabled when it could not apply.
             if ui
                 .add_enabled(
                     !installed,
@@ -5623,10 +5702,38 @@ mod tests {
         assert!(given, "the global selection is a real selection");
         assert_eq!(methods, vec![2, 3]);
 
-        // A per-file list wins, and the order in the string does not matter.
+        // A per-file list wins outright.
         let (_, given, methods) = options_from(&build(Some(vec![15]))).unwrap();
         assert!(given);
         assert_eq!(methods, vec![15], "the file's list must replace the global one");
+
+        // The ORDER of the list is part of the request: `parse_methods_text`
+        // takes the first method as the deep-repair mode, so 1,3 and 3,1 are not
+        // the same repair. The Methods tab's Up/Down edits exactly this string,
+        // which is why it must never be sorted on the way out.
+        let ordered = |text: &str| {
+            let settings = RepairSettings {
+                methods: Some(text.to_string()),
+                ..Default::default()
+            };
+            let (opts, given, methods) = options_from(&settings).unwrap();
+            assert!(given, "{text:?} is an explicit selection");
+            (
+                methods,
+                opts.forced_methods,
+                opts.deep_repair,
+            )
+        };
+        let (a_methods, a_forced, a_deep) = ordered("1,3");
+        let (b_methods, b_forced, b_deep) = ordered("3,1");
+        assert_eq!(a_methods, vec![1, 3], "the list keeps the user's order");
+        assert_eq!(b_methods, vec![3, 1], "and the reverse, reversed");
+        assert_eq!(a_forced, vec![1, 3], "forced_methods carries that order");
+        assert_eq!(b_forced, vec![3, 1]);
+        assert_ne!(
+            a_deep, b_deep,
+            "the first method picks the deep-repair mode, so the two differ"
+        );
 
         // An empty selection is NOT an error in the core: it yields
         // `methods_given = true` with an empty list, i.e. "run no forced

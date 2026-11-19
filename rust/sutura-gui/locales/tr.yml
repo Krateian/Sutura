@@ -281,3 +281,6 @@ app:
   engines_install_tip: "Bir fTetWild ikilisi seç ve yönetilen klasöre kopyala. İndirme yok: sürüm onu uygulamanın yanında getirir."
   engines_remove: Kaldır...
   engines_remove_tip: Yönetilen fTetWild ikilisini sil.
+  manual_sequence_empty: Henüz yöntem seçilmedi. Yukarıdaki listeden işaretle.
+  manual_move_up: Yukarı taşı
+  manual_move_down: Aşağı taşı

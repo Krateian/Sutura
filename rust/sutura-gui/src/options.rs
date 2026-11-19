@@ -98,28 +98,36 @@ impl SuturaApp {
             ui.separator();
             ui.add_space(SPACE_8);
 
-            // The bar is always visible: on macOS egui hides an overlay
-            // scrollbar until you hover the edge, which reads as "there is more
-            // content but no way to reach it" -- and Repair is taller than any
-            // window.
-            let scroll = egui::ScrollArea::vertical()
+            // The handle's resting opacity is what made the bar invisible
+            // before (see `theme.rs`); the visibility policy only decides
+            // whether a bar is allocated at all, and a full-height bar in a tab
+            // that fits is noise -- Updates and Engines showed one.
+            let mut scroll = egui::ScrollArea::vertical()
                 .id_salt("options-scroll")
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .scroll_bar_visibility(
+                    egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+                )
                 .max_height(500.0)
                 .min_scrolled_height(500.0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_max_width(ui.available_width());
-                    match tab {
-                        OptionsTab::General => self.tab_general(ui),
-                        OptionsTab::Repair => self.tab_repair(ui),
-                        OptionsTab::Methods => self.tab_methods(ui),
-                        OptionsTab::Experimental => self.tab_experimental(ui),
-                        OptionsTab::Updates => self.tab_updates(ui),
-                        OptionsTab::Changelog => self.tab_changelog(ui),
-                        OptionsTab::Engines => self.tab_engines(ui),
-                    }
-                });
+                .auto_shrink([false, false]);
+            // `--options-scroll`: the same one-shot seed as `--settings-scroll`.
+            // `vertical_scroll_offset` writes the offset on every frame it is
+            // set, so applying it repeatedly would snap the wheel back.
+            if let Some(offset) = self.options_scroll.take() {
+                scroll = scroll.vertical_scroll_offset(offset);
+            }
+            let scroll = scroll.show(ui, |ui| {
+                ui.set_max_width(ui.available_width());
+                match tab {
+                    OptionsTab::General => self.tab_general(ui),
+                    OptionsTab::Repair => self.tab_repair(ui),
+                    OptionsTab::Methods => self.tab_methods(ui),
+                    OptionsTab::Experimental => self.tab_experimental(ui),
+                    OptionsTab::Updates => self.tab_updates(ui),
+                    OptionsTab::Changelog => self.tab_changelog(ui),
+                    OptionsTab::Engines => self.tab_engines(ui),
+                }
+            });
             #[cfg(test)]
             self.options_scroll_probe.store(
                 scroll.state.clamped_offset().y.to_bits(),

@@ -51,6 +51,8 @@ fn main() -> eframe::Result<()> {
     // `[x,y,z]` centre, optionally `[x,y,z,zoom]`: see `--focus`.
     let mut focus: Option<([f32; 3], Option<f32>)> = None;
     let mut options_tab: Option<app::OptionsTab> = None;
+    let mut options_scroll: Option<f32> = None;
+    let mut methods_manual: Option<String> = None;
     let mut file_methods: Option<Vec<u8>> = None;
     // Window size, so a capture can prove the layout at the small end (Steam
     // Deck is 1280x800, the stated minimum 720x480). Not in `--help`: it exists
@@ -117,6 +119,14 @@ fn main() -> eframe::Result<()> {
             "--open-changelog" => open = app::OpenOnStart::Changelog,
             // Capture hook: open the Options window on one tab, so each of the
             // seven can be photographed without a click.
+            // Capture hook: start Methods on Manual with this sequence, so the
+            // Up/Down rows can be photographed.
+            "--methods-manual" => methods_manual = args.next(),
+            // Capture hook: seed the Options body's scroll, so a frame can show
+            // a control that starts below the fold.
+            "--options-scroll" => {
+                options_scroll = args.next().and_then(|s| s.parse::<f32>().ok())
+            }
             "--open-options" => {
                 let tab = args.next();
                 options_tab = Some(match tab.as_deref() {
@@ -337,6 +347,8 @@ fn main() -> eframe::Result<()> {
                     wait_frames,
                     focus,
                     options_tab,
+                    options_scroll,
+                    methods_manual,
                     file_methods,
                 },
             )))
