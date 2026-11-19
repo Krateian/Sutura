@@ -536,46 +536,61 @@ GUI:
 sutura-gui            # or: open the Sutura app
 ```
 
-The GUI is a native build (Rust + egui) with the repair running in the same
-process — there is no Python interpreter and no subprocess. Everything below
-reflects that: where the old Qt window had dialogs stacked over a main window,
-this one is a single window with four areas.
+The GUI is a native build (Rust + egui) and the repair runs in the same process
+— no Python interpreter, no subprocess. The window is one centred panel holding
+two cards, and everything that is a *setting* lives in the **Options** window
+behind the gear, not on the first screen.
 
-**Layout.** The toolbar across the top carries **Add files**, **Repair**,
-**Repair all**, then the Utilities group on the right: **Diagnostics…**,
-**Changelog**, **About**, **Before / After**, **Pick repeat points**,
-**Updates**, and the language picker. Below it a method-health line appears
-**only when a method is unavailable** (for example an external engine that is
-not installed), naming each one and showing the reason on hover — the same
-availability probe `--self-check` runs. The left column is the file list, the
-centre is the 3D preview with **Before / After**, **Heatmap** and **Defect
-colours** switches, and the right column is the settings panel.
+**The first screen.** Three things: a **Files** card, one action row, a
+**Report** card.
 
-**Files.** Add files with **Add files…** (native multi-select), by dropping
-them on the window, or add a folder and its `.stl`/`.obj`/`.ply`/`.3mf` files
-at one level. Each row shows the file name, its repair decision in the verdict's
-colour (truncated, with the full verdict and status on hover) and a **x** to
-remove it; **Clear list** empties the list. Both removal controls are disabled
-while a repair runs, because the worker holds the row's index.
+* **Files** — **Add files**, **Add folder...**, **Remove selected**, **Clear
+  list**, then a three-column table (file · method · result). Drag files onto
+  the window, or drop them on the dashed area when the list is empty. Select a
+  row to see it in the preview; a selected row is tinted, never filled. Right-
+  click a row for its menu (below).
+* **Action row** — **Analyze** on the left; on the right **Repair all** (an
+  outline, only with two or more files) and **Repair** (the one filled button).
+  While a repair runs they are replaced by **Stop**.
+* **Report** — Health, Risk, Fidelity and Confidence as bars with the number
+  beside each, then the verdict, then the plain notes ("the model is still not
+  closed", "the result was not saved because…"), then **Input analysis** of the
+  file you dropped in, then **Suggestions**, then the output path with **Open
+  result** and **Show in folder**.
 
-**Settings panel.** Everything that affects a repair lives here, and it is
-one scrolling column rather than a tabbed Options dialog:
-intensity, deep-repair mode, the **Mode** ladder (low/medium/auto/aggressive/
-extreme with a live one-line description), the **Profile** preset, the tier
-switches (Tamponade, Flap, Coaptation, Splint, Dressing with its four knobs),
-the advanced graft and fTetWild-fallback switches, SI mode, solid engine,
-per-run limits, the global method list, **Methods for this file**, and the
-Engines section showing whether fTetWild was found. Every control here is
-saved to `gui.json` beside the CLI's `config.json` and restored on the next
-launch; an explicit `--intensity` or `--lang` still wins. `Ctrl+,` (Cmd+, on
-macOS) shows or hides the panel; the shortcut does not fire while a text field
-has focus, so typing a comma is safe.
+The verdict's colour follows the *result*, not the wording: green means the
+written file is watertight, amber means it needs a look, red means it was not
+repaired. A missing part appears as one sentence in the panel — "fTetWild isn't
+installed, so the solid fallback is off." — with an **Install...** button that
+opens Options → Engines.
 
-**Per-file methods.** The global method list is the default. Ticking **Use the
-panel selection** off for one file gives it its own list, and that is what
-`--methods` receives for that file; the rest keep following the panel. The list
-is a set, not a sequence — the core only asks whether a method is present — so
-there is no reordering control to promise an order nothing honours.
+**Suggestions after Analyze.** The report already ranks the methods; the
+**Suggestions** block turns that into at most three rows of plain advice, each
+with **Apply**. Apply sets the mode for the next repair and nothing else — a
+mode is a choice, not an action. When a result offers Dressing, or a save was
+declined by the budget, those appear here too as one row each rather than a
+dialog over a finished batch.
+
+**Right-click a file.** Analyze, Open result / Show in folder (once it has one),
+**Open in...** for any slicer actually found on the machine, **Recommended
+methods** (the ranking, one click to add), **Methods for this file...**, and
+**Clear tags** to make it follow the global list again.
+
+**Options** (the gear, or `Ctrl+,` / `Cmd+,`) has seven tabs, and this is the
+only place a setting lives:
+
+| Tab | What is there |
+|---|---|
+| **General** | Language, anonymous usage history, chart cache, fidelity score, learning triage, Diagnostics, Open policy |
+| **Repair** | Intensity, mode, profile, deep repair, SI mode, solid engine, mesh type classifier, the tier switches, the method ladder and **Save ladder**, profile settings (risk and geometry limits, Graft and fTetWild limits) |
+| **Methods** | Automatic (policy order) or Manual (exact order), the ladder, the per-file editor |
+| **Experimental** | Autorefine, join components, Splint, Dressing with its four knobs, fTetWild optimise, edge tiebreak |
+| **Updates** | Version, last check, **Check now**, Automatic updates, Check on every start |
+| **Changelog** | Release notes |
+| **Engines** | What was found, **Install...**, **Remove**, **Reload**, the engines folder |
+
+Everything is saved to `gui.json` beside the CLI's `config.json` and restored on
+the next launch; an explicit `--intensity` or `--lang` still wins.
 
 #### Pre-repair analysis
 

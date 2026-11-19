@@ -537,46 +537,61 @@ sutura-gui            # veya: Sutura uygulamasını açın
 ```
 
 GUI yerel bir derlemedir (Rust + egui) ve onarım aynı süreçte çalışır — Python
-yorumlayıcısı da, alt süreç de yoktur. Aşağıdaki her şey bunu yansıtır: eski Qt
-penceresinin ana pencere üstüne yığılmış diyalogları yerine burada dört bölgeli
-tek bir pencere vardır.
+yorumlayıcısı da, alt süreç de yoktur. Pencere, içinde iki kart olan tek bir
+ortalanmış panelden oluşur ve *ayar* olan her şey ilk ekranda değil, dişli
+çarkın arkasındaki **Seçenekler** penceresindedir.
 
-**Yerleşim.** Üstteki araç çubuğunda **Dosya ekle**, **Onar**, **Onar (tümü)**;
-sağında yardımcı grubu: **Teşhis…**, **Değişiklikler**, **Hakkında**,
-**Önce / Sonra**, **Tekrar noktalarını seç**, **Güncellemeler** ve dil seçici.
-Altında, **yalnızca bir yöntem kullanılamıyorsa** (örneğin kurulu olmayan bir
-harici motor) bir yöntem-sağlığı satırı belirir; her birini adlandırır ve nedeni
-üzerine gelince gösterir — `--self-check` ile aynı kullanılabilirlik yoklaması.
-Sol sütun dosya listesi, orta alan **Önce / Sonra**, **Isı haritası** ve **Kusur
-renkleri** anahtarlarıyla 3B önizleme, sağ sütun ayarlar panelidir.
+**İlk ekran.** Üç şey: bir **Dosyalar** kartı, tek bir eylem satırı, bir
+**Rapor** kartı.
 
-**Dosyalar.** Dosyaları **Dosya ekle…** ile (yerel çoklu seçim), pencereye
-sürükleyerek veya bir klasör ekleyip içindeki `.stl`/`.obj`/`.ply`/`.3mf`
-dosyalarıyla (tek seviye) ekleyin. Her satır dosya adını, onarım kararını
-hükmün renginde (kısaltılmış; tam hüküm ve durum üzerine gelince) ve listeden
-çıkarmak için bir **x** gösterir; **Listeyi temizle** listeyi boşaltır. Onarım
-sürerken iki kaldırma denetimi de devre dışıdır, çünkü işçi satırın indeksini
-tutar.
+* **Dosyalar** — **Dosya ekle**, **Klasör ekle...**, **Seçileni kaldır**,
+  **Listeyi temizle**, ardından üç sütunlu tablo (dosya · yöntem · sonuç).
+  Dosyaları pencereye sürükleyin veya liste boşken kesikli alana bırakın. Bir
+  satırı seçince önizlemede görünür; seçili satır renklendirilir, doldurulmaz.
+  Sağ tık satırın menüsünü açar (aşağıda).
+* **Eylem satırı** — solda **Analiz et**; sağda **Tümünü onar** (kontur, yalnız
+  iki ve daha fazla dosyada) ve **Onar** (tek dolu düğme). Onarım sürerken
+  yerlerini **Durdur** alır.
+* **Rapor** — Sağlık, Risk, Güvenilirlik ve Güven çubukları ve her birinin
+  yanında sayı; ardından hüküm, ardından düz notlar ("model hâlâ kapalı
+  değil", "sonuç kaydedilmedi çünkü…"), ardından bıraktığınız dosyanın **Girdi
+  analizi**, ardından **Öneriler**, ardından çıktı yolu ile **Sonucu aç** ve
+  **Klasörde göster**.
 
-**Ayarlar paneli.** Onarımı etkileyen her şey buradadır ve sekmeli bir
-Seçenekler diyaloğu değil, tek bir kaydırmalı sütundur: yoğunluk, derin onarım
-modu, **Mod** merdiveni (düşük/orta/otomatik/agresif/ekstrem, canlı tek satır
-açıklamayla), **Profil** ön ayarı, katman anahtarları (Tamponade, Flap,
-Koaptasyon, Splint, Dressing ve dört ayarı), gelişmiş graft ve fTetWild-yedeği
-anahtarları, SI modu, katı motor, çalıştırma başına sınırlar, genel yöntem
-listesi, **Bu dosyanın yöntemleri** ve fTetWild'ın bulunup bulunmadığını
-gösteren Motorlar bölümü. Buradaki her denetim CLI'nin `config.json`'ının yanındaki
-`gui.json`'a kaydedilir ve bir sonraki açılışta geri yüklenir; açıkça verilen
-`--intensity` veya `--lang` yine de kazanır. `Ctrl+,` (macOS'ta Cmd+,) paneli
-gösterir/gizler; kısayol bir metin alanı odaktayken tetiklenmez, yani virgül
-yazmak güvenlidir.
+Hükmün rengi metne değil *sonuca* uyar: yeşil yazılan dosya su geçirmez
+demektir, amber bir bakılması gerektiğini, kırmızı onarılmadığını söyler. Eksik
+bir bileşen panelde tek bir cümle olarak görünür — "fTetWild kurulu değil, bu
+yüzden katı yedek yol kapalı." — ve Seçenekler → Motorlar'ı açan bir **Kur...**
+düğmesiyle.
 
-**Dosya başına yöntemler.** Genel yöntem listesi varsayılandır. Bir dosya için
-**Panel seçimini kullan** işaretini kaldırmak ona kendi listesini verir ve o
-dosya için `--methods`'a giden budur; diğerleri paneli izlemeye devam eder.
-Liste bir kümedir, sıra değil — çekirdek yalnızca yöntemin var olup olmadığını
-sorar — dolayısıyla hiçbir şeyin onurlandırmayacağı bir sıra vaat eden yeniden
-sıralama denetimi yoktur.
+**Analiz sonrası öneriler.** Rapor yöntemleri zaten sıralar; **Öneriler**
+bloğu bunu en fazla üç satır düz tavsiyeye çevirir ve her birinde **Uygula**
+vardır. Uygula yalnızca sonraki onarımın modunu belirler — mod bir seçimdir,
+eylem değil. Bir sonuç Dressing öneriyorsa veya bir kayıt bütçeyle reddedildiyse
+bunlar da burada tek satır olarak çıkar, bitmiş bir grubun üstünde diyalog
+olarak değil.
+
+**Bir dosyaya sağ tık.** Analiz et, Sonucu aç / Klasörde göster (sonucu varsa),
+makinede gerçekten bulunan her dilimleyici için **Şurada aç...**, **Önerilen
+yöntemler** (sıralama, eklemek için tek tık), **Bu dosyanın yöntemleri...** ve
+genel listeyi izlemesi için **Etiketleri temizle**.
+
+**Seçenekler** (dişli veya `Ctrl+,` / `Cmd+,`) yedi sekmelidir ve bir ayarın
+yaşadığı tek yer burasıdır:
+
+| Sekme | İçindekiler |
+|---|---|
+| **Genel** | Dil, anonim kullanım geçmişi, grafik önbelleği, güvenilirlik puanı, öğrenme triyajı, Teşhis, İlkeyi aç |
+| **Onarım** | Yoğunluk, mod, profil, derin onarım, SI modu, katı motor, mesh türü sınıflandırıcı, katman anahtarları, yöntem merdiveni ve **Sırayı kaydet**, profil ayarları (risk ve geometri sınırları, Graft ve fTetWild sınırları) |
+| **Yöntemler** | Otomatik (ilke sırası) veya Elle (tam sıra), merdiven, dosya başına düzenleyici |
+| **Deneysel** | Autorefine, bileşenleri birleştir, Splint, Dressing ve dört ayarı, fTetWild optimizesi, kenar eşitliği |
+| **Güncellemeler** | Sürüm, son kontrol, **Şimdi kontrol et**, Otomatik güncelleme, Her açılışta kontrol et |
+| **Değişiklikler** | Sürüm notları |
+| **Motorlar** | Bulunanlar, **Kur...**, **Kaldır**, **Yenile**, motorlar klasörü |
+
+Her şey CLI'nin `config.json`'ının yanındaki `gui.json`'a kaydedilir ve bir
+sonraki açılışta geri yüklenir; açıkça verilen `--intensity` veya `--lang` yine
+de kazanır.
 
 #### Onarım öncesi analiz
 
