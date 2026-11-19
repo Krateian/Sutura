@@ -851,3 +851,62 @@ fn recommended_methods_submenu_tags_the_file() {
         "picking a recommendation must tag the file with that method"
     );
 }
+
+
+/// A non-watertight result offers Dressing, and Apply turns the option on.
+///
+/// Qt showed this as a button under the report and a modal on budget decline
+/// (`gui.py:7593`, `:7614`); here both are rows in the Suggestions block, so
+/// this test pins that the row appears for the right report and that Apply
+/// flips the two dressing settings the CLI flag implies.
+#[test]
+fn a_non_watertight_result_suggests_dressing() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1100.0, 900.0));
+    h.state_mut().add_file_for_test(temp_box("dressing"));
+    h.state_mut().select_first_for_test();
+    h.state_mut().set_raw_report_for_test(serde_json::json!({
+        "status": "ok",
+        "suggestions": [ { "method": "dressing", "confidence": 80 } ]
+    }));
+    settle(&mut h);
+
+    let row = h
+        .query_all_by_label(
+            "Dressing can close this shape, but may deform it. Re-run with it on?",
+        )
+        .next()
+        .expect("the dressing suggestion row is missing");
+    assert!(row.rect().width() > 0.0);
+
+    // Apply is the last button in the block; there is exactly one suggestion
+    // here, so the first Apply is its own.
+    h.query_all_by_label("Apply").next().unwrap().click();
+    settle(&mut h);
+    assert!(
+        h.state().settings_snapshot().contains("dressing"),
+        "Apply did not touch the dressing settings"
+    );
+}
+
+/// A budget-declined result offers a forced re-run instead of saying nothing.
+#[test]
+fn a_declined_result_offers_a_forced_rerun() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1100.0, 900.0));
+    h.state_mut().add_file_for_test(temp_box("declined"));
+    h.state_mut().select_first_for_test();
+    h.state_mut().set_raw_report_for_test(serde_json::json!({
+        "status": "budget_declined",
+        "budget": { "geometry_change_pct": 12.5, "risk_score": 0.4 }
+    }));
+    settle(&mut h);
+    assert!(
+        h.query_all_by_label(
+            "This file was declined by the time/geometry budget, so nothing was written. Re-run anyway?"
+        )
+        .next()
+        .is_some(),
+        "the budget re-run row is missing"
+    );
+}

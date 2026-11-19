@@ -2727,6 +2727,7 @@ impl SuturaApp {
             ui.set_width(ui.available_width());
             self.report_and_logs(ui, &mut None);
             self.suggestions_block(ui);
+            self.result_suggestions(ui);
             // This call was missing: `defects_panel` existed but nothing drew it,
             // which is why the hairline and "N defects >" row never appeared.
             self.defects_panel(ui);
@@ -3534,6 +3535,99 @@ impl SuturaApp {
         if let Some(mode) = apply {
             self.settings.mode = Some(mode.to_string());
             self.log(format!("mode set to {mode} from a suggestion"));
+        }
+    }
+
+    /// Suggestions that come from a *result* rather than an analysis.
+    ///
+    /// Qt showed these as buttons under the report (`try_dressing_btn`) and a
+    /// modal on budget decline (`_ask_budget_rerun`). Here they are rows in the
+    /// same Suggestions list as the mode advice, because that is where a reader
+    /// looks for "what next" and a modal on top of a finished batch interrupts
+    /// nothing useful.
+    fn result_suggestions(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.selected else { return };
+        let Some(entry) = self.files.get(idx) else { return };
+
+        // A non-watertight result whose report offered dressing: the retry is
+        // the same files with force-adopt on.
+        let offered_dressing = entry
+            .raw_report
+            .as_ref()
+            .and_then(|r| r.get("suggestions"))
+            .and_then(|v| v.as_array())
+            .map(|list| {
+                list.iter()
+                    .any(|s| s.get("method").and_then(|m| m.as_str()) == Some("dressing"))
+            })
+            .unwrap_or(false);
+        // A declined save: the CLI wrote nothing, and `--force` is the answer.
+        let declined = entry
+            .raw_report
+            .as_ref()
+            .and_then(|r| r.get("status"))
+            .and_then(|v| v.as_str())
+            == Some("budget_declined");
+
+        if !offered_dressing && !declined {
+            return;
+        }
+        ui.add_space(crate::theme::GAP_8);
+        let mut apply_dressing = false;
+        let mut apply_force = false;
+        if offered_dressing {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            rust_i18n::t!("app.sug_try_dressing").to_string(),
+                        )
+                        .size(crate::theme::FONT_BODY)
+                        .color(crate::theme::TEXT),
+                    )
+                    .wrap(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(secondary_button(rust_i18n::t!("app.apply").to_string()))
+                        .clicked()
+                    {
+                        apply_dressing = true;
+                    }
+                });
+            });
+        }
+        if declined {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(rust_i18n::t!("app.sug_budget_rerun").to_string())
+                            .size(crate::theme::FONT_BODY)
+                            .color(crate::theme::TEXT),
+                    )
+                    .wrap(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(secondary_button(rust_i18n::t!("app.apply").to_string()))
+                        .clicked()
+                    {
+                        apply_force = true;
+                    }
+                });
+            });
+        }
+
+        if apply_dressing {
+            // The CLI's `--dressing-force-adopt` implies dressing, so the option
+            // is switched on with it; otherwise the re-run's own report would
+            // disagree with the flag that produced it.
+            self.settings.dressing = true;
+            self.settings.dressing_force_adopt = true;
+            self.start_repair(idx, true);
+        }
+        if apply_force {
+            self.start_repair(idx, true);
         }
     }
 

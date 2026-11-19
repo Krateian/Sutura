@@ -305,3 +305,5 @@ app:
   menu_clear_tags: Etiketleri temizle (genel listeyi kullan)
   menu_recommended: Önerilen yöntemler
   menu_analyze_first: Önce bu dosyayı analiz et
+  sug_try_dressing: "Dressing bu şekli kapatabilir ama biçimini bozabilir. Açıkken yeniden çalıştırılsın mı?"
+  sug_budget_rerun: "Bu dosya zaman/geometri bütçesiyle reddedildi, hiçbir şey yazılmadı. Yine de çalıştırılsın mı?"
