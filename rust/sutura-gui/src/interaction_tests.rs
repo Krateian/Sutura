@@ -795,3 +795,59 @@ fn the_file_row_has_a_context_menu() {
         "clearing the tags must drop the file's own list"
     );
 }
+
+
+/// The recommended-methods submenu lists the report's ranking, and picking one
+/// tags the file.
+///
+/// The report is injected rather than produced by a real repair: the ranking is
+/// what this tests, and a repair would take a minute.
+#[test]
+fn recommended_methods_submenu_tags_the_file() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1100.0, 800.0));
+    h.state_mut().add_file_for_test(temp_box("recommended"));
+    h.state_mut().select_first_for_test();
+    h.state_mut().set_raw_report_for_test(serde_json::json!({
+        "object_reports": [
+            { "recommendations": [
+                { "num": 3, "name": "Full Mend", "score": 0.91 },
+                { "num": 1, "name": "Quick Clean", "score": 0.42 },
+            ]}
+        ]
+    }));
+    settle(&mut h);
+
+    let row = h.get_by_label("box.stl");
+    let pos = row.rect().center();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    for _ in 0..4 {
+        h.step();
+    }
+    h.query_all_by_label("Recommended methods")
+        .next()
+        .expect("no Recommended methods submenu")
+        .click();
+    for _ in 0..4 {
+        h.step();
+    }
+    // The submenu lists the ranking in report order, best score first.
+    let item = h
+        .query_all_by_label("#3  Full Mend  91%")
+        .next()
+        .expect("the ranking is missing from the submenu");
+    item.click();
+    settle(&mut h);
+    assert_eq!(
+        h.state().selected_file_methods(),
+        Some(vec![3]),
+        "picking a recommendation must tag the file with that method"
+    );
+}

@@ -303,3 +303,5 @@ app:
   menu_analyze: Analiz et
   menu_use_method: Bu dosyanın yöntemleri...
   menu_clear_tags: Etiketleri temizle (genel listeyi kullan)
+  menu_recommended: Önerilen yöntemler
+  menu_analyze_first: Önce bu dosyayı analiz et

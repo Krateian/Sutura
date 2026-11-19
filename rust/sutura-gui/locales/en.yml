@@ -303,3 +303,5 @@ app:
   menu_analyze: Analyze
   menu_use_method: Methods for this file...
   menu_clear_tags: Clear tags (use global list)
+  menu_recommended: Recommended methods
+  menu_analyze_first: Analyze this file first

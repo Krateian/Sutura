@@ -178,6 +178,42 @@ pub enum RowAction {
     EditMethods(usize),
     /// Drop the file's own method list, so it follows the global one again.
     ClearTags(usize),
+    /// Add a recommended method to this file's own list.
+    TagMethod(usize, u8),
+}
+
+/// The ranked methods in a file's report: `(num, name, score 0..1)`.
+///
+/// Two shapes, as in the panel: the 3MF path stores `{model_name, report}` and
+/// the single-mesh path stores the report directly. Both are handled here so the
+/// menu and the panel cannot disagree about what was recommended.
+fn recommended_methods(raw: &Value) -> Vec<(u8, String, f64)> {
+    let mut out = Vec::new();
+    let Some(objects) = raw.get("object_reports").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for object in objects {
+        let report = object.get("report").unwrap_or(object);
+        let Some(recs) = report.get("recommendations").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for rec in recs {
+            let Some(num) = rec.get("num").and_then(|v| v.as_u64()) else {
+                continue;
+            };
+            let name = rec
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+            let score = rec.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            if !out.iter().any(|(n, _, _)| *n == num as u8) {
+                out.push((num as u8, name, score));
+            }
+        }
+    }
+    out.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    out
 }
 
 /// A menu item, styled like the rest of the app.
@@ -595,6 +631,15 @@ impl SuturaApp {
     #[cfg(test)]
     pub fn selected_index(&self) -> Option<usize> {
         self.selected
+    }
+
+    #[cfg(test)]
+    pub fn set_raw_report_for_test(&mut self, raw: Value) {
+        if let Some(i) = self.selected {
+            if let Some(slot) = self.files.get_mut(i) {
+                slot.raw_report = Some(raw);
+            }
+        }
     }
 
     #[cfg(test)]
@@ -2872,6 +2917,40 @@ impl SuturaApp {
                                         ui.separator();
                                     }
                                 }
+                                // "Recommended methods": the ranking the report
+                                // already carries, as a submenu. Qt built it in
+                                // `_build_recommended_menu`.
+                                let recs = self
+                                    .files
+                                    .get(idx)
+                                    .and_then(|e| e.raw_report.as_ref())
+                                    .map(recommended_methods)
+                                    .unwrap_or_default();
+                                ui.menu_button(
+                                    rust_i18n::t!("app.menu_recommended").to_string(),
+                                    |ui| {
+                                        if recs.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    rust_i18n::t!("app.menu_analyze_first")
+                                                        .to_string(),
+                                                )
+                                                .size(crate::theme::FONT_SECTION)
+                                                .color(crate::theme::TEXT_FAINT),
+                                            );
+                                            return;
+                                        }
+                                        for (num, name, score) in &recs {
+                                            let pct = (score * 100.0).round() as i64;
+                                            if menu_action(
+                                                ui,
+                                                format!("#{num}  {name}  {pct}%"),
+                                            ) {
+                                                chosen = Some(RowAction::TagMethod(idx, *num));
+                                            }
+                                        }
+                                    },
+                                );
                                 if menu_action(
                                     ui,
                                     rust_i18n::t!("app.menu_use_method").to_string(),
@@ -3382,6 +3461,17 @@ impl SuturaApp {
                     slot.methods = None;
                 }
                 self.log("method tags cleared; this file follows the global list".to_string());
+            }
+            RowAction::TagMethod(idx, num) => {
+                // Appended, not sorted: the order is the sequence the core runs.
+                if let Some(slot) = self.files.get_mut(idx) {
+                    let mut list = slot.methods.take().unwrap_or_default();
+                    if !list.contains(&num) {
+                        list.push(num);
+                    }
+                    slot.methods = Some(list);
+                }
+                self.log(format!("method {num} added to this file"));
             }
         }
     }
