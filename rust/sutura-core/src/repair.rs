@@ -353,6 +353,7 @@ pub struct CancelToken {
 
 impl CancelToken {
     pub fn new() -> Self {
+        sutura_geom::cancel::reset();
         Self {
             flag: AtomicBool::new(false),
         }
@@ -360,6 +361,7 @@ impl CancelToken {
 
     pub fn cancel(&self) {
         self.flag.store(true, Ordering::SeqCst);
+        sutura_geom::cancel::request();
     }
 
     pub fn is_cancelled(&self) -> bool {

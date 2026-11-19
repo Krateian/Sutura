@@ -352,6 +352,10 @@ pub fn run(
     let mut accepted_any = false;
 
     for round_idx in 0..max_rounds {
+        if sutura_geom::cancel::is_cancelled() {
+            report.insert("reason".into(), json!("cancelled"));
+            return (v, t, Value::Object(report));
+        }
         let before = common::topology_summary(&v, &t);
         let saved_v = v.clone();
         let saved_t = t.clone();
