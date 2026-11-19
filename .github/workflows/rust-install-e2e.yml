@@ -1,0 +1,69 @@
+name: Rust install E2E
+
+# Draft: install the packaged Rust distribution and assert the user-visible
+# contract. No Python venv, no conda: the tarball carries the CLI, the GUI,
+# the fTetWild sidecar and the desktop/Quick Action files.
+#
+# Workflow dispatch only until the Rust installers replace install.sh in the
+# linux-install/macos-install workflows (separate commit).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the packaged artifact
+        run: ./scripts/package_rust.sh
+      - name: Install from the packaged artifact
+        shell: bash
+        run: |
+          shopt -s nullglob
+          ARTS=(dist/*.tar.gz dist/*.tar.* dist/*.zip dist/*.dmg)
+          test "${#ARTS[@]}" -gt 0
+          ./install-rust.sh --from "${ARTS[0]}"
+      - name: CLI and GUI are present and Python-free
+        shell: bash
+        run: |
+          ~/.local/bin/sutura --version
+          test -x ~/.local/bin/sutura-gui
+          if otool -L ~/.local/bin/sutura 2>/dev/null | grep -qi python; then exit 1; fi
+          if ldd ~/.local/bin/sutura 2>/dev/null | grep -qi python; then exit 1; fi
+          test -z "$(find ~/.local/share/sutura -maxdepth 2 \( -name 'venv' -o -name 'python*' \) 2>/dev/null)"
+      - name: fTetWild sidecar is reachable
+        shell: bash
+        run: |
+          test -x ~/.local/share/sutura/ftetwild || test -x ~/.local/bin/ftetwild
+      - name: Diagnostics and offline update
+        shell: bash
+        run: |
+          D=$(mktemp -d); SUTURA_DATA_DIR="$D" ~/.local/bin/sutura --diagnostics >/dev/null
+          SUTURA_UPDATE_API=http://127.0.0.1:9 SUTURA_DATA_DIR="$D" ~/.local/bin/sutura --check-update --json
+      - name: Desktop integration (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          desktop-file-validate ~/.local/share/applications/*.desktop
+          ! grep -rE 'python|venv' ~/.local/share/applications/*.desktop
+          test -f ~/.local/share/kio/servicemenus/*.desktop || \
+            test -f ~/.local/share/kservices5/ServiceMenus/*.desktop
+      - name: Quick Action (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          test -d "$HOME/Library/Services/Sutura Quick Action.workflow"
+          ! grep -rq 'python\|venv' "$HOME/Library/Services/Sutura Quick Action.workflow"
+      - name: Uninstall is a dry run first, then removes
+        shell: bash
+        run: |
+          ./uninstall-rust.sh --dry-run
+          ./uninstall-rust.sh
+          test ! -e ~/.local/bin/sutura
