@@ -2315,6 +2315,21 @@ mod history_guard_tests {
     fn data_dir_env_redirects_history() {
         let dir = std::env::temp_dir().join(format!("sutura-hist-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        // Restore the previous value on the way out. Leaving it set made every
+        // later test in this binary see a directory that this one then deletes --
+        // which failed a full `cargo test --workspace` run while the same binary
+        // passed on its own, three times in a row.
+        let previous = std::env::var_os(sutura_core::config::learning::DATA_ENV);
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var(sutura_core::config::learning::DATA_ENV, v),
+                    None => std::env::remove_var(sutura_core::config::learning::DATA_ENV),
+                }
+            }
+        }
+        let _restore = Restore(previous);
         std::env::set_var(sutura_core::config::learning::DATA_ENV, &dir);
 
         let path = sutura_core::report::history::history_path();

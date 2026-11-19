@@ -28,6 +28,14 @@ pub struct GuiState {
     pub intensity: Option<String>,
     /// One of "system"/"en"/"tr".
     pub language: Option<String>,
+    /// The window's inner size in logical points, saved on close.
+    ///
+    /// Needed because egui does not know the monitor size on Wayland
+    /// (`viewport().monitor_size` is `None` there), so "90% of the screen" cannot
+    /// be computed on first launch. Remembering the size the user actually had
+    /// is the portable answer: the first run asks for maximized, and every run
+    /// after that restores what that produced.
+    pub window_size: Option<[f32; 2]>,
 }
 
 /// `<config dir>/gui.json`, beside the CLI's `config.json`.
@@ -129,6 +137,7 @@ mod tests {
             },
             intensity: Some("thorough".into()),
             language: Some("tr".into()),
+            window_size: Some([1280.0, 800.0]),
         };
         let text = serde_json::to_string(&state).unwrap();
         let back: GuiState = serde_json::from_str(&text).unwrap();
@@ -147,6 +156,11 @@ mod tests {
         assert_eq!(back.settings.repeat_target, Some([4.0, 5.0, 6.0]));
         assert_eq!(back.intensity.as_deref(), Some("thorough"));
         assert_eq!(back.language.as_deref(), Some("tr"));
+        assert_eq!(
+            back.window_size,
+            Some([1280.0, 800.0]),
+            "the window size must round-trip with the settings"
+        );
     }
 
     /// A malformed or older file must not stop the app: unknown keys are

@@ -164,7 +164,7 @@ impl Entry {
     }
 }
 
-enum RepairEvent {
+pub(crate) enum RepairEvent {
     Started(u32),
     Progress { step: u8, total: u8 },
     Stderr(String),
@@ -255,6 +255,11 @@ pub struct StartupOptions {
     /// Frames to settle before capturing; an overlay needs more than the main
     /// window for its fade-in to finish.
     pub wait_frames: u8,
+    /// Point the camera at this centre, optionally with an explicit zoom. A
+    /// capture hook like `--settings-scroll`: a defect that is three pixels wide
+    /// in the whole-part view cannot be documented, and `--screenshot` has no
+    /// input device to orbit or zoom with.
+    pub focus: Option<([f32; 3], Option<f32>)>,
     /// Give the selected file its own method list, as if the user had unticked
     /// "Use the panel selection" and picked these. Needed to show the per-file
     /// editor in a state other than "inherited" -- which is otherwise the same
@@ -332,9 +337,20 @@ pub struct SuturaApp {
     /// `--open-compare` asked for the pair, but the repair had not finished when
     /// the window opened. Opened from the frame that has the result.
     pending_compare: bool,
+    /// The current egui context, refreshed each frame. A repair worker holds a
+    /// clone so it can wake the UI when it finishes -- see `start_repair_mode`.
+    ctx: Option<egui::Context>,
     /// One-shot: size the window to the screen on the first frame, when the
-    /// monitor's dimensions are finally known.
-    fit_to_screen_pending: bool,
+    /// The window size restored from `gui.json` at startup, before any frame has
+    /// run. `None` means "no previous run".
+    saved_window_size: Option<[f32; 2]>,
+    /// Latest inner size seen, so `Drop` can save it.
+    last_window_size: Option<[f32; 2]>,
+    /// The size the window opened at. A later difference is a user resize and is
+    /// the only thing worth persisting.
+    open_size: Option<[f32; 2]>,
+    /// Whether the user has resized since startup.
+    user_resized: bool,
     /// `Ctrl+,` toggles the settings panel. Python's only shortcut opens its
     /// options dialog; settings live in a permanent panel here, so the honest
     /// equivalent is to show or hide that panel.
@@ -372,6 +388,8 @@ pub struct SuturaApp {
     /// opens. `None` while closed. Python's default view is static
     /// (`gui.py:7373`); the live 3D preview is the interactive alternative.
     compare: Option<ComparePair>,
+    /// Camera focus from `--focus`, applied when a mesh is loaded.
+    focus: Option<([f32; 3], Option<f32>)>,
 }
 
 impl SuturaApp {
@@ -489,6 +507,18 @@ impl SuturaApp {
         self.settings_scroll = offset;
     }
 
+    /// Start a repair and hand back the channel it reports on, so a test can wait
+    /// for completion WITHOUT driving a frame.
+    #[cfg(test)]
+    pub fn start_repair_without_frames(
+        &mut self,
+        idx: usize,
+        force: bool,
+    ) -> mpsc::Receiver<RepairEvent> {
+        self.start_repair_mode(idx, force, false);
+        self.repair_rx.take().expect("start_repair opens a channel")
+    }
+
     #[cfg(test)]
     pub fn diagnostics_note(&self) -> Option<String> {
         self.diagnostics_note.clone()
@@ -541,7 +571,11 @@ impl SuturaApp {
             settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
-            fit_to_screen_pending: false,
+            ctx: None,
+            saved_window_size: None,
+            last_window_size: None,
+            open_size: None,
+            user_resized: false,
             method_health: Vec::new(),
             ftetwild: None,
             crash_open: false,
@@ -653,7 +687,11 @@ impl SuturaApp {
             settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
-            fit_to_screen_pending: true,
+            ctx: None,
+            saved_window_size: saved.window_size,
+            last_window_size: None,
+            open_size: None,
+            user_resized: false,
             method_health,
             ftetwild: sutura_core::ftetwild::find_binary(),
             crash_open: crate::crash::panic_recorded(),
@@ -662,6 +700,7 @@ impl SuturaApp {
             changelog_open: false,
             changelog_error: None,
             compare: None,
+            focus: options.focus,
         };
         for path in files {
             app.add_path(path);
@@ -895,6 +934,13 @@ impl SuturaApp {
             settings: self.settings.clone(),
             intensity: Some(self.intensity.value().to_string()),
             language: Some(self.language.code().to_string()),
+            // Only a resize is a choice; the opening size is a default and must
+            // not be frozen into the next launch.
+            window_size: if self.user_resized {
+                self.last_window_size
+            } else {
+                self.saved_window_size
+            },
         };
         serde_json::to_string(&state).unwrap_or_default()
     }
@@ -911,6 +957,11 @@ impl SuturaApp {
         if cfg!(test) {
             return;
         }
+        // A scripted capture is not a user changing a setting; it must not leave a
+        // gui.json behind, and above all it must not pin a window size.
+        if self.screenshot_path.is_some() {
+            return;
+        }
         let now = self.state_json();
         if now == self.persisted {
             return;
@@ -919,6 +970,13 @@ impl SuturaApp {
             settings: self.settings.clone(),
             intensity: Some(self.intensity.value().to_string()),
             language: Some(self.language.code().to_string()),
+            // Only a resize is a choice; the opening size is a default and must
+            // not be frozen into the next launch.
+            window_size: if self.user_resized {
+                self.last_window_size
+            } else {
+                self.saved_window_size
+            },
         };
         match crate::state::save(&state) {
             Ok(()) => self.persisted = now,
@@ -996,6 +1054,21 @@ impl SuturaApp {
                 }
             }
             self.preview.set_mesh(Arc::new(mesh));
+            // A capture hook: point the camera at a region and zoom, so a defect
+            // smaller than a few pixels in the whole-part view can be seen. The
+            // default framing fits the whole bounding sphere, which is right for a
+            // user and useless for documenting a 3 mm hole in a 57 mm key.
+            if let Some((target, zoom)) = self.focus {
+                self.preview.camera.target = glam::Vec3::from(target);
+                if let Some(zoom) = zoom {
+                    self.preview.camera.zoom = zoom.clamp(0.02, 3.0);
+                } else {
+                    // Frame a much smaller sphere: 1/6 of the part's radius puts
+                    // the region across most of the viewport at the default FOV.
+                    self.preview.camera.radius = (self.preview.camera.radius / 6.0).max(1e-6);
+                }
+                self.preview.dirty = true;
+            }
         }
         self.loaded = Some(key);
     }
@@ -1067,8 +1140,19 @@ impl SuturaApp {
                     .join(","),
             );
         }
+        // The worker owns a `Context` handle so it can wake the UI when it
+        // finishes. Without this the repair thread completes, writes its output,
+        // and the event sits unread in the channel until the user happens to move
+        // the mouse: `poll_repair` only runs inside a frame, and an idle window
+        // produces none. On a Steam Deck that looked like "stuck at Step 4/8" --
+        // measured here, the output file appeared at 52 s while the UI still said
+        // "repair started" at 62 s.
+        let ctx_for_worker = self.ctx.clone();
         std::thread::spawn(move || {
             run_repair(&input, &output, settings, tx, cancel);
+            if let Some(ctx) = ctx_for_worker {
+                ctx.request_repaint();
+            }
         });
     }
 
@@ -1291,6 +1375,7 @@ impl SuturaApp {
     /// it. `_frame` was never read.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.ctx = Some(ctx.clone());
         // Deferred so the panel closure can set it while `self.files` is borrowed.
         let mut clear_list = false;
         // Deferred so a panel closure can set them while `self` is borrowed.
@@ -1745,7 +1830,6 @@ impl SuturaApp {
                     // the wrap width makes the combos and boxes shrink to the
                     // column instead of overflowing it.
                     ui.set_max_width(ui.available_width());
-                    let wrap = ui.available_width();
                     ui.heading(rust_i18n::t!("app.settings").to_string());
                     ui.separator();
                     ui.horizontal(|ui| {
@@ -3317,28 +3401,24 @@ impl SuturaApp {
                 });
         }
 
-        // Size the window to the screen on the first frame. The builder cannot do
-        // this: the monitor's size is only known once the viewport exists, so a
-        // fixed 1024x720 opened small on a 1280x800 Steam Deck and in the middle of
-        // a large desktop. 90% of the available area, clamped to the minimum.
-        //
-        // Skipped for a capture, which asks for an exact size.
-        if self.fit_to_screen_pending && self.screenshot_path.is_none() {
-            self.fit_to_screen_pending = false;
-            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
-                if monitor.x > 1.0 && monitor.y > 1.0 {
-                    let want = egui::vec2(
-                        (monitor.x * 0.9).max(720.0),
-                        (monitor.y * 0.9).max(480.0),
-                    );
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
-                    if let Some(center) = egui::ViewportCommand::center_on_screen(&ctx) {
-                        ctx.send_viewport_cmd(center);
-                    }
-                    self.log(format!(
-                        "window sized to {:.0}x{:.0} (screen {}x{})",
-                        want.x, want.y, monitor.x, monitor.y
-                    ));
+        // Progress is read from a channel inside a frame, so a running repair needs
+        // frames even when nothing is happening in the window. Without this the
+        // progress bar froze until the next stray input event.
+        if self.busy() || self.pending_batch.is_some() || self.pending_overwrite.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+
+        // Remember a size the user actually chose. `open_size` is what the builder
+        // asked for; anything else is a drag or a maximize, and is worth restoring
+        // next time. Recording the opening size instead pinned every launch to it.
+        if let Some(rect) = ctx.input(|i| i.viewport().inner_rect) {
+            let (w, h) = (rect.width(), rect.height());
+            if w >= 400.0 && h >= 300.0 {
+                self.last_window_size = Some([w, h]);
+                match self.open_size {
+                    Some([ow, oh]) if (w - ow).abs() <= 2.0 && (h - oh).abs() <= 2.0 => {}
+                    Some(_) => self.user_resized = true,
+                    None => self.open_size = Some([w, h]),
                 }
             }
         }

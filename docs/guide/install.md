@@ -157,6 +157,26 @@ Repair time for a typical mesh is deliberately blank. It is the number that
 matters most and the one that is not yet settled: it depends on the fidelity
 decision still being made, so filling it now would mean replacing it later.
 
+## Backend selection (transition)
+
+The command-line tool, the GUI and every entry point in this package run the
+**Rust** pipeline and cores by default. The previous Python backend is kept for
+one release so a problem found in the field is never a dead end:
+
+```sh
+SUTURA_BACKEND=python sutura model.stl    # environment variable
+sutura --backend python model.stl        # CLI flag, wins over the variable
+```
+
+The Python backend prints a one-line deprecation note and will be removed in the
+next release. Nothing else changes: the same flags, the same report, the same
+output files.
+
+If you set a per-engine switch such as `SUTURA_PIPELINE_ENGINE`, it still applies
+under the Python backend. Under the Rust backend the product backend wins and
+those switches are pinned to Rust, so a stale one in your shell profile cannot
+silently put half the pipeline back on Python.
+
 ## Updating
 
 Updates are installed by **`sutura --update`**, or by the GUI's update panel.

@@ -46,6 +46,8 @@ fn main() -> eframe::Result<()> {
     let mut select: Option<usize> = None;
     let mut settings_scroll = 0.0f32;
     let mut wait_frames = 3u8;
+    // `[x,y,z]` centre, optionally `[x,y,z,zoom]`: see `--focus`.
+    let mut focus: Option<([f32; 3], Option<f32>)> = None;
     let mut file_methods: Option<Vec<u8>> = None;
     // Window size, so a capture can prove the layout at the small end (Steam
     // Deck is 1280x800, the stated minimum 720x480). Not in `--help`: it exists
@@ -112,6 +114,21 @@ fn main() -> eframe::Result<()> {
             "--open-changelog" => open = app::OpenOnStart::Changelog,
             "--show-after" => open = app::OpenOnStart::After,
             "--defect-colors" => open = app::OpenOnStart::DefectColors,
+            // Hidden capture hook: point the camera at a box centre and zoom in,
+            // so a frame can show a defect that is invisible in a whole-part view.
+            "--focus" => {
+                focus = args.next().and_then(|spec| {
+                    let nums: Vec<f32> = spec
+                        .split(',')
+                        .filter_map(|p| p.trim().parse::<f32>().ok())
+                        .collect();
+                    match nums.len() {
+                        3 => Some(([nums[0], nums[1], nums[2]], None)),
+                        4 => Some(([nums[0], nums[1], nums[2]], Some(nums[3]))),
+                        _ => None,
+                    }
+                })
+            }
             "--select" => select = args.next().and_then(|s| s.parse::<usize>().ok()),
             "--file-methods" => {
                 file_methods = args.next().map(|spec| {
@@ -231,9 +248,37 @@ fn main() -> eframe::Result<()> {
         viewport: {
             let mut vp = egui::ViewportBuilder::default()
                 .with_title(rust_i18n::t!("app.title").to_string())
-                .with_inner_size(window_size.unwrap_or([1024.0, 720.0]))
                 .with_min_inner_size([720.0, 480.0])
                 .with_drag_and_drop(true);
+            // Size at startup, in order of preference: an explicit --window-size,
+            // the size this window last had, then maximized.
+            //
+            // "90% of the monitor" is not an option on Wayland: egui reports
+            // `monitor_size` as None there, so the window used to open at the
+            // 1024x720 default on a Steam Deck. Maximizing is the one request every
+            // window manager honours, and the resulting size is what gets saved, so
+            // later launches restore it directly.
+            let saved = crate::state::load().window_size;
+            match window_size.or(saved) {
+                Some([w, h]) => {
+                    vp = vp.with_inner_size([w, h]);
+                    eprintln!(
+                        "window: opening at {w:.0}x{h:.0} ({})",
+                        if window_size.is_some() { "--window-size" } else { "saved" }
+                    );
+                }
+                None if screenshot.is_none() => {
+                    vp = vp.with_maximized(true);
+                    eprintln!("window: opening maximized (no saved size)");
+                }
+                None => {
+                    vp = vp.with_inner_size([1024.0, 720.0]);
+                    eprintln!("window: opening at 1024x720 (capture default)");
+                }
+            }
+            if screenshot.is_some() && window_size.is_none() {
+                vp = vp.with_inner_size([1024.0, 720.0]);
+            }
             if screenshot.is_some() {
                 // A scripted capture must not flash a window over whatever the
                 // user is doing. eframe still creates a native window -- there is
@@ -269,6 +314,7 @@ fn main() -> eframe::Result<()> {
                     select,
                     settings_scroll,
                     wait_frames,
+                    focus,
                     file_methods,
                 },
             )))
