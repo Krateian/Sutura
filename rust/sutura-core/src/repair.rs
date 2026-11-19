@@ -1147,6 +1147,10 @@ fn adopted(report: &Value) -> bool {
         .unwrap_or(false)
 }
 
+thread_local! {
+    static FTW_NOTICE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn stage2_report_json(rep: &Stage2Report) -> Value {
     let mut out = Map::new();
     out.insert(
@@ -3065,6 +3069,7 @@ pub fn repair(
     // One reset per top-level run: `new()` is also used for short-lived score
     // tokens, and resetting there would swallow a running repair's cancel.
     sutura_geom::cancel::reset();
+    FTW_NOTICE.with(|c| c.set(false));
     repair_impl(verts, tris, opts, sink, cancel, true)
 }
 
@@ -4004,6 +4009,25 @@ fn repair_impl(
             // fTetWild (#7): standalone deterministic binary when installed.
             let ft_trigger =
                 crate::ftetwild::resolve_trigger(opts.ftetwild.as_ref(), spec.ftetwild_enabled);
+            if ft_trigger != crate::ftetwild::Trigger::Disabled && ftetwild_bin.is_some() {
+                let earlier = if graft_ok {
+                    "graft"
+                } else if splint_ok {
+                    "splint"
+                } else if coaptation_ok {
+                    "coaptation"
+                } else if cdt_ok {
+                    "cdt"
+                } else {
+                    ""
+                };
+                if !earlier.is_empty() {
+                    stats.insert(
+                        "ftetwild_reason".into(),
+                        json!(format!("skipped: earlier tier succeeded ({earlier})")),
+                    );
+                }
+            }
             if ft_trigger != crate::ftetwild::Trigger::Disabled
                 && !graft_ok
                 && !splint_ok
@@ -4240,14 +4264,23 @@ fn repair_impl(
     stage_fp_log("after_deep", &cur_v, &cur_t);
 
     let produced = produced_tier(&stats);
+    if opts.solid_engine.as_str() == "ftetwild"
+        && produced != "ftetwild"
+        && !FTW_NOTICE.with(|c| c.replace(true))
+    {
+        eprintln!(
+            "sutura: fTetWild not needed: {} repaired the mesh",
+            produced
+        );
+    }
     stats.insert(
         "solid_engine".into(),
         json!({
             "selected": opts.solid_engine.as_str(),
             "produced": produced,
             "reason": stats
-                .get("cdt")
-                .and_then(|r| r.get("reason"))
+                .get("ftetwild_reason")
+                .or_else(|| stats.get("cdt").and_then(|r| r.get("reason")))
                 .cloned()
                 .unwrap_or(Value::Null),
         }),
