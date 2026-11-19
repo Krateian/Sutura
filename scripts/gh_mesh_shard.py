@@ -235,7 +235,7 @@ def main():
     set_name = os.environ['SET_NAME']
     shard = int(os.environ['SHARD'])
     shards = int(os.environ['SHARDS'])
-    mode = os.environ['MODE']
+    mode = os.environ.get('MODE', 'rust_ab')
     env_c = os.environ.get('ENV_CAND', '')
     env_b = os.environ.get('ENV_BASE', '')
     if env_b:
