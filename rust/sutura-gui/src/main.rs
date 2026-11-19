@@ -231,9 +231,37 @@ fn main() -> eframe::Result<()> {
         viewport: {
             let mut vp = egui::ViewportBuilder::default()
                 .with_title(rust_i18n::t!("app.title").to_string())
-                .with_inner_size(window_size.unwrap_or([1024.0, 720.0]))
                 .with_min_inner_size([720.0, 480.0])
                 .with_drag_and_drop(true);
+            // Size at startup, in order of preference: an explicit --window-size,
+            // the size this window last had, then maximized.
+            //
+            // "90% of the monitor" is not an option on Wayland: egui reports
+            // `monitor_size` as None there, so the window used to open at the
+            // 1024x720 default on a Steam Deck. Maximizing is the one request every
+            // window manager honours, and the resulting size is what gets saved, so
+            // later launches restore it directly.
+            let saved = crate::state::load().window_size;
+            match window_size.or(saved) {
+                Some([w, h]) => {
+                    vp = vp.with_inner_size([w, h]);
+                    eprintln!(
+                        "window: opening at {w:.0}x{h:.0} ({})",
+                        if window_size.is_some() { "--window-size" } else { "saved" }
+                    );
+                }
+                None if screenshot.is_none() => {
+                    vp = vp.with_maximized(true);
+                    eprintln!("window: opening maximized (no saved size)");
+                }
+                None => {
+                    vp = vp.with_inner_size([1024.0, 720.0]);
+                    eprintln!("window: opening at 1024x720 (capture default)");
+                }
+            }
+            if screenshot.is_some() && window_size.is_none() {
+                vp = vp.with_inner_size([1024.0, 720.0]);
+            }
             if screenshot.is_some() {
                 // A scripted capture must not flash a window over whatever the
                 // user is doing. eframe still creates a native window -- there is
