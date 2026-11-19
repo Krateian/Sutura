@@ -300,3 +300,6 @@ app:
   sug_watertight: "The input is already watertight - the Quick mode is probably enough."
   sug_low_conf: "Trying the next mode up and comparing results could help."
   sug_extreme_caveat: "Extreme can delete parts with fewer than 20 faces entirely - be careful with assemblies."
+  menu_analyze: Analyze
+  menu_use_method: Methods for this file...
+  menu_clear_tags: Clear tags (use global list)

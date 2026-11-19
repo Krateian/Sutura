@@ -300,3 +300,6 @@ app:
   sug_watertight: "Girdi zaten su geçirmez - Quick modu muhtemelen yeterli."
   sug_low_conf: "Bir üst modu deneyip sonucu karşılaştırmak faydalı olabilir."
   sug_extreme_caveat: "Extreme, 20'den az yüzlü parçaları tamamen silebilir - montajlarda dikkatli olun."
+  menu_analyze: Analiz et
+  menu_use_method: Bu dosyanın yöntemleri...
+  menu_clear_tags: Etiketleri temizle (genel listeyi kullan)

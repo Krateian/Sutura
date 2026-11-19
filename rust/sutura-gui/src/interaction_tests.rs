@@ -737,3 +737,61 @@ fn suggestions_apply_sets_the_mode() {
         "Apply did not change the settings"
     );
 }
+
+
+/// The file table opens a right-click menu, and its items do what they say.
+///
+/// Qt built this menu in `_build_context_menu`; the Rust one hangs off the row's
+/// response. The test drives the same path a user does: right-click the row,
+/// then click the item.
+#[test]
+fn the_file_row_has_a_context_menu() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1100.0, 800.0));
+    h.state_mut().add_file_for_test(temp_box("menu"));
+    h.state_mut().select_first_for_test();
+    settle(&mut h);
+
+    // Right-click the file name.
+    let row = h.get_by_label("box.stl");
+    let pos = row.rect().center();
+    h.event(egui::Event::PointerMoved(pos));
+    h.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Secondary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Secondary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    for _ in 0..4 {
+        h.step();
+    }
+    assert!(
+        h.query_all_by_label("Clear tags (use global list)")
+            .next()
+            .is_some(),
+        "the context menu did not open"
+    );
+
+    // The row has no output yet, so "Open result" must not be offered.
+    assert!(
+        h.query_all_by_label("Open result").next().is_none(),
+        "Open result must only appear once a file has been repaired"
+    );
+
+    h.query_all_by_label("Clear tags (use global list)")
+        .next()
+        .unwrap()
+        .click();
+    settle(&mut h);
+    assert_eq!(
+        h.state().selected_file_methods(),
+        None,
+        "clearing the tags must drop the file's own list"
+    );
+}

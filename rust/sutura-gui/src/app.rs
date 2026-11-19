@@ -164,6 +164,36 @@ impl Entry {
     }
 }
 
+/// What the file table's right-click menu asked for.
+///
+/// Collected while the table is borrowed and applied after it, the same pattern
+/// the row buttons use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowAction {
+    /// Clear the cached analysis so this frame recomputes it.
+    Analyze(usize),
+    /// Open the repaired file (`true` = reveal in the folder).
+    OpenOutput(usize, bool),
+    /// Open Options on the Methods tab with this file selected.
+    EditMethods(usize),
+    /// Drop the file's own method list, so it follows the global one again.
+    ClearTags(usize),
+}
+
+/// A menu item, styled like the rest of the app.
+fn menu_action(ui: &mut egui::Ui, text: String) -> bool {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(text)
+                .size(crate::theme::FONT_BODY)
+                .color(crate::theme::TEXT),
+        )
+        .fill(egui::Color32::TRANSPARENT)
+        .min_size(egui::vec2(ui.available_width(), crate::theme::BUTTON_H * 0.8)),
+    )
+    .clicked()
+}
+
 /// What the Repair tab's profile buttons asked for, applied after the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileAction {
@@ -2672,6 +2702,8 @@ impl SuturaApp {
 
         let mut clicked = None;
         let mut removed = None;
+        // Set by the right-click menu; applied after the table's borrow ends.
+        let mut chosen: Option<RowAction> = None;
 
         // Empty state takes one row, not a hundred (rule e).
         let rows = if self.files.is_empty() {
@@ -2809,12 +2841,51 @@ impl SuturaApp {
                                 );
                                 crate::theme::selection_bar(ui.painter(), r);
                             }
-                            if ui
-                                .add(egui::Label::new(text).sense(egui::Sense::click()))
-                                .clicked()
-                            {
+                            let response =
+                                ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                            if response.clicked() {
                                 clicked = Some(idx);
                             }
+                            // Right-click, as Qt's `_on_tree_context_menu` did.
+                            // The menu is built here, closes over `idx`, and only
+                            // reports what was chosen: the actions run after the
+                            // table's borrow ends.
+                            response.context_menu(|ui| {
+                                if menu_action(ui, rust_i18n::t!("app.menu_analyze").to_string()) {
+                                    chosen = Some(RowAction::Analyze(idx));
+                                }
+                                ui.separator();
+                                if let Some(entry) = self.files.get(idx) {
+                                    if entry.output.is_some() {
+                                        if menu_action(
+                                            ui,
+                                            rust_i18n::t!("app.open_result").to_string(),
+                                        ) {
+                                            chosen = Some(RowAction::OpenOutput(idx, false));
+                                        }
+                                        if menu_action(
+                                            ui,
+                                            rust_i18n::t!("app.show_in_folder").to_string(),
+                                        ) {
+                                            chosen = Some(RowAction::OpenOutput(idx, true));
+                                        }
+                                        ui.separator();
+                                    }
+                                }
+                                if menu_action(
+                                    ui,
+                                    rust_i18n::t!("app.menu_use_method").to_string(),
+                                ) {
+                                    chosen = Some(RowAction::EditMethods(idx));
+                                }
+                                ui.separator();
+                                if menu_action(
+                                    ui,
+                                    rust_i18n::t!("app.menu_clear_tags").to_string(),
+                                ) {
+                                    chosen = Some(RowAction::ClearTags(idx));
+                                }
+                            });
                         });
                         row.col(|ui| {
                             let method = entry
@@ -2856,6 +2927,9 @@ impl SuturaApp {
         }
         if let Some(idx) = removed {
             self.remove_file(idx);
+        }
+        if let Some(action) = chosen {
+            self.apply_row_action(action);
         }
 
         // Repair progress, if any, under the table rather than inside it: a
@@ -3279,6 +3353,35 @@ impl SuturaApp {
                 .clicked()
             {
                 *open_action = Some((output.clone(), true));
+            }
+        }
+    }
+
+    /// Run a right-click action collected from the file table.
+    fn apply_row_action(&mut self, action: RowAction) {
+        match action {
+            RowAction::Analyze(idx) => {
+                if let Some(slot) = self.files.get_mut(idx) {
+                    slot.analysis = None;
+                    slot.defects = None;
+                }
+                self.selected = Some(idx);
+            }
+            RowAction::OpenOutput(idx, reveal) => {
+                if let Some(out) = self.files.get(idx).and_then(|e| e.output.clone()) {
+                    open_path(&out, reveal);
+                }
+            }
+            RowAction::EditMethods(idx) => {
+                self.selected = Some(idx);
+                self.options_open = true;
+                self.options_tab = OptionsTab::Methods;
+            }
+            RowAction::ClearTags(idx) => {
+                if let Some(slot) = self.files.get_mut(idx) {
+                    slot.methods = None;
+                }
+                self.log("method tags cleared; this file follows the global list".to_string());
             }
         }
     }
