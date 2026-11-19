@@ -1198,6 +1198,12 @@ impl SuturaApp {
         if !self.batch_active {
             return;
         }
+        // A cancelled file must stop the queue, not start the next one with a
+        // fresh token. The per-file token is still the cancelled one here.
+        if self.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+            self.batch_active = false;
+            return;
+        }
         if let Some(idx) = self.batch.pop() {
             self.start_repair_mode(idx, self.batch_force, true);
         } else {
