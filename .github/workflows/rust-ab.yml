@@ -1,0 +1,68 @@
+name: Rust-vs-Rust byte gate
+
+# P10 gate: both sides are release CLIs. The baseline is the previous Rust
+# commit (or a release tag), the candidate is this commit; no Sutura Python is
+# installed or executed. The set is the tracked public corpus, so the job needs
+# no private data.
+#
+# Workflow dispatch only: a Rust-vs-Rust run is a deliberate gate, not
+# something every push should start.
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:  { description: 'Previous Rust ref (branch, tag or SHA)', required: true }
+      candidate_ref: { description: 'Candidate ref (branch, tag or SHA)', required: true, default: 'main' }
+      flags:         { description: 'Shared CLI flags', required: false, default: '--json --no-history --no-cache' }
+      timeout_s:     { description: 'Per-run timeout in seconds', required: false, default: '1800' }
+
+permissions:
+  contents: read
+
+jobs:
+  build-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { ref: '${{ inputs.baseline_ref }}' }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release CLI
+        working-directory: rust
+        run: cargo build --release -p sutura-cli
+      - uses: actions/upload-artifact@v4
+        with: { name: rust-ab-baseline, path: rust/target/release/sutura, retention-days: 3 }
+
+  build-candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { ref: '${{ inputs.candidate_ref }}' }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release CLI
+        working-directory: rust
+        run: cargo build --release -p sutura-cli
+      - uses: actions/upload-artifact@v4
+        with: { name: rust-ab-candidate, path: rust/target/release/sutura, retention-days: 3 }
+
+  gate:
+    needs: [build-baseline, build-candidate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { ref: '${{ inputs.candidate_ref }}' }
+      - uses: actions/download-artifact@v4
+        with: { name: rust-ab-baseline, path: baseline-bin }
+      - uses: actions/download-artifact@v4
+        with: { name: rust-ab-candidate, path: candidate-bin }
+      - name: Gate the tracked public corpus
+        env:
+          FLAGS: '${{ inputs.flags }}'
+          TIMEOUT: '${{ inputs.timeout_s }}'
+        run: |
+          chmod +x baseline-bin/sutura candidate-bin/sutura
+          mapfile -t MESHES < <(git ls-files 'tests/real-world-samples/*.stl')
+          test "${#MESHES[@]}" -gt 0
+          python3 scripts/rust_ab_gate.py \
+            --baseline-bin baseline-bin/sutura \
+            --candidate-bin candidate-bin/sutura \
+            --flags "$FLAGS" --timeout "$TIMEOUT" "${MESHES[@]}"
