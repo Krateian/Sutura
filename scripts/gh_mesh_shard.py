@@ -8,15 +8,24 @@ SI-after pair that decides TRADE-SI.
 A missing OrcaSlicer is not a missing row: the harness reports
 ``orca_number_of_parts=None`` / ``orca_manifold='unknown'`` and the judge falls
 back to the component count, so Orca is reported but never required.
+
+``MODE=rust_ab`` is the post-P10 gate: both sides are release CLIs, the
+baseline being the previous Rust commit's binary and the candidate this
+commit's.  No Python is involved; a row is SAME only when both exit 0 and write
+identical bytes.  ``RUST_BASE_BIN`` / ``RUST_BIN`` name the two binaries and
+``RUST_AB_FLAGS`` (default ``--json --no-history --no-cache``) the shared args.
 """
 import glob
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 
 VERIFY = os.environ.get(
@@ -160,6 +169,68 @@ def numeric_log_lines(items):
     return lines
 
 
+RUST_AB_DEFAULT_FLAGS = '--json --no-history --no-cache'
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run_rust_ab(files, corpus):
+    """Byte comparison of two release CLIs (P10's Rust-vs-Rust mode)."""
+    baseline = os.path.abspath(os.environ.get('RUST_BASE_BIN', 'base-bin/sutura'))
+    candidate = os.path.abspath(os.environ.get('RUST_BIN', 'cand-bin/sutura'))
+    for label, path in (('baseline', baseline), ('candidate', candidate)):
+        if not os.access(path, os.X_OK):
+            raise SystemExit('rust_ab: no executable %s CLI at %s'
+                             % (label, path))
+    flags = shlex.split(os.environ.get('RUST_AB_FLAGS', RUST_AB_DEFAULT_FLAGS))
+    timeout = float(os.environ.get('RUST_AB_TIMEOUT', '1800'))
+    rows = []
+    log_lines = []
+    for idx, rel in enumerate(files, 1):
+        src = resolve_mesh(corpus, rel)
+        sides = {}
+        for label, binary in (('baseline', baseline), ('candidate', candidate)):
+            work = tempfile.mkdtemp(prefix='rustab-')
+            out = os.path.join(work, 'out.stl')
+            env = dict(os.environ)
+            env['SUTURA_DATA_DIR'] = os.path.join(work, 'data')
+            env['SUTURA_NO_CACHE'] = '1'
+            started = time.time()
+            try:
+                proc = subprocess.run([binary, src, '-o', out] + flags,
+                                      capture_output=True, text=True,
+                                      timeout=timeout, env=env)
+                rc, err = proc.returncode, proc.stderr[-300:]
+            except subprocess.TimeoutExpired:
+                rc, err = 'TIMEOUT', ''
+            elapsed = time.time() - started
+            sha = sha256_file(out) if rc == 0 and os.path.exists(out) else None
+            sides[label] = {'rc': rc, 'sha256': sha,
+                            'seconds': round(elapsed, 3),
+                            'error': None if rc == 0 else err}
+            log_lines.append('%d %s %s %s' % (
+                idx, label, rc, int(round(elapsed * 1000))))
+            shutil.rmtree(work, ignore_errors=True)
+        base, cand = sides['baseline'], sides['candidate']
+        if base['rc'] != 0 or cand['rc'] != 0:
+            verdict = 'TIMEOUT' if 'TIMEOUT' in (base['rc'], cand['rc']) else 'RC'
+        elif base['sha256'] == cand['sha256']:
+            verdict = 'SAME'
+        else:
+            verdict = 'DIFF'
+        rows.append({'id': os.path.basename(rel), 'verdict': verdict,
+                     'reason': None if verdict == 'SAME' else
+                     'baseline rc=%s candidate rc=%s' % (base['rc'], cand['rc']),
+                     'baseline': base, 'candidate': cand})
+    return rows, log_lines
+
+
 def main():
     set_name = os.environ['SET_NAME']
     shard = int(os.environ['SHARD'])
@@ -189,6 +260,19 @@ def main():
     if set_name != 'bench115':
         files = files[shard::shards]
     outdir = tempfile.mkdtemp(prefix='shard-')
+    # P10: after the Python runtime is gone this is the only shape gate that
+    # runs; both sides are release binaries, so nothing here imports sutura.
+    if mode == 'rust_ab':
+        rows, log_lines = run_rust_ab(files, corpus)
+        json.dump({'set': set_name, 'shard': shard, 'shards': shards,
+                   'mode': mode, 'rc': 0, 'meshes': len(files),
+                   'rows': rows, 'error': None},
+                  open('shard-%s-%d.json' % (set_name, shard), 'w'), indent=1)
+        with open('shard-%s-%d.log' % (set_name, shard), 'w') as handle:
+            if log_lines:
+                handle.write('\n'.join(log_lines) + '\n')
+        failed = sum(1 for row in rows if row['verdict'] != 'SAME')
+        sys.exit(1 if failed else 0)
     # determinism compares two independent runs of the SAME ref (the
     # candidate, or the base when no candidate is given), never base vs cand.
     if mode == 'io_parity':
