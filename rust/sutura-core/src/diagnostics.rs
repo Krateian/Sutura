@@ -65,6 +65,54 @@ pub fn scrub_string(value: &str, home: Option<&str>, user: Option<&str>) -> Stri
     ] {
         out = replace_segment_after(&out, prefix, placeholder);
     }
+    scrub_absolute_paths(&out)
+}
+
+/// Redact absolute paths that `$HOME` did not cover.
+///
+/// The archive is emailed to a stranger, so a binary run from `/tmp`, `/opt` or
+/// a build directory must not publish its full path just because it sits
+/// outside the home directory. A slash starts a path token at the beginning of
+/// the string or after whitespace, a quote, `=`, `(`, `[`, `{`, `,` or `:`.
+/// URLs are left alone because their `//` follows a `:` or another slash.
+fn scrub_absolute_paths(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let token_start = chars[i] == '/'
+            && (i == 0
+                || chars[i - 1].is_whitespace()
+                || "'\"=([{,:".contains(chars[i - 1]))
+            && chars.get(i + 1).is_none_or(|next| *next != '/');
+        if !token_start {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < chars.len()
+            && !chars[j].is_whitespace()
+            && !"\"')]},;:".contains(chars[j])
+        {
+            j += 1;
+        }
+        let token: String = chars[i..j].iter().collect();
+        // `/mnt/data/<user>/x` and `/Volumes/<name>/x` already anonymise the
+        // personal segment; leave those exactly as Python wrote them.  A path
+        // with no such placeholder (`/tmp/.../deps/sutura`, `/opt/sutura`) is
+        // the leak this step exists for.
+        if token.contains('<') {
+            out.push_str(&token);
+        } else {
+            out.push_str("<path>");
+            if let Some(name) = token.rsplit('/').find(|part| !part.is_empty()) {
+                out.push('/');
+                out.push_str(name);
+            }
+        }
+        i = j;
+    }
     out
 }
 
@@ -485,10 +533,21 @@ mod tests {
     }
 
     #[test]
-    fn scrub_leaves_unrelated_text_alone() {
+    fn scrub_redacts_non_home_absolute_paths() {
+        // A binary under /tmp or /opt is not under $HOME, but its path still
+        // must not leave the machine.
         assert_eq!(
             scrub_string(&p(&["", "opt", "sutura", "bin", "sutura"]), Some(&p(&["", "Users", "alice"])), Some("alice")),
-            "/opt/sutura/bin/sutura"
+            "<path>/sutura"
+        );
+        // Non-path text and URLs are untouched.
+        assert_eq!(
+            scrub_string("sutura 0.9.9", Some(&p(&["", "Users", "alice"])), Some("alice")),
+            "sutura 0.9.9"
+        );
+        assert_eq!(
+            scrub_string("see https://github.com/Krateian/Sutura/releases", None, None),
+            "see https://github.com/Krateian/Sutura/releases"
         );
     }
 }
