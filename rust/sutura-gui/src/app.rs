@@ -1764,10 +1764,18 @@ impl SuturaApp {
                 // on top of the layout's item spacing, so the content ran past
                 // the right edge and the Repair button was cut off at 720 px.
                 let avail = ui.available_width();
-                let side = ((avail - crate::theme::PANEL_MAX_W).max(0.0)) / 2.0;
+                // 16 px of gutter on each side, plus whatever centring is left.
+                let side = ((avail
+                    - crate::theme::PANEL_MAX_W
+                    - 2.0 * crate::theme::GAP_16)
+                    .max(0.0))
+                    / 2.0;
                 egui::Frame::new()
                     .fill(crate::theme::WINDOW)
-                    .inner_margin(egui::Margin::symmetric(side as i8, 0))
+                    .inner_margin(egui::Margin::symmetric(
+                        (side + crate::theme::GAP_16) as i8,
+                        0,
+                    ))
                     .show(ui, |ui| {
                         crate::theme::panel().show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -2585,10 +2593,12 @@ impl SuturaApp {
             // Multi-file: the batch action is the bigger decision, so it keeps
             // the fill and the single-file one is an outline beside it.
             if multi {
+                // Repair all is offered beside it, as an outline: the filled
+                // button is always "Repair".
                 if ui
                     .add_enabled(
                         can_repair && !app.batch_active && app.repair_rx.is_none(),
-                        primary_button(rust_i18n::t!("app.repair_all").to_string()),
+                        secondary_button(rust_i18n::t!("app.repair_all").to_string()),
                     )
                     .clicked()
                 {
@@ -2597,7 +2607,7 @@ impl SuturaApp {
                 if ui
                     .add_enabled(
                         can_repair,
-                        secondary_button(rust_i18n::t!("app.repair").to_string()),
+                        primary_button(rust_i18n::t!("app.repair").to_string()),
                     )
                     .clicked()
                 {
@@ -2625,33 +2635,26 @@ impl SuturaApp {
             }
         };
 
-        // Two repair buttons plus Analyze do not fit on one line at any width a
-        // card can actually be: the measured content width at a 720 px window is
-        // ~630 and the three buttons need ~700. Rather than tune a threshold that
-        // breaks at the next font size, the multi-file case always puts the
-        // repair group on its own line.
-        if multi || ui.available_width() < 620.0 {
-            ui.horizontal(|ui| analyze(self, ui));
-            ui.add_space(crate::theme::GAP_8);
-            ui.horizontal(|ui| {
+        // Always one row: Analyze left, the repair group right. It fits because
+        // the table no longer demands a fixed width -- the earlier overflow was
+        // the columns, not the buttons.
+        ui.horizontal(|ui| {
+            analyze(self, ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 repair(self, ui, multi, can_repair, running, cancel_clicked)
             });
-        } else {
-            ui.horizontal(|ui| {
-                analyze(self, ui);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    repair(self, ui, multi, can_repair, running, cancel_clicked)
-                });
-            });
-        }
+        });
     }
 
     /// The Analysis card: label/value rows, an amber count where a count is a
-    /// problem, and the collapsible defects list underneath.
+    /// problem, then the defects row and its list.
     fn analysis_card(&mut self, ui: &mut egui::Ui) {
         crate::theme::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             self.report_and_logs(ui, &mut None);
+            // This call was missing: `defects_panel` existed but nothing drew it,
+            // which is why the hairline and "N defects >" row never appeared.
+            self.defects_panel(ui);
         });
     }
 
@@ -2686,9 +2689,12 @@ impl SuturaApp {
             .striped(false)
             .resizable(false)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::initial(330.0).at_least(160.0))
-            .column(Column::initial(300.0).at_least(90.0))
-            .column(Column::remainder())
+            // All three share what the card has: a fixed 330 + 300 demanded
+            // 630 px of a card that is ~590 inside a 720 px window, so the row
+            // ran past the panel edge and the Result column was off-screen.
+            .column(Column::remainder().at_least(150.0))
+            .column(Column::remainder().at_least(70.0))
+            .column(Column::remainder().at_least(80.0))
             // Let the table take its natural height: `max_scroll_height` is the
             // height of the *scrollable body*, not of the table, and pairing it
             // with a `min_scrolled_height` of one row pinned the viewport to a
@@ -3294,7 +3300,6 @@ impl SuturaApp {
         if !has_any {
             return;
         }
-        ui.heading(rust_i18n::t!("app.input_defects").to_string());
         match &self.files[idx].defects {
                     Some(Ok(report))
                         if !report.holes.is_empty()
