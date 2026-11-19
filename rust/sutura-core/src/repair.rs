@@ -4781,7 +4781,18 @@ fn repair_impl(
     stage_fp_log("after_final_fallback", &cur_v, &cur_t);
     let final_holes = boundary_loop_stats(&cur_t).0;
     let final_nm = common::topology_summary(&cur_v, &cur_t).non_two_manifold_edges;
-    let reachable = common::is_two_manifold(cur_v.len(), &cur_t) && final_holes == 0;
+    // Python `classification.classify` only calls a mesh watertight once Stage 2
+    // actually confirmed the solid.  A closed Stage-1 output that manifold3d
+    // rejects (e.g. NotManifold) is a warning there and keeps the ladder going;
+    // accepting it here skipped the autorefine/scaffold escalation and kept a
+    // result the user was told was watertight.
+    let stage2_ok = stats
+        .get("stage2")
+        .and_then(|s| s.get("ok"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let reachable =
+        common::is_two_manifold(cur_v.len(), &cur_t) && final_holes == 0 && stage2_ok;
     stats.insert("method_reached_watertight".into(), Value::Bool(reachable));
     stats.insert(
         "timings".into(),
