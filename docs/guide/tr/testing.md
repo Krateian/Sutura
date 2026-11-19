@@ -79,7 +79,7 @@ README'si, "Sloan flips and edge-point propagation").
 İşkence testleri zor ama basılabilir geometriyi kapsar:
 
 ```sh
-~/.local/share/sutura/venv/bin/python tests/torture_tests.py
+python3 tests/torture_tests.py
 ```
 
 Rust çekirdeği (`rust/sutura-geom`, Rust araç zinciri gerekir; sonuçlar crate
@@ -145,7 +145,7 @@ ayrıntısını korur.
 Depo kökünden:
 
 ```sh
-~/.local/share/sutura/venv/bin/python \
+python3 \
   .claude/skills/sutura-verify/scripts/verify_visual_qa.py \
   original.stl repaired.stl --input original.stl \
   --contact-sheet /tmp/visual-qa.png --no-v2

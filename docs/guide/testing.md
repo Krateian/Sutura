@@ -79,7 +79,7 @@ and edge-point propagation").
 Torture tests cover hard-but-printable geometry:
 
 ```sh
-~/.local/share/sutura/venv/bin/python tests/torture_tests.py
+python3 tests/torture_tests.py
 ```
 
 Rust core (`rust/sutura-geom`, needs a Rust toolchain; results in the crate
@@ -143,7 +143,7 @@ while `two_sided_max_all_mm` / `i2o_max_all_mm` and `buried_faces_removed` /
 From the repository root:
 
 ```sh
-~/.local/share/sutura/venv/bin/python \
+python3 \
   .claude/skills/sutura-verify/scripts/verify_visual_qa.py \
   original.stl repaired.stl --input original.stl \
   --contact-sheet /tmp/visual-qa.png --no-v2
