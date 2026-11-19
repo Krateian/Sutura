@@ -1526,6 +1526,7 @@ impl MeshBvh {
             let mut stack = Vec::with_capacity(64);
             stack.push((0, 0));
             let mut steps = 0usize;
+            let mut pairs = 0usize;
 
             while let Some((a_idx, b_idx)) = stack.pop() {
                 steps += 1;
@@ -1539,6 +1540,11 @@ impl MeshBvh {
                     continue;
                 }
                 if na.left < 0 && nb.left < 0 {
+                    pairs += 1;
+                    if pairs & 511 == 0 && poll_cancel && crate::cancel::is_cancelled() {
+                        aborted.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
                     test_leaf_pair(
                         &self.order,
                         tris,
@@ -1631,6 +1637,7 @@ impl MeshBvh {
             let mut stack = Vec::with_capacity(128);
             stack.push(initial_pair);
             let mut steps = 0usize;
+            let mut pairs = 0usize;
 
             while let Some((a_idx, b_idx)) = stack.pop() {
                 steps += 1;
@@ -1644,6 +1651,11 @@ impl MeshBvh {
                     continue;
                 }
                 if na.left < 0 && nb.left < 0 {
+                    pairs += 1;
+                    if pairs & 511 == 0 && poll_cancel && crate::cancel::is_cancelled() {
+                        aborted.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
                     test_leaf_pair(
                         &self.order,
                         tris,
