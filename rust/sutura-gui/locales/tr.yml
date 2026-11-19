@@ -314,3 +314,8 @@ app:
   sum_watertight: su geçirmez
   sum_warning: uyarı
   sum_error: hata
+  ftetwild_optimize: fTetWild sonucunu optimize et
+  auto_reorder: Pipeline yöntemleri yeniden sıralayabilsin
+  classifier_experimental: Experimental (varsayılan)
+  classifier_classic: Klasik
+  edge_tiebreak: Sınıflandırıcı kenar eşitlik özellikleri

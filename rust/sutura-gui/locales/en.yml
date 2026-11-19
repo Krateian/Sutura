@@ -314,3 +314,8 @@ app:
   sum_watertight: watertight
   sum_warning: warning
   sum_error: error
+  ftetwild_optimize: Optimise the fTetWild result
+  auto_reorder: Let the pipeline reorder methods
+  classifier_experimental: Experimental (default)
+  classifier_classic: Classic
+  edge_tiebreak: Classifier edge tiebreak features

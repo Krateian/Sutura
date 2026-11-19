@@ -1026,3 +1026,31 @@ fn the_score_bar_fills_in_proportion() {
         "the bar must carry the fraction the rounded number loses"
     );
 }
+
+
+/// The three settings that had a CLI flag and no control now have one, and the
+/// checkbox writes through to the struct the core reads.
+#[test]
+fn the_new_controls_exist_and_write_through() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1200.0, 950.0));
+    h.state_mut().open_options_for_test(crate::app::OptionsTab::Experimental);
+    settle(&mut h);
+
+    // Both checkboxes are in Experimental, beside the other opt-in passes.
+    assert!(
+        h.query_all_by_label("Optimise the fTetWild result").next().is_some(),
+        "the fTetWild optimise checkbox is missing"
+    );
+    let before = h.state().settings_snapshot();
+    h.query_all_by_label("Let the pipeline reorder methods")
+        .next()
+        .expect("the auto-reorder checkbox is missing")
+        .click();
+    settle(&mut h);
+    assert_ne!(
+        before,
+        h.state().settings_snapshot(),
+        "the auto-reorder checkbox did not write through"
+    );
+}

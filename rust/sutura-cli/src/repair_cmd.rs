@@ -397,6 +397,7 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         repeat_source,
         repeat_target,
         time_budget_s: None,
+        ftetwild_optimize: cli.ftetwild_optimize,
         join_components: cli.experimental_join_components,
         // Declared on the CLI since the beginning, and  already
         // had both; the settings table was the only place they were missing, so

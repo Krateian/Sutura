@@ -133,6 +133,14 @@ pub struct RepairSettings {
     pub ftetwild_max_hausdorff_rel: Option<f64>,
     /// `--ftetwild-optimize` retry after a rejected fTetWild candidate.
     pub ftetwild_optimize_retry: Option<bool>,
+    /// `--ftetwild-optimize`: run the optimiser on the fTetWild result. Separate
+    /// from `-retry`, which decides whether a rejected candidate is tried again.
+    pub ftetwild_optimize: bool,
+    /// `--auto-reorder`: let the core reorder the method list it was given.
+    pub auto_reorder: bool,
+    /// `--experimental-edge-tiebreak`: the classifier's extra features. The CLI
+    /// writes it to `RepairOptions.extra_features` (`repair_cmd.rs:459`).
+    pub extra_features: bool,
     /// Per-run Graft limits (`--graft-max-faces`, `--graft-timeout`).
     pub graft_max_faces: Option<i64>,
     pub graft_timeout: Option<f64>,
@@ -378,6 +386,9 @@ pub fn options_from(
         ftetwild_timeout: settings.ftetwild_timeout,
         ftetwild_max_hausdorff_rel: settings.ftetwild_max_hausdorff_rel,
         ftetwild_optimize_retry: settings.ftetwild_optimize_retry,
+        ftetwild_optimize: settings.ftetwild_optimize,
+        auto_reorder: settings.auto_reorder,
+        extra_features: settings.extra_features,
         graft_max_faces: settings.graft_max_faces,
         graft_timeout: settings.graft_timeout,
         dense_ratio: settings.dense_ratio,

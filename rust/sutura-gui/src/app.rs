@@ -4222,11 +4222,54 @@ impl SuturaApp {
                     });
             });
         }
-        // `--classifier-engine` has NO control here on purpose:
-        // `repair.rs:907` hard-codes "experimental", so writing
-        // `settings.classifier_engine` would be a control that does
-        // nothing -- the same bug class as a dead flag. It gets one
-        // in İ6, where the analysis panel reads it.
+        // `--classifier-engine`: `options_from` copies it and `repair.rs:913`
+        // reads it, so this is a live control; the two engines the classifier
+        // actually implements are "experimental" and "classic" (`classify.rs:237`).
+        {
+            let current = self
+                .settings
+                .classifier_engine
+                .clone()
+                .unwrap_or_else(|| "experimental".to_string());
+            egui::Grid::new("gui_classifier_engine")
+                .num_columns(2)
+                .spacing([crate::theme::GAP_16, crate::theme::GAP_8])
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            rust_i18n::t!("app.classifier_engine").to_string(),
+                        )
+                        .size(crate::theme::FONT_BODY)
+                        .color(crate::theme::TEXT_MUTED),
+                    );
+                    let mut chosen = match current.as_str() {
+                        "classic" => 1,
+                        _ => 0,
+                    };
+                    egui::ComboBox::from_id_salt("classifier_engine_combo")
+                        .selected_text(if chosen == 0 {
+                            rust_i18n::t!("app.classifier_experimental").to_string()
+                        } else {
+                            rust_i18n::t!("app.classifier_classic").to_string()
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut chosen,
+                                0,
+                                rust_i18n::t!("app.classifier_experimental").to_string(),
+                            );
+                            ui.selectable_value(
+                                &mut chosen,
+                                1,
+                                rust_i18n::t!("app.classifier_classic").to_string(),
+                            );
+                        });
+                    self.settings.classifier_engine = Some(
+                        if chosen == 1 { "classic" } else { "experimental" }.to_string(),
+                    );
+                    ui.end_row();
+                });
+        }
 
         // External engines. `--engines` takes a list of *configured*
         // names (`repair_cmd.rs:145` rejects unknowns), so the only
@@ -4832,6 +4875,22 @@ impl SuturaApp {
         ui.checkbox(
             &mut self.settings.join_components,
             rust_i18n::t!("app.join_components").to_string(),
+        );
+        // `--ftetwild-optimize`: separate from `-retry`, which only decides
+        // whether a rejected candidate is tried again.
+        ui.checkbox(
+            &mut self.settings.ftetwild_optimize,
+            rust_i18n::t!("app.ftetwild_optimize").to_string(),
+        );
+        // `--auto-reorder`: whether the ladder may reorder the list it was given.
+        ui.checkbox(
+            &mut self.settings.auto_reorder,
+            rust_i18n::t!("app.auto_reorder").to_string(),
+        );
+        // `--experimental-edge-tiebreak`: the classifier's extra features.
+        ui.checkbox(
+            &mut self.settings.extra_features,
+            rust_i18n::t!("app.edge_tiebreak").to_string(),
         );
         let dressing_on = self.settings.dressing;
         ui.checkbox(
@@ -6123,13 +6182,8 @@ mod tests {
     /// never reads is the dead-flag bug class, and only this direction catches
     /// it.
     ///
-    /// Two of the plan's thirteen are deliberately absent here:
-    /// * `time_budget_s` is `None` on the CLI too (`repair_cmd.rs:272`), so its
-    ///   absence is parity, not a gap.
-    /// * `classifier_engine` is a live field in `RepairSettings` that
-    ///   `options_from` never reads, and `repair.rs:907` hard-codes
-    ///   "experimental". The GUI has **no** control for it rather than a dead
-    ///   one; it returns in İ6 with the analysis panel as its consumer.
+    /// `time_budget_s` is the one plan item deliberately absent: it is `None` on
+    /// the CLI too (`repair_cmd.rs`), so its absence is parity, not a gap.
     #[test]
     fn previously_missing_settings_reach_core() {
         use sutura_core::repair_settings::options_from;
@@ -6145,6 +6199,11 @@ mod tests {
             dressing_rmax_scale: Some(1.5),
             dressing_sigma_scale: Some(0.75),
             engines: Some(vec!["alpha".into()]),
+            // The three this round added: each had a flag and no control.
+            classifier_engine: Some("classic".into()),
+            ftetwild_optimize: true,
+            auto_reorder: true,
+            extra_features: true,
             ..Default::default()
         };
         let (opts, _, _) = options_from(&settings).expect("valid settings");
@@ -6161,6 +6220,23 @@ mod tests {
         assert_eq!(opts.dressing_rmax_scale, Some(1.5));
         assert_eq!(opts.dressing_sigma_scale, Some(0.75));
         assert_eq!(opts.engines, Some(vec!["alpha".to_string()]));
+        assert_eq!(
+            opts.classifier_engine.as_deref(),
+            Some("classic"),
+            "the classifier engine must reach core; `repair.rs` reads it"
+        );
+        assert!(
+            opts.ftetwild_optimize,
+            "the optimiser switch must reach core; `repair.rs` reads it"
+        );
+        assert!(
+            opts.auto_reorder,
+            "auto-reorder must reach core; the ladder reads it"
+        );
+        assert!(
+            opts.extra_features,
+            "edge-tiebreak must reach core; the classifier reads it"
+        );
 
         // The negative flags must win when both are set, or the GUI could leave
         // a user with a "no" that does nothing.
