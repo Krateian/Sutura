@@ -353,7 +353,6 @@ pub struct CancelToken {
 
 impl CancelToken {
     pub fn new() -> Self {
-        sutura_geom::cancel::reset();
         Self {
             flag: AtomicBool::new(false),
         }
@@ -3063,6 +3062,9 @@ pub fn repair(
     sink: &dyn ProgressSink,
     cancel: &CancelToken,
 ) -> RepairOutcome {
+    // One reset per top-level run: `new()` is also used for short-lived score
+    // tokens, and resetting there would swallow a running repair's cancel.
+    sutura_geom::cancel::reset();
     repair_impl(verts, tris, opts, sink, cancel, true)
 }
 
