@@ -363,8 +363,13 @@ pub fn run(
             init_mask.clone()
         } else {
             let ut: Vec<[usize; 3]> = t.iter().map(|r| [r[0] as usize, r[1] as usize, r[2] as usize]).collect();
-            let (m, _s, _k) = sutura_geom::self_intersections_core(&v, &ut);
-            m
+            match sutura_geom::self_intersections_core_cancellable(&v, &ut) {
+                Ok((m, _s, _k)) => m,
+                Err(()) => {
+                    report.insert("reason".into(), json!("cancelled"));
+                    return (v, t, Value::Object(report));
+                }
+            }
         };
         let mut accepted = false;
         for attempt in 0..2usize {

@@ -2316,6 +2316,19 @@ pub fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<
     out
 }
 
+/// Cancellable `self_intersections_core` for the Stage-1 path: no cache, so a
+/// cancelled query cannot poison a cached mask. `Err(())` means cancelled.
+pub fn self_intersections_core_cancellable(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+) -> Result<(Vec<bool>, i64, bool), ()> {
+    if tris.len() > SI_MAX_FACES {
+        return Ok((vec![false; tris.len()], -1, true));
+    }
+    let bvh = winding::MeshBvh::from_arrays(verts, tris);
+    bvh.self_intersections_cancellable(verts, tris)
+}
+
 /// Self-intersections counted only from a face SUBSET.
 ///
 /// Returns the number of proper-crossing, non-adjacent face PAIRS `(i, j)` in
