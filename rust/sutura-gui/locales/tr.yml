@@ -347,3 +347,11 @@ app:
   ladder_save_empty: Kaydetmeden önce en az bir yöntem seçin.
   first_run_msg: "İlk açılış: aşağıdaki iki soru (otomatik güncelleme, anonim kullanım geçmişi) sorduğumuz tek şey. Hiçbir veri bu makineden çıkmaz."
   methods_ranked: "Bu dosya için %{n} yöntem sıralandı"
+  write_error_title: Sonuç kaydedilemedi
+  write_error_body: "Sutura %{what} dosyasını şuraya yazamadı: %{path}"
+  write_error_choose: Başka klasör seç...
+  ok: Tamam
+  notice_ftetwild_missing: "fTetWild kurulu değil, bu yüzden katı yedek yol kapalı."
+  notice_part_missing: "%{count} isteğe bağlı bileşen eksik, bazı onarımlar zayıf yolu kullanacak."
+  install_dots: Kur…
+  install_dots_tip: Seçenekler > Motorlar

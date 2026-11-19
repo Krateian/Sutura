@@ -229,6 +229,17 @@ fn collect_recs(recs: &[Value], out: &mut Vec<(u8, String, f64)>) {
 }
 
 /// A menu item, styled like the rest of the app.
+/// Blend `t` of `top` into `base`: the one way this app tints a surface.
+fn lerp_color(base: egui::Color32, top: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
+    egui::Color32::from_rgb(
+        mix(base.r(), top.r()),
+        mix(base.g(), top.g()),
+        mix(base.b(), top.b()),
+    )
+}
+
 fn menu_action(ui: &mut egui::Ui, text: String) -> bool {
     ui.add(
         egui::Button::new(
@@ -569,6 +580,12 @@ pub struct SuturaApp {
     summary_issues_open: bool,
     /// The last policy write's message and whether it succeeded.
     policy_status: Option<(String, bool)>,
+    /// A failed save: (what could not be written, the reason, the wanted path).
+    ///
+    /// Its own field, not a log line, because "the file was not saved" is the one
+    /// outcome a user must not miss -- they will otherwise open a file that was
+    /// never written.
+    write_error: Option<(String, String, PathBuf)>,
     /// Whether the first-run line has been shown this launch. Per session, not
     /// per frame: a line that reappears on every redraw is not a greeting.
     pub(crate) first_run_seen: bool,
@@ -662,6 +679,21 @@ impl SuturaApp {
                 slot.output = Some(out);
             }
         }
+    }
+
+    #[cfg(test)]
+    pub fn raise_write_error_for_test(&mut self, what: &str, reason: &str, path: PathBuf) {
+        self.write_error = Some((what.to_string(), reason.to_string(), path));
+    }
+
+    #[cfg(test)]
+    pub fn mark_method_unavailable_for_test(&mut self) {
+        self.method_health.push(serde_json::json!({
+            "num": 7,
+            "name": "ftetwild",
+            "status": "skip",
+            "reason": "fTetWild binary not found",
+        }));
     }
 
     #[cfg(test)]
@@ -895,6 +927,7 @@ impl SuturaApp {
             defects_open: false,
             summary_issues_open: false,
             policy_status: None,
+            write_error: None,
             first_run_seen: false,
             slicers: crate::slicers::detect(),
             methods_manual: None,
@@ -1029,6 +1062,7 @@ impl SuturaApp {
             profile_prompt: None,
             defects_open: false,
             policy_status: None,
+            write_error: None,
             first_run_seen: false,
             summary_issues_open: false,
             slicers: crate::slicers::detect(),
@@ -1622,6 +1656,22 @@ impl SuturaApp {
                         self.log(
                             rust_i18n::t!("app.log_repair_failed", error = e).to_string(),
                         );
+                        // `run_repair` tags a failed save distinctly; a repair
+                        // that could not produce a mesh is a different outcome
+                        // and reads well enough in the row.
+                        if let Some(reason) = e.strip_prefix("write failed: ") {
+                            let path = self.files[idx]
+                                .output
+                                .clone()
+                                .unwrap_or_else(|| fixed_path(&self.files[idx].path));
+                            let name = self.files[idx]
+                                .path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            self.write_error =
+                                Some((name, reason.to_string(), path));
+                        }
                     }
                 }
                 if self.batch_active {
@@ -1841,37 +1891,6 @@ impl SuturaApp {
 
         self.options_window(&ctx);
 
-        // The method-health banner is its own full-width row, the way Qt drew
-        // `health_banner`. Inline in the title row it was clipped to
-        // "1 method(s) unavailable:" with the names past the edge.
-        let unhealthy: Vec<&Value> = self
-            .method_health
-            .iter()
-            .filter(|m| m.get("status").and_then(|v| v.as_str()) != Some("ok"))
-            .collect();
-        if !unhealthy.is_empty() {
-            egui::containers::Panel::top("health").show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(
-                            rust_i18n::t!("app.method_health", count = unhealthy.len() as i64)
-                                .to_string(),
-                        )
-                        .color(COLOR_WARN),
-                    );
-                    for m in &unhealthy {
-                        let num = m.get("num").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let status = m.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                        ui.label(
-                            egui::RichText::new(format!("#{num} {status}"))
-                                .small()
-                                .color(COLOR_WARN),
-                        );
-                    }
-                });
-            });
-        }
-
         // ---- The main window: three cards on a charcoal surface -------------
         //
         // Arif's direction: the first screen is calm and professional, and
@@ -1920,6 +1939,15 @@ impl SuturaApp {
                         0,
                     ))
                     .show(ui, |ui| {
+                        // The panel's content is taller than a 1000 px window
+                        // once a repair has a report, and a clipped result panel
+                        // hides the very rows the repair produced. Scrolling is
+                        // the window's job, so the panel scrolls rather than
+                        // growing past the frame.
+                        egui::ScrollArea::vertical()
+                            .id_salt("main_panel_scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
                         crate::theme::panel().show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             let width = ui.available_width();
@@ -1952,6 +1980,12 @@ impl SuturaApp {
                                     },
                                 );
                             });
+                            // An unavailable part, in plain language, inside the
+                            // panel where it belongs. The old strip was a
+                            // full-width bar above the window reading
+                            // "1 method(s) unavailable: #7 skip", which is a
+                            // debug line, not something a user can act on.
+                            self.unavailable_notice(ui);
                             ui.add_space(crate::theme::GAP_CARD);
 
                             let wide = width >= crate::theme::TWO_COLUMN_MIN_W;
@@ -2007,6 +2041,7 @@ impl SuturaApp {
                                 );
                             }
                         });
+                            });
                     });
             });
 
@@ -2490,6 +2525,72 @@ impl SuturaApp {
                         }
                     });
                 });
+        }
+
+        if let Some((what, reason, path)) = self.write_error.clone() {
+            let mut dismiss = false;
+            let mut choose_folder = false;
+            egui::Window::new(rust_i18n::t!("app.write_error_title").to_string())
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(&ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            rust_i18n::t!(
+                                "app.write_error_body",
+                                what = what.clone(),
+                                path = path.display().to_string()
+                            )
+                            .to_string(),
+                        )
+                        .size(crate::theme::FONT_BODY),
+                    );
+                    ui.add_space(crate::theme::GAP_8);
+                    ui.label(
+                        egui::RichText::new(reason.clone())
+                            .size(crate::theme::FONT_SECTION)
+                            .color(crate::theme::TEXT_MUTED),
+                    );
+                    ui.add_space(crate::theme::GAP_16);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(rust_i18n::t!("app.write_error_choose").to_string())
+                            .clicked()
+                        {
+                            choose_folder = true;
+                        }
+                        if ui
+                            .add(primary_button(rust_i18n::t!("app.ok").to_string()))
+                            .clicked()
+                        {
+                            dismiss = true;
+                        }
+                    });
+                });
+            if choose_folder {
+                // Re-run the same repair with the output in the folder the user
+                // picks: the mesh that failed to save is still in hand, but it
+                // lives in the thread that wrote it -- so the honest thing is to
+                // offer the choice and redo the write, not to invent a path into
+                // a dead thread's result.
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    if let Some(idx) = self.selected {
+                        let name = self.files[idx]
+                            .path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if let Some(slot) = self.files.get_mut(idx) {
+                            slot.output = Some(dir.join(name));
+                        }
+                        self.write_error = None;
+                        self.start_repair(idx, true);
+                    }
+                }
+            } else if dismiss {
+                self.write_error = None;
+            }
         }
 
         // Progress is read from a channel inside a frame, so a running repair needs
@@ -3271,19 +3372,30 @@ impl SuturaApp {
             egui::Grid::new("report-grid")
                 .num_columns(2)
                 .spacing([12.0, 6.0])
+                .min_col_width(84.0)
                 .show(ui, |ui| {
-                    ui.label(rust_i18n::t!("app.health").to_string());
-                    ui.label(fmt_score_with_bar(report.health));
-                    ui.end_row();
-                    ui.label(rust_i18n::t!("app.risk").to_string());
-                    ui.label(fmt_score(report.risk));
-                    ui.end_row();
-                    ui.label(rust_i18n::t!("app.fidelity").to_string());
-                    ui.label(fmt_score_with_bar(report.fidelity));
-                    ui.end_row();
-                    ui.label(rust_i18n::t!("app.confidence").to_string());
-                    ui.label(fmt_score(report.confidence));
-                    ui.end_row();
+                    // A column of numbers has to line up; a bar in two rows and
+                    // not the other two made the grid as wide as its widest cell
+                    // and pushed the short rows' values left.
+                    let mut row = |ui: &mut egui::Ui, label: String, value: String| {
+                        ui.label(label);
+                        // Right-aligned in a fixed column: the rows that
+                        // carry a bar are wider, so left-aligning put their
+                        // number past the rows that do not, and a column of
+                        // numbers that does not line up is just text.
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(124.0, 0.0),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.label(crate::theme::number(value, crate::theme::TEXT));
+                            },
+                        );
+                        ui.end_row();
+                    };
+                    row(ui, rust_i18n::t!("app.health").to_string(), fmt_score_with_bar(report.health));
+                    row(ui, rust_i18n::t!("app.risk").to_string(), fmt_score(report.risk));
+                    row(ui, rust_i18n::t!("app.fidelity").to_string(), fmt_score_with_bar(report.fidelity));
+                    row(ui, rust_i18n::t!("app.confidence").to_string(), fmt_score(report.confidence));
                 });
             let verdict = verdict_text(report);
             let color = verdict_color(&report.verdict_code);
@@ -3731,6 +3843,75 @@ impl SuturaApp {
                 .unwrap_or_default(),
             recs
         ));
+    }
+
+    /// A missing optional part, as one sentence with the button that fixes it.
+    ///
+    /// One notice, not a list: whatever is missing, the answer is the same
+    /// screen, and a list of internal names ("#7 skip") tells a user nothing.
+    fn unavailable_notice(&mut self, ui: &mut egui::Ui) {
+        let missing: Vec<&Value> = self
+            .method_health
+            .iter()
+            .filter(|m| m.get("status").and_then(|v| v.as_str()) != Some("ok"))
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        // fTetWild is the one that matters here: it is the solid fallback, and a
+        // repair silently takes the weaker path without it. Any other missing
+        // part is named by its own sentence; the raw id and status stay out.
+        let ftetwild = missing.iter().any(|m| {
+            m.get("name")
+                .and_then(|v| v.as_str())
+                .map(|n| n.to_lowercase().contains("ftetwild"))
+                .unwrap_or(false)
+        });
+        let text = if ftetwild {
+            rust_i18n::t!("app.notice_ftetwild_missing").to_string()
+        } else {
+            rust_i18n::t!("app.notice_part_missing", count = missing.len() as i64).to_string()
+        };
+        egui::Frame::new()
+            // Amber at 8% over the panel: the tint says "warning" without a
+            // second accent colour, which the design rules forbid.
+            .fill(lerp_color(
+                crate::theme::PANEL,
+                crate::theme::WARN,
+                0.08,
+            ))
+            .stroke(egui::Stroke::new(1.0, crate::theme::WARN))
+            .corner_radius(crate::theme::RADIUS_CARD)
+            .inner_margin(egui::Margin::symmetric(
+                crate::theme::GAP_16 as i8,
+                crate::theme::GAP_16 as i8,
+            ))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(text)
+                                .size(crate::theme::FONT_BODY)
+                                .color(crate::theme::TEXT),
+                        )
+                        .wrap(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(secondary_button(
+                                rust_i18n::t!("app.install_dots").to_string(),
+                            ))
+                            .on_hover_text(rust_i18n::t!("app.install_dots_tip").to_string())
+                            .clicked()
+                        {
+                            // Options → Engines, where Install lives.
+                            self.options_open = true;
+                            self.options_tab = OptionsTab::Engines;
+                        }
+                    });
+                });
+            });
     }
 
     /// Write the ladder to the user policy. `_show_write_error`'s counterpart:

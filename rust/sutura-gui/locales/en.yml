@@ -347,3 +347,11 @@ app:
   ladder_save_empty: Pick at least one method before saving.
   first_run_msg: "First run: the two questions below (automatic updates, anonymous usage history) are all we ask. Nothing leaves this machine."
   methods_ranked: "%{n} method(s) ranked for this file"
+  write_error_title: Could not save the result
+  write_error_body: "Sutura could not write %{what} to %{path}"
+  write_error_choose: Choose another folder...
+  ok: OK
+  notice_ftetwild_missing: "fTetWild isn't installed, so the solid fallback is off."
+  notice_part_missing: "%{count} optional part(s) are missing, so some repairs will take the weaker path."
+  install_dots: Install…
+  install_dots_tip: Open Options > Engines

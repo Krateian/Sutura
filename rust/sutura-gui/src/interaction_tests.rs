@@ -1169,3 +1169,70 @@ fn the_methods_tab_saves_the_ladder() {
         "a save must report its outcome"
     );
 }
+
+
+/// A failed save is a modal, not a log line.
+///
+/// "The file was not saved" is the one outcome a user must not miss -- they will
+/// otherwise open a file that was never written. Qt showed a dialog here; the
+/// row shows `Failed`, which looks like any other repair failure.
+#[test]
+fn a_failed_save_opens_a_modal() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1100.0, 800.0));
+    h.state_mut().add_file_for_test(temp_box("write"));
+    h.state_mut().select_first_for_test();
+    settle(&mut h);
+    assert!(
+        h.query_all_by_label("Could not save the result").next().is_none(),
+        "no modal before a failure"
+    );
+    // The same event the repair thread sends when `save_mesh` fails.
+    h.state_mut().raise_write_error_for_test(
+        "box.stl",
+        "Permission denied",
+        std::path::PathBuf::from("/readonly/box_fixed.stl"),
+    );
+    settle(&mut h);
+    assert!(
+        h.query_all_by_label("Could not save the result").next().is_some(),
+        "a failed save must open a modal"
+    );
+    assert!(
+        h.query_all_by_label("Choose another folder...").next().is_some(),
+        "the modal must offer another folder"
+    );
+    // OK dismisses it and nothing else happens.
+    h.query_all_by_label("OK").next().unwrap().click();
+    settle(&mut h);
+    assert!(
+        h.query_all_by_label("Could not save the result").next().is_none(),
+        "OK must dismiss the modal"
+    );
+}
+
+/// The unavailable-part notice is a sentence with a button, not a debug strip.
+#[test]
+fn the_unavailable_notice_is_a_sentence() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1200.0, 900.0));
+    h.state_mut().mark_method_unavailable_for_test();
+    settle(&mut h);
+    assert!(
+        h.query_all_by_label(
+            "fTetWild isn't installed, so the solid fallback is off."
+        )
+        .next()
+        .is_some(),
+        "the notice must be a sentence"
+    );
+    assert!(
+        h.query_all_by_label("Install…").next().is_some(),
+        "the notice must offer the install button"
+    );
+    // No internal names anywhere on the first screen.
+    assert!(
+        h.query_all_by_label("#7 skip").next().is_none(),
+        "raw method ids and statuses must not reach the user"
+    );
+}
