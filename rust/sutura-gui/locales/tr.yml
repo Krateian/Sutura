@@ -81,7 +81,7 @@ app:
   file_methods_count: "%{count} yöntem uygulanıyor"
   defect_colors: "Kusur renkleri"
   defect_colors_tip: "Her yüzü kusur türüne göre boya (manifold olmayan, kopya, dejenere…). İlk kullanımda tam teşhis gerekir."
-  drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
+  drop_hint: STL veya 3MF dosyalarını buraya bırak, ya da Dosya ekle kullan
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"
   lang_system: Sistem
@@ -284,3 +284,6 @@ app:
   manual_sequence_empty: Henüz yöntem seçilmedi. Yukarıdaki listeden işaretle.
   manual_move_up: Yukarı taşı
   manual_move_down: Aşağı taşı
+  repairing_stage: "%{name} onarılıyor — aşama %{step}/%{total}"
+  drop_hint_alt: ya da Dosya ekle kullan
+  not_repaired: Henüz onarılmadı

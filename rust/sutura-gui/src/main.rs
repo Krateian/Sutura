@@ -10,6 +10,8 @@ mod viewer;
 mod crash;
 #[cfg(test)]
 mod interaction_tests;
+#[cfg(test)]
+mod design_frames;
 
 rust_i18n::i18n!("locales", fallback = "en");
 

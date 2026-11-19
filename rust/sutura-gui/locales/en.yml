@@ -81,7 +81,7 @@ app:
   file_methods_count: "%{count} method(s) applied"
   defect_colors: "Defect colours"
   defect_colors_tip: "Paint each face by its defect kind (non-manifold, duplicate, degenerate…). Needs a full diagnosis on first use."
-  drop_hint: Drop an STL / OBJ / PLY / 3MF file here
+  drop_hint: Drop STL or 3MF files here, or use Add files
   repair_running: Repairing…
   triangles: "%{count} triangles"
   lang_system: System
@@ -284,3 +284,6 @@ app:
   manual_sequence_empty: No methods selected yet. Tick them in the list above.
   manual_move_up: Move up
   manual_move_down: Move down
+  repairing_stage: "Repairing %{name} — stage %{step}/%{total}"
+  drop_hint_alt: or use Add files
+  not_repaired: Not repaired yet

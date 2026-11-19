@@ -191,7 +191,7 @@ pub(crate) const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(0xf5, 0x9e,
 pub(crate) const COLOR_OK: egui::Color32 = egui::Color32::from_rgb(0x2e, 0xc4, 0x7a);
 /// The single accent, used for the one primary action (rule c). Qt's value
 /// (`gui.py:2217`), not a new one.
-pub(crate) const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x14, 0xb8, 0xa6);
+pub(crate) const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x4c, 0xa3, 0x7a);
 pub(crate) const COLOR_ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x0b, 0x0f, 0x11);
 
 /// The 8 px grid (rule b): every gap is 8, 16 or 24.
@@ -482,6 +482,8 @@ pub struct SuturaApp {
     /// `RepairOptions` has no field for. They are applied around the repair in
     /// `run_repair`, the same switches the CLI's `--no-*` flags set.
     pub(crate) prefs: crate::state::GuiState,
+    /// Whether the Analysis card's defects list is expanded.
+    defects_open: bool,
     /// A profile edit requested from the Repair tab. Applied after the frame,
     /// because the dialog needs `&mut self.files`-free access to write the file.
     profile_action: Option<ProfileAction>,
@@ -563,6 +565,13 @@ impl SuturaApp {
     #[cfg(test)]
     pub fn selected_index(&self) -> Option<usize> {
         self.selected
+    }
+
+    #[cfg(test)]
+    pub fn select_first_for_test(&mut self) {
+        if !self.files.is_empty() {
+            self.selected = Some(0);
+        }
     }
 
     #[cfg(test)]
@@ -748,6 +757,7 @@ impl SuturaApp {
             options_open: false,
             options_tab: OptionsTab::Repair,
             options_scroll: None,
+            defects_open: false,
             methods_manual: None,
             prefs: crate::state::GuiState::default(),
             profile_action: None,
@@ -878,6 +888,7 @@ impl SuturaApp {
             methods_manual: options.methods_manual.clone(),
             profile_action: None,
             profile_prompt: None,
+            defects_open: false,
             prefs: crate::state::GuiState::default(),
         };
         for path in files {
@@ -1546,6 +1557,14 @@ impl eframe::App for SuturaApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame_ui(ui);
     }
+
+    /// eframe's default clear colour is `from_rgba_unmultiplied(12, 12, 12, 180)`
+    /// -- alpha 180. With no `transparent()` request the window still composites
+    /// that against the desktop wherever a panel has not painted, which is the
+    /// half-transparent background a macOS report showed. Opaque, always.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        crate::theme::WINDOW.to_normalized_gamma_f32()
+    }
 }
 
 impl SuturaApp {
@@ -1557,6 +1576,16 @@ impl SuturaApp {
     /// it. `_frame` was never read.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if std::env::var_os("SUTURA_STYLE_LOG").is_some() && self.ready_frames == 0 {
+            let st = ui.style().spacing.scroll;
+            eprintln!(
+                "[style] floating={} bar_w={} fg_color={} handle_op={} inactive_bg={:?} theme={:?}",
+                st.floating, st.bar_width, st.foreground_color,
+                st.dormant_handle_opacity,
+                ui.visuals().widgets.inactive.bg_fill,
+                ctx.theme(),
+            );
+        }
         self.ctx = Some(ctx.clone());
         // Deferred so the panel closure can set it while `self.files` is borrowed.
         let mut clear_list = false;
@@ -1700,34 +1729,160 @@ impl SuturaApp {
             });
         }
 
-        egui::containers::Panel::top("top").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(rust_i18n::t!("app.title").to_string());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(rust_i18n::t!("app.about").to_string()).clicked() {
-                        self.about_open = true;
-                    }
-                    ui.add_space(SPACE_16);
-                    ui.label(
-                        egui::RichText::new(format!("v{}", SUTURA_VERSION))
-                            .small()
-                            .weak(),
-                    );
-                });
-            });
-        });
+        // ---- The main window: three cards on a charcoal surface -------------
+        //
+        // Arif's direction: the first screen is calm and professional, and
+        // anything that needs detail lives in Options. So the top bar carries a
+        // title and a gear, the middle is a Files card, an action row, and a
+        // Report card, and Mode / Profile / Methods moved into Options.
 
-        // --- Bottom row: the two views Qt had as dialogs ---------------------
-        egui::containers::Panel::bottom("bottom")
-            .exact_size(40.0)
+        // ---- The main window, matched to the approved target ----------------
+        //
+        // Window → one large rounded panel, centred and capped at
+        // `PANEL_MAX_W` → cards inside it (darker than the panel), outline
+        // buttons, one green accent. Wide windows get two columns (Files and the
+        // action row on the left, Analysis on the right); narrow ones stack,
+        // which is exactly what the target shows.
+
+        // (6) No top panel: the title bar is the first row inside the main
+        // panel, so "Sutura", the version and the gear share the panel's left and
+        // right edges instead of floating above it.
+        egui::containers::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::WINDOW)
+                    .inner_margin(egui::Margin::symmetric(
+                        crate::theme::GAP_24 as i8,
+                        crate::theme::GAP_0 as i8,
+                    )),
+            )
             .show(ui, |ui| {
+                // The panel: centred, never wider than PANEL_MAX_W.
+                //
+                // The centring is done with the FRAME's margin, not an
+                // `add_space` inside a `horizontal`: that put the panel's width
+                // on top of the layout's item spacing, so the content ran past
+                // the right edge and the Repair button was cut off at 720 px.
+                let avail = ui.available_width();
+                let side = ((avail - crate::theme::PANEL_MAX_W).max(0.0)) / 2.0;
+                egui::Frame::new()
+                    .fill(crate::theme::WINDOW)
+                    .inner_margin(egui::Margin::symmetric(side as i8, 0))
+                    .show(ui, |ui| {
+                        crate::theme::panel().show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            let width = ui.available_width();
+
+                            // The title bar, inside the panel.
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(rust_i18n::t!("app.title").to_string())
+                                        .size(crate::theme::FONT_TITLE)
+                                        .color(crate::theme::TEXT),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if gear_button(ui)
+                                            .on_hover_text(
+                                                rust_i18n::t!("app.options_btn").to_string(),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.options_open = true;
+                                            self.options_tab = OptionsTab::Repair;
+                                        }
+                                        ui.add_space(crate::theme::GAP_16);
+                                        ui.label(
+                                            egui::RichText::new(format!("v{}", SUTURA_VERSION))
+                                                .size(crate::theme::FONT_BODY)
+                                                .color(crate::theme::TEXT_MUTED),
+                                        );
+                                    },
+                                );
+                            });
+                            ui.add_space(crate::theme::GAP_CARD);
+
+                            let wide = width >= crate::theme::TWO_COLUMN_MIN_W;
+                            if wide {
+                                let gap = crate::theme::GAP_CARD;
+                                let left_w = (ui.available_width() - gap) * 0.58;
+                                ui.horizontal_top(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.set_width(left_w);
+                                        self.files_card(ui, &mut add_files, &mut add_folder, &mut clear_list);
+                                        ui.add_space(gap);
+                                        self.action_row(ui, running, &mut cancel_clicked);
+                                    });
+                                    ui.add_space(gap);
+                                    ui.vertical(|ui| {
+                                        ui.set_width(ui.available_width());
+                                        self.analysis_card(ui);
+                                    });
+                                });
+                            } else {
+                                // Stacked: the target's own layout.
+                                self.files_card(ui, &mut add_files, &mut add_folder, &mut clear_list);
+                                ui.add_space(crate::theme::GAP_CARD);
+                                self.action_row(ui, running, &mut cancel_clicked);
+                                ui.add_space(crate::theme::GAP_CARD);
+                                self.analysis_card(ui);
+                            }
+
+                            // The progress hairline belongs under whichever
+                            // layout ran, full panel width.
+                            if let Some((name, step, total)) = self.repair_progress() {
+                                ui.add_space(crate::theme::GAP_16);
+                                ui.add(
+                                    egui::ProgressBar::new(step as f32 / total.max(1) as f32)
+                                        .desired_height(crate::theme::PROGRESS_H)
+                                        .corner_radius(0)
+                                        .fill(crate::theme::ACCENT)
+                                        .animate(false),
+                                );
+                                ui.add_space(crate::theme::GAP_8);
+                                ui.label(
+                                    egui::RichText::new(
+                                        rust_i18n::t!(
+                                            "app.repairing_stage",
+                                            name = name,
+                                            step = step as i64,
+                                            total = total as i64
+                                        )
+                                        .to_string(),
+                                    )
+                                    .size(crate::theme::FONT_SECTION)
+                                    .color(crate::theme::TEXT_MUTED),
+                                );
+                            }
+                        });
+                    });
+            });
+
+        egui::containers::Panel::bottom("bottom")
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::WINDOW)
+                    .inner_margin(egui::Margin::symmetric(
+                        crate::theme::GAP_24 as i8,
+                        crate::theme::GAP_8 as i8,
+                    )),
+            )
+            .show(ui, |ui| {
+                let has_result = self
+                    .selected
+                    .and_then(|i| self.files.get(i))
+                    .map(|e| e.result.is_some())
+                    .unwrap_or(false);
                 ui.horizontal(|ui| {
-                    let half = (ui.available_width() - SPACE_8) / 2.0;
+                    ui.add_space(
+                        ((ui.available_width() - crate::theme::PANEL_MAX_W).max(0.0) / 2.0)
+                            .max(0.0),
+                    );
                     if ui
                         .add_enabled(
-                            self.selected.is_some(),
-                            egui::Button::new(rust_i18n::t!("app.show_heatmap").to_string())
-                                .min_size(egui::vec2(half, 24.0)),
+                            has_result,
+                            secondary_button(rust_i18n::t!("app.show_heatmap").to_string()),
                         )
                         .clicked()
                     {
@@ -1735,9 +1890,10 @@ impl SuturaApp {
                     }
                     if ui
                         .add_enabled(
-                            self.selected.is_some(),
-                            egui::Button::new(rust_i18n::t!("app.show_before_after").to_string())
-                                .min_size(egui::vec2(half, 24.0)),
+                            has_result,
+                            secondary_button(
+                                rust_i18n::t!("app.show_before_after").to_string(),
+                            ),
                         )
                         .clicked()
                     {
@@ -1745,203 +1901,6 @@ impl SuturaApp {
                     }
                 });
             });
-
-        egui::containers::CentralPanel::default().show(ui, |ui| {
-            ui.add_space(SPACE_8);
-
-            // --- The file table, Qt's QTreeWidget: File / Method / Result -----
-            self.file_table(ui);
-
-            // --- Row 1: file operations, left-aligned (rule d) ----------------
-            ui.add_space(SPACE_8);
-            ui.horizontal(|ui| {
-                if ui.button(rust_i18n::t!("app.add_files").to_string()).clicked() {
-                    add_files = true;
-                }
-                if ui.button(rust_i18n::t!("app.add_folder").to_string()).clicked() {
-                    add_folder = true;
-                }
-                if ui
-                    .add_enabled(
-                        self.selected.is_some() && !self.busy(),
-                        egui::Button::new(rust_i18n::t!("app.remove").to_string()),
-                    )
-                    .clicked()
-                {
-                    if let Some(idx) = self.selected {
-                        self.remove_file(idx);
-                    }
-                }
-                if ui
-                    .add_enabled(
-                        !self.files.is_empty() && !self.busy(),
-                        egui::Button::new(rust_i18n::t!("app.clear_list").to_string()),
-                    )
-                    .clicked()
-                {
-                    clear_list = true;
-                }
-            });
-
-            // --- Row 2: analyze / mode / methods / options / profile, then the
-            // batch action right-aligned and separated (rule d) ---------------
-            ui.add_space(SPACE_8);
-            ui.horizontal(|ui| {
-                let has_file = self.selected.is_some();
-                if ui
-                    .add_enabled(
-                        has_file,
-                        egui::Button::new(rust_i18n::t!("app.analyze").to_string()),
-                    )
-                    .clicked()
-                {
-                    if let Some(idx) = self.selected {
-                        if let Some(slot) = self.files.get_mut(idx) {
-                            slot.analysis = None;
-                            slot.defects = None;
-                        }
-                    }
-                }
-                let mode = self
-                    .settings
-                    .mode
-                    .clone()
-                    .unwrap_or_else(|| "auto".to_string());
-                let mode_id = ui.label(rust_i18n::t!("app.mode").to_string()).id;
-                egui::ComboBox::from_id_salt("toolbar-mode")
-                    .selected_text(mode)
-                    .width(110.0)
-                    .show_ui(ui, |ui| {
-                        for value in MODES {
-                            if ui
-                                .selectable_label(
-                                    self.settings.mode.as_deref().unwrap_or("auto") == value,
-                                    value,
-                                )
-                                .clicked()
-                            {
-                                self.settings.mode = Some(value.to_string());
-                            }
-                        }
-                    })
-                    .response
-                    .labelled_by(mode_id);
-                if ui.button(rust_i18n::t!("app.methods_btn").to_string()).clicked() {
-                    self.options_open = true;
-                    self.options_tab = OptionsTab::Methods;
-                }
-                if ui.button(rust_i18n::t!("app.options_btn").to_string()).clicked() {
-                    self.options_open = true;
-                    self.options_tab = OptionsTab::Repair;
-                }
-                let profile = self
-                    .settings
-                    .profile
-                    .clone()
-                    .unwrap_or_else(|| rust_i18n::t!("app.profile_auto").to_string());
-                let profile_id = ui.label(rust_i18n::t!("app.profile").to_string()).id;
-                egui::ComboBox::from_id_salt("toolbar-profile")
-                    .selected_text(profile)
-                    .width(130.0)
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(
-                                self.settings.profile.is_none(),
-                                rust_i18n::t!("app.profile_auto").to_string(),
-                            )
-                            .clicked()
-                        {
-                            self.settings.profile = None;
-                        }
-                        for value in PROFILES {
-                            if ui
-                                .selectable_label(
-                                    self.settings.profile.as_deref() == Some(value),
-                                    value,
-                                )
-                                .clicked()
-                            {
-                                self.settings.profile = Some((*value).to_string());
-                            }
-                        }
-                    })
-                    .response
-                    .labelled_by(profile_id);
-
-                // The primary action, right-aligned and apart from the group
-                // above (rule d): filled with the single accent colour (rule c).
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if running && ui.button(rust_i18n::t!("app.stop").to_string()).clicked() {
-                        cancel_clicked = true;
-                    }
-                    if ui
-                        .add_enabled(
-                            self.files.iter().any(|e| e.input.is_some())
-                                && !self.batch_active
-                                && self.repair_rx.is_none(),
-                            egui::Button::new(rust_i18n::t!("app.repair_all").to_string()),
-                        )
-                        .clicked()
-                    {
-                        self.enqueue_all();
-                    }
-                    let can_repair = self
-                        .selected
-                        .and_then(|i| self.files.get(i))
-                        .map(|e| {
-                            e.input.is_some()
-                                && !matches!(e.repair, RepairState::Running { .. })
-                        })
-                        .unwrap_or(false);
-                    if ui
-                        .add_enabled(
-                            can_repair,
-                            egui::Button::new(
-                                egui::RichText::new(rust_i18n::t!("app.repair").to_string())
-                                    .color(COLOR_ON_ACCENT),
-                            )
-                            .fill(COLOR_ACCENT),
-                        )
-                        .clicked()
-                    {
-                        if let Some(idx) = self.selected {
-                            self.start_repair(idx, false);
-                        }
-                    }
-                });
-            });
-
-            // --- Progress row -------------------------------------------------
-            ui.add_space(SPACE_8);
-            ui.horizontal(|ui| {
-                let total = self.batch_total.max(1);
-                let done = self.batch_done.min(total);
-                // Thin and flat. egui's default is a tall rounded bar that at 0%
-                // reads as a slider knob sitting on the left.
-                ui.add(
-                    egui::ProgressBar::new(if self.batch_active {
-                        done as f32 / total as f32
-                    } else {
-                        0.0
-                    })
-                    .desired_width((ui.available_width() - 240.0).max(80.0))
-                    .desired_height(4.0)
-                    .corner_radius(0)
-                    .fill(COLOR_ACCENT)
-                    .animate(false),
-                );
-                ui.label(egui::RichText::new(self.status_line()).small().weak());
-            });
-
-            ui.add_space(SPACE_8);
-            ui.separator();
-
-            // --- Report, log, analysis, then the defects pane (rule e: each
-            // section collapses when it has nothing to show) ------------------
-            self.report_and_logs(ui, &mut open_action);
-            self.defects_panel(ui);
-            ui.add_space(SPACE_8);
-        });
 
         if add_files {
             if let Some(paths) = rfd::FileDialog::new()
@@ -2539,6 +2498,163 @@ impl SuturaApp {
     /// Qt's `QTreeWidget` had explicit widths 330 / 300 / 140 and no row
     /// styling beyond selection. Reproduced as a grid so the columns line up
     /// whatever the file names are, with the rows themselves selectable.
+    /// The Files card: title, its buttons, and the table (or the drop area).
+    fn files_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        add_files: &mut bool,
+        add_folder: &mut bool,
+        clear_list: &mut bool,
+    ) {
+        crate::theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                crate::theme::card_title(ui, rust_i18n::t!("app.files").to_string());
+            });
+            ui.add_space(crate::theme::GAP_16);
+            self.file_table(ui);
+            ui.add_space(crate::theme::GAP_16);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(secondary_button(rust_i18n::t!("app.add_files").to_string()))
+                    .clicked()
+                {
+                    *add_files = true;
+                }
+                if ui
+                    .add(secondary_button(rust_i18n::t!("app.add_folder").to_string()))
+                    .clicked()
+                {
+                    *add_folder = true;
+                }
+                if ui
+                    .add_enabled(
+                        self.selected.is_some() && !self.busy(),
+                        secondary_button(rust_i18n::t!("app.remove").to_string()),
+                    )
+                    .clicked()
+                {
+                    if let Some(idx) = self.selected {
+                        self.remove_file(idx);
+                    }
+                }
+                if ui
+                    .add_enabled(
+                        !self.files.is_empty() && !self.busy(),
+                        secondary_button(rust_i18n::t!("app.clear_list").to_string()),
+                    )
+                    .clicked()
+                {
+                    *clear_list = true;
+                }
+            });
+        });
+    }
+
+    /// Analyze on the left; Repair / Repair all on the right.
+    fn action_row(&mut self, ui: &mut egui::Ui, running: bool, cancel_clicked: &mut bool) {
+        let can_repair = self
+            .selected
+            .and_then(|i| self.files.get(i))
+            .map(|e| e.input.is_some() && !matches!(e.repair, RepairState::Running { .. }))
+            .unwrap_or(false);
+        let multi = self.files.len() > 1;
+
+        let analyze = |app: &mut SuturaApp, ui: &mut egui::Ui| {
+            if ui
+                .add_enabled(
+                    app.selected.is_some(),
+                    secondary_button(rust_i18n::t!("app.analyze").to_string()),
+                )
+                .clicked()
+            {
+                if let Some(idx) = app.selected {
+                    if let Some(slot) = app.files.get_mut(idx) {
+                        slot.analysis = None;
+                        slot.defects = None;
+                    }
+                }
+            }
+        };
+        let repair = |app: &mut SuturaApp,
+                      ui: &mut egui::Ui,
+                      multi: bool,
+                      can_repair: bool,
+                      running: bool,
+                      cancel: &mut bool| {
+            // Multi-file: the batch action is the bigger decision, so it keeps
+            // the fill and the single-file one is an outline beside it.
+            if multi {
+                if ui
+                    .add_enabled(
+                        can_repair && !app.batch_active && app.repair_rx.is_none(),
+                        primary_button(rust_i18n::t!("app.repair_all").to_string()),
+                    )
+                    .clicked()
+                {
+                    app.enqueue_all();
+                }
+                if ui
+                    .add_enabled(
+                        can_repair,
+                        secondary_button(rust_i18n::t!("app.repair").to_string()),
+                    )
+                    .clicked()
+                {
+                    if let Some(idx) = app.selected {
+                        app.start_repair(idx, false);
+                    }
+                }
+            } else if ui
+                .add_enabled(
+                    can_repair,
+                    primary_button(rust_i18n::t!("app.repair").to_string()),
+                )
+                .clicked()
+            {
+                if let Some(idx) = app.selected {
+                    app.start_repair(idx, false);
+                }
+            }
+            if running
+                && ui
+                    .add(secondary_button(rust_i18n::t!("app.stop").to_string()))
+                    .clicked()
+            {
+                *cancel = true;
+            }
+        };
+
+        // Two repair buttons plus Analyze do not fit on one line at any width a
+        // card can actually be: the measured content width at a 720 px window is
+        // ~630 and the three buttons need ~700. Rather than tune a threshold that
+        // breaks at the next font size, the multi-file case always puts the
+        // repair group on its own line.
+        if multi || ui.available_width() < 620.0 {
+            ui.horizontal(|ui| analyze(self, ui));
+            ui.add_space(crate::theme::GAP_8);
+            ui.horizontal(|ui| {
+                repair(self, ui, multi, can_repair, running, cancel_clicked)
+            });
+        } else {
+            ui.horizontal(|ui| {
+                analyze(self, ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    repair(self, ui, multi, can_repair, running, cancel_clicked)
+                });
+            });
+        }
+    }
+
+    /// The Analysis card: label/value rows, an amber count where a count is a
+    /// problem, and the collapsible defects list underneath.
+    fn analysis_card(&mut self, ui: &mut egui::Ui) {
+        crate::theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            self.report_and_logs(ui, &mut None);
+        });
+    }
+
     /// The file table: Qt's `QTreeWidget`, three columns.
     ///
     /// A real table, not sized labels: the first version laid the header out with
@@ -2560,8 +2676,10 @@ impl SuturaApp {
         } else {
             self.files.len()
         };
-        let row_h = 20.0;
-        let body_h = (rows as f32 * row_h).clamp(60.0, 220.0);
+        let row_h = crate::theme::ROW_H;
+        const HEADER_H: f32 = 28.0;
+        // Only used by the empty-state branch below.
+        let _rows = rows;
 
         let table = TableBuilder::new(ui)
             .id_salt("file_table")
@@ -2571,43 +2689,82 @@ impl SuturaApp {
             .column(Column::initial(330.0).at_least(160.0))
             .column(Column::initial(300.0).at_least(90.0))
             .column(Column::remainder())
-            .min_scrolled_height(0.0)
-            .max_scroll_height(body_h)
+            // Let the table take its natural height: `max_scroll_height` is the
+            // height of the *scrollable body*, not of the table, and pairing it
+            // with a `min_scrolled_height` of one row pinned the viewport to a
+            // single row -- four loaded files drew one.
+            .auto_shrink([false, true])
             .sense(egui::Sense::click());
 
-        // The table's own scroll area is what must be measured, and `TableBuilder`
-        // keeps it private. Drawing the body inside an explicit `ScrollArea`
-        // would give a second scrollbar, so the probe reads egui's stored offset
-        // for the table's id after the frame instead.
-        #[cfg(test)]
-        let _ = &body_h;
+
+
+        // (1) With no files there is no table: headers over an empty row read as
+        // a broken table. A dashed drop area takes its place.
+        if self.files.is_empty() {
+            let w = ui.available_width();
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 160.0), egui::Sense::hover());
+            let painter = ui.painter();
+            painter.rect_stroke(
+                rect,
+                egui::CornerRadius::same(crate::theme::RADIUS),
+                egui::Stroke::new(1.0, crate::theme::BORDER),
+                egui::StrokeKind::Inside,
+            );
+            // An upload arrow, drawn: the font has no glyph for it.
+            let c = rect.center();
+            let colour = crate::theme::TEXT_MUTED;
+            painter.line_segment(
+                [egui::pos2(c.x, c.y - 26.0), egui::pos2(c.x, c.y - 2.0)],
+                egui::Stroke::new(1.6, colour),
+            );
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(c.x, c.y - 30.0),
+                    egui::pos2(c.x - 5.0, c.y - 22.0),
+                    egui::pos2(c.x + 5.0, c.y - 22.0),
+                ],
+                colour,
+                egui::Stroke::NONE,
+            ));
+            painter.text(
+                egui::pos2(c.x, c.y + 6.0),
+                egui::Align2::CENTER_CENTER,
+                rust_i18n::t!("app.drop_hint").to_string(),
+                egui::FontId::proportional(crate::theme::FONT_BODY),
+                crate::theme::TEXT_MUTED,
+            );
+            painter.text(
+                egui::pos2(c.x, c.y + 28.0),
+                egui::Align2::CENTER_CENTER,
+                rust_i18n::t!("app.drop_hint_alt").to_string(),
+                egui::FontId::proportional(crate::theme::FONT_SECTION),
+                crate::theme::TEXT_MUTED,
+            );
+            return;
+        }
 
         table
-            .header(22.0, |mut header| {
-                header.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(rust_i18n::t!("app.col_file").to_string()).strong(),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(rust_i18n::t!("app.col_method").to_string()).strong(),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(rust_i18n::t!("app.col_result").to_string()).strong(),
-                    );
-                });
+            .header(HEADER_H, |mut header| {
+                // (2) Secondary and small: the headers were body-coloured and
+                // bold, which read as content rather than a label.
+                for key in ["app.col_file", "app.col_method", "app.col_result"] {
+                    header.col(|ui| {
+                        ui.label(
+                            egui::RichText::new(rust_i18n::t!(key).to_string())
+                                .size(crate::theme::FONT_SECTION)
+                                .color(crate::theme::TEXT_MUTED),
+                        );
+                    });
+                }
             })
             .body(|mut body| {
                 if self.files.is_empty() {
                     body.row(row_h, |mut row| {
                         row.col(|ui| {
                             ui.label(
-                                egui::RichText::new(rust_i18n::t!("app.no_files").to_string())
-                                    .small()
-                                    .weak(),
+                                egui::RichText::new(rust_i18n::t!("app.drop_hint").to_string())
+                                    .size(crate::theme::FONT_BODY)
+                                    .color(crate::theme::TEXT_MUTED),
                             );
                         });
                         row.col(|_| {});
@@ -2621,6 +2778,9 @@ impl SuturaApp {
                         // A selected row is tinted, not filled: Qt paints
                         // `Highlight` behind the text, and a solid button per row
                         // is what the first attempt got wrong.
+                        // H2: the row's own highlight, not egui's strong
+                        // selection fill. `set_selected` handles the tint; the
+                        // left bar is painted inside the first cell below.
                         row.set_selected(selected);
 
                         row.col(|ui| {
@@ -2633,7 +2793,20 @@ impl SuturaApp {
                             if entry.error.is_some() {
                                 text = text.color(COLOR_ERROR);
                             }
-                            if ui.selectable_label(selected, text).clicked() {
+                            // The 3 px accent bar on a selected row: the visual
+                            // half of H2, and it cannot be done with a
+                            // `set_selected` tint alone.
+                            if selected {
+                                let (r, _) = ui.allocate_exact_size(
+                                    egui::vec2(3.0, 18.0),
+                                    egui::Sense::hover(),
+                                );
+                                crate::theme::selection_bar(ui.painter(), r);
+                            }
+                            if ui
+                                .add(egui::Label::new(text).sense(egui::Sense::click()))
+                                .clicked()
+                            {
                                 clicked = Some(idx);
                             }
                         });
@@ -2700,6 +2873,21 @@ impl SuturaApp {
         }
     }
 
+    /// The running repair's file name and step, for the line under the bar.
+    fn repair_progress(&self) -> Option<(String, u8, u8)> {
+        let entry = self.selected.and_then(|i| self.files.get(i))?;
+        let (step, total) = match entry.repair {
+            RepairState::Running { step, total } => (step, total),
+            _ => return None,
+        };
+        let name = entry
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Some((name, step, total))
+    }
+
     /// The one-line status Qt shows at the right of the progress row.
     fn status_line(&self) -> String {
         if self.busy() {
@@ -2726,7 +2914,23 @@ impl SuturaApp {
         open_action: &mut Option<(PathBuf, bool)>,
     ) {
         let mut cancel_in_panel = false;
-        ui.heading(rust_i18n::t!("app.report").to_string());
+        // (3) The state belongs next to the title, not on a line of its own that
+        // contradicts the analysis under it.
+        let repaired = self
+            .selected
+            .and_then(|i| self.files.get(i))
+            .map(|e| e.report.is_some())
+            .unwrap_or(false);
+        ui.horizontal(|ui| {
+            crate::theme::card_title(ui, rust_i18n::t!("app.report").to_string());
+            if !repaired {
+                ui.label(
+                    egui::RichText::new(rust_i18n::t!("app.not_repaired").to_string())
+                        .size(crate::theme::FONT_SECTION)
+                        .color(crate::theme::TEXT_MUTED),
+                );
+            }
+        });
         if self.batch_active {
             ui.label(
                 rust_i18n::t!(
@@ -2762,7 +2966,6 @@ impl SuturaApp {
             }
         }
         let Some(entry) = self.selected.and_then(|i| self.files.get(i)) else {
-            ui.label(rust_i18n::t!("app.report_empty").to_string());
             return;
         };
         if let RepairState::Running { step, total } = entry.repair {
@@ -2815,21 +3018,15 @@ impl SuturaApp {
                 ))
                 .weak(),
             );
-        } else if !matches!(entry.repair, RepairState::Running { .. })
-            && !matches!(entry.repair, RepairState::Failed(_))
-        {
-            ui.label(rust_i18n::t!("app.report_empty").to_string());
         }
         // Panels come last: they need `entry` only for an index
         // sanity check, and the data is already cached above.
         if let Some(idx) = self.selected {
             if self.files.get(idx).is_some() {
-                egui::CollapsingHeader::new(
-                    rust_i18n::t!("app.analysis").to_string(),
-                )
-                .id_salt("analysis_header")
-                .default_open(true)
-                .show(ui, |ui| {
+                ui.add_space(crate::theme::GAP_8);
+                crate::theme::section_label(ui, rust_i18n::t!("app.analysis").to_string());
+                ui.add_space(crate::theme::GAP_8);
+                {
                     match &self.files[idx].analysis {
                         Some(Ok(a)) => {
                             let rows: [(String, String); 8] = [
@@ -2871,13 +3068,39 @@ impl SuturaApp {
                                     format!("{:.2}%", a.open_area_ratio * 100.0),
                                 ),
                             ];
+                            // The target's grid: a wide label column, the value
+                            // starting at the halfway mark, roomy rows. Counts
+                            // that ARE problems are amber; counts that are merely
+                            // large (faces, vertices) are not.
+                            let amber: [usize; 4] = [4, 5, 6, 7];
                             egui::Grid::new("analysis-grid")
                                 .num_columns(2)
-                                .spacing([12.0, 4.0])
+                                .min_col_width(220.0)
+                                .spacing([crate::theme::GAP_16, crate::theme::GAP_8])
                                 .show(ui, |ui| {
-                                    for (label, value) in rows {
-                                        ui.label(label);
-                                        ui.label(value);
+                                    for (i, (label, value)) in rows.iter().enumerate() {
+                                        ui.label(
+                                            egui::RichText::new(label)
+                                                .size(crate::theme::FONT_BODY)
+                                                .color(crate::theme::TEXT),
+                                        );
+                                        let is_problem = amber.contains(&i)
+                                            && value.parse::<f64>().map(|v| v > 0.0).unwrap_or(
+                                                value.trim_end_matches('%')
+                                                    .parse::<f64>()
+                                                    .map(|v| v > 0.0)
+                                                    .unwrap_or(false),
+                                            );
+                                        let colour = if is_problem {
+                                            crate::theme::WARN
+                                        } else {
+                                            crate::theme::TEXT
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(value.clone())
+                                                .size(crate::theme::FONT_BODY)
+                                                .color(colour),
+                                        );
                                         ui.end_row();
                                     }
                                 });
@@ -2891,7 +3114,7 @@ impl SuturaApp {
                         }
                         None => {}
                     }
-                });
+                    }
                 // Individual defects, as Python's plain-text panel
                 // lists them (`gui.py:6755`): one line per hole and
                 // per non-manifold region, with its centroid so the
@@ -3078,13 +3301,34 @@ impl SuturaApp {
                             || !report.non_manifold.is_empty() =>
                     {
                         let total = report.holes.len() + report.non_manifold.len();
-                        egui::CollapsingHeader::new(
-                            rust_i18n::t!("app.defects", count = total as i64)
-                                .to_string(),
-                        )
-                        .id_salt("defects_header")
-                        .default_open(true)
-                        .show(ui, |ui| {
+                        // (5) The target's row: a hairline separator, then
+                        // "N defects >" as a plain clickable line. The arrow is
+                        // drawn because the font has no chevron glyph.
+                        ui.add_space(crate::theme::GAP_8);
+                        ui.separator();
+                        ui.add_space(crate::theme::GAP_8);
+                        let open = self.defects_open;
+                        let response = ui
+                            .add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!(
+                                        "{}  {}",
+                                        rust_i18n::t!("app.defects", count = total as i64)
+                                            .to_string(),
+                                        if open { "v" } else { ">" }
+                                    ))
+                                    .size(crate::theme::FONT_BODY)
+                                    .color(crate::theme::TEXT_MUTED),
+                                )
+                                .sense(egui::Sense::click()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if response.clicked() {
+                            self.defects_open = !self.defects_open;
+                        }
+                        if open {
+                            ui.add_space(crate::theme::GAP_8);
+                            {
                             // Bound the list: a shattered mesh can
                             // have thousands, and the panel is a
                             // summary, not a table to scroll.
@@ -3137,13 +3381,14 @@ impl SuturaApp {
                                 );
                             }
                             });
-                        });
+                            }
+                        }
                     }
                     Some(Err(e)) => {
                         ui.label(
                             egui::RichText::new(e)
                                 .small()
-                                .color(egui::Color32::LIGHT_RED),
+                                .color(COLOR_ERROR),
                         );
                     }
                     _ => {}
@@ -3536,6 +3781,14 @@ impl SuturaApp {
                     .small()
                     .weak(),
             );
+            // A grid, so the labels form one column and the inputs another;
+            // `ui.horizontal` sized each row to its own caption, which is why
+            // every box sat at a different x.
+            egui::Grid::new("profile-limits")
+                .num_columns(2)
+                .spacing([SPACE_16, SPACE_8])
+                .min_col_width(LABEL_W)
+                .show(ui, |ui| {
             // Every field here is an `Option`, and blank means "keep the
             // intensity's value" -- so a cleared box must write `None`,
             // not zero. A zero timeout would cap the tier at no time.
@@ -3562,6 +3815,7 @@ impl SuturaApp {
             // a target with the tier off would silently do nothing.
             opt_f64(ui, "gui_wall_min", &mut self.settings.wall_min_thickness,
                     &rust_i18n::t!("app.wall_min_thickness"));
+                });
             self.settings.wall_thicken =
                 self.settings.wall_min_thickness.is_some();
             ui.separator();
@@ -3765,15 +4019,13 @@ impl SuturaApp {
                             .unwrap_or("?");
                         ui.label(format!("{n}. {name}"));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add_enabled(index + 1 < selected.len(), egui::Button::new("v"))
+                            if arrow_button(ui, false, index + 1 < selected.len())
                                 .on_hover_text(rust_i18n::t!("app.manual_move_down").to_string())
                                 .clicked()
                             {
                                 move_down = Some(index);
                             }
-                            if ui
-                                .add_enabled(index > 0, egui::Button::new("^"))
+                            if arrow_button(ui, true, index > 0)
                                 .on_hover_text(rust_i18n::t!("app.manual_move_up").to_string())
                                 .clicked()
                             {
@@ -4255,12 +4507,14 @@ fn verdict_text(report: &RepairReport) -> String {
 
 fn verdict_color(code: &str) -> egui::Color32 {
     match code {
-        "preserved" | "preserved_notes" => egui::Color32::from_rgb(120, 200, 140),
+        // Green for a clean fix, amber for a shape change, red for a failure --
+        // the same three meanings the analysis counts use.
+        "preserved" | "preserved_notes" => crate::theme::OK,
         "changed" | "changed_no_area" | "low_confidence" | "low_confidence_no_area" => {
-            egui::Color32::from_rgb(230, 190, 90)
+            crate::theme::WARN
         }
-        "not_repaired" => egui::Color32::LIGHT_RED,
-        _ => egui::Color32::GRAY,
+        "not_repaired" => crate::theme::ERROR,
+        _ => crate::theme::TEXT_FAINT,
     }
 }
 
@@ -4612,61 +4866,49 @@ pub fn fixed_path(input: &Path) -> PathBuf {
 /// A numeric box that distinguishes "blank" (`None`, keep the tier's value) from
 /// zero. Required by the per-run limits: `Some(0.0)` on a timeout means the run
 /// gets no time at all, which is not what an empty field means.
+/// One label/input pair inside a `Grid`, so every field starts at the same x.
+///
+/// `ui.horizontal` took the label's natural width, which is why "Max risk" and
+/// "fTetWild max Hausdorff" put their boxes at different columns.
+fn opt_cell(ui: &mut egui::Ui, id: &str, text: &mut String, label: &str) {
+    let label_id = ui.label(label).id;
+    // `hint_text` gives the box an accessible name -- egui's TextEdit does not
+    // take one from `labelled_by`, which is why the accessibility check listed
+    // ten anonymous boxes. A single space rather than the label: with the label
+    // as the hint, an empty field rendered "Max risk Max risk" beside itself.
+    let _ = label_id;
+    ui.add(
+        egui::TextEdit::singleline(text)
+            .id_salt(id)
+            .hint_text(" ")
+            .desired_width(120.0),
+    )
+    .labelled_by(label_id);
+}
+
 fn opt_f64(ui: &mut egui::Ui, id: &str, value: &mut Option<f64>, label: &str) {
-    ui.horizontal(|ui| {
-        let label_id = ui.label(label).id;
-        let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
-        // `hint_text` gives the box an accessible name -- egui's TextEdit does not
-        // take one from `labelled_by`, which is why the accessibility check listed
-        // ten anonymous boxes. It is set to a single space rather than the label:
-        // with the label as the hint, an empty field rendered "Max risk Max risk"
-        // beside its own caption.
-        if ui
-            .add(
-                egui::TextEdit::singleline(&mut text)
-                    .id_salt(id)
-                    .hint_text(" ")
-                    .desired_width(90.0),
-            )
-            .labelled_by(label_id)
-            .changed()
-        {
-            *value = if text.trim().is_empty() {
-                None
-            } else {
-                text.trim().parse::<f64>().ok()
-            };
-        }
-    });
+    let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
+    opt_cell(ui, id, &mut text, label);
+    ui.end_row();
+    // Blank means "keep the intensity's value", so a cleared box writes `None`,
+    // not zero: a zero timeout would cap the tier at no time.
+    *value = if text.trim().is_empty() {
+        None
+    } else {
+        text.trim().parse::<f64>().ok()
+    };
 }
 
 /// The integer twin of [`opt_f64`].
 fn opt_i64(ui: &mut egui::Ui, id: &str, value: &mut Option<i64>, label: &str) {
-    ui.horizontal(|ui| {
-        let label_id = ui.label(label).id;
-        let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
-        // `hint_text` gives the box an accessible name -- egui's TextEdit does not
-        // take one from `labelled_by`, which is why the accessibility check listed
-        // ten anonymous boxes. It is set to a single space rather than the label:
-        // with the label as the hint, an empty field rendered "Max risk Max risk"
-        // beside its own caption.
-        if ui
-            .add(
-                egui::TextEdit::singleline(&mut text)
-                    .id_salt(id)
-                    .hint_text(" ")
-                    .desired_width(90.0),
-            )
-            .labelled_by(label_id)
-            .changed()
-        {
-            *value = if text.trim().is_empty() {
-                None
-            } else {
-                text.trim().parse::<i64>().ok()
-            };
-        }
-    });
+    let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
+    opt_cell(ui, id, &mut text, label);
+    ui.end_row();
+    *value = if text.trim().is_empty() {
+        None
+    } else {
+        text.trim().parse::<i64>().ok()
+    };
 }
 
 /// Repair one file in-process, through `sutura_core::repair`.
@@ -4935,6 +5177,117 @@ fn finish_from_output_with(
 /// widgets. `labelled_by` is the standard way to associate a label with a
 /// control, and it costs one id.
 /// `%g`-ish: no trailing zeros, so a scale factor reads "x1" not "x1.000".
+/// A small button with a painted triangle, up or down.
+///
+/// egui's bundled Ubuntu-Light has neither U+25B2/U+25BC nor U+2713 -- every one
+/// of those attempts drew a missing-glyph box -- so the arrow is drawn.
+/// A secondary button: card height, control surface, hairline border.
+pub(crate) fn secondary_button(text: String) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text)
+            .size(crate::theme::FONT_BODY)
+            .color(crate::theme::TEXT),
+    )
+    .fill(egui::Color32::TRANSPARENT)
+    .stroke(egui::Stroke::new(
+        crate::theme::BORDER_W,
+        crate::theme::BUTTON_BORDER,
+    ))
+    .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BUTTON))
+    .min_size(egui::vec2(0.0, crate::theme::BUTTON_H))
+}
+
+/// The one filled button: accent fill, dark text.
+pub(crate) fn primary_button(text: String) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text)
+            .size(crate::theme::FONT_BODY)
+            .color(crate::theme::ON_ACCENT),
+    )
+    .fill(crate::theme::ACCENT)
+    .stroke(egui::Stroke::NONE)
+    .min_size(egui::vec2(0.0, crate::theme::BUTTON_H))
+}
+
+/// The Options gear, painted. Same reason as the arrows: no glyph in the font.
+pub(crate) fn gear_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(theme_gear_size(), theme_gear_size()),
+        egui::Sense::click(),
+    );
+    if ui.is_rect_visible(rect) {
+        let visuals = *ui.style().interact(&response);
+        let c = rect.center();
+        let colour = visuals.fg_stroke.color;
+        let painter = ui.painter();
+        let r_out = 7.0;
+        let r_in = 4.6;
+        // Eight teeth as short radial spokes between two rings.
+        for i in 0..8 {
+            let a = std::f32::consts::TAU * (i as f32) / 8.0;
+            let (sa, ca) = a.sin_cos();
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + ca * r_in, c.y + sa * r_in),
+                    egui::pos2(c.x + ca * r_out, c.y + sa * r_out),
+                ],
+                egui::Stroke::new(2.6, colour),
+            );
+        }
+        painter.circle_stroke(c, r_in, egui::Stroke::new(2.4, colour));
+        painter.circle_filled(c, 1.6, colour);
+    }
+    response
+}
+
+fn theme_gear_size() -> f32 {
+    32.0
+}
+
+pub(crate) fn arrow_button(ui: &mut egui::Ui, up: bool, enabled: bool) -> egui::Response {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 20.0), sense);
+    if ui.is_rect_visible(rect) {
+        let mut visuals = *ui.style().interact(&response);
+        if !enabled {
+            visuals.fg_stroke.color = ui.visuals().weak_text_color();
+            visuals.weak_bg_fill = ui.visuals().faint_bg_color;
+        }
+        ui.painter().rect(
+            rect,
+            4.0,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        let c = rect.center();
+        let (w, h) = (4.5, 3.5);
+        let points = if up {
+            vec![
+                egui::pos2(c.x, c.y - h),
+                egui::pos2(c.x - w, c.y + h),
+                egui::pos2(c.x + w, c.y + h),
+            ]
+        } else {
+            vec![
+                egui::pos2(c.x, c.y + h),
+                egui::pos2(c.x - w, c.y - h),
+                egui::pos2(c.x + w, c.y - h),
+            ]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(
+            points,
+            visuals.fg_stroke.color,
+            egui::Stroke::NONE,
+        ));
+    }
+    response
+}
+
 pub(crate) fn trim_float(v: f64) -> String {
     let s = format!("{v:.2}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
