@@ -109,6 +109,13 @@ fn temp_box(tag: &str) -> std::path::PathBuf {
     path
 }
 
+/// A real mesh from the repo's geom fixtures.
+fn real_fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../sutura-geom/tests/fixtures")
+        .join(name)
+}
+
 /// A harness with Options already open on a tab.
 fn harness_with_options(size: egui::Vec2, tab: OptionsTab) -> Harness<'static, SuturaApp> {
     let mut h = harness(size);
@@ -1052,5 +1059,113 @@ fn the_new_controls_exist_and_write_through() {
         before,
         h.state().settings_snapshot(),
         "the auto-reorder checkbox did not write through"
+    );
+}
+
+
+/// The six behaviours this round restored, each pinned where it is visible.
+#[test]
+fn the_report_shows_its_notes_under_the_verdict() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1200.0, 950.0));
+    h.state_mut().add_file_for_test(temp_box("notes"));
+    h.state_mut().select_first_for_test();
+    // A saved result that went over budget: `budget` is one of the note codes,
+    // and it is the one a user can act on.
+    h.state_mut().set_raw_report_for_test(serde_json::json!({
+        "status": "ok",
+        "output": "/tmp/x_fixed.stl",
+        "budget": { "within_budget": false },
+        "stage1": { "two_manifold": true, "holes_remaining": 0 },
+        "stage2": { "ok": true }
+    }));
+    settle(&mut h);
+    assert!(
+        h.query_all_by_label(
+            "The result was not saved because the repair went over its size or risk limit."
+        )
+        .next()
+        .is_some(),
+        "the report's notes are missing"
+    );
+}
+
+/// The batch summary's issue link opens the per-code breakdown, as Qt's
+/// `_on_summary_link` logged it.
+#[test]
+fn the_summary_issue_link_opens_the_breakdown() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1200.0, 950.0));
+    h.state_mut().add_file_for_test(temp_box("summary"));
+    h.state_mut().select_first_for_test();
+    h.state_mut().set_raw_report_for_test(serde_json::json!({
+        "status": "ok",
+        "output": "/tmp/x_fixed.stl",
+        "shape_changed": true,
+        "stage1": { "two_manifold": true, "holes_remaining": 0 },
+        "stage2": { "ok": true }
+    }));
+    settle(&mut h);
+
+    let link = h
+        .query_all_by_label("1 issues >")
+        .next()
+        .expect("the issue link is missing from the summary");
+    assert!(
+        h.query_all_by_label("shape_changed: 1").next().is_none(),
+        "the breakdown must stay closed until the link is clicked"
+    );
+    link.click();
+    settle(&mut h);
+    assert!(
+        h.query_all_by_label("shape_changed: 1").next().is_some(),
+        "clicking the link must open the per-code breakdown"
+    );
+}
+
+/// Analyze ranks methods now, not only the topology: Qt's `_analyze_methods`.
+#[test]
+fn analyze_ranks_methods() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1100.0, 800.0));
+    // `temp_box` is a 4-face tetrahedron: every method's gate rejects it, so an
+    // empty ranking is the honest answer. The repo ships real broken meshes for
+    // the geom tests, and one of those is what a user actually drops in.
+    h.state_mut().add_file_for_test(real_fixture("case4_cracked_sphere.stl"));
+    h.state_mut().select_first_for_test();
+    settle(&mut h);
+    assert!(
+        h.state().selected_recommendations_for_test().is_empty(),
+        "no ranking before Analyze"
+    );
+    h.query_all_by_label("Analyze").next().unwrap().click();
+    settle(&mut h);
+    assert!(
+        !h.state().selected_recommendations_for_test().is_empty(),
+        "Analyze must rank the methods, as Qt's _analyze_methods did"
+    );
+}
+
+/// The Methods tab can save the ladder, and a failed write says so instead of
+/// being swallowed (Qt's `_show_write_error`).
+#[test]
+fn the_methods_tab_saves_the_ladder() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1200.0, 950.0));
+    h.state_mut().open_options_for_test(crate::app::OptionsTab::Methods);
+    h.state_mut().set_methods_for_test("3,2");
+    settle(&mut h);
+    let save = h
+        .query_all_by_label("Save ladder")
+        .next()
+        .expect("the ladder's save button is missing");
+    save.click();
+    for _ in 0..3 {
+        h.step();
+    }
+    // Either outcome must be told to the reader; silence is the bug.
+    assert!(
+        h.state().policy_status_for_test().is_some(),
+        "a save must report its outcome"
     );
 }

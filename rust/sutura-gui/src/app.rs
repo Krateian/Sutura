@@ -191,6 +191,12 @@ pub enum RowAction {
 /// menu and the panel cannot disagree about what was recommended.
 fn recommended_methods(raw: &Value) -> Vec<(u8, String, f64)> {
     let mut out = Vec::new();
+    // Three shapes, and missing one is silent: `--analyze` on a single mesh puts
+    // `recommendations` at the top level, a repair report nests them per object,
+    // and a 3MF wraps each object as `{model_name, report}`.
+    if let Some(recs) = raw.get("recommendations").and_then(|v| v.as_array()) {
+        collect_recs(recs, &mut out);
+    }
     let Some(objects) = raw.get("object_reports").and_then(|v| v.as_array()) else {
         return out;
     };
@@ -199,23 +205,27 @@ fn recommended_methods(raw: &Value) -> Vec<(u8, String, f64)> {
         let Some(recs) = report.get("recommendations").and_then(|v| v.as_array()) else {
             continue;
         };
-        for rec in recs {
-            let Some(num) = rec.get("num").and_then(|v| v.as_u64()) else {
-                continue;
-            };
-            let name = rec
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?")
-                .to_string();
-            let score = rec.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            if !out.iter().any(|(n, _, _)| *n == num as u8) {
-                out.push((num as u8, name, score));
-            }
-        }
+        collect_recs(recs, &mut out);
     }
     out.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
     out
+}
+
+fn collect_recs(recs: &[Value], out: &mut Vec<(u8, String, f64)>) {
+    for rec in recs {
+        let Some(num) = rec.get("num").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let name = rec
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string();
+        let score = rec.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        if !out.iter().any(|(n, _, _)| *n == num as u8) {
+            out.push((num as u8, name, score));
+        }
+    }
 }
 
 /// A menu item, styled like the rest of the app.
@@ -555,6 +565,13 @@ pub struct SuturaApp {
     slicers: Vec<crate::slicers::Slicer>,
     /// Whether the Analysis card's defects list is expanded.
     defects_open: bool,
+    /// Whether the batch summary's issue breakdown is open.
+    summary_issues_open: bool,
+    /// The last policy write's message and whether it succeeded.
+    policy_status: Option<(String, bool)>,
+    /// Whether the first-run line has been shown this launch. Per session, not
+    /// per frame: a line that reappears on every redraw is not a greeting.
+    pub(crate) first_run_seen: bool,
     /// A profile edit requested from the Repair tab. Applied after the frame,
     /// because the dialog needs `&mut self.files`-free access to write the file.
     profile_action: Option<ProfileAction>,
@@ -645,6 +662,30 @@ impl SuturaApp {
                 slot.output = Some(out);
             }
         }
+    }
+
+    #[cfg(test)]
+    pub fn log_for_test(&self) -> &[String] {
+        &self.log
+    }
+
+    #[cfg(test)]
+    pub fn selected_recommendations_for_test(&self) -> Vec<(u8, String, f64)> {
+        self.selected
+            .and_then(|i| self.files.get(i))
+            .and_then(|e| e.raw_report.as_ref())
+            .map(recommended_methods)
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub fn set_methods_for_test(&mut self, methods: &str) {
+        self.settings.methods = Some(methods.to_string());
+    }
+
+    #[cfg(test)]
+    pub fn policy_status_for_test(&self) -> Option<&(String, bool)> {
+        self.policy_status.as_ref()
     }
 
     #[cfg(test)]
@@ -852,6 +893,9 @@ impl SuturaApp {
             options_tab: OptionsTab::Repair,
             options_scroll: None,
             defects_open: false,
+            summary_issues_open: false,
+            policy_status: None,
+            first_run_seen: false,
             slicers: crate::slicers::detect(),
             methods_manual: None,
             prefs: crate::state::GuiState::default(),
@@ -984,6 +1028,9 @@ impl SuturaApp {
             profile_action: None,
             profile_prompt: None,
             defects_open: false,
+            policy_status: None,
+            first_run_seen: false,
+            summary_issues_open: false,
             slicers: crate::slicers::detect(),
             prefs: crate::state::GuiState::default(),
         };
@@ -2677,6 +2724,12 @@ impl SuturaApp {
                         slot.analysis = None;
                         slot.defects = None;
                     }
+                    // Qt's `_analyze_methods` (gui.py:7214): the ranking, not
+                    // just the topology. It is a subprocess run there because
+                    // Python did not link the core; here it is the same call the
+                    // repair makes, so the recommendation is the one the repair
+                    // would use.
+                    app.analyze_methods(idx);
                 }
             }
         };
@@ -3246,6 +3299,31 @@ impl SuturaApp {
                 .weak(),
             );
         }
+        // The plain notes under the verdict: Qt's `report_notes`
+        // (`_render_report_brief`, gui.py:6595). Each one is a sentence a user
+        // can act on -- "thin wall", "budget exceeded", "SI escalation adopted"
+        // -- so they are listed, not counted. Outside the `report` binding on
+        // purpose: a note must not disappear because the typed parse failed.
+        if let Some(raw) = self
+            .selected
+            .and_then(|i| self.files.get(i))
+            .and_then(|e| e.raw_report.as_ref())
+        {
+            let b = sutura_core::report::brief::brief(raw);
+            let mut lines = self.note_lines(&b);
+            if b.verdict == "failed" {
+                if let Some(err) = b.error.clone() {
+                    lines.push(err);
+                }
+            }
+            for line in lines {
+                ui.label(
+                    egui::RichText::new(line)
+                        .size(crate::theme::FONT_SECTION)
+                        .color(crate::theme::TEXT_MUTED),
+                );
+            }
+        }
         // Panels come last: they need `entry` only for an index
         // sanity check, and the data is already cached above.
         if let Some(idx) = self.selected {
@@ -3620,19 +3698,184 @@ impl SuturaApp {
         }
     }
 
-    /// "Batch summary": how the last batch went, by category.
+    /// Rank the methods for this file and keep the result where the panel and
+    /// the right-click submenu both read it (`_analyze_methods`).
     ///
-    /// Qt rendered this as a rich-text strip with a link per issue code
-    /// (`_render_summary`, gui.py:7648). Here it is a line of counts: the link
-    /// existed to open a detail list, and the per-file rows already are that
-    /// list.
+    /// Qt ran `sutura --analyze` in a thread so the window stayed live; this is
+    /// an ordinary call, because the analysis is pure and takes well under a
+    /// frame on the meshes the window can open. If it ever becomes slow, this is
+    /// the call to move behind `repair_rx` like the repair itself.
+    pub fn analyze_methods(&mut self, idx: usize) {
+        let Some(entry) = self.files.get(idx) else { return };
+        let path = entry.path.clone();
+        let loaded = sutura_core::config::policy::load_policy(None)
+            .unwrap_or_else(|_| sutura_core::config::policy::default_policy().unwrap());
+        let report = sutura_core::analyze::analyze_report(
+            &path.display().to_string(),
+            &loaded,
+            self.settings
+                .classifier_engine
+                .as_deref()
+                .unwrap_or("experimental"),
+            true,
+            true,
+        );
+        let recs = recommended_methods(&report).len();
+        if let Some(slot) = self.files.get_mut(idx) {
+            slot.raw_report = Some(report);
+        }
+        self.log(format!(
+            "{}: {} method(s) ranked",
+            path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            recs
+        ));
+    }
+
+    /// Write the ladder to the user policy. `_show_write_error`'s counterpart:
+    /// the outcome is a visible line, not a silent catch.
+    fn save_ladder(&mut self, selected: &[u8]) {
+        let tiers: Vec<String> = selected
+            .iter()
+            .filter_map(|n| {
+                sutura_core::repair_settings::METHODS
+                    .iter()
+                    .find(|m| m.0 == *n)
+                    .map(|m| m.1.to_string())
+            })
+            .collect();
+        if tiers.is_empty() {
+            self.policy_status = Some((
+                rust_i18n::t!("app.ladder_save_empty").to_string(),
+                false,
+            ));
+            return;
+        }
+        match sutura_core::config::policy::write_deep_tier_order(&tiers) {
+            Ok(path) => {
+                self.policy_status = Some((
+                    rust_i18n::t!("app.ladder_saved", path = path.display().to_string())
+                        .to_string(),
+                    true,
+                ));
+            }
+            Err(e) => {
+                self.policy_status = Some((
+                    rust_i18n::t!("app.ladder_save_failed", error = e.0).to_string(),
+                    false,
+                ));
+            }
+        }
+    }
+
+    /// `_save_auto_reorder`: persist the ladder auto-reorder opt-in.
+    ///
+    /// It lives in the GUI's own `gui.json`, which is where `auto_reorder` is
+    /// already read from, so this is the same file and the same key the checkbox
+    /// reads on the next launch.
+    fn save_auto_reorder(&mut self) {
+        let mut state = crate::state::load();
+        state.settings.auto_reorder = self.settings.auto_reorder;
+        match crate::state::save(&state) {
+            Ok(()) => {
+                self.log(format!(
+                    "auto-reorder saved: {}",
+                    self.settings.auto_reorder
+                ));
+            }
+            Err(e) => {
+                self.policy_status = Some((
+                    rust_i18n::t!("app.ladder_save_failed", error = e).to_string(),
+                    false,
+                ));
+            }
+        }
+    }
+
+    /// The localised text of a report's notes ("`_brief_note_lines`").
+    ///
+    /// One line per note. Unknown codes fall through as `code: args`, because a
+    /// caveat the GUI cannot phrase is still a caveat the user must see.
+    fn note_lines(&self, b: &sutura_core::report::brief::Brief) -> Vec<String> {
+        let mut out = Vec::new();
+        for note in &b.notes {
+            let a = &note.args;
+            let num = |k: &str| a.get(k).and_then(|v| v.as_f64());
+            let line = match note.code.as_str() {
+                "stage2_skipped" => rust_i18n::t!("app.brief_note_stage2_skipped").to_string(),
+                "stage2_error" => rust_i18n::t!("app.brief_note_stage2_error").to_string(),
+                "shape_changed" => rust_i18n::t!("app.brief_note_shape_changed").to_string(),
+                "volume_warning" => rust_i18n::t!("app.brief_note_volume").to_string(),
+                "graft_detail_loss" => rust_i18n::t!("app.brief_note_graft").to_string(),
+                "dressing_detail_loss" => rust_i18n::t!("app.brief_note_dressing").to_string(),
+                "reload_non_manifold_vertices" => {
+                    rust_i18n::t!("app.brief_note_reload_nm").to_string()
+                }
+                "unit_warning" => rust_i18n::t!("app.brief_note_unit").to_string(),
+                "material_discarded" => rust_i18n::t!("app.brief_note_material").to_string(),
+                "attribute_loss" => rust_i18n::t!(
+                    "app.brief_note_attr_loss",
+                    dropped = a.get("dropped").and_then(|v| v.as_i64()).unwrap_or(0),
+                    kept = a.get("kept").and_then(|v| v.as_i64()).unwrap_or(0),
+                    new_without = a.get("new_without").and_then(|v| v.as_i64()).unwrap_or(0)
+                )
+                .to_string(),
+                "budget" => rust_i18n::t!("app.brief_note_budget").to_string(),
+                "thin_wall" => {
+                    let mut line = rust_i18n::t!(
+                        "app.brief_note_thin_wall",
+                        ratio = format!("{:.1}", num("ratio").unwrap_or(0.0) * 100.0),
+                        threshold = format!("{:.1}", num("threshold").unwrap_or(0.0) * 100.0)
+                    )
+                    .to_string();
+                    if let Some(mm) = num("min_mm") {
+                        line += &rust_i18n::t!("app.brief_note_thin_wall_mm", mm = format!("{mm:.2}"))
+                            .to_string();
+                    }
+                    if a.get("estimated").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        line += &rust_i18n::t!("app.brief_note_estimated").to_string();
+                    }
+                    line
+                }
+                "holes_remaining" => rust_i18n::t!(
+                    "app.brief_note_holes_remaining",
+                    count = a.get("count").and_then(|v| v.as_i64()).unwrap_or(0)
+                )
+                .to_string(),
+                "not_closed" => rust_i18n::t!("app.brief_note_not_closed").to_string(),
+                "si_escalation" => {
+                    if a.get("outcome").and_then(|v| v.as_str()) == Some("adopted") {
+                        rust_i18n::t!("app.brief_note_si_adopted").to_string()
+                    } else {
+                        rust_i18n::t!("app.brief_note_si_unfixed").to_string()
+                    }
+                }
+                other => format!("{other}: {a}"),
+            };
+            out.push(line);
+        }
+        out
+    }
+
+    /// "Batch summary": how the last batch went, by category, plus the issue
+    /// breakdown behind a link.
+    ///
+    /// Qt rendered a rich-text strip whose "N issues" link called
+    /// `_on_summary_link` (gui.py:7665), which logged one line per issue code
+    /// with its count. The breakdown was the point of the link, so it is kept;
+    /// it opens under the counts instead of scrolling away in a log, and the link
+    /// says what it does.
     fn batch_summary(&mut self, ui: &mut egui::Ui) {
-        if !self.batch_active && self.batch_total == 0 {
+        let any_report = self.files.iter().any(|e| e.raw_report.is_some());
+        if !self.batch_active && self.batch_total == 0 && !any_report {
             return;
         }
         let mut watertight = 0;
         let mut warning = 0;
         let mut failed = 0;
+        let mut issue_counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
         for entry in &self.files {
             match entry.report.as_ref().map(|r| r.verdict_code.as_str()) {
                 Some("preserved") | Some("preserved_notes") => watertight += 1,
@@ -3640,7 +3883,14 @@ impl SuturaApp {
                 Some(_) => warning += 1,
                 None => failed += 1,
             }
+            if let Some(raw) = entry.raw_report.as_ref() {
+                let (_, issues, _) = sutura_core::report::classify::classify_value(raw);
+                for code in issues {
+                    *issue_counts.entry(code).or_insert(0) += 1;
+                }
+            }
         }
+        let total_issues: usize = issue_counts.values().sum();
         ui.add_space(crate::theme::GAP_8);
         ui.horizontal(|ui| {
             for (count, key, colour) in [
@@ -3659,7 +3909,37 @@ impl SuturaApp {
                         .color(crate::theme::TEXT_FAINT),
                 );
             }
+            if total_issues > 0 {
+                if ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(
+                                rust_i18n::t!("app.sum_show_issues", n = total_issues as i64)
+                                    .to_string(),
+                            )
+                            .size(crate::theme::FONT_SECTION)
+                            .color(crate::theme::TEXT_MUTED),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text(rust_i18n::t!("app.sum_issues_detail").to_string())
+                    .clicked()
+                {
+                    self.summary_issues_open = !self.summary_issues_open;
+                }
+            }
         });
+        if self.summary_issues_open && total_issues > 0 {
+            ui.indent("summary_issues", |ui| {
+                for (code, n) in &issue_counts {
+                    ui.label(
+                        egui::RichText::new(format!("{code}: {n}"))
+                            .size(crate::theme::FONT_SECTION)
+                            .color(crate::theme::TEXT_MUTED),
+                    );
+                }
+            });
+        }
     }
 
     /// "Small parts": what the pipeline considered debris.
@@ -4569,6 +4849,58 @@ impl SuturaApp {
                     .collect::<Vec<_>>()
                     .join(","),
             );
+        }
+
+        // Save the ladder and the auto-reorder opt-in. Qt had this as
+        // `apply()` plus `_save_auto_reorder`, with `_show_write_error` turning a
+        // refused write into a visible message: a save that fails silently is
+        // worse than no save button.
+        let mut save_ladder = false;
+        let mut save_reorder = false;
+        Self::option_section(ui, rust_i18n::t!("app.automatic_ladder").to_string());
+        ui.label(
+            egui::RichText::new(rust_i18n::t!("app.ladder_save_body").to_string())
+                .small()
+                .weak(),
+        );
+        ui.horizontal(|ui| {
+            if !automatic {
+                if ui
+                    .add(secondary_button(
+                        rust_i18n::t!("app.ladder_save").to_string(),
+                    ))
+                    .on_hover_text(rust_i18n::t!("app.ladder_save_tip").to_string())
+                    .clicked()
+                {
+                    save_ladder = true;
+                }
+            }
+            let mut reorder = self.settings.auto_reorder;
+            if ui
+                .checkbox(&mut reorder, rust_i18n::t!("app.auto_reorder").to_string())
+                .changed()
+            {
+                self.settings.auto_reorder = reorder;
+                save_reorder = true;
+            }
+        });
+        // The outcome of the last policy write, beside the button that caused it.
+        if let Some((text, ok)) = self.policy_status.clone() {
+            ui.label(
+                egui::RichText::new(text)
+                    .size(crate::theme::FONT_SECTION)
+                    .color(if ok {
+                        crate::theme::OK
+                    } else {
+                        crate::theme::ERROR
+                    }),
+            );
+        }
+        if save_ladder {
+            self.save_ladder(&selected);
+        }
+        if save_reorder {
+            self.save_auto_reorder();
         }
 
         Self::option_section(ui, rust_i18n::t!("app.manual_sequence").to_string());

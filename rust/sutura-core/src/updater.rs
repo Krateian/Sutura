@@ -155,6 +155,11 @@ pub fn config_path() -> PathBuf {
     home.join(".config/sutura/config.json")
 }
 
+/// Whether a config file exists yet, which is what "first run" means.
+pub fn config_exists() -> bool {
+    config_path().exists()
+}
+
 /// Read the config, or an empty object when it is missing or unreadable.
 pub fn load_config() -> Value {
     std::fs::read_to_string(config_path())

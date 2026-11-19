@@ -319,3 +319,31 @@ app:
   classifier_experimental: Experimental (varsayılan)
   classifier_classic: Klasik
   edge_tiebreak: Sınıflandırıcı kenar eşitlik özellikleri
+  sum_show_issues: "%{n} sorun >"
+  sum_issues_detail: Sorun dökümünü göster
+  brief_note_stage2_skipped: Son katı kontrolü atlandı; kapalı model korundu.
+  brief_note_stage2_error: Son katı kontrolü modeli doğrulayamadı.
+  brief_note_shape_changed: Şekil değişti; dilimleyicide kontrol edin.
+  brief_note_volume: Hacim değişti; dilimleyicide kontrol edin.
+  brief_note_graft: Yüzey yumuşatıldığı için ince ayrıntılar azalmış olabilir.
+  brief_note_dressing: Yüzey kaplandığı için özgün yüzeyin biraz dışında kalabilir.
+  brief_note_reload_nm: Kaydedilen dosyada yeniden açılışta bir yapı sorunu var.
+  brief_note_unit: Model milimetre cinsinde olmayabilir.
+  brief_note_material: OBJ malzeme referansları korunmadı.
+  brief_note_attr_loss: "%{dropped} üçgende boya/dikiş/destek özniteliği kayboldu; %{kept} korundu, %{new_without} yeni üçgen özniteliksiz."
+  brief_note_budget: Onarım boyut veya risk sınırını aştığı için sonuç kaydedilmedi.
+  brief_note_thin_wall: "Yüzeyin ~%{ratio}% kadarı model boyutunun %{threshold}% değerinden ince"
+  brief_note_thin_wall_mm: " (en ince ~%{mm} mm)"
+  brief_note_estimated: " [tahmini]"
+  brief_note_si_adopted: Kendi içine geçen yüzeyler daha güçlü bir onarım yöntemiyle düzeltildi.
+  brief_note_si_unfixed: Kendi içine geçen yüzeyler kaldı; daha güvenli onarım korundu.
+  brief_note_holes_remaining: "%{count} delik kaldı."
+  brief_note_not_closed: Model hâlâ kapalı değil.
+  ladder_save: Sırayı kaydet
+  ladder_save_tip: Bu sırayı ilke dosyanıza yaz
+  ladder_save_body: Sıra ilke sırasıdır. Değiştirmek gerçek bir düzenlemedir, kaydedilmelidir.
+  ladder_saved: "Sıra şuraya kaydedildi: %{path}"
+  ladder_save_failed: "Kaydedilemedi: %{error}"
+  ladder_save_empty: Kaydetmeden önce en az bir yöntem seçin.
+  first_run_msg: "İlk açılış: aşağıdaki iki soru (otomatik güncelleme, anonim kullanım geçmişi) sorduğumuz tek şey. Hiçbir veri bu makineden çıkmaz."
+  methods_ranked: "Bu dosya için %{n} yöntem sıralandı"

@@ -307,6 +307,24 @@ impl SuturaApp {
     fn tab_updates(&mut self, ui: &mut egui::Ui) {
         use crate::updater_ui::Phase;
 
+        // First run: Qt asked once, in a modal, whether to check for updates
+        // and keep an anonymous usage history (`_maybe_ask_update_on_first_run`,
+        // gui.py:5814). A modal on first launch is a bad greeting, and the same
+        // two questions are the two checkboxes directly below -- so this is one
+        // line that says where they are and then never returns.
+        if !self.first_run_seen && !sutura_core::updater::config_exists() {
+            self.first_run_seen = true;
+            ui.add_space(SPACE_8);
+            ui.label(
+                egui::RichText::new(rust_i18n::t!("app.first_run_msg").to_string())
+                    .size(crate::theme::FONT_SECTION)
+                    .color(crate::theme::TEXT),
+            );
+            ui.add_space(SPACE_8);
+            ui.separator();
+            ui.add_space(SPACE_8);
+        }
+
         // Qt's order: installed version, last check, [Check now] [Automatic
         // updates], [Check on every start], then the note.
         ui.label(

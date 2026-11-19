@@ -319,3 +319,31 @@ app:
   classifier_experimental: Experimental (default)
   classifier_classic: Classic
   edge_tiebreak: Classifier edge tiebreak features
+  sum_show_issues: "%{n} issues >"
+  sum_issues_detail: Show the issue breakdown
+  brief_note_stage2_skipped: The final solid check was skipped; the closed model was kept.
+  brief_note_stage2_error: The final solid check could not confirm the model.
+  brief_note_shape_changed: The shape changed; check it in the slicer.
+  brief_note_volume: The volume changed; check it in the slicer.
+  brief_note_graft: The surface was smoothed, so fine detail may be reduced.
+  brief_note_dressing: The surface was coated, so it may sit slightly outside the original.
+  brief_note_reload_nm: The saved file reopens with a topology problem.
+  brief_note_unit: The model may not be in millimetres.
+  brief_note_material: OBJ material references were not preserved.
+  brief_note_attr_loss: "Painted/seam/support attributes were lost on %{dropped} triangles; %{kept} kept, %{new_without} new ones without."
+  brief_note_budget: The result was not saved because the repair went over its size or risk limit.
+  brief_note_thin_wall: "Some walls are thin: ~%{ratio}% of the surface is thinner than %{threshold}% of the model size"
+  brief_note_thin_wall_mm: " (thinnest ~%{mm} mm)"
+  brief_note_estimated: " [estimated]"
+  brief_note_si_adopted: Overlapping surfaces were fixed with a stronger repair method.
+  brief_note_si_unfixed: Overlapping surfaces remain; the safer repair was kept.
+  brief_note_holes_remaining: "%{count} hole(s) remain."
+  brief_note_not_closed: The model is still not closed.
+  ladder_save: Save ladder
+  ladder_save_tip: Write this order to your policy file
+  ladder_save_body: The ladder is the policy order. Reordering it is a real edit, so it must be saved.
+  ladder_saved: "Ladder saved to %{path}"
+  ladder_save_failed: "Could not save: %{error}"
+  ladder_save_empty: Pick at least one method before saving.
+  first_run_msg: "First run: the two questions below (automatic updates, anonymous usage history) are all we ask. Nothing leaves this machine."
+  methods_ranked: "%{n} method(s) ranked for this file"
