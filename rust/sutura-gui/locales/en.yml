@@ -308,3 +308,9 @@ app:
   sug_try_dressing: "Dressing can close this shape, but may deform it. Re-run with it on?"
   sug_budget_rerun: "This file was declined by the time/geometry budget, so nothing was written. Re-run anyway?"
   open_in_slicer: Open in...
+  small_parts: "Small parts (%{count})"
+  small_removed: Removed
+  small_debris: Debris
+  sum_watertight: watertight
+  sum_warning: warning
+  sum_error: error

@@ -972,3 +972,57 @@ fn the_open_in_menu_needs_a_result_and_a_slicer() {
         "with a result, the entry must appear exactly when a slicer was detected"
     );
 }
+
+
+/// The report card carries the batch counts, the small-parts section and the
+/// score bar; none of them may claim space when there is nothing to say.
+#[test]
+fn the_report_card_shows_the_new_sections() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1100.0, 900.0));
+    h.state_mut().add_file_for_test(temp_box("sections"));
+    h.state_mut().select_first_for_test();
+    settle(&mut h);
+
+    // No batch run and no debris: neither section appears.
+    assert!(
+        h.query_all_by_label("0 watertight").next().is_none(),
+        "the batch summary must stay hidden before a batch"
+    );
+    assert!(
+        h.query_all_by_label("Small parts (0)").next().is_none(),
+        "the small-parts section must stay hidden with nothing to list"
+    );
+
+    // A report with debris turns the section on.
+    h.state_mut().set_raw_report_for_test(serde_json::json!({
+        "status": "ok",
+        "stage1": { "possible_debris": { "count": 2, "capped": false, "parts": [
+            { "faces": 12, "volume_pct": 0.4, "size_pct": 0.1, "distance_mm": 3.0 },
+        ]}}
+    }));
+    settle(&mut h);
+    assert!(
+        h.query_all_by_label("Small parts (2)").next().is_some(),
+        "the small-parts section must appear when the report lists debris"
+    );
+}
+
+/// The score bar is eight blocks, filled in proportion; the number stays beside
+/// it so the bar is a glance and not a replacement.
+#[test]
+fn the_score_bar_fills_in_proportion() {
+    let _serial = serial();
+    assert_eq!(crate::app::score_bar(0.0), "--------");
+    assert_eq!(crate::app::score_bar(1.0), "========");
+    assert_eq!(crate::app::score_bar(0.5), "====----");
+    // Out-of-range values clamp rather than panic.
+    assert_eq!(crate::app::score_bar(-3.0), "--------");
+    assert_eq!(crate::app::score_bar(9.0), "========");
+    //  prints whole percentages, so the bar and the number together
+    // read "====----  0" -- the bar carries the fraction the number rounds away.
+    assert!(
+        crate::app::fmt_score_with_bar(Some(0.5)).starts_with("====----"),
+        "the bar must carry the fraction the rounded number loses"
+    );
+}

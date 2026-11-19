@@ -2767,6 +2767,8 @@ impl SuturaApp {
         crate::theme::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             self.report_and_logs(ui, &mut None);
+            self.batch_summary(ui);
+            self.small_parts_section(ui);
             self.suggestions_block(ui);
             self.result_suggestions(ui);
             // This call was missing: `defects_panel` existed but nothing drew it,
@@ -3218,13 +3220,13 @@ impl SuturaApp {
                 .spacing([12.0, 6.0])
                 .show(ui, |ui| {
                     ui.label(rust_i18n::t!("app.health").to_string());
-                    ui.label(fmt_score(report.health));
+                    ui.label(fmt_score_with_bar(report.health));
                     ui.end_row();
                     ui.label(rust_i18n::t!("app.risk").to_string());
                     ui.label(fmt_score(report.risk));
                     ui.end_row();
                     ui.label(rust_i18n::t!("app.fidelity").to_string());
-                    ui.label(fmt_score(report.fidelity));
+                    ui.label(fmt_score_with_bar(report.fidelity));
                     ui.end_row();
                     ui.label(rust_i18n::t!("app.confidence").to_string());
                     ui.label(fmt_score(report.confidence));
@@ -3613,6 +3615,123 @@ impl SuturaApp {
             self.settings.mode = Some(mode.to_string());
             self.log(format!("mode set to {mode} from a suggestion"));
         }
+    }
+
+    /// "Batch summary": how the last batch went, by category.
+    ///
+    /// Qt rendered this as a rich-text strip with a link per issue code
+    /// (`_render_summary`, gui.py:7648). Here it is a line of counts: the link
+    /// existed to open a detail list, and the per-file rows already are that
+    /// list.
+    fn batch_summary(&mut self, ui: &mut egui::Ui) {
+        if !self.batch_active && self.batch_total == 0 {
+            return;
+        }
+        let mut watertight = 0;
+        let mut warning = 0;
+        let mut failed = 0;
+        for entry in &self.files {
+            match entry.report.as_ref().map(|r| r.verdict_code.as_str()) {
+                Some("preserved") | Some("preserved_notes") => watertight += 1,
+                Some("not_repaired") => failed += 1,
+                Some(_) => warning += 1,
+                None => failed += 1,
+            }
+        }
+        ui.add_space(crate::theme::GAP_8);
+        ui.horizontal(|ui| {
+            for (count, key, colour) in [
+                (watertight, "app.sum_watertight", crate::theme::OK),
+                (warning, "app.sum_warning", crate::theme::WARN),
+                (failed, "app.sum_error", crate::theme::ERROR),
+            ] {
+                ui.label(
+                    egui::RichText::new(format!("{count} {}", rust_i18n::t!(key).to_string()))
+                        .size(crate::theme::FONT_SECTION)
+                        .color(colour),
+                );
+                ui.label(
+                    egui::RichText::new("·")
+                        .size(crate::theme::FONT_SECTION)
+                        .color(crate::theme::TEXT_FAINT),
+                );
+            }
+        });
+    }
+
+    /// "Small parts": what the pipeline considered debris.
+    ///
+    /// Qt printed this as text lines in the details (`_small_parts_section`,
+    /// gui.py:2327). It is a collapsible section here, closed by default: a
+    /// healthy repair has nothing to say and the section must not claim space.
+    fn small_parts_section(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.selected else { return };
+        let Some(raw) = self.files.get(idx).and_then(|e| e.raw_report.as_ref()) else {
+            return;
+        };
+        // Both keys live under `stage1` for a single mesh; a 3MF carries one
+        // `stage1` per object, which the object list already shows.
+        let Some(stage1) = raw.get("stage1") else { return };
+        let removed = stage1.get("removed_small_parts");
+        let debris = stage1.get("possible_debris");
+        let removed_n = removed
+            .and_then(|r| r.get("count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let debris_n = debris
+            .and_then(|d| d.get("count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if removed_n == 0 && debris_n == 0 {
+            return;
+        }
+        ui.add_space(crate::theme::GAP_8);
+        egui::CollapsingHeader::new(
+            rust_i18n::t!(
+                "app.small_parts",
+                count = (removed_n + debris_n) as i64
+            )
+            .to_string(),
+        )
+        .id_salt("small_parts_header")
+        .default_open(false)
+        .show(ui, |ui| {
+            let mut line = |ui: &mut egui::Ui, text: String, colour: egui::Color32| {
+                ui.label(
+                    egui::RichText::new(text)
+                        .size(crate::theme::FONT_SECTION)
+                        .color(colour),
+                );
+            };
+            if let Some(list) = removed.and_then(|r| r.get("parts")).and_then(|p| p.as_array()) {
+                for part in list {
+                    let faces = part.get("faces").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let size = part.get("size_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    line(
+                        ui,
+                        format!(
+                            "{}  {faces} faces, {size:.1}% of the mesh",
+                            rust_i18n::t!("app.small_removed").to_string()
+                        ),
+                        crate::theme::TEXT_MUTED,
+                    );
+                }
+            }
+            if let Some(list) = debris.and_then(|d| d.get("parts")).and_then(|p| p.as_array()) {
+                for part in list {
+                    let faces = part.get("faces").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let vol = part.get("volume_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    line(
+                        ui,
+                        format!(
+                            "{}  {faces} faces, {vol:.2}% of the volume",
+                            rust_i18n::t!("app.small_debris").to_string()
+                        ),
+                        crate::theme::WARN,
+                    );
+                }
+            }
+        });
     }
 
     /// Suggestions that come from a *result* rather than an analysis.
@@ -4910,6 +5029,29 @@ fn fmt_point(p: Option<[f64; 3]>) -> String {
     }
 }
 
+/// A score with its bar: `====---- 0.52`.
+pub(crate) fn fmt_score_with_bar(v: Option<f64>) -> String {
+    match v {
+        Some(score) => format!("{}  {}", score_bar(score), fmt_score(Some(score))),
+        None => fmt_score(None),
+    }
+}
+
+/// Qt's `_score_bar`: a small block bar for a 0..1 score.
+///
+/// Eight blocks, filled in proportion, with the number beside it elsewhere. The
+/// bar is what makes two scores comparable at a glance; the number is what makes
+/// them precise, so both are shown.
+pub(crate) fn score_bar(score: f64) -> String {
+    const BLOCKS: usize = 8;
+    let filled = ((score.clamp(0.0, 1.0)) * BLOCKS as f64).round() as usize;
+    let mut s = String::with_capacity(BLOCKS * 3);
+    for i in 0..BLOCKS {
+        s.push(if i < filled { '=' } else { '-' });
+    }
+    s
+}
+
 fn fmt_score(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.0}"))
         .unwrap_or_else(|| rust_i18n::t!("app.none").to_string())
@@ -5790,7 +5932,7 @@ impl sutura_core::repair::ProgressSink for GuiSink {
 }
 
 
-fn open_path(path: &Path, reveal: bool) {
+pub(crate) fn open_path(path: &Path, reveal: bool) {
     #[cfg(target_os = "macos")]
     {
         let mut cmd = Command::new("open");

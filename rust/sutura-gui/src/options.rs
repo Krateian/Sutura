@@ -157,6 +157,24 @@ impl SuturaApp {
     /// score and the learning triage. The language selector and the diagnostics
     /// export are Rust extras re-homed here rather than deleted, as the mapping
     /// table said.
+    /// Qt's `_open_policy` (gui.py:4468): reveal the policy file.
+    ///
+    /// Behind a button rather than automatic: the file is a JSON document a user
+    /// edits by hand, and opening a text editor unbidden is hostile.
+    fn policy_row(ui: &mut egui::Ui) {
+        ui.add_space(SPACE_16);
+        ui.horizontal(|ui| {
+            if ui
+                .button(rust_i18n::t!("app.open_policy").to_string())
+                .on_hover_text(rust_i18n::t!("app.open_policy_tip").to_string())
+                .clicked()
+            {
+                let path = sutura_core::config::policy::user_policy_path();
+                crate::app::open_path(&path, false);
+            }
+        });
+    }
+
     fn tab_general(&mut self, ui: &mut egui::Ui) {
         // Qt's four General switches, each a real checkbox: they are persisted
         // in `gui.json` and applied in `run_repair`, so they do something.
@@ -263,6 +281,7 @@ impl SuturaApp {
         if ui.button(rust_i18n::t!("app.diagnostics").to_string()).clicked() {
             self.export_diagnostics();
         }
+        Self::policy_row(ui);
         if let Some(note) = &self.diagnostics_note {
             ui.label(egui::RichText::new(note).small().weak());
         }

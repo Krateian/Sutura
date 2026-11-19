@@ -308,3 +308,9 @@ app:
   sug_try_dressing: "Dressing bu şekli kapatabilir ama biçimini bozabilir. Açıkken yeniden çalıştırılsın mı?"
   sug_budget_rerun: "Bu dosya zaman/geometri bütçesiyle reddedildi, hiçbir şey yazılmadı. Yine de çalıştırılsın mı?"
   open_in_slicer: Şurada aç...
+  small_parts: "Küçük parçalar (%{count})"
+  small_removed: Kaldırıldı
+  small_debris: Moloz
+  sum_watertight: su geçirmez
+  sum_warning: uyarı
+  sum_error: hata
