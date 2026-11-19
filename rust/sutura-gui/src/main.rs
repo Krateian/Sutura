@@ -46,6 +46,8 @@ fn main() -> eframe::Result<()> {
     let mut select: Option<usize> = None;
     let mut settings_scroll = 0.0f32;
     let mut wait_frames = 3u8;
+    // `[x,y,z]` centre, optionally `[x,y,z,zoom]`: see `--focus`.
+    let mut focus: Option<([f32; 3], Option<f32>)> = None;
     let mut file_methods: Option<Vec<u8>> = None;
     // Window size, so a capture can prove the layout at the small end (Steam
     // Deck is 1280x800, the stated minimum 720x480). Not in `--help`: it exists
@@ -112,6 +114,21 @@ fn main() -> eframe::Result<()> {
             "--open-changelog" => open = app::OpenOnStart::Changelog,
             "--show-after" => open = app::OpenOnStart::After,
             "--defect-colors" => open = app::OpenOnStart::DefectColors,
+            // Hidden capture hook: point the camera at a box centre and zoom in,
+            // so a frame can show a defect that is invisible in a whole-part view.
+            "--focus" => {
+                focus = args.next().and_then(|spec| {
+                    let nums: Vec<f32> = spec
+                        .split(',')
+                        .filter_map(|p| p.trim().parse::<f32>().ok())
+                        .collect();
+                    match nums.len() {
+                        3 => Some(([nums[0], nums[1], nums[2]], None)),
+                        4 => Some(([nums[0], nums[1], nums[2]], Some(nums[3]))),
+                        _ => None,
+                    }
+                })
+            }
             "--select" => select = args.next().and_then(|s| s.parse::<usize>().ok()),
             "--file-methods" => {
                 file_methods = args.next().map(|spec| {
@@ -297,6 +314,7 @@ fn main() -> eframe::Result<()> {
                     select,
                     settings_scroll,
                     wait_frames,
+                    focus,
                     file_methods,
                 },
             )))

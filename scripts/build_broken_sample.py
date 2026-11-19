@@ -35,7 +35,6 @@ for _p in (os.path.join(_REPO, 'sutura'), _REPO):
         sys.path.insert(0, _p)
 
 from sutura_engine.pipeline.mesh_io import load_mesh, save_mesh  # noqa: E402
-from defect_injector import inject_flipped_normal, inject_non_manifold  # noqa: E402
 
 
 def face_neighbours(t):
@@ -54,22 +53,69 @@ def face_neighbours(t):
     return out
 
 
-def inject_patches(t, patches, radius, rng):
+def inject_non_manifold_in(v, t, count, faces, rng):
+    """`defect_injector.inject_non_manifold`, but chosen from `faces`.
+
+    Same fins on a shared edge as the injector's version (that function hardcodes
+    `rng.integers(0, len(t))`, so it cannot be told where to wound); only the
+    choice of host face differs.
+    """
+    v = v.copy()
+    t = t.copy()
+    d = float(np.linalg.norm(v.max(axis=0) - v.min(axis=0)))
+    for _ in range(count):
+        if not faces:
+            break
+        a, b, c = t[int(rng.choice(faces))]
+        for _k in range(2):
+            p = v[c] + rng.normal(0, 0.01 * d + 1e-3, 3)
+            v = np.vstack([v, p[None, :]])
+            t = np.vstack([t, [[a, b, len(v) - 1]]])
+    return v, t
+
+def region_centre(v, t, frac=(0.5, 0.5, 0.5), half=(1.0, 1.0, 1.0)):
+    """Pick a box of the mesh to concentrate damage in, and report its centre.
+
+    Documentation needs the defects in *one* place, because the frames that show
+    them are zoomed to that place: a key with four pinholes spread along 57 units
+    of shaft reads as identical before and after at any scale that fits the whole
+    part. `frac` moves the box centre and `half` sizes it, both as fractions of
+    the bounding box, so this stays independent of units.
+    """
+    lo, hi = v.min(axis=0), v.max(axis=0)
+    span = hi - lo
+    centre = lo + span * np.asarray(frac, dtype=float)
+    half_extent = span * np.asarray(half, dtype=float) * 0.5
+    return centre, half_extent
+
+
+def inject_patches(t, v, patches, radius, rng, centre=None, half_extent=None):
     """Delete `patches` contiguous regions of roughly `radius` faces each.
 
     A breadth-first growth over shared edges, so each hole is one connected
     opening rather than scattered singles. Growing is bounded by `radius`, not by
     a physical size, which keeps the result independent of mesh scale.
+
+    When `centre`/`half_extent` are given, every region is seeded inside that box,
+    so the openings end up together instead of scattered over the whole scan.
     """
     t = t.copy()
     nbrs = face_neighbours(t)
     removed = set()
     n = len(t)
+    centroids = v[t].mean(axis=1) if centre is not None else None
+
+    def inside(i):
+        if centroids is None:
+            return True
+        d = np.abs(centroids[i] - centre)
+        return bool(np.all(d <= half_extent))
+
     for _ in range(patches):
         # A seed face that is not already gone and not on the rim of a hole.
-        for _attempt in range(200):
+        for _attempt in range(2000):
             seed = int(rng.integers(0, n))
-            if seed not in removed:
+            if seed not in removed and inside(seed):
                 break
         else:
             break
@@ -100,6 +146,9 @@ def main():
                     help='flipped-winding faces (default 3)')
     ap.add_argument('--non-manifold', type=int, default=2,
                     help='non-manifold fin pairs (default 2)')
+    ap.add_argument('--region', choices=['head', 'centre', 'tail', 'none'],
+                    default='head',
+                    help='where to concentrate the damage (default: head)')
     ap.add_argument('--seed', type=int, default=42)
     args = ap.parse_args()
 
@@ -110,11 +159,51 @@ def main():
     v, t = load_mesh(args.input)
     rng = np.random.default_rng(args.seed)
 
+    # Concentrate the damage. `--region` names the box as fractions of the
+    # bounding box: "head" is the first quarter along X, where a key's wards are
+    # and where the zoomed frames point.
+    if args.region == 'none':
+        centre = half = None
+    else:
+        # Deliberately small: the frames that show this damage are zoomed to it,
+        # and a box a third of the part wide only looks zoomed when the whole part
+        # is what you came from. A few units across is what a 3-4x view can fill.
+        frac, size = {
+            'head': ((0.20, 0.5, 0.5), (0.14, 0.5, 0.5)),
+            'centre': ((0.50, 0.5, 0.5), (0.14, 0.5, 0.5)),
+            'tail': ((0.80, 0.5, 0.5), (0.14, 0.5, 0.5)),
+        }[args.region]
+        centre, half = region_centre(v, t, frac, size)
+        print(f'region {args.region}: centre {np.round(centre, 2)} '
+              f'half {np.round(half, 2)}')
+
     # Order matters: holes first (fewer faces to search), then the injector's own
     # wounding passes on the surviving surface.
-    t = inject_patches(t, args.patches, args.radius, rng)
-    v, t = inject_flipped_normal(v, t, args.flipped, rng)
-    v, t = inject_non_manifold(v, t, args.non_manifold, rng)
+    t = inject_patches(t, v, args.patches, args.radius, rng, centre, half)
+
+    # The injector's own passes pick faces uniformly at random, which is right for
+    # a defect-detection fixture and wrong for a documentation frame: on a 90k
+    # scan a dozen random faces are invisible, and worse, they land outside the
+    # zoomed region. Re-derive the region after the deletion (indices moved) and
+    # wound inside it. Same functions, restricted selection.
+    if centre is not None:
+        cen = v[t].mean(axis=1)
+        inside = [i for i in range(len(t)) if np.all(np.abs(cen[i] - centre) <= half)]
+        if not inside:
+            print('region emptied by the hole pass; wounding everywhere', file=sys.stderr)
+            inside = list(range(len(t)))
+    else:
+        inside = list(range(len(t)))
+
+    if args.flipped:
+        pick = rng.choice(len(inside), size=min(args.flipped, len(inside)), replace=False)
+        faces = [inside[i] for i in pick]
+        t = t.copy()
+        for fi in faces:
+            t[fi] = t[fi][::-1]
+
+    if args.non_manifold:
+        v, t = inject_non_manifold_in(v, t, args.non_manifold, inside, rng)
 
     save_mesh(args.output, v, t)
     print(f'{len(t)} faces -> {args.output}')

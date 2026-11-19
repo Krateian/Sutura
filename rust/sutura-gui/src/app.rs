@@ -255,6 +255,11 @@ pub struct StartupOptions {
     /// Frames to settle before capturing; an overlay needs more than the main
     /// window for its fade-in to finish.
     pub wait_frames: u8,
+    /// Point the camera at this centre, optionally with an explicit zoom. A
+    /// capture hook like `--settings-scroll`: a defect that is three pixels wide
+    /// in the whole-part view cannot be documented, and `--screenshot` has no
+    /// input device to orbit or zoom with.
+    pub focus: Option<([f32; 3], Option<f32>)>,
     /// Give the selected file its own method list, as if the user had unticked
     /// "Use the panel selection" and picked these. Needed to show the per-file
     /// editor in a state other than "inherited" -- which is otherwise the same
@@ -383,6 +388,8 @@ pub struct SuturaApp {
     /// opens. `None` while closed. Python's default view is static
     /// (`gui.py:7373`); the live 3D preview is the interactive alternative.
     compare: Option<ComparePair>,
+    /// Camera focus from `--focus`, applied when a mesh is loaded.
+    focus: Option<([f32; 3], Option<f32>)>,
 }
 
 impl SuturaApp {
@@ -693,6 +700,7 @@ impl SuturaApp {
             changelog_open: false,
             changelog_error: None,
             compare: None,
+            focus: options.focus,
         };
         for path in files {
             app.add_path(path);
@@ -1046,6 +1054,21 @@ impl SuturaApp {
                 }
             }
             self.preview.set_mesh(Arc::new(mesh));
+            // A capture hook: point the camera at a region and zoom, so a defect
+            // smaller than a few pixels in the whole-part view can be seen. The
+            // default framing fits the whole bounding sphere, which is right for a
+            // user and useless for documenting a 3 mm hole in a 57 mm key.
+            if let Some((target, zoom)) = self.focus {
+                self.preview.camera.target = glam::Vec3::from(target);
+                if let Some(zoom) = zoom {
+                    self.preview.camera.zoom = zoom.clamp(0.02, 3.0);
+                } else {
+                    // Frame a much smaller sphere: 1/6 of the part's radius puts
+                    // the region across most of the viewport at the default FOV.
+                    self.preview.camera.radius = (self.preview.camera.radius / 6.0).max(1e-6);
+                }
+                self.preview.dirty = true;
+            }
         }
         self.loaded = Some(key);
     }
