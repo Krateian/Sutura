@@ -1873,7 +1873,7 @@ fn apply_si_escalation(
     base_t: &[[i64; 3]],
     opts: &RepairOptions,
     policy: Option<&LoadedPolicy>,
-    stage1_snapshot: Option<&(Vec<[f64; 3]>, Vec<[i64; 3]>)>,
+    _stage1_snapshot: Option<&(Vec<[f64; 3]>, Vec<[i64; 3]>)>,
     cancel: &CancelToken,
 ) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value)> {
     let base_si = si_exact(base_v, base_t)?;
@@ -1897,10 +1897,10 @@ fn apply_si_escalation(
     let (base_dev, base_vol) =
         report_geometry_metrics(&base_report, input_v, input_t, base_v, base_t);
     let mut base = si_metrics_from_report(&base_report);
+    base.si_stage1 = base.si;
     base.si = Some(base_si);
-    base.si_stage1 = stage1_snapshot.and_then(|(v, t)| si_exact(v, t));
     base.dev_pct = base_dev;
-    base.vol_pct = base_vol.or_else(|| volume_change_pct(input_v, input_t, base_v, base_t));
+    base.vol_pct = base_vol;
     base.apply_facts(&base_facts);
 
     let method_num = si_method_num(policy);
@@ -1997,10 +1997,10 @@ fn apply_si_escalation(
     let (cand_dev, cand_vol) =
         report_geometry_metrics(&cand_report, input_v, input_t, &cand_v, &cand_t);
     let mut cand = si_metrics_from_report(&cand_report);
+    cand.si_stage1 = cand.si;
     cand.si = cand_si;
-    cand.si_stage1 = cand_si;
     cand.dev_pct = cand_dev;
-    cand.vol_pct = cand_vol.or_else(|| volume_change_pct(input_v, input_t, &cand_v, &cand_t));
+    cand.vol_pct = cand_vol;
     if let Some(facts) = cand_facts.as_ref() {
         cand.apply_facts(facts);
     }
@@ -3340,7 +3340,7 @@ fn repair_impl(
         }
     }
     let before = common::topology_summary(&cur_v, &cur_t);
-    let input_components = common::topology_summary(&input_v, &input_t).components;
+    let input_components = before.components;
     let holes_before = boundary_loop_stats(&cur_t).0;
     let nm_before = before.non_two_manifold_edges;
     let before_verts = cur_v.len();
@@ -4385,7 +4385,7 @@ fn repair_impl(
     deep.insert(
         "cad_likeness".into(),
         if opts.deep_repair == DeepRepair::Full {
-            cad_likeness(&input_v, &input_t)
+            cad_likeness(&stage1_volume_before_v, &stage1_volume_before_t)
         } else {
             Value::Null
         },
