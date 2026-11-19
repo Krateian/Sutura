@@ -169,6 +169,13 @@ impl Entry {
 /// Taken from Qt's `apply_dark_theme` so the two windows agree; a control that
 /// picks its own colour is what made the first Rust UI look unlike anything
 /// shipped before it.
+/// Sutura's version, as the CLI and the Python GUI report it.
+///
+/// `CARGO_PKG_VERSION` is the crate's own 0.1.0 placeholder and showed as
+/// "v0.1.0" in the window; a user compares versions with the release they
+/// downloaded, and this is that number (`sutura/repair.py:171`).
+pub(crate) const SUTURA_VERSION: &str = "0.9.9";
+
 pub(crate) const COLOR_ERROR: egui::Color32 = egui::Color32::from_rgb(0xff, 0x5b, 0x5b);
 pub(crate) const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(0xf5, 0x9e, 0x0b);
 pub(crate) const COLOR_OK: egui::Color32 = egui::Color32::from_rgb(0x2e, 0xc4, 0x7a);
@@ -178,6 +185,12 @@ pub(crate) const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x14, 0xb
 pub(crate) const COLOR_ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x0b, 0x0f, 0x11);
 
 /// The 8 px grid (rule b): every gap is 8, 16 or 24.
+/// The label column in every Options tab, so the controls line up (rule h).
+/// The automatic ladder: the policy order Qt listed. Read-only in automatic
+/// mode, which is what makes the rows informative rather than inert.
+pub(crate) const LADDER: [u8; 6] = [2, 13, 16, 18, 19, 7];
+
+pub(crate) const LABEL_W: f32 = 104.0;
 pub(crate) const SPACE_8: f32 = 8.0;
 pub(crate) const SPACE_16: f32 = 16.0;
 pub(crate) const SPACE_24: f32 = 24.0;
@@ -422,6 +435,8 @@ pub struct SuturaApp {
     /// inside the scroll-area closures while `self` is already borrowed.
     settings_scroll_probe: Arc<std::sync::atomic::AtomicU32>,
     file_scroll_probe: Arc<std::sync::atomic::AtomicU32>,
+    /// The Options body's scroll offset, same purpose as the two above.
+    pub(crate) options_scroll_probe: Arc<std::sync::atomic::AtomicU32>,
     /// Method availability, from `self_check::run`. Process-wide, so it is
     /// computed once at startup rather than per file -- and with
     /// `run_fixtures:false`, the same cheap availability probe `--self-check`
@@ -500,6 +515,55 @@ impl SuturaApp {
         self.add_path(path);
     }
 
+    /// Test accessors for the Qt shell: the panels they name no longer exist
+    /// as panels, so these report the state the new layout uses.
+    #[cfg(test)]
+    pub fn options_open_for_test(&self) -> bool {
+        self.options_open
+    }
+
+    #[cfg(test)]
+    pub fn options_tab_for_test(&self) -> OptionsTab {
+        self.options_tab
+    }
+
+    #[cfg(test)]
+    pub fn open_options_for_test(&mut self, tab: OptionsTab) {
+        self.options_open = true;
+        self.options_tab = tab;
+    }
+
+    #[cfg(test)]
+    pub fn selected_index(&self) -> Option<usize> {
+        self.selected
+    }
+
+    #[cfg(test)]
+    pub fn clear_selection_for_test(&mut self) {
+        self.selected = None;
+    }
+
+    #[cfg(test)]
+    pub fn remove_file_for_test(&mut self, idx: usize) {
+        self.remove_file(idx);
+    }
+
+    #[cfg(test)]
+    pub fn file_scroll_offset(&self) -> f32 {
+        f32::from_bits(self.file_scroll_probe.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// The Options body's scroll offset. It lives in egui's own state rather than
+    /// a probe: the window is a `ScrollArea` and egui keeps the offset, so it is
+    /// read back from there after a frame.
+    #[cfg(test)]
+    pub fn options_scroll_offset(&self) -> f32 {
+        f32::from_bits(
+            self.options_scroll_probe
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
     #[cfg(test)]
     pub fn settings_panel_hidden(&self) -> bool {
         !self.settings_open
@@ -548,6 +612,11 @@ impl SuturaApp {
         self.updater_open = false;
         self.notes_open = false;
         self.changelog_open = false;
+    }
+
+    #[cfg(test)]
+    pub fn methods_manual_for_test(&self) -> bool {
+        self.settings.methods.is_some()
     }
 
     #[cfg(test)]
@@ -633,6 +702,7 @@ impl SuturaApp {
             settings_scroll: 0.0,
             settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            options_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
             ctx: None,
             saved_window_size: None,
@@ -754,6 +824,7 @@ impl SuturaApp {
             settings_scroll: options.settings_scroll,
             settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            options_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
             ctx: None,
             saved_window_size: saved.window_size,
@@ -1597,7 +1668,7 @@ impl SuturaApp {
                     }
                     ui.add_space(SPACE_16);
                     ui.label(
-                        egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        egui::RichText::new(format!("v{}", SUTURA_VERSION))
                             .small()
                             .weak(),
                     );
@@ -1695,6 +1766,7 @@ impl SuturaApp {
                     .mode
                     .clone()
                     .unwrap_or_else(|| "auto".to_string());
+                let mode_id = ui.label(rust_i18n::t!("app.mode").to_string()).id;
                 egui::ComboBox::from_id_salt("toolbar-mode")
                     .selected_text(mode)
                     .width(110.0)
@@ -1710,7 +1782,9 @@ impl SuturaApp {
                                 self.settings.mode = Some(value.to_string());
                             }
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(mode_id);
                 if ui.button(rust_i18n::t!("app.methods_btn").to_string()).clicked() {
                     self.options_open = true;
                     self.options_tab = OptionsTab::Methods;
@@ -1724,6 +1798,7 @@ impl SuturaApp {
                     .profile
                     .clone()
                     .unwrap_or_else(|| rust_i18n::t!("app.profile_auto").to_string());
+                let profile_id = ui.label(rust_i18n::t!("app.profile").to_string()).id;
                 egui::ComboBox::from_id_salt("toolbar-profile")
                     .selected_text(profile)
                     .width(130.0)
@@ -1748,7 +1823,9 @@ impl SuturaApp {
                                 self.settings.profile = Some((*value).to_string());
                             }
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(profile_id);
 
                 // The primary action, right-aligned and apart from the group
                 // above (rule d): filled with the single accent colour (rule c).
@@ -1798,9 +1875,19 @@ impl SuturaApp {
             ui.horizontal(|ui| {
                 let total = self.batch_total.max(1);
                 let done = self.batch_done.min(total);
+                // Thin and flat. egui's default is a tall rounded bar that at 0%
+                // reads as a slider knob sitting on the left.
                 ui.add(
-                    egui::ProgressBar::new(done as f32 / total as f32)
-                        .desired_width((ui.available_width() - 240.0).max(80.0)),
+                    egui::ProgressBar::new(if self.batch_active {
+                        done as f32 / total as f32
+                    } else {
+                        0.0
+                    })
+                    .desired_width((ui.available_width() - 240.0).max(80.0))
+                    .desired_height(4.0)
+                    .corner_radius(0)
+                    .fill(COLOR_ACCENT)
+                    .animate(false),
                 );
                 ui.label(egui::RichText::new(self.status_line()).small().weak());
             });
@@ -1808,8 +1895,10 @@ impl SuturaApp {
             ui.add_space(SPACE_8);
             ui.separator();
 
-            // --- Report, log, analysis, defects, repair log -------------------
+            // --- Report, log, analysis, then the defects pane (rule e: each
+            // section collapses when it has nothing to show) ------------------
             self.report_and_logs(ui, &mut open_action);
+            self.defects_panel(ui);
             ui.add_space(SPACE_8);
         });
 
@@ -2283,158 +2372,165 @@ impl SuturaApp {
     /// Qt's `QTreeWidget` had explicit widths 330 / 300 / 140 and no row
     /// styling beyond selection. Reproduced as a grid so the columns line up
     /// whatever the file names are, with the rows themselves selectable.
+    /// The file table: Qt's `QTreeWidget`, three columns.
+    ///
+    /// A real table, not sized labels: the first version laid the header out with
+    /// `allocate_ui_with_layout` and the rows with `add_sized`, which do not
+    /// agree, and the "row" came out as one full-width button with the method
+    /// outside it. `TableBuilder` is the widget for exactly this.
+    ///
+    /// Qt's widths were 330 / 300 / 140 at 1055 px; the same proportions here so
+    /// the columns land in the same place.
     pub(crate) fn file_table(&mut self, ui: &mut egui::Ui) {
-        let avail = ui.available_width();
-        let (w_file, w_method) = (avail * 0.46, avail * 0.32);
-        let w_result = (avail - w_file - w_method - 2.0 * SPACE_8).max(60.0);
+        use egui_extras::{Column, TableBuilder};
 
-        ui.horizontal(|ui| {
-            for (w, key) in [
-                (w_file, "app.col_file"),
-                (w_method, "app.col_method"),
-                (w_result, "app.col_result"),
-            ] {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(w, 18.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.label(egui::RichText::new(rust_i18n::t!(key).to_string()).strong());
-                    },
-                );
-            }
-        });
-        ui.separator();
-
-        // Empty state fills nothing (rule e): the table's own height shrinks to
-        // its rows, and the buttons below move up with it.
         let mut clicked = None;
-        let mut remove = None;
-        let rows_height = if self.files.is_empty() {
-            28.0
+        let mut removed = None;
+
+        // Empty state takes one row, not a hundred (rule e).
+        let rows = if self.files.is_empty() {
+            0
         } else {
-            (self.files.len() as f32 * 20.0).clamp(60.0, 220.0)
+            self.files.len()
         };
-        egui::ScrollArea::vertical()
-            .id_salt("file_table_scroll")
-            .max_height(rows_height)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                if self.files.is_empty() {
+        let row_h = 20.0;
+        let body_h = (rows as f32 * row_h).clamp(60.0, 220.0);
+
+        let table = TableBuilder::new(ui)
+            .id_salt("file_table")
+            .striped(false)
+            .resizable(false)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::initial(330.0).at_least(160.0))
+            .column(Column::initial(300.0).at_least(90.0))
+            .column(Column::remainder())
+            .min_scrolled_height(0.0)
+            .max_scroll_height(body_h)
+            .sense(egui::Sense::click());
+
+        // The table's own scroll area is what must be measured, and `TableBuilder`
+        // keeps it private. Drawing the body inside an explicit `ScrollArea`
+        // would give a second scrollbar, so the probe reads egui's stored offset
+        // for the table's id after the frame instead.
+        #[cfg(test)]
+        let _ = &body_h;
+
+        table
+            .header(22.0, |mut header| {
+                header.col(|ui| {
                     ui.label(
-                        egui::RichText::new(rust_i18n::t!("app.no_files").to_string())
-                            .small()
-                            .weak(),
+                        egui::RichText::new(rust_i18n::t!("app.col_file").to_string()).strong(),
                     );
+                });
+                header.col(|ui| {
+                    ui.label(
+                        egui::RichText::new(rust_i18n::t!("app.col_method").to_string()).strong(),
+                    );
+                });
+                header.col(|ui| {
+                    ui.label(
+                        egui::RichText::new(rust_i18n::t!("app.col_result").to_string()).strong(),
+                    );
+                });
+            })
+            .body(|mut body| {
+                if self.files.is_empty() {
+                    body.row(row_h, |mut row| {
+                        row.col(|ui| {
+                            ui.label(
+                                egui::RichText::new(rust_i18n::t!("app.no_files").to_string())
+                                    .small()
+                                    .weak(),
+                            );
+                        });
+                        row.col(|_| {});
+                        row.col(|_| {});
+                    });
+                    return;
                 }
                 for (idx, entry) in self.files.iter().enumerate() {
-                    let name = entry
-                        .path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| entry.path.display().to_string());
-                    let selected = self.selected == Some(idx);
-                    let decision = entry.decision();
-                    let row = ui.horizontal(|ui| {
-                        let mut text = egui::RichText::new(&name);
-                        if entry.error.is_some() {
-                            text = text.color(COLOR_ERROR);
-                        }
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(w_file, 18.0),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                if ui
-                                    .add(egui::Button::selectable(selected, text).min_size(
-                                        egui::vec2(w_file, 18.0),
-                                    ))
-                                    .clicked()
-                                {
-                                    clicked = Some(idx);
-                                }
-                            },
-                        );
-                        let method = entry
-                            .methods
-                            .as_ref()
-                            .map(|m| {
-                                m.iter()
-                                    .map(|n| n.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(",")
-                            })
-                            .unwrap_or_else(|| rust_i18n::t!("app.method_auto").to_string());
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(w_method, 18.0),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.label(egui::RichText::new(method).small());
-                            },
-                        );
-                        match &decision {
-                            Some((text, colour, tip)) => {
-                                let short = truncate_decision(text, 30);
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(w_result, 18.0),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(short).small().color(*colour),
-                                            ),
-                                        )
-                                        .on_hover_text(tip.clone());
-                                    },
-                                );
+                    body.row(row_h, |mut row| {
+                        let selected = self.selected == Some(idx);
+                        // A selected row is tinted, not filled: Qt paints
+                        // `Highlight` behind the text, and a solid button per row
+                        // is what the first attempt got wrong.
+                        row.set_selected(selected);
+
+                        row.col(|ui| {
+                            let name = entry
+                                .path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| entry.path.display().to_string());
+                            let mut text = egui::RichText::new(name);
+                            if entry.error.is_some() {
+                                text = text.color(COLOR_ERROR);
                             }
-                            None => {
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(w_result, 18.0),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |_ui| {},
-                                );
+                            if ui.selectable_label(selected, text).clicked() {
+                                clicked = Some(idx);
                             }
-                        }
-                    });
-                    if row.response.hovered() && self.selected == Some(idx) {
-                        // A selected row reads as one unit; covering it here
-                        // would draw over the label, so nothing is added.
-                    }
-                    // Removing the file being repaired would orphan the worker's
-                    // index, so it is disabled while busy.
-                    if !self.busy()
-                        && matches!(entry.repair, RepairState::Running { .. })
-                    {
-                        let _ = remove;
-                    }
-                    if let RepairState::Running { step, total } = entry.repair {
-                        ui.add(
-                            egui::ProgressBar::new(step as f32 / total.max(1) as f32)
-                                .text(
-                                    rust_i18n::t!(
-                                        "app.progress",
-                                        step = step as i64,
-                                        total = total as i64
+                        });
+                        row.col(|ui| {
+                            let method = entry
+                                .methods
+                                .as_ref()
+                                .map(|m| {
+                                    m.iter()
+                                        .map(|n| n.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(",")
+                                })
+                                .unwrap_or_else(|| rust_i18n::t!("app.method_auto").to_string());
+                            ui.label(egui::RichText::new(method).small().monospace());
+                        });
+                        row.col(|ui| {
+                            match entry.decision() {
+                                Some((text, colour, tip)) => {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(truncate_decision(&text, 26))
+                                                .small()
+                                                .color(colour),
+                                        ),
                                     )
-                                    .to_string(),
-                                )
-                                .desired_height(8.0),
-                        );
-                    }
-                    if let Some(e) = &entry.error {
-                        ui.label(egui::RichText::new(e).small().color(COLOR_ERROR));
-                    }
+                                    .on_hover_text(tip);
+                                }
+                                None => {
+                                    // Qt leaves the Result cell empty until a
+                                    // report exists; removal is the toolbar's.
+                                    let _ = &mut removed;
+                                }
+                            }
+                        });
+                    });
                 }
             });
-        #[cfg(test)]
-        self.file_scroll_probe.store(
-            self.files.len() as u32,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+
         if let Some(idx) = clicked {
             self.selected = Some(idx);
         }
-        if let Some(idx) = remove {
+        if let Some(idx) = removed {
             self.remove_file(idx);
+        }
+
+        // Repair progress, if any, under the table rather than inside it: a
+        // progress bar in a cell makes the row height jump around.
+        if let Some(entry) = self.selected.and_then(|i| self.files.get(i)) {
+            if let RepairState::Running { step, total } = entry.repair {
+                ui.add(
+                    egui::ProgressBar::new(step as f32 / total.max(1) as f32)
+                        .desired_height(4.0)
+                        .corner_radius(0)
+                        .text(
+                            rust_i18n::t!(
+                                "app.progress",
+                                step = step as i64,
+                                total = total as i64
+                            )
+                            .to_string(),
+                        ),
+                );
+            }
         }
     }
 
@@ -2634,82 +2730,6 @@ impl SuturaApp {
                 // lists them (`gui.py:6755`): one line per hole and
                 // per non-manifold region, with its centroid so the
                 // user can locate it.
-                match &self.files[idx].defects {
-                    Some(Ok(report))
-                        if !report.holes.is_empty()
-                            || !report.non_manifold.is_empty() =>
-                    {
-                        let total = report.holes.len() + report.non_manifold.len();
-                        egui::CollapsingHeader::new(
-                            rust_i18n::t!("app.defects", count = total as i64)
-                                .to_string(),
-                        )
-                        .id_salt("defects_header")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            // Bound the list: a shattered mesh can
-                            // have thousands, and the panel is a
-                            // summary, not a table to scroll.
-                            //
-                            // The bound is not enough on its own:
-                            // twenty rows is ~500 px, which pushed
-                            // everything below it (the 3MF object
-                            // list) off the bottom of the window.
-                            // A bounded inner scroll keeps the
-                            // section a fixed height whatever the
-                            // mesh.
-                            egui::ScrollArea::vertical()
-                                .id_salt("defects_scroll")
-                                .max_height(160.0)
-                                .show(ui, |ui| {
-                            const SHOWN: usize = 20;
-                            for hole in report.holes.iter().take(SHOWN) {
-                                let [x, y, z] = hole.centroid;
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "hole  ({x:.1}, {y:.1}, {z:.1})  d={:.2}",
-                                        hole.diameter
-                                    ))
-                                    .small()
-                                    .monospace(),
-                                );
-                            }
-                            for nm in report.non_manifold.iter().take(SHOWN) {
-                                let [x, y, z] = nm.centroid;
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "non-manifold  ({x:.1}, {y:.1}, {z:.1})  faces={}",
-                                        nm.faces
-                                    ))
-                                    .small()
-                                    .monospace(),
-                                );
-                            }
-                            if total > SHOWN {
-                                ui.label(
-                                    egui::RichText::new(
-                                        rust_i18n::t!(
-                                            "app.defects_more",
-                                            rest = (total - SHOWN) as i64
-                                        )
-                                        .to_string(),
-                                    )
-                                    .small()
-                                    .weak(),
-                                );
-                            }
-                            });
-                        });
-                    }
-                    Some(Err(e)) => {
-                        ui.label(
-                            egui::RichText::new(e)
-                                .small()
-                                .color(egui::Color32::LIGHT_RED),
-                        );
-                    }
-                    _ => {}
-                }
                 if let Some(Ok(objects)) = &self.files[idx].objects {
                     if !objects.is_empty() {
                         egui::CollapsingHeader::new(
@@ -2868,10 +2888,102 @@ impl SuturaApp {
         }
     }
 
-    /// The settings controls, rendered inside the Options window.
+    /// The selected file's individual defects, as its own panel.
     ///
-    /// Moved out of the old right-hand column unchanged: every control still
-    /// writes the same field, so the CLI mapping cannot drift.
+    /// Qt had this as `Input defects (selected file):` with a fixed-height
+    /// text pane under the log; the plan put it there and not inside the
+    /// report, where it reads as part of the verdict.
+    pub(crate) fn defects_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.selected else { return };
+        // Filled on demand, the same call the headless hook uses.
+        if let Some(slot) = self.files.get_mut(idx) {
+            if slot.defects.is_none() {
+                slot.defects = Some(defect_rows(&slot.path));
+            }
+        }
+        let has_any = matches!(&self.files[idx].defects, Some(Ok(r)) if !r.holes.is_empty() || !r.non_manifold.is_empty());
+        if !has_any {
+            return;
+        }
+        ui.heading(rust_i18n::t!("app.input_defects").to_string());
+        match &self.files[idx].defects {
+                    Some(Ok(report))
+                        if !report.holes.is_empty()
+                            || !report.non_manifold.is_empty() =>
+                    {
+                        let total = report.holes.len() + report.non_manifold.len();
+                        egui::CollapsingHeader::new(
+                            rust_i18n::t!("app.defects", count = total as i64)
+                                .to_string(),
+                        )
+                        .id_salt("defects_header")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            // Bound the list: a shattered mesh can
+                            // have thousands, and the panel is a
+                            // summary, not a table to scroll.
+                            //
+                            // The bound is not enough on its own:
+                            // twenty rows is ~500 px, which pushed
+                            // everything below it (the 3MF object
+                            // list) off the bottom of the window.
+                            // A bounded inner scroll keeps the
+                            // section a fixed height whatever the
+                            // mesh.
+                            egui::ScrollArea::vertical()
+                                .id_salt("defects_scroll")
+                                .max_height(160.0)
+                                .show(ui, |ui| {
+                            const SHOWN: usize = 20;
+                            for hole in report.holes.iter().take(SHOWN) {
+                                let [x, y, z] = hole.centroid;
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "hole  ({x:.1}, {y:.1}, {z:.1})  d={:.2}",
+                                        hole.diameter
+                                    ))
+                                    .small()
+                                    .monospace(),
+                                );
+                            }
+                            for nm in report.non_manifold.iter().take(SHOWN) {
+                                let [x, y, z] = nm.centroid;
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "non-manifold  ({x:.1}, {y:.1}, {z:.1})  faces={}",
+                                        nm.faces
+                                    ))
+                                    .small()
+                                    .monospace(),
+                                );
+                            }
+                            if total > SHOWN {
+                                ui.label(
+                                    egui::RichText::new(
+                                        rust_i18n::t!(
+                                            "app.defects_more",
+                                            rest = (total - SHOWN) as i64
+                                        )
+                                        .to_string(),
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                            }
+                            });
+                        });
+                    }
+                    Some(Err(e)) => {
+                        ui.label(
+                            egui::RichText::new(e)
+                                .small()
+                                .color(egui::Color32::LIGHT_RED),
+                        );
+                    }
+                    _ => {}
+        }
+    }
+
     /// The settings controls, rendered in Options -> Repair.
     ///
     /// Moved out of the old right-hand column unchanged: every control still
@@ -2992,7 +3104,7 @@ impl SuturaApp {
         });
 
         ui.separator();
-        ui.label(rust_i18n::t!("app.tiers").to_string());
+        Self::option_section(ui, rust_i18n::t!("app.tiers_section").to_string());
         let mut tamponade = self.settings.no_tamponade == false;
         if ui
             .checkbox(&mut tamponade, rust_i18n::t!("app.tier_tamponade").to_string())
@@ -3020,43 +3132,81 @@ impl SuturaApp {
             self.settings.no_coaptation = !coaptation;
             self.settings.experimental_coaptation = false;
         }
-        // Splint is OFF by default, so it is expressed as an opt-in.
-        ui.checkbox(
-            &mut self.settings.experimental_splint,
-            rust_i18n::t!("app.tier_splint").to_string(),
-        );
-
         ui.separator();
         // Graft and the fTetWild fallback: declared on the CLI since
         // the beginning, never reachable from the GUI.
-        ui.label(rust_i18n::t!("app.advanced").to_string());
-        ui.checkbox(
-            &mut self.settings.experimental_graft,
-            rust_i18n::t!("app.experimental_graft").to_string(),
-        );
-        // Python: the negative flag wins over the positive one, and
-        // `options_from` keeps them as two independent booleans, so
-        // the GUI must not let both be on.
-        let mut no_graft = self.settings.no_graft;
-        if ui
-            .checkbox(&mut no_graft, rust_i18n::t!("app.no_graft").to_string())
-            .changed()
+        Self::option_section(ui, rust_i18n::t!("app.advanced_section").to_string());
+        // Graft and the fTetWild fallback are each TWO booleans in the core: a
+        // positive (`experimental_*`) and a negative (`no_*`), and Python lets
+        // the negative win. Two checkboxes for one decision is a pair that can
+        // contradict itself on screen, so the choice is one tri-state combo and
+        // the two flags are derived from it.
         {
-            self.settings.no_graft = no_graft;
+            // Graft: on / off / experimental.
+            let current = if self.settings.no_graft {
+                "off"
+            } else if self.settings.experimental_graft {
+                "experimental"
+            } else {
+                "on"
+            };
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [LABEL_W, 22.0],
+                    egui::Label::new(rust_i18n::t!("app.graft").to_string()),
+                );
+                egui::ComboBox::from_id_salt("graft-tier")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (value, key) in [
+                            ("on", "app.tier_on"),
+                            ("experimental", "app.tier_experimental"),
+                            ("off", "app.tier_off"),
+                        ] {
+                            if ui
+                                .selectable_label(current == value, rust_i18n::t!(key).to_string())
+                                .clicked()
+                            {
+                                self.settings.no_graft = value == "off";
+                                self.settings.experimental_graft = value == "experimental";
+                            }
+                        }
+                    });
+            });
         }
-        ui.checkbox(
-            &mut self.settings.experimental_fallback_ftetwild,
-            rust_i18n::t!("app.experimental_fallback_ftetwild").to_string(),
-        );
-        let mut no_fallback = self.settings.no_fallback_ftetwild;
-        if ui
-            .checkbox(
-                &mut no_fallback,
-                rust_i18n::t!("app.no_fallback_ftetwild").to_string(),
-            )
-            .changed()
         {
-            self.settings.no_fallback_ftetwild = no_fallback;
+            // fTetWild fallback: the same shape.
+            let current = if self.settings.no_fallback_ftetwild {
+                "off"
+            } else if self.settings.experimental_fallback_ftetwild {
+                "experimental"
+            } else {
+                "on"
+            };
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [LABEL_W, 22.0],
+                    egui::Label::new(rust_i18n::t!("app.fallback_ftetwild").to_string()),
+                );
+                egui::ComboBox::from_id_salt("ftetwild-tier")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (value, key) in [
+                            ("on", "app.tier_on"),
+                            ("experimental", "app.tier_experimental"),
+                            ("off", "app.tier_off"),
+                        ] {
+                            if ui
+                                .selectable_label(current == value, rust_i18n::t!(key).to_string())
+                                .clicked()
+                            {
+                                self.settings.no_fallback_ftetwild = value == "off";
+                                self.settings.experimental_fallback_ftetwild =
+                                    value == "experimental";
+                            }
+                        }
+                    });
+            });
         }
         // `--classifier-engine` has NO control here on purpose:
         // `repair.rs:907` hard-codes "experimental", so writing
@@ -3241,10 +3391,10 @@ impl SuturaApp {
 
     /// The method pickers, rendered in Options -> Methods.
     pub(crate) fn methods_controls(&mut self, ui: &mut egui::Ui) {
-        // Qt's Method control radios. `forced_methods` is a set in the core
-        // (`repair.rs`: membership only), so "Manual (exact order)" cannot
-        // promise an order -- the radio picks whether the panel's selection is
-        // sent at all, which is what `--methods` vs its absence means.
+        // Qt's Methods tab, in its order: the mode radios, then the automatic
+        // ladder (read-only when the policy is in charge), then the manual
+        // sequence. "Use the panel selection" was left over from a panel this
+        // window replaced, and "0 method(s) applied" told a reader nothing.
         Self::option_section(ui, rust_i18n::t!("app.method_control").to_string());
         let mut manual = self.settings.methods.is_some();
         ui.horizontal(|ui| {
@@ -3267,82 +3417,14 @@ impl SuturaApp {
             self.settings.methods = Some(String::new());
         }
 
-        ui.label(rust_i18n::t!("app.file_methods").to_string());
-        if let Some(idx) = self.selected {
-            if self.files.get(idx).is_some() {
-                let global: Vec<u8> = self
-                    .settings
-                    .methods
-                    .as_deref()
-                    .map(|s| {
-                        s.split(',')
-                            .filter_map(|t| t.trim().parse::<u8>().ok())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let mut local = self.files[idx].methods.clone();
-                let mut inherited = local.is_none();
-                ui.horizontal(|ui| {
-                    ui.checkbox(
-                        &mut inherited,
-                        rust_i18n::t!("app.file_methods_inherit").to_string(),
-                    );
-                    if inherited && local.is_some() {
-                        local = None;
-                    } else if !inherited && local.is_none() {
-                        local = Some(global.clone());
-                    }
-                });
-                let effective = local.clone().unwrap_or_else(|| global.clone());
-                if local.is_some() {
-                    let mut edited = effective.clone();
-                    let mut changed = false;
-                    egui::ScrollArea::vertical()
-                        .id_salt("file_methods_scroll")
-                        .max_height(110.0)
-                        .show(ui, |ui| {
-                            for (num, id, _cat, name) in
-                                sutura_core::repair_settings::METHODS
-                            {
-                                let mut on = edited.contains(&num);
-                                if ui
-                                    .checkbox(&mut on, format!("{num}. {name} ({id})"))
-                                    .changed()
-                                {
-                                    if on {
-                                        edited.push(num);
-                                    } else {
-                                        edited.retain(|n| *n != num);
-                                    }
-                                    changed = true;
-                                }
-                            }
-                        });
-                    if changed {
-                        edited.sort_unstable();
-                        local = Some(edited);
-                    }
-                }
-                if local != self.files[idx].methods {
-                    self.files[idx].methods = local;
-                }
-                ui.label(
-                    egui::RichText::new(rust_i18n::t!(
-                        "app.file_methods_count",
-                        count = effective.len() as i64
-                    )
-                    .to_string())
-                    .small()
-                    .weak(),
-                );
-            }
-        }
-
-        ui.separator();
-        ui.label(rust_i18n::t!("app.methods").to_string());
-        // Multiple selection, not a sequence: `forced_methods` is a set
-        // in the core (membership only), so offering reordering would
-        // promise an order nothing honours.
+        // The ladder. In automatic mode the policy picks and the rows are shown
+        // but not editable, which is what Qt meant by a fixed order.
+        Self::option_section(ui, rust_i18n::t!("app.automatic_ladder").to_string());
+        ui.label(
+            egui::RichText::new(rust_i18n::t!("app.automatic_ladder_body").to_string())
+                .small()
+                .weak(),
+        );
         let mut selected: Vec<u8> = self
             .settings
             .methods
@@ -3353,19 +3435,25 @@ impl SuturaApp {
                     .collect()
             })
             .unwrap_or_default();
+        let automatic = self.settings.methods.is_none();
         let mut changed = false;
         egui::ScrollArea::vertical()
-            .id_salt("methods_scroll")
-            .max_height(140.0)
+            .id_salt("methods_ladder")
+            .max_height(170.0)
+            .auto_shrink([false, true])
             .show(ui, |ui| {
-                for (num, id, _category, name) in
-                    sutura_core::repair_settings::METHODS
-                {
-                    let mut on = selected.contains(&num);
-                    if ui
-                        .checkbox(&mut on, format!("{num}. {name} ({id})"))
-                        .changed()
-                    {
+                for (num, id, _category, name) in sutura_core::repair_settings::METHODS {
+                    let mut on = if automatic {
+                        LADDER.contains(&num)
+                    } else {
+                        selected.contains(&num)
+                    };
+                    // Disabled rows still read: a greyed tick is the ladder.
+                    let response = ui.add_enabled(
+                        !automatic,
+                        egui::Checkbox::new(&mut on, format!("{num}. {name} ({id})")),
+                    );
+                    if response.changed() {
                         if on {
                             selected.push(num);
                         } else {
@@ -3376,20 +3464,89 @@ impl SuturaApp {
                 }
             });
         if changed {
-            self.settings.methods = if selected.is_empty() {
-                None
-            } else {
-                selected.sort_unstable();
-                Some(
-                    selected
-                        .iter()
-                        .map(|n| n.to_string())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                )
-            };
+            selected.sort_unstable();
+            self.settings.methods = Some(
+                selected
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+
+        Self::option_section(ui, rust_i18n::t!("app.manual_sequence").to_string());
+        ui.label(
+            egui::RichText::new(rust_i18n::t!("app.manual_sequence_body").to_string())
+                .small()
+                .weak(),
+        );
+        if automatic {
+            ui.label(
+                egui::RichText::new(rust_i18n::t!("app.manual_sequence_hint").to_string())
+                    .small()
+                    .weak(),
+            );
+        }
+
+        // The per-file editor sits here too: Qt edited the selected file's
+        // sequence from this tab.
+        Self::option_section(ui, rust_i18n::t!("app.file_methods").to_string());
+        if let Some(idx) = self.selected {
+            if self.files.get(idx).is_some() {
+                let global = selected.clone();
+                let mut local = self.files[idx].methods.clone();
+                let mut inherit = local.is_none();
+                ui.push_id("file-methods-inherit", |ui| {
+                    ui.checkbox(
+                        &mut inherit,
+                        rust_i18n::t!("app.file_methods_inherit").to_string(),
+                    );
+                });
+                if inherit && local.is_some() {
+                    local = None;
+                } else if !inherit && local.is_none() {
+                    local = Some(global.clone());
+                }
+                if let Some(edited) = local.clone() {
+                    let mut next = edited.clone();
+                    let mut dirty = false;
+                    egui::ScrollArea::vertical()
+                        .id_salt("file_methods_list")
+                        .max_height(120.0)
+                        .show(ui, |ui| {
+                            for (num, id, _cat, name) in sutura_core::repair_settings::METHODS {
+                                let mut on = next.contains(&num);
+                                if ui
+                                    .checkbox(&mut on, format!("{num}. {name} ({id})"))
+                                    .changed()
+                                {
+                                    if on {
+                                        next.push(num);
+                                    } else {
+                                        next.retain(|n| *n != num);
+                                    }
+                                    dirty = true;
+                                }
+                            }
+                        });
+                    if dirty {
+                        next.sort_unstable();
+                        local = Some(next);
+                    }
+                }
+                if local != self.files[idx].methods {
+                    self.files[idx].methods = local;
+                }
+            }
+        } else {
+            ui.label(
+                egui::RichText::new(rust_i18n::t!("app.no_selection").to_string())
+                    .small()
+                    .weak(),
+            );
         }
     }
+
 
     /// fTetWild and the external engines, rendered in Options -> Engines.
     pub(crate) fn engines_controls(&mut self, ui: &mut egui::Ui) {
@@ -3461,7 +3618,17 @@ impl SuturaApp {
 
     /// The opt-in passes, rendered in Options -> Experimental.
     pub(crate) fn experimental_controls(&mut self, ui: &mut egui::Ui) {
-        ui.label("moved below");
+        // The opt-in passes, which Qt kept on this tab.
+        ui.label(
+            egui::RichText::new(rust_i18n::t!("app.experimental_hint").to_string())
+                .small()
+                .weak(),
+        );
+        // Splint is OFF by default, so it is expressed as an opt-in.
+        ui.checkbox(
+            &mut self.settings.experimental_splint,
+            rust_i18n::t!("app.tier_splint").to_string(),
+        );
         let mut dressing = self.settings.dressing;
         if ui
             .checkbox(&mut dressing, rust_i18n::t!("app.tier_dressing").to_string())
@@ -4325,7 +4492,10 @@ fn finish_from_output_with(
 /// widgets. `labelled_by` is the standard way to associate a label with a
 /// control, and it costs one id.
 pub(crate) fn labelled(ui: &mut egui::Ui, text: String) -> egui::Id {
-    let response = ui.label(text);
+    // A fixed label column, so every control in a tab starts at the same x
+    // (rule h). `add_sized` rather than `label`: the latter takes its natural
+    // width and the combos then land in ragged columns.
+    let response = ui.add_sized([LABEL_W, 22.0], egui::Label::new(text));
     response.id
 }
 
@@ -5248,36 +5418,26 @@ mod tests {
         assert_eq!(app.settings_scroll, 0.0);
     }
 
-    /// The settings panel must be inside a scroll area.
+    /// The Options window must be inside a scroll area.
     ///
     /// A static screenshot cannot show this: egui only paints the scrollbar
-    /// while hovering, and at scroll offset 0 the frame is identical either
-    /// way. The window is a fixed 1024x720 with a 720x480 minimum
-    /// (`main.rs:174-175`), so at the minimum size the panel is taller than the
-    /// window and the lower controls (wall thickness, join components, retries,
-    /// the whole method list) are unreachable without this.
+    /// while hovering, and at offset 0 the frame is identical either way. Two of
+    /// the seven tabs (Repair, Methods) are taller than the window, and the lower
+    /// controls (per-run limits, the method lists) are unreachable without it.
+    ///
+    /// The panel moved from a `Panel::right` to the Options window when the Qt
+    /// layout landed, so this looks there now.
     #[test]
-    fn settings_panel_is_scrollable() {
-        let src = include_str!("app.rs");
-        let start = src
-            .find("Panel::right(\"settings\")")
-            .expect("settings panel exists");
-        let end = src[start..]
-            .find("\n            });")
-            .map(|i| start + i)
-            .expect("settings panel ends");
-        let panel = &src[start..end];
-        // `vertical()`, not `horizontal()`: only vertical scrolling makes the
-        // lower controls reachable, and a substring check for "ScrollArea"
-        // alone would pass either way.
+    fn options_window_is_scrollable() {
+        let src = include_str!("options.rs");
         assert!(
-            panel.contains("ScrollArea::vertical()"),
-            "the settings panel must scroll vertically, or its lower half is \
-             unreachable at 720x480"
+            src.contains("ScrollArea::vertical()"),
+            "the Options body must scroll: two tabs are taller than the window"
         );
+        // `options-scroll`, not an inner list: this is the body itself.
         assert!(
-            !panel.contains("ScrollArea::horizontal()"),
-            "horizontal scrolling does not make the lower controls reachable"
+            src.contains(".id_salt(\"options-scroll\")"),
+            "the body scroll area must be the one that carries the id"
         );
     }
 }

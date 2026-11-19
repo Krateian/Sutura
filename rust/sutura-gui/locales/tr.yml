@@ -230,3 +230,22 @@ app:
   method_control: Yöntem denetimi
   method_automatic: Otomatik (politika sırası)
   method_manual: Elle (tam sıra)
+  opt_usage_history: Anonim kullanım geçmişi (dosya adı veya yol yok)
+  opt_already_recorded: Her zaman açık; öğrenme sıralaması bu ortak geçmiş dosyasını okur.
+  opt_chart_cache: Sutura çizim önbelleği (~/.cache/sutura/)
+  diagnostics_title: Tanılama
+  graft: Graft
+  fallback_ftetwild: fTetWild yedeği
+  tier_on: Açık
+  tier_experimental: Deneysel
+  tier_off: Kapalı
+  input_defects: Girdi kusurları (seçili dosya)
+  automatic_ladder: Otomatik sıra
+  automatic_ladder_body: Otomatik sıra sabittir. Özel bir sıra için Elle'yi seç.
+  manual_sequence: Elle sıra
+  manual_sequence_body: İşaretli yöntemler dosya etiketi olur; CLI bunları --methods olarak alır.
+  manual_sequence_hint: Bu listeyi düzenlemek için Elle (tam sıra) moduna geç.
+  no_selection: Yöntemlerini düzenlemek için bir dosya seç.
+  opt_learning: "Öğrenme sıralaması: yöntemleri yerel onarım geçmişinden sırala"
+  tiers_section: Onarım katları
+  advanced_section: Gelişmiş

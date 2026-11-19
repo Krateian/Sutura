@@ -27,6 +27,9 @@ const TEXT: egui::Color32 = egui::Color32::from_rgb(0xf2, 0xf4, 0xf6);
 const PLACEHOLDER: egui::Color32 = egui::Color32::from_rgb(0x8b, 0x94, 0x9e);
 /// Qt's disabled text.
 const DISABLED: egui::Color32 = egui::Color32::from_rgb(0x6b, 0x74, 0x80);
+/// A selected row's tint: Qt's accent, dimmed, so selection reads without
+/// competing with the one primary action.
+const SELECTION: egui::Color32 = egui::Color32::from_rgb(0x1d, 0x4b, 0x46);
 /// Qt's `HighlightedText`.
 const ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x0b, 0x0f, 0x11);
 
@@ -82,7 +85,7 @@ pub fn apply(ctx: &egui::Context) {
     visuals.faint_bg_color = BASE;
     visuals.override_text_color = Some(TEXT);
     visuals.window_stroke = egui::Stroke::new(1.0, BUTTON);
-    visuals.selection.bg_fill = COLOR_ACCENT;
+    visuals.selection.bg_fill = SELECTION;
     visuals.selection.stroke = egui::Stroke::new(1.0, ON_ACCENT);
     visuals.hyperlink_color = COLOR_ACCENT;
 

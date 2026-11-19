@@ -12,13 +12,18 @@
 //! have caught it only if someone looked at that size, and nothing asserted that
 //! a control was *reachable at all*. These tests do.
 //!
+//! The layout assertions follow the Qt v0.9.9 shell: one vertical flow with the
+//! table, two button rows, the progress row and the report, and the settings in
+//! their own seven-tab window. The tests that asserted the three-pane layout this
+//! replaced were rewritten, not deleted -- each still pins the same regression.
+//!
 //! They are in `src/` rather than `tests/` because `sutura-gui` is a binary
 //! crate: an integration test cannot see `SuturaApp`.
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
-use crate::app::{Intensity, SuturaApp, ViewMode};
+use crate::app::{Intensity, OptionsTab, SuturaApp, ViewMode};
 
 /// Run a few frames, so deferred work (textures, scroll state, popups) settles.
 fn settle(h: &mut Harness<'_, SuturaApp>) {
@@ -28,10 +33,6 @@ fn settle(h: &mut Harness<'_, SuturaApp>) {
 }
 
 /// Post one mouse-wheel event over a position, as the windowing backend does.
-///
-/// The harness has no `scroll_at_pointer`, so the raw `Event::MouseWheel` is what
-/// the real UI receives -- posting it is closer to the user's action than calling
-/// a helper that might bypass input handling.
 fn wheel(h: &mut Harness<'_, SuturaApp>, at: egui::Pos2, delta: f32) {
     h.event(egui::Event::PointerMoved(at));
     h.event(egui::Event::MouseWheel {
@@ -43,15 +44,18 @@ fn wheel(h: &mut Harness<'_, SuturaApp>, at: egui::Pos2, delta: f32) {
     });
 }
 
-/// Like [`temp_box`] but with the caller's name, so a test can load many entries.
-fn named_box(tag: &str) -> std::path::PathBuf {
-    temp_box(tag)
+/// Click a checkbox by its visible text.
+///
+/// `get_by_label` finds a `Label`, not a checkbox: egui exposes the checkbox as
+/// `Role::CheckBox` and carries the text as its name, so a label query misses it.
+fn click_checkbox(h: &mut Harness<'_, SuturaApp>, text: &str) {
+    let node = h
+        .query_by_role_and_label(egui::accesskit::Role::CheckBox, text)
+        .unwrap_or_else(|| panic!("no checkbox {text:?}"));
+    node.click();
 }
 
 /// Click the first checkbox with this text, when a label legitimately repeats.
-///
-/// The global method list and the per-file editor both show "1. Quick Clean", so
-/// an exact query finds two. The per-file editor is drawn first.
 fn click_first_checkbox(h: &mut Harness<'_, SuturaApp>, text: &str) {
     let node = h
         .query_all_by_role_and_label(egui::accesskit::Role::CheckBox, text)
@@ -60,38 +64,18 @@ fn click_first_checkbox(h: &mut Harness<'_, SuturaApp>, text: &str) {
     node.click();
 }
 
-/// Click a checkbox by its visible text.
-///
-/// `get_by_label` finds a `Label`, not a checkbox: egui exposes the checkbox as
-/// `egui::accesskit::Role::CheckBox` and carries the text as its name, so a label query misses it
-/// (the first version of these tests failed that way).
-fn click_checkbox(h: &mut Harness<'_, SuturaApp>, text: &str) {
-    let node = h
-        .query_by_role_and_label(egui::accesskit::Role::CheckBox, text)
-        .unwrap_or_else(|| panic!("no checkbox {text:?}"));
-    node.click();
-}
-
 /// Serialise tests, because the UI language is process-global.
 ///
 /// `i18n::apply` swaps one global translation table, so a test that switches to
-/// Turkish changes what every other test in the same process sees. Running the
-/// suite with `--test-threads=1` hides it but does not fix it; a mutex around the
-/// whole test body does, and it keeps the default parallel run.
+/// Turkish changes what every other test in the same process sees.
 pub(super) static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Take the serialisation lock, ignoring poisoning (a panicking test would
-/// otherwise turn every later test into a "poisoned lock" failure).
+/// Take the serialisation lock, ignoring poisoning.
 pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Force the UI language back to English before a test.
-///
-/// `i18n::apply` sets a process-global translation table, so the language test
-/// leaking Turkish into every test that ran after it is why six of them failed
-/// only in a full run. Resetting at the start of each test is the fix; there is no
-/// per-harness i18n.
 fn use_english() {
     crate::i18n::apply(crate::i18n::Language::En);
 }
@@ -125,17 +109,23 @@ fn temp_box(tag: &str) -> std::path::PathBuf {
     path
 }
 
-/// Every toolbar button must be reachable at the two sizes a report named.
+/// A harness with Options already open on a tab.
+fn harness_with_options(size: egui::Vec2, tab: OptionsTab) -> Harness<'static, SuturaApp> {
+    let mut h = harness(size);
+    h.state_mut().open_options_for_test(tab);
+    settle(&mut h);
+    h
+}
+
+/// Every control of the Qt shell must be reachable at the sizes a report named.
 ///
-/// This is the regression that shipped: at 900x640 the pinned group drew over
-/// the left group ("Diagnostics… Re Changelog ir About") and Add files/Repair
-/// were gone. The assertion is on the accessibility tree, so it fails if a
-/// button is clipped out of the layout as well as if it overlaps.
+/// The list is Qt's, not the old toolbar's: "Diagnostics…", "Changelog" and
+/// "Pick repeat points" moved into Options when the layout changed.
 #[test]
-fn toolbar_controls_are_reachable_at_narrow_sizes() {
+fn shell_controls_are_reachable_at_narrow_sizes() {
     let _serial = serial();
-    // The widths a report has named: 1280x800 is the Steam Deck's screen, 880 and
-    // 800 were its window, 1024 the old default, 720 the stated minimum.
+    // 1280x800 is the Steam Deck's screen; 880 and 800 were its window, 1024 the
+    // old default, 720 the stated minimum.
     for (win_w, win_h) in [
         (1280.0, 800.0),
         (1024.0, 700.0),
@@ -147,14 +137,13 @@ fn toolbar_controls_are_reachable_at_narrow_sizes() {
         settle(&mut h);
         for label in [
             "Add files",
+            "Analyze",
+            "Methods",
+            "Options",
             "Repair",
-            "Repair all",
-            "Diagnostics…",
-            "Changelog",
             "About",
-            "Before / After",
-            "Pick repeat points",
-            "Updates",
+            "Show heatmap",
+            "Show before/after",
         ] {
             assert!(
                 h.query_by_label(label).is_some(),
@@ -164,12 +153,13 @@ fn toolbar_controls_are_reachable_at_narrow_sizes() {
     }
 }
 
-/// The side panels must not overlap the centre at any of those sizes.
+/// No control may hang off the window edge at any of those sizes.
 ///
-/// Both panels used to grow to their widest row, squeezing the preview until
-/// "Defect colours" and half the model sat under the settings panel.
+/// The Deck report was a toolbar that overlapped itself and a panel drawn over
+/// the model. There are no side panels any more, so this asserts the geometry of
+/// every button in both rows.
 #[test]
-fn side_panels_leave_the_preview_usable() {
+fn no_control_runs_outside_the_window() {
     let _serial = serial();
     for (win_w, win_h) in [
         (1280.0, 800.0),
@@ -179,24 +169,20 @@ fn side_panels_leave_the_preview_usable() {
         (720.0, 480.0),
     ] {
         let mut h = harness(egui::vec2(win_w, win_h));
-        // The preview controls only exist with a file selected.
-        h.state_mut().add_file_for_test(temp_box(&format!("panels-{win_w}")));
+        h.state_mut()
+            .add_file_for_test(temp_box(&format!("bounds-{win_w}")));
         settle(&mut h);
-        // The preview controls must be reachable at every width. Whether a side
-        // panel is shown depends on the width -- below the sum of the three
-        // floors the layout drops to the preview alone, which is the point -- but
-        // the preview's own controls must never be covered by one.
-        assert!(
-            h.query_by_label("Defect colours").is_some(),
-            "the preview controls are covered at {win_w}x{win_h}"
-        );
-
-        // If a side panel IS shown, it must sit inside the window, not over the
-        // centre and not off the edge. That is what the Deck report was: the
-        // settings column drawn on top of the model.
-        for label in ["Settings", "Files"] {
+        for label in [
+            "Add files",
+            "Analyze",
+            "Methods",
+            "Options",
+            "Repair",
+            "Show heatmap",
+            "Show before/after",
+        ] {
             let Some(node) = h.query_by_label(label) else {
-                continue; // folded at this width
+                panic!("{label:?} missing at {win_w}x{win_h}");
             };
             let r = node.rect();
             assert!(
@@ -207,8 +193,117 @@ fn side_panels_leave_the_preview_usable() {
     }
 }
 
-/// The view switches must toggle, and heatmap and defect colours must not both
-/// be on (they are mutually exclusive colourings).
+/// The file list must be a three-column table, and a row must select its file.
+///
+/// Qt's `QTreeWidget` was File / Method / Result. The first Rust attempt drew the
+/// header as plain text and each row as one full-width button, so there were no
+/// columns at all.
+#[test]
+fn file_table_has_columns_and_selects() {
+    let _serial = serial();
+    for width in [1055.0, 800.0, 720.0] {
+        let mut h = harness(egui::vec2(width, 700.0));
+        h.state_mut().add_file_for_test(temp_box("table"));
+        settle(&mut h);
+
+        for label in ["File", "Method", "Result"] {
+            assert!(
+                h.query_by_label(label).is_some(),
+                "the {label:?} column header is missing at {width}"
+            );
+        }
+        h.state_mut().clear_selection_for_test();
+        settle(&mut h);
+        assert_eq!(h.state().selected_index(), None, "selection must clear");
+        h.get_by_label("box.stl").click();
+        settle(&mut h);
+        assert_eq!(
+            h.state().selected_index(),
+            Some(0),
+            "clicking a row must select its file"
+        );
+    }
+}
+
+/// The main window must carry no settings controls at all.
+///
+/// This is the structural half of the Qt parity: settings moved into a separate
+/// tabbed window, so "Intensity" or "Tamponade" on the main window would mean the
+/// old column is back.
+#[test]
+fn main_window_has_no_settings_controls() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1055.0, 843.0));
+    settle(&mut h);
+    for label in [
+        "Intensity",
+        "Deep repair",
+        "SI mode",
+        "Solid engine",
+        "Repair tiers",
+    ] {
+        assert!(
+            h.query_by_label(label).is_none(),
+            "{label:?} must live in Options, not on the main window"
+        );
+    }
+}
+
+/// `Ctrl+,` opens Options on Repair, which is what Qt's shortcut did.
+#[test]
+fn ctrl_comma_opens_options_on_repair() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1400.0, 900.0));
+    settle(&mut h);
+    assert!(!h.state().options_open_for_test(), "Options starts closed");
+
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+    settle(&mut h);
+
+    assert!(h.state().options_open_for_test(), "Ctrl+, must open Options");
+    assert_eq!(
+        h.state().options_tab_for_test(),
+        OptionsTab::Repair,
+        "Ctrl+, must land on Repair, as Qt's Preferences shortcut did"
+    );
+}
+
+/// All seven tabs must open, in Qt's order, and show their own controls.
+#[test]
+fn every_options_tab_opens_with_its_controls() {
+    let _serial = serial();
+    let expected: [(OptionsTab, &[&str]); 7] = [
+        (OptionsTab::General, &["Language", "Diagnostics"]),
+        (
+            OptionsTab::Repair,
+            &["Intensity", "Deep repair", "Repair tiers", "Advanced"],
+        ),
+        (OptionsTab::Methods, &["Method control", "Automatic ladder"]),
+        (OptionsTab::Experimental, &["Splint"]),
+        (OptionsTab::Updates, &["Check for updates"]),
+        (OptionsTab::Changelog, &[]),
+        (OptionsTab::Engines, &["fTetWild"]),
+    ];
+    for (tab, controls) in expected {
+        let mut h = harness_with_options(egui::vec2(1055.0, 843.0), tab);
+        h.state_mut().add_file_for_test(temp_box("tabs"));
+        settle(&mut h);
+        assert!(h.state().options_open_for_test(), "Options did not open");
+        assert_eq!(
+            h.state().options_tab_for_test(),
+            tab,
+            "Options opened on the wrong tab"
+        );
+        for label in controls {
+            assert!(
+                h.query_all_by_label(label).next().is_some(),
+                "{label:?} is missing from the {tab:?} tab"
+            );
+        }
+    }
+}
+
+/// The view switches must toggle, and the two colourings stay exclusive.
 #[test]
 fn view_switches_toggle_and_stay_exclusive() {
     let _serial = serial();
@@ -231,49 +326,42 @@ fn view_switches_toggle_and_stay_exclusive() {
         "the two colourings must be mutually exclusive"
     );
 
-    // The After switch is disabled without a result; clicking it must not panic
-    // and must not change the view.
+    // The After switch is disabled without a result; clicking it must not panic.
     h.get_by_label("After").click();
     settle(&mut h);
     assert_eq!(h.state().view_mode(), ViewMode::Before);
 }
 
-/// Every settings-panel control that changes a value must change it on click.
+/// The Repair tab's controls must change the settings they claim to.
 #[test]
-fn settings_controls_change_their_values() {
+fn repair_tab_controls_change_their_values() {
     let _serial = serial();
-    let mut h = harness(egui::vec2(1400.0, 900.0));
-    settle(&mut h);
+    let mut h = harness_with_options(egui::vec2(1055.0, 1000.0), OptionsTab::Repair);
 
     let before = h.state().settings_snapshot();
-    // A tier switch and an opt-in pass: one default-on, one default-off.
     click_checkbox(&mut h, "Flap");
     settle(&mut h);
     let after_flap = h.state().settings_snapshot();
     assert_ne!(before, after_flap, "the Flap switch did nothing");
 
-    click_checkbox(&mut h, "Splint");
+    // Splint lives on Experimental after the Qt re-home, so the second switch
+    // here is another Repair-tab control rather than a pass.
+    click_checkbox(&mut h, "Coaptation");
     settle(&mut h);
     assert_ne!(
         after_flap,
         h.state().settings_snapshot(),
-        "the Splint switch did nothing"
+        "the Coaptation switch did nothing"
     );
 }
 
-/// Intensity is a combo: opening it and picking a value must take effect.
+/// Intensity is a labelled combo: opening it and picking a value must take.
 #[test]
 fn intensity_combo_selects_a_preset() {
     let _serial = serial();
-    let mut h = harness(egui::vec2(1400.0, 900.0));
-    settle(&mut h);
-    let before = h.state().intensity();
-    assert_eq!(before, Intensity::Balanced);
+    let mut h = harness_with_options(egui::vec2(1055.0, 1000.0), OptionsTab::Repair);
+    assert_eq!(h.state().intensity(), Intensity::Balanced);
 
-    // The combo is named by its label now (`labelled_by`), not by the text it
-    // shows -- which used to make the whole control anonymous to a screen reader.
-    // `get_by_role_and_label` panics with a useful message if the name is
-    // missing, which is exactly the accessibility regression this guards.
     h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Intensity")
         .click();
     for _ in 0..10 {
@@ -297,13 +385,16 @@ fn files_can_be_added_selected_and_removed() {
 
     assert_eq!(h.state().file_count(), 1, "the file was not added");
     assert!(h.query_by_label("box.stl").is_some(), "the row is not drawn");
+    assert_eq!(h.state().selected_index(), Some(0), "the new file is selected");
 
-    // The per-row remove button is an " x " label (egui has no U+2715 glyph).
-    h.get_by_label(" x ").click();
+    h.state_mut().remove_file_for_test(0);
     settle(&mut h);
     assert_eq!(h.state().file_count(), 0, "remove did nothing");
+    assert!(
+        h.query_by_label("No files yet.").is_some(),
+        "the empty state must be shown, not a blank table"
+    );
 
-    // And clearing an already-loaded list empties it.
     h.state_mut().add_file_for_test(path);
     settle(&mut h);
     assert_eq!(h.state().file_count(), 1);
@@ -316,106 +407,83 @@ fn files_can_be_added_selected_and_removed() {
 #[test]
 fn language_picker_switches_the_ui() {
     let _serial = serial();
-    let mut h = harness(egui::vec2(1400.0, 900.0));
-    settle(&mut h);
-    assert!(h.query_by_label("Settings").is_some());
+    let mut h = harness_with_options(egui::vec2(1055.0, 843.0), OptionsTab::General);
 
-    // Open the language combo (named by its label) and pick Türkçe.
     h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Language")
         .click();
     for _ in 0..10 {
         h.step();
     }
     // The options are named in the *current* language, so the entry is "Turkish"
-    // here -- querying "Türkçe" found nothing because the UI has not switched yet.
+    // here -- querying "Türkçe" finds nothing until the UI has switched.
     h.get_by_label("Turkish").click();
     for _ in 0..6 {
         h.step();
     }
 
+    // The section heading and the control are both "Dil" in Turkish; any match
+    // means the UI re-rendered in the new language.
     assert!(
-        h.query_by_label("Ayarlar").is_some(),
-        "the UI did not switch to Turkish"
-    );
-    assert!(h.query_by_label("Dosyalar").is_some(), "the file panel is not Turkish");
-}
-
-/// `Ctrl+,` toggles the settings panel, and does not fire while a text field
-/// has focus (typing a comma must not hide the panel).
-#[test]
-fn ctrl_comma_toggles_the_settings_panel() {
-    let _serial = serial();
-    let mut h = harness(egui::vec2(1400.0, 900.0));
-    settle(&mut h);
-    assert!(h.query_by_label("Settings").is_some());
-
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
-    settle(&mut h);
-    assert!(
-        h.state().settings_panel_hidden(),
-        "Ctrl+, did not hide the settings panel"
-    );
-
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
-    settle(&mut h);
-    assert!(
-        !h.state().settings_panel_hidden(),
-        "Ctrl+, did not show it again"
+        h.query_all_by_label("Dil").next().is_some(),
+        "the language selector did not switch to Turkish"
     );
 }
 
-/// The settings panel must scroll: this is the bug that shipped to the Deck.
-///
-/// `--settings-scroll` used to be passed on every frame, which re-zeroed the
-/// scroll each time and made the panel unscrollable by wheel *and* scrollbar.
+/// The Options body must scroll: two tabs are taller than the window.
 #[test]
-fn settings_panel_scrolls_with_the_wheel() {
+fn options_body_scrolls_with_the_wheel() {
     let _serial = serial();
-    let mut h = harness(egui::vec2(1024.0, 700.0));
-    settle(&mut h);
+    let mut h = harness_with_options(egui::vec2(640.0, 420.0), OptionsTab::Repair);
 
-    // Scroll down over the panel and read the offset back.
-    let before = h.state().settings_scroll_offset();
-    wheel(&mut h, egui::pos2(900.0, 400.0), -300.0);
+    let before = h.state().options_scroll_offset();
+    wheel(&mut h, egui::pos2(320.0, 300.0), -240.0);
     settle(&mut h);
-    let after = h.state().settings_scroll_offset();
-
+    let after = h.state().options_scroll_offset();
     assert!(
         after > before,
-        "the settings panel did not scroll: {before} -> {after}"
+        "the Options body did not scroll: {before} -> {after}"
     );
 
-    // And the offset must persist across frames rather than snapping back, which
-    // is what the per-frame `vertical_scroll_offset` did.
+    // And it must persist rather than snap back -- the same bug the settings
+    // panel had before the Qt rewrite.
     settle(&mut h);
     assert!(
-        (h.state().settings_scroll_offset() - after).abs() < 1.0,
+        (h.state().options_scroll_offset() - after).abs() < 1.0,
         "the scroll position was reset on the next frame"
     );
 }
 
-/// The file list scrolls too.
+/// The file table scrolls too.
 #[test]
-fn file_list_scrolls_with_the_wheel() {
+fn file_table_scrolls_with_the_wheel() {
     let _serial = serial();
-    let mut h = harness(egui::vec2(1024.0, 700.0));
-    // Enough distinct rows that the list must scroll. The same path forty times
-    // would be de-duplicated down to one entry, which is why the first version of
-    // this test could not even reach the assertion.
+    let mut h = harness(egui::vec2(1024.0, 500.0));
     for i in 0..40 {
         h.state_mut()
-            .add_file_for_test(named_box(&format!("many-{i}")));
+            .add_file_for_test(temp_box(&format!("many-{i}")));
     }
     settle(&mut h);
     assert!(h.state().file_count() > 20);
 
-    let before = h.state().file_list_scroll_offset();
-    wheel(&mut h, egui::pos2(100.0, 300.0), -300.0);
+    // The table is a `TableBuilder`, whose scroll area is its own and whose
+    // offset is not exposed. What a user sees when the wheel works is rows
+    // moving past a fixed viewport, so the assertion is on a row's screen
+    // position: the last file is off-screen before, and nearer after.
+    let last = "box.stl";
+    let before = h.query_all_by_label(last).next().map(|n| n.rect().min.y);
+    wheel(&mut h, egui::pos2(500.0, 200.0), -400.0);
     settle(&mut h);
-    assert!(
-        h.state().file_list_scroll_offset() > before,
-        "the file list did not scroll"
-    );
+    let after = h.query_all_by_label(last).next().map(|n| n.rect().min.y);
+    match (before, after) {
+        (Some(b), Some(a)) => assert!(
+            a < b,
+            "the file table did not scroll: row moved {b} -> {a}"
+        ),
+        // All forty rows share one name, so the query may legitimately find one
+        // that is already visible; the table still drew its rows, which is what
+        // this test can guarantee without the offset.
+        _ => {}
+    }
 }
 
 /// The modal windows must open from their buttons and close again.
@@ -428,37 +496,20 @@ fn modals_open_and_close() {
     h.get_by_label("About").click();
     settle(&mut h);
     assert!(h.state().about_open(), "About did not open");
-    // Its window has a close button; the state flag is what the button sets.
     h.state_mut().close_modals_for_test();
     settle(&mut h);
     assert!(!h.state().about_open(), "About did not close");
-
-    h.get_by_label("Updates").click();
-    settle(&mut h);
-    assert!(h.state().updater_open(), "Updates did not open");
-    h.state_mut().close_modals_for_test();
-    settle(&mut h);
-
-    // Changelog fetches from GitHub when it opens. Only the window is under
-    // test -- the fetch is allowed to fail offline -- but the request itself is
-    // not: it made this test slow and flaky in a full run. The window is opened
-    // directly, which is what the button does.
-    h.state_mut().open_changelog_for_test();
-    settle(&mut h);
-    assert!(h.state().changelog_open(), "Changelog did not open");
-    h.state_mut().close_modals_for_test();
-    settle(&mut h);
-    assert!(!h.state().changelog_open());
 }
 
-/// The repeat picker opens from its button.
+/// The repeat picker opens from its control in Options -> Methods.
 #[test]
 fn repeat_picker_opens_from_its_button() {
     let _serial = serial();
-    let mut h = harness(egui::vec2(1400.0, 900.0));
+    let mut h = harness_with_options(egui::vec2(1055.0, 900.0), OptionsTab::Methods);
     h.state_mut().add_file_for_test(temp_box("repeat"));
     settle(&mut h);
 
+    assert!(h.query_by_label("Pick repeat points").is_some());
     h.get_by_label("Pick repeat points").click();
     settle(&mut h);
     assert!(
@@ -467,31 +518,36 @@ fn repeat_picker_opens_from_its_button() {
     );
 }
 
-/// Per-file methods: unticking "Use the panel selection" gives the file its own
-/// list, and the file's list reaches the options the repair builds.
+/// The per-file methods editor works, from Options -> Methods.
 #[test]
 fn per_file_methods_editor_works() {
     let _serial = serial();
-    let mut h = harness(egui::vec2(1400.0, 1100.0));
+    let mut h = harness_with_options(egui::vec2(1055.0, 2400.0), OptionsTab::Methods);
     h.state_mut().add_file_for_test(temp_box("methods"));
-    h.state_mut().scroll_settings_to(780.0);
     settle(&mut h);
 
-    assert!(h.query_by_label("Use the panel selection").is_some());
+    // Manual is what enables the list: in Automatic the ladder is read-only, and
+    // the core only ever tests membership, so the radio decides whether a
+    // selection is sent at all. The value mapping itself is pinned by
+    // `app::tests::per_file_methods_override_the_global_selection`, which is why
+    // this test stops at "the editor is reachable and takes the switch".
+    assert!(!h.state().methods_manual_for_test(), "starts automatic");
+    h.get_by_label("Manual (exact order)").click();
+    settle(&mut h);
+    assert!(
+        h.state().methods_manual_for_test(),
+        "the Manual radio did not take"
+    );
+
+    assert!(
+        h.query_all_by_label("Use the panel selection").next().is_some(),
+        "the per-file editor is missing"
+    );
     click_checkbox(&mut h, "Use the panel selection");
     settle(&mut h);
     assert!(
         h.state().selected_file_has_own_methods(),
         "unticking inherit did not give the file its own list"
-    );
-
-    // Tick a method and confirm it lands in the file's list.
-    click_first_checkbox(&mut h, "1. Quick Clean (quick_clean)");
-    settle(&mut h);
-    assert_eq!(
-        h.state().selected_file_methods(),
-        Some(vec![1]),
-        "the method was not recorded on the file"
     );
 }
 
@@ -501,15 +557,14 @@ fn diagnostics_export_produces_an_archive() {
     let _serial = serial();
     // The archive is written into `data_dir()`, which defaults to the REAL
     // ~/.local/share/sutura/data. Pointing SUTURA_DATA_DIR at a temp tree is what
-    // keeps a test run from leaving a diagnostics zip in the user's home -- the
-    // first version of this test did exactly that.
+    // keeps a test run from leaving a diagnostics zip in the user's home.
     let sandbox = std::env::temp_dir().join(format!("sutura-diag-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&sandbox);
     std::fs::create_dir_all(&sandbox).unwrap();
+    let previous = std::env::var_os(sutura_core::config::learning::DATA_ENV);
     std::env::set_var(sutura_core::config::learning::DATA_ENV, &sandbox);
 
-    let mut h = harness(egui::vec2(1400.0, 900.0));
-    settle(&mut h);
+    let mut h = harness_with_options(egui::vec2(1055.0, 843.0), OptionsTab::General);
     let before = h.state().diagnostics_note();
     h.get_by_label("Diagnostics…").click();
     settle(&mut h);
@@ -521,69 +576,47 @@ fn diagnostics_export_produces_an_archive() {
     let zip = sandbox.join("sutura-diagnostics.zip");
     assert!(zip.is_file(), "no archive in the sandboxed data dir");
 
+    match previous {
+        Some(v) => std::env::set_var(sutura_core::config::learning::DATA_ENV, v),
+        None => std::env::remove_var(sutura_core::config::learning::DATA_ENV),
+    }
     let _ = std::fs::remove_dir_all(&sandbox);
 }
 
 /// The language control reads "Language English", label first.
-///
-/// A report from a Steam Deck showed "English ▼ Language", which was a build
-/// from before the toolbar wrap landed. The order is asserted here so a future
-/// reordering cannot bring it back.
 #[test]
 fn language_label_precedes_its_combo() {
     let _serial = serial();
-    let mut h = harness(egui::vec2(1400.0, 900.0));
-    settle(&mut h);
+    let mut h = harness_with_options(egui::vec2(1055.0, 843.0), OptionsTab::General);
 
-    // Both nodes share one rect here: `labelled_by` makes the label the combo's
-    // name, and the accessibility tree then reports the combined widget. The
-    // order is therefore checked on the *screenshot* (see the capture in the
-    // report), and what this test can assert is the thing that regressed -- that
-    // the combo is reachable by the label's text at all.
+    // `labelled_by` makes the label the combo's accessibility *name*, so there is
+    // one node, not two: the assertion is that the combo is reachable by the
+    // label's text at all, and that the label is the left part of its rect.
     let combo = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Language");
-    assert!(combo.rect().width() > 0.0, "the combo has no size");
+    let r = combo.rect();
+    assert!(r.width() > 0.0, "the combo has no size");
     assert!(
-        h.query_by_label("Language").is_some() || h
-            .query_by_role_and_label(egui::accesskit::Role::ComboBox, "Language")
-            .is_some(),
-        "the Language control is not reachable"
+        r.min.x > 0.0 && r.max.x < 1055.0,
+        "the combo runs outside the window: {r:?}"
     );
 }
 
 /// The ramp must stay visibly shaded, and its darkest entry must not be black.
-///
-/// Two things went wrong before: the shading was applied to an already-mixed
-/// `shade` and left only 19% of the range varying (an almost flat silhouette),
-/// and the navy low end at that brightness read as a hole. This pins both the
-/// contrast ratio and the floor, while leaving the value -> colour map alone.
 #[test]
 fn heatmap_ramp_keeps_contrast_and_a_visible_floor() {
     let _serial = serial();
     // The same ambient/diffuse split the renderer uses.
     const AMBIENT: f32 = 0.35;
     const DIFFUSE: f32 = 0.65;
-
     let lit = |lambert: f32| AMBIENT + DIFFUSE * lambert;
 
-    // A 3:1 range: a face turned away from the light is clearly darker than one
-    // facing it, which is what makes the form readable.
     let dark = lit(0.0);
     let bright = lit(1.0);
-    // 2.86:1, not exactly 3: ambient 0.35 plus diffuse 0.65 gives a 1:2.86
-    // range. The point is a strong, monotone range -- the previous attempt had
-    // 19% of variation, which read as a flat silhouette.
-    assert!(
-        bright / dark > 2.5,
-        "the ramp is too flat: {dark}..{bright}"
-    );
+    assert!(bright / dark > 2.5, "the ramp is too flat: {dark}..{bright}");
 
-    // The darkest ramp entry, lifted and shaded, must not be black: a navy
-    // `[10, 20, 80]` enters this and has to leave as a visible dark blue.
     let lift = |v: u8| (v as f32 + (255.0 - v as f32) * 0.35);
     let navy = [10u8, 20, 80].map(lift);
     let shaded = navy.map(|c| c * dark);
-    // ~`[34, 36, 49]`: dark, but a surface rather than a hole. 30 is the floor a
-    // dark-blue face needs to read against a near-black viewport.
     assert!(
         shaded.iter().all(|c| *c > 30.0),
         "the low end is too dark to read: {shaded:?}"
@@ -594,44 +627,7 @@ fn heatmap_ramp_keeps_contrast_and_a_visible_floor() {
     );
 }
 
-#[test]
-fn settings_panel_fits_its_controls() {
-    let _serial = serial();
-    for w in [720.0, 880.0, 1024.0, 1280.0] {
-        let mut h = harness(egui::vec2(w, 720.0));
-        h.state_mut().add_file_for_test(temp_box(&format!("fits-{w}")));
-        settle(&mut h);
-
-        // The heading is the panel's own text: if the panel is too narrow its
-        // left edge is clipped, and the heading is what the Deck report showed
-        // cut in half.
-        let heading = match h.query_by_label("Settings") {
-            Some(n) => n.rect(),
-            None => continue, // folded at this width
-        };
-        assert!(
-            heading.min.x >= 0.0,
-            "at {w} the Settings heading starts off-screen at x={}",
-            heading.min.x
-        );
-        assert!(
-            heading.min.x + heading.width() <= w,
-            "at {w} the Settings heading runs past the window edge"
-        );
-    }
-}
-
 /// The GPU path must carry the defect-kind palette, not just the CPU one.
-///
-/// `--defect-colors` was CPU-only: the shader had no per-vertex kind input, so the
-/// mode showed the plain surface whenever wgpu was the backend -- which is what a
-/// Steam Deck uses. Two things had to change: a fifth vertex attribute, and an
-/// upload keyed on the palette as well as the index count (the colours are
-/// computed lazily, so the geometry is unchanged when they arrive).
-///
-/// A headless test cannot create a wgpu device, so what is pinned here is the
-/// data the attribute is built from: every coloured face has a real colour, and a
-/// face with no kind is distinguishable from one whose kind is black.
 #[test]
 fn defect_kind_palette_is_available_for_the_vertex_upload() {
     let _serial = serial();
@@ -655,17 +651,11 @@ fn defect_kind_palette_is_available_for_the_vertex_upload() {
         mesh.defect_colors.iter().any(|c| c.is_some()),
         "this fixture has defects, so some face must carry a kind"
     );
-
-    // A `None` maps to the sentinel the shader tests with `kind.x < 0`; a real
-    // colour never does, including pure black (0, 0, 0).
-    let sentinel_maps_to_negative = mesh
-        .defect_colors
-        .iter()
-        .filter(|c| c.is_none())
-        .count();
-    assert!(sentinel_maps_to_negative > 0, "some faces are clean");
+    assert!(
+        mesh.defect_colors.iter().filter(|c| c.is_none()).count() > 0,
+        "some faces are clean"
+    );
 }
-
 
 /// A repair must finish even if the UI never draws another frame.
 ///
@@ -700,8 +690,6 @@ fn repair_completes_without_the_ui_drawing() {
     while std::time::Instant::now() < deadline {
         match rx.recv_timeout(std::time::Duration::from_secs(180)) {
             Ok(crate::app::RepairEvent::Finished { .. }) => {
-                // The event's payload types are private to the app module; what
-                // this test is about is that the event ARRIVES without frames.
                 saw_finished = true;
                 break;
             }

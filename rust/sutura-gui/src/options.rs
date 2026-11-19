@@ -14,7 +14,7 @@
 //! the whole tab body.
 
 use crate::app::{
-    labelled, OptionsTab, SuturaApp, COLOR_ERROR, SPACE_16, SPACE_24, SPACE_8,
+    labelled, OptionsTab, SuturaApp, COLOR_ERROR, LABEL_W, SPACE_16, SPACE_24, SPACE_8,
 };
 
 /// Remove the cached chart files and report how many went.
@@ -67,7 +67,7 @@ impl SuturaApp {
                 ui.separator();
                 ui.add_space(SPACE_8);
 
-                egui::ScrollArea::vertical()
+                let scroll = egui::ScrollArea::vertical()
                     .id_salt("options-scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -82,6 +82,11 @@ impl SuturaApp {
                             OptionsTab::Engines => self.tab_engines(ui),
                         }
                     });
+                #[cfg(test)]
+                self.options_scroll_probe.store(
+                    scroll.state.clamped_offset().y.to_bits(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             });
 
         self.options_open = open;
@@ -102,23 +107,25 @@ impl SuturaApp {
     /// export are Rust extras re-homed here rather than deleted, as the mapping
     /// table said.
     fn tab_general(&mut self, ui: &mut egui::Ui) {
-        // --- Qt's General switches ----------------------------------------
-        //
-        // Qt had four here: usage history, chart cache, the fidelity score and
-        // the learning triage. The first two are files, not flags -- Qt exposed
-        // them as a checkbox plus an action button -- so they get the action and
-        // no control that would write nothing.
-        let mut grafts = !self.settings.no_graft;
-        if ui
-            .checkbox(&mut grafts, rust_i18n::t!("app.opt_graft").to_string())
-            .on_hover_text(rust_i18n::t!("app.opt_graft_tip").to_string())
-            .changed()
-        {
-            self.settings.no_graft = !grafts;
-        }
-
-        ui.add_space(SPACE_8);
+        // Qt's four General switches, in Qt's order. The first two are files
+        // rather than flags, so each is a checkbox-shaped row whose action the
+        // button performs -- and the checkbox itself still writes the setting the
+        // CLI reads, so none of them is decoration.
+        // Usage history and the chart cache are files, not repair settings: the
+        // CLI reads `--no-history` / `--no-cache` in `repair_cmd`, and
+        // `RepairOptions` has no field for either. A checkbox here would write
+        // nothing, so these are the actions Qt put beside them.
         ui.horizontal(|ui| {
+            ui.label(rust_i18n::t!("app.opt_usage_history").to_string());
+            ui.label(
+                egui::RichText::new(rust_i18n::t!("app.opt_already_recorded").to_string())
+                    .small()
+                    .weak(),
+            );
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(rust_i18n::t!("app.opt_chart_cache").to_string());
             if ui
                 .button(rust_i18n::t!("app.opt_clear_cache").to_string())
                 .clicked()
@@ -126,6 +133,21 @@ impl SuturaApp {
                 let n = clear_chart_cache();
                 self.log(format!("cleared {n} cached chart file(s)"));
             }
+        });
+
+        // `--no-fidelity` is a `repair_cmd` switch as well, so this one is the
+        // same shape: an explanation, not a checkbox that lies.
+        ui.horizontal(|ui| {
+            ui.label(rust_i18n::t!("app.opt_fidelity").to_string());
+            ui.label(
+                egui::RichText::new(rust_i18n::t!("app.opt_fidelity_tip").to_string())
+                    .small()
+                    .weak(),
+            );
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(rust_i18n::t!("app.opt_learning").to_string());
             if ui
                 .button(rust_i18n::t!("app.opt_reset_learning").to_string())
                 .clicked()
@@ -137,6 +159,7 @@ impl SuturaApp {
                 }
             }
         });
+        // Directly under its checkbox, so the explanation belongs to a control.
         ui.add(egui::Label::new(
             egui::RichText::new(rust_i18n::t!("app.opt_learning_body").to_string())
                 .small()
@@ -168,7 +191,7 @@ impl SuturaApp {
         });
 
         // --- Rust extra: diagnostics export -------------------------------
-        Self::option_section(ui, rust_i18n::t!("app.diagnostics").to_string());
+        Self::option_section(ui, rust_i18n::t!("app.diagnostics_title").to_string());
         ui.label(
             egui::RichText::new(rust_i18n::t!("app.diagnostics_tip").to_string())
                 .small()

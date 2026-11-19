@@ -230,3 +230,22 @@ app:
   method_control: Method control
   method_automatic: Automatic (policy order)
   method_manual: Manual (exact order)
+  opt_usage_history: Anonymous usage history (no file names or paths)
+  opt_already_recorded: Always on; the shared history file is what the learning triage reads.
+  opt_chart_cache: Suture chart cache (~/.cache/sutura/)
+  diagnostics_title: Diagnostics
+  graft: Graft
+  fallback_ftetwild: fTetWild fallback
+  tier_on: On
+  tier_experimental: Experimental
+  tier_off: Off
+  input_defects: Input defects (selected file)
+  automatic_ladder: Automatic ladder
+  automatic_ladder_body: The automatic order is fixed. Pick Manual to run a custom order.
+  manual_sequence: Manual sequence
+  manual_sequence_body: Checked methods become the file tags; the CLI receives them as --methods.
+  manual_sequence_hint: Switch to Manual (exact order) to edit this list.
+  no_selection: Select a file to edit its methods.
+  opt_learning: "Learning triage: rank methods from the local repair history"
+  tiers_section: Repair tiers
+  advanced_section: Advanced
