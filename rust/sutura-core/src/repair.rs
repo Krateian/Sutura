@@ -448,6 +448,49 @@ pub(crate) fn boundary_loop_stats(tris: &[[i64; 3]]) -> (usize, usize) {
     crate::validate::boundary_loop_stats(0, &t32)
 }
 
+/// Boundary loops exactly as `topology.mesh_topology` counts them: walk the
+/// face-oriented boundary edges (one outgoing edge per boundary vertex on a
+/// 2-manifold).  `boundary_loop_stats` counts undirected boundary components,
+/// which differs when loops touch at a vertex and shifted the reported genus.
+fn boundary_loop_count_directed(tris: &[[i64; 3]]) -> i64 {
+    use std::collections::{HashMap, HashSet};
+    let mut edge_counts: HashMap<(i64, i64), usize> = HashMap::new();
+    for t in tris {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let k = if a <= b { (a, b) } else { (b, a) };
+            *edge_counts.entry(k).or_insert(0) += 1;
+        }
+    }
+    let mut boundary_directed: HashMap<i64, i64> = HashMap::new();
+    for t in tris {
+        for (u, w) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let k = if u <= w { (u, w) } else { (w, u) };
+            if edge_counts.get(&k) == Some(&1) {
+                boundary_directed.insert(u, w);
+            }
+        }
+    }
+    let mut visited: HashSet<i64> = HashSet::new();
+    let mut holes = 0i64;
+    for start in boundary_directed.keys().copied().collect::<Vec<_>>() {
+        if visited.contains(&start) {
+            continue;
+        }
+        let mut curr = start;
+        while let Some(&next) = boundary_directed.get(&curr) {
+            if !visited.insert(curr) {
+                break;
+            }
+            curr = next;
+            if curr == start {
+                holes += 1;
+                break;
+            }
+        }
+    }
+    holes
+}
+
 /// Port of `mesh_io.should_extract_outer_shell`.
 ///
 /// True only for a mechanical (or heavy-SI, `si_count >= 200`) mesh whose
@@ -1061,8 +1104,10 @@ fn tamponade_params(
     let genus = if summary.non_two_manifold_edges == 0
         && summary.non_two_manifold_vertices == 0
     {
-        let holes = boundary_loop_stats(tris).0 as i64;
-        summary.components as i64 - (holes + chi) / 2
+        let holes = boundary_loop_count_directed(tris);
+        // Python truncates the whole expression toward zero (`int(...)`), so
+        // do the half in floating point rather than integer-dividing first.
+        (summary.components as f64 - (holes + chi) as f64 / 2.0).trunc() as i64
     } else {
         -1
     };
