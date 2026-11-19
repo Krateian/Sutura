@@ -60,7 +60,9 @@ impl SuturaApp {
         let modal = egui::Modal::new(egui::Id::new("options-modal"))
             .backdrop_color(egui::Color32::TRANSPARENT)
             .show(ctx, |ui| {
-            ui.set_width(580.0);
+            // Wide enough for all seven tabs on one line; at 580 px the strip
+            // wrapped Changelog and Engines onto a second row.
+            ui.set_width(760.0);
             // No `set_min_height`: reserving 640 px before the heading pushed
             // the title and the tab strip on top of each other. The scroll area
             // below gets its own fixed height instead.

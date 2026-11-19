@@ -285,6 +285,17 @@ fn main() -> eframe::Result<()> {
                 .with_title(rust_i18n::t!("app.title").to_string())
                 .with_min_inner_size([720.0, 480.0])
                 .with_drag_and_drop(true);
+            // macOS: one header, not two. The title bar is transparent and the
+            // content runs under it, so the traffic lights sit inside the app's
+            // own header row (the app leaves room for them and drags the window
+            // from that row). Other platforms keep their native decorations.
+            #[cfg(target_os = "macos")]
+            {
+                vp = vp
+                    .with_fullsize_content_view(true)
+                    .with_titlebar_shown(false)
+                    .with_title_shown(false);
+            }
             // Size at startup, in order of preference: an explicit --window-size,
             // the size this window last had, then maximized.
             //

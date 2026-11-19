@@ -142,16 +142,9 @@ fn shell_controls_are_reachable_at_narrow_sizes() {
     ] {
         let mut h = harness(egui::vec2(win_w, win_h));
         settle(&mut h);
-        for label in [
-            "Add files",
-            "Analyze",
-            "Methods",
-            "Options",
-            "Repair",
-            "About",
-            "Show heatmap",
-            "Show before/after",
-        ] {
+        // The main window keeps only what is used most; everything else is in
+        // Options (the gear). Preview controls appear once a file is loaded.
+        for label in ["Add files", "Add folder...", "Analyze", "Repair", "About"] {
             assert!(
                 h.query_by_label(label).is_some(),
                 "{label:?} is not reachable at {win_w}x{win_h}"
@@ -182,11 +175,9 @@ fn no_control_runs_outside_the_window() {
         for label in [
             "Add files",
             "Analyze",
-            "Methods",
-            "Options",
             "Repair",
-            "Show heatmap",
-            "Show before/after",
+            "About",
+            "Defect colours",
         ] {
             let Some(node) = h.query_by_label(label) else {
                 panic!("{label:?} missing at {win_w}x{win_h}");
@@ -318,11 +309,12 @@ fn view_switches_toggle_and_stay_exclusive() {
     h.state_mut().add_file_for_test(temp_box("views"));
     settle(&mut h);
 
-    click_checkbox(&mut h, "Heatmap");
-    settle(&mut h);
-    assert!(h.state().preview_heatmap(), "heatmap did not turn on");
+    // Before a repair the preview offers only Defect colours: Before/After and
+    // the heatmap compare against a result that does not exist yet.
+    assert!(h.query_by_label("Heatmap").is_none(), "heatmap shown without a result");
+    assert!(h.query_by_label("After").is_none(), "After shown without a result");
 
-    click_checkbox(&mut h, "Defect colours");
+    h.get_by_label("Defect colours").click();
     settle(&mut h);
     assert!(
         h.state().preview_defect_colors(),
@@ -332,10 +324,9 @@ fn view_switches_toggle_and_stay_exclusive() {
         !h.state().preview_heatmap(),
         "the two colourings must be mutually exclusive"
     );
-
-    // The After switch is disabled without a result; clicking it must not panic.
-    h.get_by_label("After").click();
+    h.get_by_label("Defect colours").click();
     settle(&mut h);
+    assert!(!h.state().preview_defect_colors(), "defect colours did not turn off");
     assert_eq!(h.state().view_mode(), ViewMode::Before);
 }
 
@@ -398,8 +389,8 @@ fn files_can_be_added_selected_and_removed() {
     settle(&mut h);
     assert_eq!(h.state().file_count(), 0, "remove did nothing");
     assert!(
-        h.query_by_label("No files yet.").is_some(),
-        "the empty state must be shown, not a blank table"
+        h.query_by_label("Row 1").is_none() && h.query_by_label("box.stl").is_none(),
+        "the removed file is still drawn"
     );
 
     h.state_mut().add_file_for_test(path);
@@ -516,8 +507,11 @@ fn repeat_picker_opens_from_its_button() {
     h.state_mut().add_file_for_test(temp_box("repeat"));
     settle(&mut h);
 
-    assert!(h.query_by_label("Pick repeat points").is_some());
-    h.get_by_label("Pick repeat points").click();
+    // The section heading and the button share the label; click the button.
+    // Accesskit's click: the button sits below the Options body's fold, and a
+    // pointer click on an off-screen rect lands on nothing.
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Pick repeat points")
+        .click_accesskit();
     settle(&mut h);
     assert!(
         h.state().repeat_picker_open(),
@@ -547,10 +541,13 @@ fn per_file_methods_editor_works() {
     );
 
     assert!(
-        h.query_all_by_label("Use the panel selection").next().is_some(),
+        h.query_all_by_label("Use the global method settings").next().is_some(),
         "the per-file editor is missing"
     );
-    click_checkbox(&mut h, "Use the panel selection");
+    // Below the fold too; see `repeat_picker_opens_from_its_button`.
+    h.query_by_role_and_label(egui::accesskit::Role::CheckBox, "Use the global method settings")
+        .expect("no inherit checkbox")
+        .click_accesskit();
     settle(&mut h);
     assert!(
         h.state().selected_file_has_own_methods(),
@@ -721,7 +718,9 @@ fn repair_completes_without_the_ui_drawing() {
 #[test]
 fn suggestions_apply_sets_the_mode() {
     let _serial = serial();
-    let mut h = harness(egui::vec2(1100.0, 900.0));
+    // Wide and tall: the report column scrolls, and a click on an Apply row
+    // below the fold would land on nothing.
+    let mut h = harness(egui::vec2(1600.0, 1600.0));
     h.state_mut().add_file_for_test(temp_box("suggestions"));
     h.state_mut().select_first_for_test();
     settle(&mut h);

@@ -81,12 +81,18 @@ app:
   file_methods_count: "%{count} yöntem uygulanıyor"
   defect_colors: "Kusur renkleri"
   defect_colors_tip: "Her yüzü kusur türüne göre boya (manifold olmayan, kopya, dejenere…). İlk kullanımda tam teşhis gerekir."
+  drop_title: "STL veya 3MF dosyalarını buraya bırak"
   drop_hint: STL veya 3MF dosyalarını buraya bırak, ya da Dosya ekle kullan
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"
   lang_system: Sistem
   lang_english: İngilizce
   lang_turkish: Türkçe
+  preview: "Önizleme"
+  heatmap_flat: "Neredeyse hiçbir şey değişmedi: orijinalden ölçülebilir fark yok"
+  heatmap_legend: "Isı haritası: mavi değişmedi, kırmızı en çok değişti"
+  heatmap_short: "Isı haritası"
+  side_by_side: "Yan yana"
   before: Önce
   after: Sonra
   open_result: Sonucu aç
