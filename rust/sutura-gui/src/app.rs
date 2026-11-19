@@ -169,12 +169,13 @@ impl Entry {
 /// Taken from Qt's `apply_dark_theme` so the two windows agree; a control that
 /// picks its own colour is what made the first Rust UI look unlike anything
 /// shipped before it.
-pub(crate) const COLOR_ERROR: egui::Color32 = egui::Color32::from_rgb(0xef, 0x44, 0x44);
+pub(crate) const COLOR_ERROR: egui::Color32 = egui::Color32::from_rgb(0xff, 0x5b, 0x5b);
 pub(crate) const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(0xf5, 0x9e, 0x0b);
-pub(crate) const COLOR_OK: egui::Color32 = egui::Color32::from_rgb(0x22, 0xc5, 0x5e);
-/// The single accent, used for the one primary action (rule c).
-pub(crate) const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x0e, 0xa5, 0xe9);
-pub(crate) const COLOR_ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x08, 0x1c, 0x28);
+pub(crate) const COLOR_OK: egui::Color32 = egui::Color32::from_rgb(0x2e, 0xc4, 0x7a);
+/// The single accent, used for the one primary action (rule c). Qt's value
+/// (`gui.py:2217`), not a new one.
+pub(crate) const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x14, 0xb8, 0xa6);
+pub(crate) const COLOR_ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x0b, 0x0f, 0x11);
 
 /// The 8 px grid (rule b): every gap is 8, 16 or 24.
 pub(crate) const SPACE_8: f32 = 8.0;
@@ -664,6 +665,8 @@ impl SuturaApp {
         // grey ghost -- which reads as a rendering bug and is not. Turning the
         // animation off for `--screenshot` makes the image show the final state;
         // an interactive run keeps its animation.
+        // Qt's palette and the 8 px grid, before any widget is built.
+        crate::theme::apply(&cc.egui_ctx);
         if options.screenshot_path.is_some() {
             cc.egui_ctx.all_styles_mut(|style| style.animation_time = 0.0);
         }
