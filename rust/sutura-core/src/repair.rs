@@ -3069,7 +3069,6 @@ pub fn repair(
     // One reset per top-level run: `new()` is also used for short-lived score
     // tokens, and resetting there would swallow a running repair's cancel.
     sutura_geom::cancel::reset();
-    FTW_NOTICE.with(|c| c.set(false));
     repair_impl(verts, tris, opts, sink, cancel, true)
 }
 
