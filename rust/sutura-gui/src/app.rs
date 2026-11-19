@@ -555,6 +555,7 @@ impl SuturaApp {
             about_open: false,
             updater_open: false,
             repeat_picker: None,
+            focus: None,
             deviation_reference: None,
             updater: crate::updater_ui::Updater::new(),
             notes_open: false,
