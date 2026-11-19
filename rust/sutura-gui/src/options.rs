@@ -42,52 +42,79 @@ impl SuturaApp {
         let mut open = self.options_open;
         let mut tab = self.options_tab;
 
-        egui::Window::new(rust_i18n::t!("app.options_btn").to_string())
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size([620.0, 520.0])
-            .min_size([520.0, 360.0])
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                // Wrapped, so a narrow window moves tabs to a second line rather
-                // than clipping the last one. Qt clipped "Engi" at its own
-                // default width; copying a clipping bug is not parity.
-                ui.horizontal_wrapped(|ui| {
-                    for candidate in OptionsTab::ALL {
-                        if ui
-                            .add(egui::Button::selectable(tab == candidate, candidate.label()))
-                            .clicked()
-                        {
-                            tab = candidate;
+        // A real modal, not a `Window`: the main window's Methods/Options/
+        // Profile buttons looked like empty boxes behind an ordinary window, and
+        // a click could land on them. `Modal` dims the backdrop and blocks input
+        // to the rest of the UI, which is what a tabbed options dialog is.
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::new("options-modal")).show(ctx, |ui| {
+            ui.set_width(580.0);
+            // A fixed height, so the scroll area inside knows how much room it
+            // has; without it the modal grew to fit the content and nothing
+            // scrolled -- "Advanced" was simply cut off at the window edge.
+            ui.set_min_height(640.0);
+            ui.horizontal(|ui| {
+                ui.heading(rust_i18n::t!("app.options_btn").to_string());
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui.button("x").clicked() {
+                            close = true;
                         }
-                    }
-                });
-                ui.add_space(SPACE_8);
-                ui.separator();
-                ui.add_space(SPACE_8);
-
-                let scroll = egui::ScrollArea::vertical()
-                    .id_salt("options-scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_max_width(ui.available_width());
-                        match tab {
-                            OptionsTab::General => self.tab_general(ui),
-                            OptionsTab::Repair => self.tab_repair(ui),
-                            OptionsTab::Methods => self.tab_methods(ui),
-                            OptionsTab::Experimental => self.tab_experimental(ui),
-                            OptionsTab::Updates => self.tab_updates(ui),
-                            OptionsTab::Changelog => self.tab_changelog(ui),
-                            OptionsTab::Engines => self.tab_engines(ui),
-                        }
-                    });
-                #[cfg(test)]
-                self.options_scroll_probe.store(
-                    scroll.state.clamped_offset().y.to_bits(),
-                    std::sync::atomic::Ordering::Relaxed,
+                    },
                 );
             });
+            ui.add_space(SPACE_8);
+
+            // Wrapped, so a narrow window moves tabs to a second line rather
+            // than clipping the last one. Qt clipped "Engi" at its own default
+            // width; copying a clipping bug is not parity.
+            ui.horizontal_wrapped(|ui| {
+                for candidate in OptionsTab::ALL {
+                    if ui
+                        .add(egui::Button::selectable(tab == candidate, candidate.label()))
+                        .clicked()
+                    {
+                        tab = candidate;
+                    }
+                }
+            });
+            ui.add_space(SPACE_8);
+            ui.separator();
+            ui.add_space(SPACE_8);
+
+            // The bar is always visible: on macOS egui hides an overlay
+            // scrollbar until you hover the edge, which reads as "there is more
+            // content but no way to reach it" -- and Repair is taller than any
+            // window.
+            let scroll = egui::ScrollArea::vertical()
+                .id_salt("options-scroll")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .max_height(560.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_max_width(ui.available_width());
+                    match tab {
+                        OptionsTab::General => self.tab_general(ui),
+                        OptionsTab::Repair => self.tab_repair(ui),
+                        OptionsTab::Methods => self.tab_methods(ui),
+                        OptionsTab::Experimental => self.tab_experimental(ui),
+                        OptionsTab::Updates => self.tab_updates(ui),
+                        OptionsTab::Changelog => self.tab_changelog(ui),
+                        OptionsTab::Engines => self.tab_engines(ui),
+                    }
+                });
+            #[cfg(test)]
+            self.options_scroll_probe.store(
+                scroll.state.clamped_offset().y.to_bits(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        });
+
+        // Clicking the backdrop closes it, as a modal should.
+        if modal.backdrop_response.clicked() || close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
 
         self.options_open = open;
         self.options_tab = tab;
@@ -107,25 +134,27 @@ impl SuturaApp {
     /// export are Rust extras re-homed here rather than deleted, as the mapping
     /// table said.
     fn tab_general(&mut self, ui: &mut egui::Ui) {
-        // Qt's four General switches, in Qt's order. The first two are files
-        // rather than flags, so each is a checkbox-shaped row whose action the
-        // button performs -- and the checkbox itself still writes the setting the
-        // CLI reads, so none of them is decoration.
-        // Usage history and the chart cache are files, not repair settings: the
-        // CLI reads `--no-history` / `--no-cache` in `repair_cmd`, and
-        // `RepairOptions` has no field for either. A checkbox here would write
-        // nothing, so these are the actions Qt put beside them.
-        ui.horizontal(|ui| {
-            ui.label(rust_i18n::t!("app.opt_usage_history").to_string());
-            ui.label(
-                egui::RichText::new(rust_i18n::t!("app.opt_already_recorded").to_string())
-                    .small()
-                    .weak(),
-            );
-        });
+        // Qt's four General switches, each a real checkbox: they are persisted
+        // in `gui.json` and applied in `run_repair`, so they do something.
+        let mut history = self.prefs.history_enabled.unwrap_or(true);
+        if ui
+            .checkbox(
+                &mut history,
+                rust_i18n::t!("app.opt_usage_history").to_string(),
+            )
+            .changed()
+        {
+            self.prefs.history_enabled = Some(history);
+        }
 
         ui.horizontal(|ui| {
-            ui.label(rust_i18n::t!("app.opt_chart_cache").to_string());
+            let mut cache = self.prefs.cache_enabled.unwrap_or(true);
+            if ui
+                .checkbox(&mut cache, rust_i18n::t!("app.opt_chart_cache").to_string())
+                .changed()
+            {
+                self.prefs.cache_enabled = Some(cache);
+            }
             if ui
                 .button(rust_i18n::t!("app.opt_clear_cache").to_string())
                 .clicked()
@@ -135,19 +164,25 @@ impl SuturaApp {
             }
         });
 
-        // `--no-fidelity` is a `repair_cmd` switch as well, so this one is the
-        // same shape: an explanation, not a checkbox that lies.
-        ui.horizontal(|ui| {
-            ui.label(rust_i18n::t!("app.opt_fidelity").to_string());
-            ui.label(
-                egui::RichText::new(rust_i18n::t!("app.opt_fidelity_tip").to_string())
-                    .small()
-                    .weak(),
-            );
-        });
+        let mut fidelity = self.prefs.fidelity_enabled.unwrap_or(true);
+        if ui
+            .checkbox(
+                &mut fidelity,
+                rust_i18n::t!("app.opt_fidelity").to_string(),
+            )
+            .changed()
+        {
+            self.prefs.fidelity_enabled = Some(fidelity);
+        }
 
         ui.horizontal(|ui| {
-            ui.label(rust_i18n::t!("app.opt_learning").to_string());
+            let mut learning = self.prefs.learning_enabled.unwrap_or(true);
+            if ui
+                .checkbox(&mut learning, rust_i18n::t!("app.opt_learning").to_string())
+                .changed()
+            {
+                self.prefs.learning_enabled = Some(learning);
+            }
             if ui
                 .button(rust_i18n::t!("app.opt_reset_learning").to_string())
                 .clicked()
@@ -159,15 +194,19 @@ impl SuturaApp {
                 }
             }
         });
-        // Directly under its checkbox, so the explanation belongs to a control.
+        // The explanation belongs to the checkboxes above it, so it sits directly
+        // under them and in the muted colour.
         ui.add(egui::Label::new(
             egui::RichText::new(rust_i18n::t!("app.opt_learning_body").to_string())
                 .small()
                 .weak(),
         ));
 
-        // --- Rust extra: language, as the mapping table places it ----------
-        Self::option_section(ui, rust_i18n::t!("app.section_language").to_string());
+        // --- Rust extra: language ------------------------------------------
+        //
+        // No section heading: the control's own label already reads "Language",
+        // and a heading with the same word directly above it was the duplication.
+        ui.add_space(SPACE_24);
         ui.horizontal(|ui| {
             let id = labelled(ui, rust_i18n::t!("app.language").to_string());
             egui::ComboBox::from_id_salt("options-language")
@@ -192,11 +231,11 @@ impl SuturaApp {
 
         // --- Rust extra: diagnostics export -------------------------------
         Self::option_section(ui, rust_i18n::t!("app.diagnostics_title").to_string());
-        ui.label(
+        ui.add(egui::Label::new(
             egui::RichText::new(rust_i18n::t!("app.diagnostics_tip").to_string())
                 .small()
                 .weak(),
-        );
+        ));
         if ui.button(rust_i18n::t!("app.diagnostics").to_string()).clicked() {
             self.export_diagnostics();
         }

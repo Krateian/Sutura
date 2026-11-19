@@ -464,6 +464,10 @@ pub struct SuturaApp {
     compare: Option<ComparePair>,
     /// Camera focus from `--focus`, applied when a mesh is loaded.
     focus: Option<([f32; 3], Option<f32>)>,
+    /// The General tab's preferences, which Qt kept in `config.json` and which
+    /// `RepairOptions` has no field for. They are applied around the repair in
+    /// `run_repair`, the same switches the CLI's `--no-*` flags set.
+    pub(crate) prefs: crate::state::GuiState,
     /// The Options window: Qt's 7-tab dialog, which replaced the settings
     /// column. `None` while hidden.
     pub(crate) options_open: bool,
@@ -720,6 +724,7 @@ impl SuturaApp {
             focus: None,
             options_open: false,
             options_tab: OptionsTab::Repair,
+            prefs: crate::state::GuiState::default(),
         }
     }
 
@@ -842,6 +847,7 @@ impl SuturaApp {
             focus: options.focus,
             options_open: options.options_tab.is_some(),
             options_tab: options.options_tab.unwrap_or(OptionsTab::Repair),
+            prefs: crate::state::GuiState::default(),
         };
         for path in files {
             app.add_path(path);
@@ -1082,6 +1088,10 @@ impl SuturaApp {
             } else {
                 self.saved_window_size
             },
+            history_enabled: self.prefs.history_enabled,
+            cache_enabled: self.prefs.cache_enabled,
+            fidelity_enabled: self.prefs.fidelity_enabled,
+            learning_enabled: self.prefs.learning_enabled,
         };
         serde_json::to_string(&state).unwrap_or_default()
     }
@@ -1107,18 +1117,10 @@ impl SuturaApp {
         if now == self.persisted {
             return;
         }
-        let state = crate::state::GuiState {
-            settings: self.settings.clone(),
-            intensity: Some(self.intensity.value().to_string()),
-            language: Some(self.language.code().to_string()),
-            // Only a resize is a choice; the opening size is a default and must
-            // not be frozen into the next launch.
-            window_size: if self.user_resized {
-                self.last_window_size
-            } else {
-                self.saved_window_size
-            },
-        };
+        // Built by the same function the change detector uses, so the two can
+        // never disagree about which fields are persisted.
+        let state: crate::state::GuiState =
+            serde_json::from_str(&now).unwrap_or_default();
         match crate::state::save(&state) {
             Ok(()) => self.persisted = now,
             // Logged, not fatal: a read-only config dir must not break the UI.
@@ -1289,8 +1291,9 @@ impl SuturaApp {
         // measured here, the output file appeared at 52 s while the UI still said
         // "repair started" at 62 s.
         let ctx_for_worker = self.ctx.clone();
+        let prefs = self.prefs.clone();
         std::thread::spawn(move || {
-            run_repair(&input, &output, settings, tx, cancel);
+            run_repair(&input, &output, settings, prefs, tx, cancel);
             if let Some(ctx) = ctx_for_worker {
                 ctx.request_repaint();
             }
@@ -2481,7 +2484,7 @@ impl SuturaApp {
                                         .join(",")
                                 })
                                 .unwrap_or_else(|| rust_i18n::t!("app.method_auto").to_string());
-                            ui.label(egui::RichText::new(method).small().monospace());
+                            ui.label(egui::RichText::new(method));
                         });
                         row.col(|ui| {
                             match entry.decision() {
@@ -2489,7 +2492,6 @@ impl SuturaApp {
                                     ui.add(
                                         egui::Label::new(
                                             egui::RichText::new(truncate_decision(&text, 26))
-                                                .small()
                                                 .color(colour),
                                         ),
                                     )
@@ -3443,23 +3445,40 @@ impl SuturaApp {
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 for (num, id, _category, name) in sutura_core::repair_settings::METHODS {
+                    // The ladder is the policy order, not the whole registry:
+                    // Qt listed exactly these six and nothing else.
+                    if automatic && !LADDER.contains(&num) {
+                        continue;
+                    }
                     let mut on = if automatic {
-                        LADDER.contains(&num)
+                        true
                     } else {
                         selected.contains(&num)
                     };
-                    // Disabled rows still read: a greyed tick is the ladder.
-                    let response = ui.add_enabled(
-                        !automatic,
-                        egui::Checkbox::new(&mut on, format!("{num}. {name} ({id})")),
-                    );
-                    if response.changed() {
-                        if on {
-                            selected.push(num);
-                        } else {
-                            selected.retain(|n| *n != num);
+                    if automatic {
+                        // A disabled checkbox draws its tick almost invisibly
+                        // against Qt's dark `Button` colour, so the ladder read
+                        // as "only #2 is on" when all six were. Draw the mark as
+                        // text instead -- and ASCII, because egui's bundled font
+                        // has no U+2713 either (the same reason the per-row
+                        // remove button is " x ").
+                        let mark = if on { "[x]" } else { "[ ]" };
+                        ui.add(egui::Label::new(egui::RichText::new(format!(
+                            "{mark} {num}. {name} ({id})"
+                        ))
+                        .monospace()));
+                    } else {
+                        if ui
+                            .checkbox(&mut on, format!("{num}. {name} ({id})"))
+                            .changed()
+                        {
+                            if on {
+                                selected.push(num);
+                            } else {
+                                selected.retain(|n| *n != num);
+                            }
+                            changed = true;
                         }
-                        changed = true;
                     }
                 }
             });
@@ -3883,7 +3902,9 @@ pub fn headless_repair(
     }
 
     let settings = RepairSettings::from_intensity(intensity.value(), false);
-    run_repair(input, output, settings, tx, cancel);
+    // The headless path has no UI, so it runs with the defaults rather than a
+    // user's General tab -- a gate must not change behaviour with a GUI file.
+    run_repair(input, output, settings, crate::state::GuiState::default(), tx, cancel);
 
     let observed = cancel_started.elapsed();
     if cancel_after_ms.is_some() {
@@ -4251,6 +4272,7 @@ fn run_repair(
     input: &Path,
     output: &Path,
     settings: RepairSettings,
+    prefs: crate::state::GuiState,
     tx: mpsc::Sender<RepairEvent>,
     cancel: Arc<CancelToken>,
 ) {
@@ -4340,6 +4362,16 @@ fn run_repair(
     if opts.deep_repair != sutura_core::repair::DeepRepair::Off {
         stage(4, 8);
     }
+    // The General tab's four switches, applied exactly where the CLI applies its
+    // `--no-*` flags: two are environment variables the core reads, and the other
+    // two gate the history write below.
+    if prefs.learning_enabled == Some(false) {
+        std::env::set_var("SUTURA_LEARNING_TRIAGE", "0");
+    }
+    if prefs.cache_enabled == Some(false) {
+        std::env::set_var("SUTURA_NO_CACHE", "1");
+    }
+
     let sink = GuiSink { tx: tx.clone() };
     // Keep the inputs: scoring compares the repaired mesh against them, and
     // `verts`/`tris` are shadowed by the outcome below.
