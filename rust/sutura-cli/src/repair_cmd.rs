@@ -398,6 +398,11 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         repeat_target,
         time_budget_s: None,
         join_components: cli.experimental_join_components,
+        // Declared on the CLI since the beginning, and  already
+        // had both; the settings table was the only place they were missing, so
+        // the GUI could not reach them either.
+        autorefine: cli.experimental_autorefine,
+        indirect_autorefine: cli.experimental_indirect_autorefine,
         ftetwild_max_faces: cli.ftetwild_max_faces,
         ftetwild_timeout: cli.ftetwild_timeout,
         ftetwild_max_hausdorff_rel: cli.ftetwild_max_hausdorff,
