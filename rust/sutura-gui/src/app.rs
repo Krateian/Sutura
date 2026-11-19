@@ -180,6 +180,8 @@ pub enum RowAction {
     ClearTags(usize),
     /// Add a recommended method to this file's own list.
     TagMethod(usize, u8),
+    /// Open the repaired file in the detected slicer at this index.
+    OpenInSlicer(usize, usize),
 }
 
 /// The ranked methods in a file's report: `(num, name, score 0..1)`.
@@ -548,6 +550,9 @@ pub struct SuturaApp {
     /// `RepairOptions` has no field for. They are applied around the repair in
     /// `run_repair`, the same switches the CLI's `--no-*` flags set.
     pub(crate) prefs: crate::state::GuiState,
+    /// Slicers found at startup. Computed once: a user does not install one
+    /// while the window is open, and detection walks PATH and /Applications.
+    slicers: Vec<crate::slicers::Slicer>,
     /// Whether the Analysis card's defects list is expanded.
     defects_open: bool,
     /// A profile edit requested from the Repair tab. Applied after the frame,
@@ -631,6 +636,20 @@ impl SuturaApp {
     #[cfg(test)]
     pub fn selected_index(&self) -> Option<usize> {
         self.selected
+    }
+
+    #[cfg(test)]
+    pub fn set_output_for_test(&mut self, out: PathBuf) {
+        if let Some(i) = self.selected {
+            if let Some(slot) = self.files.get_mut(i) {
+                slot.output = Some(out);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn slicers_for_test(&self) -> &[crate::slicers::Slicer] {
+        &self.slicers
     }
 
     #[cfg(test)]
@@ -833,6 +852,7 @@ impl SuturaApp {
             options_tab: OptionsTab::Repair,
             options_scroll: None,
             defects_open: false,
+            slicers: crate::slicers::detect(),
             methods_manual: None,
             prefs: crate::state::GuiState::default(),
             profile_action: None,
@@ -964,6 +984,7 @@ impl SuturaApp {
             profile_action: None,
             profile_prompt: None,
             defects_open: false,
+            slicers: crate::slicers::detect(),
             prefs: crate::state::GuiState::default(),
         };
         for path in files {
@@ -2714,6 +2735,26 @@ impl SuturaApp {
         // the columns, not the buttons.
         ui.horizontal(|ui| {
             analyze(self, ui);
+            // Once there is a repaired file and a slicer, the next thing a user
+            // does is open it. Qt offered this from the context menu only; the
+            // action row is where the result is, so it belongs here too.
+            let has_output = self
+                .selected
+                .and_then(|i| self.files.get(i))
+                .map(|e| e.output.is_some())
+                .unwrap_or(false);
+            if has_output && !self.slicers.is_empty() {
+                let installed = self.slicers.clone();
+                ui.menu_button(rust_i18n::t!("app.open_in_slicer").to_string(), |ui| {
+                    for (i, slicer) in installed.iter().enumerate() {
+                        if menu_action(ui, slicer.label.to_string()) {
+                            if let Some(idx) = self.selected {
+                                self.apply_row_action(RowAction::OpenInSlicer(idx, i));
+                            }
+                        }
+                    }
+                });
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 repair(self, ui, multi, can_repair, running, cancel_clicked)
             });
@@ -2914,6 +2955,30 @@ impl SuturaApp {
                                             rust_i18n::t!("app.show_in_folder").to_string(),
                                         ) {
                                             chosen = Some(RowAction::OpenOutput(idx, true));
+                                        }
+                                        // "Open in..." only when a slicer is
+                                        // actually installed: a menu entry that
+                                        // cannot work is worse than none.
+                                        let installed = self.slicers.clone();
+                                        if !installed.is_empty() {
+                                            ui.menu_button(
+                                                rust_i18n::t!("app.open_in_slicer")
+                                                    .to_string(),
+                                                |ui| {
+                                                    for (i, slicer) in
+                                                        installed.iter().enumerate()
+                                                    {
+                                                        if menu_action(
+                                                            ui,
+                                                            slicer.label.to_string(),
+                                                        ) {
+                                                            chosen = Some(
+                                                                RowAction::OpenInSlicer(idx, i),
+                                                            );
+                                                        }
+                                                    }
+                                                },
+                                            );
                                         }
                                         ui.separator();
                                     }
@@ -3462,6 +3527,18 @@ impl SuturaApp {
                     slot.methods = None;
                 }
                 self.log("method tags cleared; this file follows the global list".to_string());
+            }
+            RowAction::OpenInSlicer(idx, which) => {
+                let Some(slicer) = self.slicers.get(which) else {
+                    return;
+                };
+                let Some(out) = self.files.get(idx).and_then(|e| e.output.clone()) else {
+                    return;
+                };
+                match crate::slicers::open_in(slicer, &out) {
+                    Ok(()) => self.log(format!("opened {} in {}", out.display(), slicer.label)),
+                    Err(e) => self.log(format!("could not open the slicer: {e}")),
+                }
             }
             RowAction::TagMethod(idx, num) => {
                 // Appended, not sorted: the order is the sequence the core runs.

@@ -910,3 +910,65 @@ fn a_declined_result_offers_a_forced_rerun() {
         "the budget re-run row is missing"
     );
 }
+
+
+/// "Open in..." appears only when there is BOTH a repaired file and a slicer.
+///
+/// Qt guarded the entry with "the file has an output" and then offered the
+/// slicers it detected. Detection is tested in `slicers.rs`; this pins the
+/// wiring, in both directions: no output means no entry even when a slicer is
+/// installed, and an output plus a slicer means the entry is there.
+#[test]
+fn the_open_in_menu_needs_a_result_and_a_slicer() {
+    let _serial = serial();
+    let mut h = harness(egui::vec2(1100.0, 800.0));
+    h.state_mut().add_file_for_test(temp_box("slicer"));
+    h.state_mut().select_first_for_test();
+    settle(&mut h);
+    let detected = h.state().slicers_for_test().len();
+
+    // No output yet: the entry must not be offered, whatever was detected.
+    let row = h.get_by_label("box.stl");
+    let pos = row.rect().center();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    for _ in 0..4 {
+        h.step();
+    }
+    assert!(
+        h.query_all_by_label("Open in...").next().is_none(),
+        "no repaired file, so there is nothing to open"
+    );
+
+    // Simulate a finished repair, then the entry must follow detection.
+    h.state_mut().set_output_for_test(std::path::PathBuf::from("/tmp/x_fixed.stl"));
+    settle(&mut h);
+    h.get_by_label("box.stl").click();
+    for _ in 0..2 {
+        h.step();
+    }
+    let pos = h.get_by_label("box.stl").rect().center();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    for _ in 0..4 {
+        h.step();
+    }
+    let has_entry = h.query_all_by_label("Open in...").next().is_some();
+    assert_eq!(
+        has_entry,
+        detected > 0,
+        "with a result, the entry must appear exactly when a slicer was detected"
+    );
+}

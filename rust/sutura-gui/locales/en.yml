@@ -307,3 +307,4 @@ app:
   menu_analyze_first: Analyze this file first
   sug_try_dressing: "Dressing can close this shape, but may deform it. Re-run with it on?"
   sug_budget_rerun: "This file was declined by the time/geometry budget, so nothing was written. Re-run anyway?"
+  open_in_slicer: Open in...
