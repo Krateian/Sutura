@@ -216,3 +216,17 @@ app:
   tab_updates: Updates
   tab_changelog: Changelog
   tab_engines: Engines
+  opt_graft: Keep the Graft pass enabled
+  opt_graft_tip: The last-resort solid rebuild. Off means no Graft tier at all.
+  opt_fidelity: Show the Fidelity shape score (report only)
+  opt_fidelity_tip: A report-only measurement. It can never change the repaired mesh.
+  opt_clear_cache: Clear cache
+  opt_reset_learning: Reset learning
+  opt_learning_body: A small, bounded bonus from the anonymised (object type, method) success and time recorded locally. No network.
+  section_language: Language
+  repeat_pick_unset: not set
+  repeat_pick_clear: Clear
+  experimental_hint: These passes are experimental and off by default. Each one is adopted only when its result is not worse than the default chain, but it can make a repair much slower.
+  method_control: Method control
+  method_automatic: Automatic (policy order)
+  method_manual: Manual (exact order)

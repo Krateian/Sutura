@@ -89,7 +89,7 @@ impl SuturaApp {
     }
 
     /// A section heading inside a tab: one step larger and bold (rule f).
-    fn option_section(ui: &mut egui::Ui, text: String) {
+    pub(crate) fn option_section(ui: &mut egui::Ui, text: String) {
         ui.add_space(SPACE_16);
         ui.add(egui::Label::new(egui::RichText::new(text).heading()).wrap());
         ui.add_space(SPACE_8);

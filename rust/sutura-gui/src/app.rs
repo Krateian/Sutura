@@ -276,6 +276,8 @@ pub struct StartupOptions {
     /// in the whole-part view cannot be documented, and `--screenshot` has no
     /// input device to orbit or zoom with.
     pub focus: Option<([f32; 3], Option<f32>)>,
+    /// Capture hook: open Options on this tab as soon as the window appears.
+    pub options_tab: Option<OptionsTab>,
     /// Give the selected file its own method list, as if the user had unticked
     /// "Use the panel selection" and picked these. Needed to show the per-file
     /// editor in a state other than "inherited" -- which is otherwise the same
@@ -764,8 +766,8 @@ impl SuturaApp {
             changelog_error: None,
             compare: None,
             focus: options.focus,
-            options_open: false,
-            options_tab: OptionsTab::Repair,
+            options_open: options.options_tab.is_some(),
+            options_tab: options.options_tab.unwrap_or(OptionsTab::Repair),
         };
         for path in files {
             app.add_path(path);
@@ -3020,111 +3022,6 @@ impl SuturaApp {
             &mut self.settings.experimental_splint,
             rust_i18n::t!("app.tier_splint").to_string(),
         );
-        let mut dressing = self.settings.dressing;
-        if ui
-            .checkbox(&mut dressing, rust_i18n::t!("app.tier_dressing").to_string())
-            .changed()
-        {
-            self.settings.dressing = dressing;
-        }
-        if self.settings.dressing {
-            ui.checkbox(
-                &mut self.settings.dressing_force_adopt,
-                rust_i18n::t!("app.dressing_force_adopt").to_string(),
-            );
-            // The four dressing knobs, previously CLI-only. Each is
-            // tri-state (`None` = CLI default), so a blank field
-            // means "leave it to the intensity", exactly like the
-            // per-run limits above.
-            ui.indent("dressing_knobs", |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(rust_i18n::t!("app.dressing_drain").to_string());
-                    let mut text = self
-                        .settings
-                        .dressing_drain
-                        .as_ref()
-                        .map(|v| match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        })
-                        .unwrap_or_default();
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut text)
-                                .hint_text(rust_i18n::t!("app.dressing_drain_hint")),
-                        )
-                        .changed()
-                    {
-                        let t = text.trim();
-                        self.settings.dressing_drain = if t.is_empty() {
-                            None
-                        } else {
-                            Some(match t.parse::<f64>() {
-                                // Same shape the CLI produces: a bare
-                                // number stays a number.
-                                Ok(n) => serde_json::json!(n),
-                                Err(_) => {
-                                    serde_json::Value::String(t.to_lowercase())
-                                }
-                            })
-                        };
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(rust_i18n::t!("app.dressing_defects").to_string());
-                    let mut text = self
-                        .settings
-                        .dressing_defects
-                        .clone()
-                        .unwrap_or_default();
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut text)
-                                .hint_text(rust_i18n::t!("app.dressing_defects_hint")),
-                        )
-                        .changed()
-                    {
-                        let t = text.trim();
-                        self.settings.dressing_defects = if t.is_empty() {
-                            None
-                        } else {
-                            Some(t.to_string())
-                        };
-                    }
-                });
-                let mut knob = |ui: &mut egui::Ui, label: &str, value: &mut Option<f64>| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(label);
-                        let mut text =
-                            value.map(|v| v.to_string()).unwrap_or_default();
-                        if ui
-                            .add(
-                                egui::TextEdit::singleline(&mut text)
-                                    .desired_width(70.0),
-                            )
-                            .changed()
-                        {
-                            let t = text.trim();
-                            *value = if t.is_empty() {
-                                None
-                            } else {
-                                t.parse::<f64>().ok()
-                            };
-                        }
-                    });
-                };
-                knob(
-                    ui,
-                    &rust_i18n::t!("app.dressing_rmax_scale").to_string(),
-                    &mut self.settings.dressing_rmax_scale,
-                );
-                knob(
-                    ui,
-                    &rust_i18n::t!("app.dressing_sigma_scale").to_string(),
-                    &mut self.settings.dressing_sigma_scale,
-                );
-            });
-        }
 
         ui.separator();
         // Graft and the fTetWild fallback: declared on the CLI since
@@ -3341,6 +3238,32 @@ impl SuturaApp {
 
     /// The method pickers, rendered in Options -> Methods.
     pub(crate) fn methods_controls(&mut self, ui: &mut egui::Ui) {
+        // Qt's Method control radios. `forced_methods` is a set in the core
+        // (`repair.rs`: membership only), so "Manual (exact order)" cannot
+        // promise an order -- the radio picks whether the panel's selection is
+        // sent at all, which is what `--methods` vs its absence means.
+        Self::option_section(ui, rust_i18n::t!("app.method_control").to_string());
+        let mut manual = self.settings.methods.is_some();
+        ui.horizontal(|ui| {
+            if ui
+                .radio(!manual, rust_i18n::t!("app.method_automatic"))
+                .clicked()
+            {
+                manual = false;
+            }
+            if ui
+                .radio(manual, rust_i18n::t!("app.method_manual"))
+                .clicked()
+            {
+                manual = true;
+            }
+        });
+        if !manual {
+            self.settings.methods = None;
+        } else if self.settings.methods.is_none() {
+            self.settings.methods = Some(String::new());
+        }
+
         ui.label(rust_i18n::t!("app.file_methods").to_string());
         if let Some(idx) = self.selected {
             if self.files.get(idx).is_some() {
@@ -3536,11 +3459,153 @@ impl SuturaApp {
     /// The opt-in passes, rendered in Options -> Experimental.
     pub(crate) fn experimental_controls(&mut self, ui: &mut egui::Ui) {
         ui.label("moved below");
+        let mut dressing = self.settings.dressing;
+        if ui
+            .checkbox(&mut dressing, rust_i18n::t!("app.tier_dressing").to_string())
+            .changed()
+        {
+            self.settings.dressing = dressing;
+        }
+        if self.settings.dressing {
+            ui.checkbox(
+                &mut self.settings.dressing_force_adopt,
+                rust_i18n::t!("app.dressing_force_adopt").to_string(),
+            );
+            // The four dressing knobs, previously CLI-only. Each is
+            // tri-state (`None` = CLI default), so a blank field
+            // means "leave it to the intensity", exactly like the
+            // per-run limits above.
+            ui.indent("dressing_knobs", |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(rust_i18n::t!("app.dressing_drain").to_string());
+                    let mut text = self
+                        .settings
+                        .dressing_drain
+                        .as_ref()
+                        .map(|v| match v {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        })
+                        .unwrap_or_default();
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut text)
+                                .hint_text(rust_i18n::t!("app.dressing_drain_hint")),
+                        )
+                        .changed()
+                    {
+                        let t = text.trim();
+                        self.settings.dressing_drain = if t.is_empty() {
+                            None
+                        } else {
+                            Some(match t.parse::<f64>() {
+                                // Same shape the CLI produces: a bare
+                                // number stays a number.
+                                Ok(n) => serde_json::json!(n),
+                                Err(_) => {
+                                    serde_json::Value::String(t.to_lowercase())
+                                }
+                            })
+                        };
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(rust_i18n::t!("app.dressing_defects").to_string());
+                    let mut text = self
+                        .settings
+                        .dressing_defects
+                        .clone()
+                        .unwrap_or_default();
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut text)
+                                .hint_text(rust_i18n::t!("app.dressing_defects_hint")),
+                        )
+                        .changed()
+                    {
+                        let t = text.trim();
+                        self.settings.dressing_defects = if t.is_empty() {
+                            None
+                        } else {
+                            Some(t.to_string())
+                        };
+                    }
+                });
+                let mut knob = |ui: &mut egui::Ui, label: &str, value: &mut Option<f64>| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(label);
+                        let mut text =
+                            value.map(|v| v.to_string()).unwrap_or_default();
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut text)
+                                    .desired_width(70.0),
+                            )
+                            .changed()
+                        {
+                            let t = text.trim();
+                            *value = if t.is_empty() {
+                                None
+                            } else {
+                                t.parse::<f64>().ok()
+                            };
+                        }
+                    });
+                };
+                knob(
+                    ui,
+                    &rust_i18n::t!("app.dressing_rmax_scale").to_string(),
+                    &mut self.settings.dressing_rmax_scale,
+                );
+                knob(
+                    ui,
+                    &rust_i18n::t!("app.dressing_sigma_scale").to_string(),
+                    &mut self.settings.dressing_sigma_scale,
+                );
+            });
+        }
     }
 
     /// The repeat points, rendered in Options -> Methods.
+    ///
+    /// Qt opened these from a toolbar button; they are two coordinates that the
+    /// CLI takes as `--repeat-source` / `--repeat-target`, and the Methods tab is
+    /// where a user looks for a per-repair option like them.
     pub(crate) fn repeat_point_controls(&mut self, ui: &mut egui::Ui) {
-        ui.label("moved below");
+        Self::option_section(ui, rust_i18n::t!("app.repeat_pick").to_string());
+        let fmt = |p: Option<[f64; 3]>| match p {
+            Some([x, y, z]) => format!("({x:.2}, {y:.2}, {z:.2})"),
+            None => rust_i18n::t!("app.repeat_pick_unset").to_string(),
+        };
+        ui.label(
+            egui::RichText::new(rust_i18n::t!(
+                "app.repeat_pick_state",
+                source = fmt(self.settings.repeat_source),
+                target = fmt(self.settings.repeat_target)
+            )
+            .to_string())
+            .small()
+            .weak(),
+        );
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    self.selected.is_some(),
+                    egui::Button::new(rust_i18n::t!("app.repeat_pick").to_string()),
+                )
+                .clicked()
+            {
+                self.open_repeat_picker();
+            }
+            if (self.settings.repeat_source.is_some() || self.settings.repeat_target.is_some())
+                && ui
+                    .button(rust_i18n::t!("app.repeat_pick_clear").to_string())
+                    .clicked()
+            {
+                self.settings.repeat_source = None;
+                self.settings.repeat_target = None;
+            }
+        });
     }
 
 }

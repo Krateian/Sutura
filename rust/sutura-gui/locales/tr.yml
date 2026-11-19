@@ -216,3 +216,17 @@ app:
   tab_updates: Güncellemeler
   tab_changelog: Değişiklikler
   tab_engines: Motorlar
+  opt_graft: Graft geçişi etkin
+  opt_graft_tip: Son çare katı yeniden inşa. Kapalıysa hiç Graft katı yok.
+  opt_fidelity: Fidelity şekil puanını göster (yalnız rapor)
+  opt_fidelity_tip: Yalnız rapor amaçlı bir ölçüm. Onarılmış ağı asla değiştirmez.
+  opt_clear_cache: Önbelleği temizle
+  opt_reset_learning: Öğrenmeyi sıfırla
+  opt_learning_body: Yerelde kaydedilen anonim (nesne türü, yöntem) başarı ve süresinden küçük, sınırlı bir bonus. Ağ yok.
+  section_language: Dil
+  repeat_pick_unset: ayarlanmadı
+  repeat_pick_clear: Temizle
+  experimental_hint: Bu geçişler deneyseldir ve varsayılan olarak kapalıdır. Her biri yalnız sonucu varsayılan zincirden kötü olmadığında benimsenir, ama onarımı çok yavaşlatabilir.
+  method_control: Yöntem denetimi
+  method_automatic: Otomatik (politika sırası)
+  method_manual: Elle (tam sıra)

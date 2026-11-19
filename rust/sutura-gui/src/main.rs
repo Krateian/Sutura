@@ -49,6 +49,7 @@ fn main() -> eframe::Result<()> {
     let mut wait_frames = 3u8;
     // `[x,y,z]` centre, optionally `[x,y,z,zoom]`: see `--focus`.
     let mut focus: Option<([f32; 3], Option<f32>)> = None;
+    let mut options_tab: Option<app::OptionsTab> = None;
     let mut file_methods: Option<Vec<u8>> = None;
     // Window size, so a capture can prove the layout at the small end (Steam
     // Deck is 1280x800, the stated minimum 720x480). Not in `--help`: it exists
@@ -113,6 +114,24 @@ fn main() -> eframe::Result<()> {
             "--open-compare" => open = app::OpenOnStart::Compare,
             "--open-repeat-picker" => open = app::OpenOnStart::RepeatPicker,
             "--open-changelog" => open = app::OpenOnStart::Changelog,
+            // Capture hook: open the Options window on one tab, so each of the
+            // seven can be photographed without a click.
+            "--open-options" => {
+                let tab = args.next();
+                options_tab = Some(match tab.as_deref() {
+                    Some("general") => app::OptionsTab::General,
+                    Some("repair") => app::OptionsTab::Repair,
+                    Some("methods") => app::OptionsTab::Methods,
+                    Some("experimental") => app::OptionsTab::Experimental,
+                    Some("updates") => app::OptionsTab::Updates,
+                    Some("changelog") => app::OptionsTab::Changelog,
+                    Some("engines") => app::OptionsTab::Engines,
+                    other => {
+                        eprintln!("--open-options: unknown tab {other:?}");
+                        app::OptionsTab::Repair
+                    }
+                });
+            }
             "--show-after" => open = app::OpenOnStart::After,
             "--defect-colors" => open = app::OpenOnStart::DefectColors,
             // Hidden capture hook: point the camera at a box centre and zoom in,
@@ -316,6 +335,7 @@ fn main() -> eframe::Result<()> {
                     settings_scroll,
                     wait_frames,
                     focus,
+                    options_tab,
                     file_methods,
                 },
             )))
