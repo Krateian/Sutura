@@ -1053,7 +1053,19 @@ fn tamponade_params(
     edges.sort_unstable();
     edges.dedup();
     let chi = used.len() as i64 - edges.len() as i64 + tris.len() as i64;
-    let genus = ((2 - chi) as f64 / 2.0).round() as i64;
+    // Mirror `topology.mesh_topology`: genus is defined only for a 2-manifold
+    // mesh, where g = components - (holes + chi) / 2 across all shells.  The
+    // closed-single-shell shortcut (2 - chi)/2 is wrong for multi-part and
+    // open meshes and disagreed with the Python report on identical output.
+    let summary = common::topology_summary(verts, tris);
+    let genus = if summary.non_two_manifold_edges == 0
+        && summary.non_two_manifold_vertices == 0
+    {
+        let holes = boundary_loop_stats(tris).0 as i64;
+        summary.components as i64 - (holes + chi) / 2
+    } else {
+        -1
+    };
     let gate = |key: &str, default: f64| -> f64 {
         policy_number(policy, "tiers.tamponade.gates", key, default)
     };
