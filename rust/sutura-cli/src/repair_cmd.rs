@@ -847,7 +847,17 @@ fn method_health() -> Value {
     let mut methods = Map::new();
     let mut ok = 0;
     let mut skipped = 0;
+    // fTetWild is available exactly when `find_binary()` finds a runnable
+    // sidecar (FTETWILD_BIN / SUTURA_FTETWILD_BIN / bundled / PATH).  The
+    // hardcoded table said "skip" even when the tier ran, which reported a
+    // missing fTetWild to the user (and the GUI health warning).
+    let ftetwild_ok = sutura_core::ftetwild::find_binary().is_some();
     for (id, status) in METHOD_HEALTH_IDS {
+        let status = if id == "ftetwild" && ftetwild_ok {
+            "ok"
+        } else {
+            status
+        };
         match status {
             "ok" => {
                 ok += 1;
