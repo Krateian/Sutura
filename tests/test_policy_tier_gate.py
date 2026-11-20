@@ -115,7 +115,7 @@ def run(case):
             env['SUTURA_POLICY_USER'] = path
         return json.loads(subprocess.check_output(
             [sys.executable, '-c', CODE], env=env, cwd=REPO, text=True,
-            stderr=subprocess.STDOUT))
+            stderr=subprocess.DEVNULL))
 
 
 def test_no_user_file_keeps_full_sequence():

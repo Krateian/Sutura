@@ -117,7 +117,7 @@ jobs:
           # Reuse the plugin pin exactly as install-macos.sh writes it into the
           # sutura-gui launcher. The conda env also carries a Qt5 stack, so a
           # bare interpreter does not find PySide6's own Qt6 offscreen plugin.
-          eval "$(sed -n '/^export QT_PLUGIN_PATH=/p' "$HOME/.local/bin/sutura-gui")"
+          eval "$(sed -n '/^export QT_PLUGIN_PATH=/p' "$HOME/.local/share/sutura/sutura-gui-py")"
           test -n "$QT_PLUGIN_PATH"
           "$ENV_PY" -c '
           import os, sys
@@ -175,7 +175,7 @@ jobs:
           # The test's GUI subprocess calls the bare interpreter like check c
           # Part 1, so it needs the same launcher-derived plugin pin.
           export QT_QPA_PLATFORM=offscreen
-          eval "$(sed -n '/^export QT_PLUGIN_PATH=/p' "$HOME/.local/bin/sutura-gui")"
+          eval "$(sed -n '/^export QT_PLUGIN_PATH=/p' "$HOME/.local/share/sutura/sutura-gui-py")"
           test -n "$QT_PLUGIN_PATH"
           set +e
           SUTURA_DIR="$HOME/.local/share/sutura" "$ENV_PY" tests/test_ftetwild_default.py > /tmp/ftetwild.log 2>&1
