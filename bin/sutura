@@ -75,14 +75,14 @@ if [ "$backend" = "python" ]; then
         echo "sutura: Python backend requested but no legacy Python install was found" >&2
         exit 1
     fi
-    exec env SUTURA_BACKEND=python "${PY_CMD[@]}" "${args[@]}"
+    exec env SUTURA_BACKEND=python "${PY_CMD[@]}" ${args[@]+"${args[@]}"}
 fi
 
 # Rust CLI candidates.  SUTURA_RUST_CLI wins; the installed payload and app
 # bundles follow; the source-checkout build is last.
 candidates=()
 if [ -n "${SUTURA_RUST_CLI:-}" ] && [ -x "$SUTURA_RUST_CLI" ] && [ "$SUTURA_RUST_CLI" != "$SELF" ]; then
-    exec "$SUTURA_RUST_CLI" "${args[@]}"
+    exec "$SUTURA_RUST_CLI" ${args[@]+"${args[@]}"}
 fi
 candidates+=("$APP_DIR/bin/sutura")
 candidates+=("$HOME/Applications/Sutura.app/Contents/MacOS/sutura")
@@ -90,14 +90,14 @@ candidates+=("/Applications/Sutura.app/Contents/MacOS/sutura")
 [ -n "$SOURCE_ROOT" ] && candidates+=("$SOURCE_ROOT/rust/target/release/sutura")
 for cand in "${candidates[@]}"; do
     if [ -n "$cand" ] && [ "$cand" != "$SELF" ] && is_rust_binary "$cand"; then
-        exec "$cand" "${args[@]}"
+        exec "$cand" ${args[@]+"${args[@]}"}
     fi
 done
 
 # No standalone Rust CLI: the Python service with the Rust core is the
 # transitional default.  A missing bridge falls back to Python with a warning.
 if collect_python_entry; then
-    exec env SUTURA_BACKEND=rust "${PY_CMD[@]}" "${args[@]}"
+    exec env SUTURA_BACKEND=rust "${PY_CMD[@]}" ${args[@]+"${args[@]}"}
 fi
 
 echo "sutura: no Rust CLI or Python fallback was found" >&2

@@ -70,12 +70,12 @@ if [ "$backend" = "python" ]; then
         echo "sutura-gui: Python backend requested but no legacy Python install was found" >&2
         exit 1
     fi
-    exec env SUTURA_BACKEND=python "${PY_CMD[@]}" "${args[@]}"
+    exec env SUTURA_BACKEND=python "${PY_CMD[@]}" ${args[@]+"${args[@]}"}
 fi
 
 candidates=()
 if [ -n "${SUTURA_RUST_GUI:-}" ] && [ -x "$SUTURA_RUST_GUI" ] && [ "$SUTURA_RUST_GUI" != "$SELF" ]; then
-    exec "$SUTURA_RUST_GUI" "${args[@]}"
+    exec "$SUTURA_RUST_GUI" ${args[@]+"${args[@]}"}
 fi
 candidates+=("$APP_DIR/bin/sutura-gui")
 candidates+=("$HOME/Applications/Sutura.app/Contents/MacOS/sutura-gui")
@@ -83,12 +83,12 @@ candidates+=("/Applications/Sutura.app/Contents/MacOS/sutura-gui")
 [ -n "$SOURCE_ROOT" ] && candidates+=("$SOURCE_ROOT/rust/target/release/sutura-gui")
 for cand in "${candidates[@]}"; do
     if [ -n "$cand" ] && [ "$cand" != "$SELF" ] && is_rust_binary "$cand"; then
-        exec "$cand" "${args[@]}"
+        exec "$cand" ${args[@]+"${args[@]}"}
     fi
 done
 
 if collect_python_gui; then
-    exec env SUTURA_BACKEND=rust "${PY_CMD[@]}" "${args[@]}"
+    exec env SUTURA_BACKEND=rust "${PY_CMD[@]}" ${args[@]+"${args[@]}"}
 fi
 
 echo "sutura-gui: no Rust GUI or Python fallback was found" >&2
