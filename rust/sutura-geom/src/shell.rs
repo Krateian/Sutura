@@ -2028,7 +2028,11 @@ pub fn resolve_coplanar_contacts(
                 }
             }
 
-            cdt.add_constraints_batch(&constraints);
+            if cdt.add_constraints_batch(&constraints).is_err() {
+                // Cancellation: drop this host's partial triangulation and
+                // every partial plane fix accumulated so far.
+                return (verts.to_vec(), tris.to_vec(), false, false);
+            }
 
             let sub_tris = cdt.triangles();
             let cdt_verts = cdt.vertices();
@@ -2471,9 +2475,22 @@ pub fn shell_analyze_and_filter(
         }
     }
 
+    // A cancelled arrangement leaves the input unchanged; report that
+    // explicitly instead of letting the caller read it as "nothing to fix".
+    if crate::cancel::is_cancelled() {
+        let mut res = ShellAnalysisResult::default();
+        res.reason = "cancelled".to_string();
+        return (verts.to_vec(), tris.to_vec(), res);
+    }
+
     // 2. Pure coplanar contact fallback (e.g. adjacent stacked boxes without transversal penetration)
     let (cop_verts, cop_tris, cop_changed, cop_budget) =
         resolve_coplanar_contacts(verts, tris, config);
+    if crate::cancel::is_cancelled() {
+        let mut res = ShellAnalysisResult::default();
+        res.reason = "cancelled".to_string();
+        return (verts.to_vec(), tris.to_vec(), res);
+    }
     if cop_budget {
         // Deterministic work budget: keep the input byte-identical and let the
         // caller fall back to its normal stage-1 path.  No candidate is built

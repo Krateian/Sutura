@@ -794,7 +794,8 @@ pub(crate) fn arrangement_core(
                     }
                 }
             }
-            cdt.add_constraints_batch(&constraint_segments);
+            cdt.add_constraints_batch(&constraint_segments)
+                .map_err(|()| "cancelled".to_string())?;
 
             #[cfg(feature = "cdt-diag")]
             {
