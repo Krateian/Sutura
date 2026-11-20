@@ -1340,6 +1340,60 @@ def _running_orca_processes():
         return None
 
 
+# OrcaSlicer's own "another instance" listener on Linux: every running
+# instance owns a session-bus name built from this prefix plus a hash, with the
+# object path and interface derived the same way (src/slic3r/GUI/InstanceCheck.cpp).
+# The message is the command line as OrcaSlicer escapes it: each argument in
+# double quotes, joined with ';', argument 0 being the executable (skipped).
+_ORCA_DBUS_PREFIX = 'com.orcaslicer.OrcaSlicer.InstanceCheck.Object'
+_ORCA_DBUS_PATH = '/com/orcaslicer/OrcaSlicer/InstanceCheck/Object'
+
+
+def _orca_cstyle(arg):
+    return '"%s"' % arg.replace('\\', '\\\\').replace('"', '\\"')
+
+
+def _load_back_dbus(out_path):
+    """Hand the repaired file to the running OrcaSlicer over D-Bus (Linux).
+
+    `orca-slicer --single-instance <path>` only forwards the file when the
+    running instance was itself started in single-instance mode, which is off
+    by default; the listener, however, always runs. Talking to it directly is
+    what works for the AppImage, a distro package and the Flatpak alike.
+    Returns True when exactly one instance was found and the message was sent.
+    """
+    try:
+        listing = subprocess.run(
+            ['dbus-send', '--session', '--print-reply', '--dest=org.freedesktop.DBus',
+             '/org/freedesktop/DBus', 'org.freedesktop.DBus.ListNames'],
+            capture_output=True, text=True, timeout=10)
+    except Exception as exc:  # noqa: BLE001 - dbus-send missing or bus down
+        sys.stderr.write('[sutura] load-back (dbus): cannot list names: %s\n' % exc)
+        return False
+    names = []
+    for line in listing.stdout.splitlines():
+        line = line.strip()
+        if line.startswith('string "%s' % _ORCA_DBUS_PREFIX):
+            names.append(line[len('string "'):-1])
+    if len(names) != 1:
+        sys.stderr.write('[sutura] load-back (dbus): %d OrcaSlicer instance(s) on the bus\n'
+                         % len(names))
+        return False
+    name = names[0]
+    suffix = name[len(_ORCA_DBUS_PREFIX):]
+    message = ';'.join([_orca_cstyle('orca-slicer'), _orca_cstyle(out_path)])
+    try:
+        proc = subprocess.run(
+            ['dbus-send', '--session', '--type=method_call', '--dest=' + name,
+             _ORCA_DBUS_PATH + suffix, name + '.AnotherInstance', 'string:' + message],
+            capture_output=True, text=True, timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write('[sutura] load-back (dbus) error: %s\n' % exc)
+        return False
+    sys.stderr.write('[sutura] load-back (dbus): %s -> rc=%d\n' % (name, proc.returncode))
+    return proc.returncode == 0
+
+
 def _load_back(out_path):
     """Best-effort: reload the repaired file into the slicer.
 
@@ -1364,6 +1418,8 @@ def _load_back(out_path):
                 return False
             cmd = ['open', '-b', 'com.orcaslicer.OrcaSlicer', out_path]
         else:
+            if _load_back_dbus(out_path):
+                return True
             cmd = [_ORCA_BIN, '--single-instance', out_path]
     except Exception as exc:  # noqa: BLE001
         sys.stderr.write('[sutura] load-back error: %s\n' % exc)
