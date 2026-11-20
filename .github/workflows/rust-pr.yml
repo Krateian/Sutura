@@ -1,0 +1,30 @@
+name: Rust workspace build
+
+# Pull-request guard for the Rust product crates. ci.yml builds and tests
+# sutura-geom only, so a change that breaks sutura-core, the CLI or the GUI
+# (for example a dependency bump with an API change) could pass every check.
+# This compiles the whole workspace, tests included, on every PR that touches
+# rust/. It does not run the tests: compile breaks are what slipped through.
+
+on:
+  pull_request:
+    paths: ['rust/**', '.github/workflows/rust-pr.yml']
+  push:
+    branches: [main]
+    paths: ['rust/**', '.github/workflows/rust-pr.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the workspace (all targets)
+        working-directory: rust
+        run: cargo build --locked --workspace --exclude sutura-py --all-targets
