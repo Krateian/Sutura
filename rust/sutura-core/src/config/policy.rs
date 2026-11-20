@@ -1020,6 +1020,67 @@ fn home_config_dir() -> PathBuf {
     home.join(".config").join("sutura")
 }
 
+/// Write the user policy's `[order].deep_tier_order`, creating the file if needed.
+///
+/// The one policy field the GUI edits, and the reason Qt had
+/// `write_user_policy({'order': {'deep_tier_order': tiers}})` at all: the method
+/// ladder is a real decision, and a ladder a user cannot save is a display.
+///
+/// Merges into whatever is already there instead of overwriting: the file also
+/// holds every other threshold a user may have edited by hand, and replacing it
+/// would silently reset them. The result is validated before it is written, so a
+/// policy that the core would refuse never reaches the disk; and the write is
+/// atomic (temp file plus rename under the same directory).
+pub fn write_deep_tier_order(tiers: &[String]) -> Result<PathBuf, PolicyError> {
+    let path = user_policy_path();
+    let mut root: toml::Value = match std::fs::read_to_string(&path) {
+        Ok(text) => text.parse::<toml::Value>().map_err(|e| {
+            PolicyError(format!("TomlDecodeError: {e}"))
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            toml::Value::Table(toml::map::Map::new())
+        }
+        Err(e) => return Err(PolicyError(format!("IoError: {e}"))),
+    };
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| PolicyError("top level is not a table".to_string()))?;
+    let order = table
+        .entry("order".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let order = order
+        .as_table_mut()
+        .ok_or_else(|| PolicyError("[order] is not a table".to_string()))?;
+    order.insert(
+        "deep_tier_order".to_string(),
+        toml::Value::Array(
+            tiers
+                .iter()
+                .map(|t| toml::Value::String(t.clone()))
+                .collect(),
+        ),
+    );
+
+    // Validate the merged policy the way a load would, so a rejected order is a
+    // returned error rather than a broken file on the next start. The base is
+    // the packaged default; a user file is an override on top of it.
+    let text = toml::to_string(&root).map_err(|e| PolicyError(format!("TomlEncodeError: {e}")))?;
+    let user = parse_toml(&text)?;
+    let base = parse_toml(DEFAULT_POLICY_TOML)?;
+    let gates = gate_paths_for(&base);
+    let mut ignored = Vec::new();
+    let merged = merge_known(&base, &user, &[], &mut ignored, &gates);
+    validate(&merged)?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| PolicyError(format!("IoError: {e}")))?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, &text).map_err(|e| PolicyError(format!("IoError: {e}")))?;
+    std::fs::rename(&tmp, &path).map_err(|e| PolicyError(format!("IoError: {e}")))?;
+    Ok(path)
+}
+
 /// The packaged default, validated.
 pub fn default_policy() -> Result<LoadedPolicy, PolicyError> {
     let base = parse_toml(DEFAULT_POLICY_TOML)?;

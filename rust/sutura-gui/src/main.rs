@@ -1,13 +1,19 @@
 mod app;
 mod i18n;
 mod mesh;
+mod options;
 mod repeat_picker;
+mod slicers;
 mod state;
+mod suggestions;
+mod theme;
 mod updater_ui;
 mod viewer;
 mod crash;
 #[cfg(test)]
 mod interaction_tests;
+#[cfg(test)]
+mod design_frames;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -48,6 +54,9 @@ fn main() -> eframe::Result<()> {
     let mut wait_frames = 3u8;
     // `[x,y,z]` centre, optionally `[x,y,z,zoom]`: see `--focus`.
     let mut focus: Option<([f32; 3], Option<f32>)> = None;
+    let mut options_tab: Option<app::OptionsTab> = None;
+    let mut options_scroll: Option<f32> = None;
+    let mut methods_manual: Option<String> = None;
     let mut file_methods: Option<Vec<u8>> = None;
     // Window size, so a capture can prove the layout at the small end (Steam
     // Deck is 1280x800, the stated minimum 720x480). Not in `--help`: it exists
@@ -112,6 +121,32 @@ fn main() -> eframe::Result<()> {
             "--open-compare" => open = app::OpenOnStart::Compare,
             "--open-repeat-picker" => open = app::OpenOnStart::RepeatPicker,
             "--open-changelog" => open = app::OpenOnStart::Changelog,
+            // Capture hook: open the Options window on one tab, so each of the
+            // seven can be photographed without a click.
+            // Capture hook: start Methods on Manual with this sequence, so the
+            // Up/Down rows can be photographed.
+            "--methods-manual" => methods_manual = args.next(),
+            // Capture hook: seed the Options body's scroll, so a frame can show
+            // a control that starts below the fold.
+            "--options-scroll" => {
+                options_scroll = args.next().and_then(|s| s.parse::<f32>().ok())
+            }
+            "--open-options" => {
+                let tab = args.next();
+                options_tab = Some(match tab.as_deref() {
+                    Some("general") => app::OptionsTab::General,
+                    Some("repair") => app::OptionsTab::Repair,
+                    Some("methods") => app::OptionsTab::Methods,
+                    Some("experimental") => app::OptionsTab::Experimental,
+                    Some("updates") => app::OptionsTab::Updates,
+                    Some("changelog") => app::OptionsTab::Changelog,
+                    Some("engines") => app::OptionsTab::Engines,
+                    other => {
+                        eprintln!("--open-options: unknown tab {other:?}");
+                        app::OptionsTab::Repair
+                    }
+                });
+            }
             "--show-after" => open = app::OpenOnStart::After,
             "--defect-colors" => open = app::OpenOnStart::DefectColors,
             // Hidden capture hook: point the camera at a box centre and zoom in,
@@ -315,6 +350,9 @@ fn main() -> eframe::Result<()> {
                     settings_scroll,
                     wait_frames,
                     focus,
+                    options_tab,
+                    options_scroll,
+                    methods_manual,
                     file_methods,
                 },
             )))

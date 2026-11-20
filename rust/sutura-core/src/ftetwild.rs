@@ -78,6 +78,58 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// Where a user-installed binary lives: `<data>/bin/ftetwild`.
+///
+/// The GUI's Install button copies a binary here and Remove deletes it. There is
+/// no download: the Rust build ships the sidecar in the package and there is no
+/// release asset to fetch, so the alternative to this pair is no pair at all.
+pub fn managed_binary_path() -> PathBuf {
+    crate::config::learning::data_dir()
+        .join("bin")
+        .join("ftetwild")
+}
+
+/// Copy `source` into [`managed_binary_path`], and make it executable.
+///
+/// Refuses to overwrite a different file: a mis-click must not replace a working
+/// binary. Returns the destination.
+pub fn install_binary(source: &Path) -> Result<PathBuf, String> {
+    if !source.is_file() {
+        return Err(format!("{} is not a file", source.display()));
+    }
+    let dest = managed_binary_path();
+    if dest.is_file() {
+        return Err(format!(
+            "{} already exists; remove it first",
+            dest.display()
+        ));
+    }
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::copy(source, &dest).map_err(|e| format!("copy: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&dest)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&dest, perms).map_err(|e| e.to_string())?;
+    }
+    Ok(dest)
+}
+
+/// Delete the managed binary. `Ok(false)` means there was none.
+pub fn remove_binary() -> Result<bool, String> {
+    let dest = managed_binary_path();
+    if !dest.exists() {
+        return Ok(false);
+    }
+    std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// Locate the standalone fTetWild CLI the way the Python manager does.
 ///
 /// `FTETWILD_BIN` is Python's override; `SUTURA_FTETWILD_BIN` is the name the

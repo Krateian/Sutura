@@ -19,6 +19,10 @@ sutura-geom = { path = "../sutura-geom", default-features = false, features = ["
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 egui = "0.37"
 egui-wgpu = "0.37"
+# egui has no table widget, and building rows out of sized widgets is what made
+# the file list render as one full-width button instead of columns. Qt's
+# QTreeWidget equivalent, with real headers and per-column widths.
+egui_extras = { version = "0.37", default-features = false }
 rfd = "0.18"
 rust-i18n = "4"
 tiny-skia = "0.11"

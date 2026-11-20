@@ -397,7 +397,17 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         repeat_source,
         repeat_target,
         time_budget_s: None,
+        ftetwild_optimize: cli.ftetwild_optimize,
+        // Both are read by `options_from` now, so they belong in the literal
+        // rather than being assigned onto `opts` afterwards.
+        auto_reorder: cli.auto_reorder,
+        extra_features: cli.experimental_edge_tiebreak,
         join_components: cli.experimental_join_components,
+        // Declared on the CLI since the beginning, and  already
+        // had both; the settings table was the only place they were missing, so
+        // the GUI could not reach them either.
+        autorefine: cli.experimental_autorefine,
+        indirect_autorefine: cli.experimental_indirect_autorefine,
         ftetwild_max_faces: cli.ftetwild_max_faces,
         ftetwild_timeout: cli.ftetwild_timeout,
         ftetwild_max_hausdorff_rel: cli.ftetwild_max_hausdorff,
@@ -450,11 +460,8 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
         .map_err(|e| RepairFailure::new(e.code, e.message))?;
     // p10/core opt-in ports that are not columns in the shared settings table
     // (they are CLI-only today). `options_from` owns everything else.
-    opts.extra_features = cli.experimental_edge_tiebreak;
     opts.autorefine = cli.experimental_autorefine;
     opts.indirect_autorefine = cli.experimental_indirect_autorefine;
-    opts.auto_reorder = cli.auto_reorder;
-    opts.ftetwild_optimize = cli.ftetwild_optimize;
     opts.ladder_depth = 0;
     Ok((opts, methods_given, methods))
 }

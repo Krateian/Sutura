@@ -36,6 +36,22 @@ pub struct GuiState {
     /// is the portable answer: the first run asks for maximized, and every run
     /// after that restores what that produced.
     pub window_size: Option<[f32; 2]>,
+    /// Anonymous usage history. Qt's General tab, and the same three preferences
+    /// it persisted in `config.json`; they live here because `gui.json` is the
+    /// GUI's file and `RepairOptions` has no field for any of them.
+    ///
+    /// `None` means "the default", which is on -- so an old file without the key
+    /// keeps the CLI's behaviour rather than silently disabling it.
+    pub history_enabled: Option<bool>,
+    pub cache_enabled: Option<bool>,
+    pub fidelity_enabled: Option<bool>,
+    pub learning_enabled: Option<bool>,
+    /// Updates tab: Qt persisted these in `config.json`, and the Rust updater
+    /// reads `check_on_startup` when it decides whether to check on launch.
+    pub check_for_updates: Option<bool>,
+    pub check_on_startup: Option<bool>,
+    /// Unix seconds of the last update check, for the "Last check" line.
+    pub last_check: Option<i64>,
 }
 
 /// `<config dir>/gui.json`, beside the CLI's `config.json`.
@@ -138,6 +154,13 @@ mod tests {
             intensity: Some("thorough".into()),
             language: Some("tr".into()),
             window_size: Some([1280.0, 800.0]),
+            history_enabled: Some(false),
+            cache_enabled: Some(false),
+            fidelity_enabled: Some(false),
+            learning_enabled: Some(false),
+            check_for_updates: Some(true),
+            check_on_startup: Some(false),
+            last_check: Some(1_700_000_000),
         };
         let text = serde_json::to_string(&state).unwrap();
         let back: GuiState = serde_json::from_str(&text).unwrap();
@@ -160,6 +183,21 @@ mod tests {
             back.window_size,
             Some([1280.0, 800.0]),
             "the window size must round-trip with the settings"
+        );
+        assert_eq!(
+            (
+                back.history_enabled,
+                back.cache_enabled,
+                back.fidelity_enabled,
+                back.learning_enabled,
+            ),
+            (Some(false), Some(false), Some(false), Some(false)),
+            "the General tab's switches must round-trip too"
+        );
+        assert_eq!(
+            (back.check_for_updates, back.check_on_startup, back.last_check),
+            (Some(true), Some(false), Some(1_700_000_000)),
+            "the Updates tab's settings must round-trip"
         );
     }
 

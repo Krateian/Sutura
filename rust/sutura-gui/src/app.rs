@@ -147,6 +147,34 @@ impl ComparePair {
     }
 }
 
+/// Whether the repaired output is actually watertight.
+///
+/// **The one field everything colour-codes on**: `stage1.two_manifold` is true
+/// and `stage1.holes_remaining` is zero, which is also exactly what
+/// `report::classify` calls `watertight`. Three places used to disagree --
+/// the table cell painted green from `repair_verdict_code`, the verdict was
+/// amber because `brief` could not see a written `output`, and the summary
+/// counted `preserved_notes` as watertight -- with one repaired, open mesh
+/// showing green in the table and "the model is still not closed" right below it.
+///
+/// `None` when the report has no topology at all (a container, or a run that
+/// never reached stage 1); callers keep the code's own colour then.
+fn output_watertight(raw: &Value) -> Option<bool> {
+    let s1 = raw.get("stage1")?;
+    let two_manifold = s1.get("two_manifold").map(truthy)?;
+    let holes_remaining = s1.get("holes_remaining").and_then(|v| v.as_i64()).unwrap_or(0);
+    Some(two_manifold && holes_remaining == 0)
+}
+
+fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().unwrap_or(0.0) != 0.0,
+        Value::String(s) => !s.is_empty(),
+        _ => false,
+    }
+}
+
 impl Entry {
     /// The short per-file decision shown next to the name: `(text, colour, tip)`.
     ///
@@ -160,9 +188,192 @@ impl Entry {
         let report = self.report.as_ref()?;
         let text = verdict_text(report);
         let status = status_text(&report.status_code);
-        Some((text.clone(), verdict_color(&report.verdict_code), status))
+        // Same rule as the verdict and the summary: green only when the output
+        // is watertight, whatever the verdict string says.
+        let colour = match self.raw_report.as_ref().and_then(output_watertight) {
+            Some(false) => crate::theme::WARN,
+            _ => verdict_color(&report.verdict_code),
+        };
+        Some((text.clone(), colour, status))
     }
 }
+
+/// What the file table's right-click menu asked for.
+///
+/// Collected while the table is borrowed and applied after it, the same pattern
+/// the row buttons use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowAction {
+    /// Clear the cached analysis so this frame recomputes it.
+    Analyze(usize),
+    /// Open the repaired file (`true` = reveal in the folder).
+    OpenOutput(usize, bool),
+    /// Open Options on the Methods tab with this file selected.
+    EditMethods(usize),
+    /// Drop the file's own method list, so it follows the global one again.
+    ClearTags(usize),
+    /// Add a recommended method to this file's own list.
+    TagMethod(usize, u8),
+    /// Open the repaired file in the detected slicer at this index.
+    OpenInSlicer(usize, usize),
+}
+
+/// The ranked methods in a file's report: `(num, name, score 0..1)`.
+///
+/// Two shapes, as in the panel: the 3MF path stores `{model_name, report}` and
+/// the single-mesh path stores the report directly. Both are handled here so the
+/// menu and the panel cannot disagree about what was recommended.
+fn recommended_methods(raw: &Value) -> Vec<(u8, String, f64)> {
+    let mut out = Vec::new();
+    // Three shapes, and missing one is silent: `--analyze` on a single mesh puts
+    // `recommendations` at the top level, a repair report nests them per object,
+    // and a 3MF wraps each object as `{model_name, report}`.
+    if let Some(recs) = raw.get("recommendations").and_then(|v| v.as_array()) {
+        collect_recs(recs, &mut out);
+    }
+    let Some(objects) = raw.get("object_reports").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for object in objects {
+        let report = object.get("report").unwrap_or(object);
+        let Some(recs) = report.get("recommendations").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        collect_recs(recs, &mut out);
+    }
+    out.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+fn collect_recs(recs: &[Value], out: &mut Vec<(u8, String, f64)>) {
+    for rec in recs {
+        let Some(num) = rec.get("num").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let name = rec
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string();
+        let score = rec.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        if !out.iter().any(|(n, _, _)| *n == num as u8) {
+            out.push((num as u8, name, score));
+        }
+    }
+}
+
+/// A menu item, styled like the rest of the app.
+/// A real score bar: 6 px, rounded, coloured by how good the score is.
+///
+/// `higher_is_better` is the whole reason this is not a one-liner: a risk of 5
+/// is excellent and a risk of 90 is not, while a health of 5 is the opposite.
+/// Green / amber / red are the only three meanings this app uses.
+fn score_bar_widget(ui: &mut egui::Ui, score: Option<f64>, higher_is_better: bool) {
+    const H: f32 = 6.0;
+    let w = crate::theme::SCORE_BAR_W;
+    // Centre the 6 px bar in the cell's full height rather than drawing it at
+    // the cell's top, which is what `allocate_exact_size` would do.
+    let cell_h = ui.available_height().max(H);
+    let (outer, _) = ui.allocate_exact_size(egui::vec2(w, cell_h), egui::Sense::hover());
+    let rect = egui::Rect::from_center_size(outer.center(), egui::vec2(w, H));
+    // The trough, so an empty score still reads as a bar and not as a gap.
+    ui.painter().rect_filled(rect, H / 2.0, crate::theme::TRACK);
+    let Some(score) = score else { return };
+    // Reports carry 0..100; the bar works in fractions.
+    let fraction = (score / 100.0).clamp(0.0, 1.0) as f32;
+    let goodness = if higher_is_better { fraction } else { 1.0 - fraction };
+    let colour = if goodness >= 0.66 {
+        crate::theme::OK
+    } else if goodness >= 0.33 {
+        crate::theme::WARN
+    } else {
+        crate::theme::ERROR
+    };
+    let filled = egui::Rect::from_min_size(rect.min, egui::vec2(w * fraction, H));
+    ui.painter().rect_filled(filled, H / 2.0, colour);
+}
+
+/// Shorten a path from the middle, keeping both ends readable.
+///
+/// The end of a path names the file and the start names the folder it is in;
+/// both matter, and a naive truncation keeps only one of them.
+fn shorten_path(path: &str, max_width: f32) -> String {
+    // ~7 px per character at this size; enough to decide, not exact.
+    let max_chars = ((max_width / 7.0).floor() as usize).max(16);
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= max_chars {
+        return path.to_string();
+    }
+    let keep = max_chars.saturating_sub(1) / 2;
+    let head: String = chars[..keep].iter().collect();
+    let tail: String = chars[chars.len() - keep..].iter().collect();
+    format!("{head}…{tail}")
+}
+
+/// Blend `t` of `top` into `base`: the one way this app tints a surface.
+fn lerp_color(base: egui::Color32, top: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
+    egui::Color32::from_rgb(
+        mix(base.r(), top.r()),
+        mix(base.g(), top.g()),
+        mix(base.b(), top.b()),
+    )
+}
+
+fn menu_action(ui: &mut egui::Ui, text: String) -> bool {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(text)
+                .size(crate::theme::FONT_BODY)
+                .color(crate::theme::TEXT),
+        )
+        .fill(egui::Color32::TRANSPARENT)
+        .min_size(egui::vec2(ui.available_width(), crate::theme::BUTTON_H * 0.8)),
+    )
+    .clicked()
+}
+
+/// What the Repair tab's profile buttons asked for, applied after the frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileAction {
+    New,
+    Duplicate,
+    Rename,
+    Delete,
+    SaveAsNew,
+}
+
+/// The palette. Three semantic colours, one accent, and nothing else (rule g).
+///
+/// Taken from Qt's `apply_dark_theme` so the two windows agree; a control that
+/// picks its own colour is what made the first Rust UI look unlike anything
+/// shipped before it.
+/// Sutura's version, as the CLI and the Python GUI report it.
+///
+/// `CARGO_PKG_VERSION` is the crate's own 0.1.0 placeholder and showed as
+/// "v0.1.0" in the window; a user compares versions with the release they
+/// downloaded, and this is that number (`sutura/repair.py:171`).
+pub(crate) const SUTURA_VERSION: &str = "0.9.9";
+
+pub(crate) const COLOR_ERROR: egui::Color32 = egui::Color32::from_rgb(0xff, 0x5b, 0x5b);
+pub(crate) const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(0xf5, 0x9e, 0x0b);
+pub(crate) const COLOR_OK: egui::Color32 = egui::Color32::from_rgb(0x2e, 0xc4, 0x7a);
+/// The single accent, used for the one primary action (rule c). Qt's value
+/// (`gui.py:2217`), not a new one.
+pub(crate) const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x4c, 0xa3, 0x7a);
+pub(crate) const COLOR_ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x0b, 0x0f, 0x11);
+
+/// The 8 px grid (rule b): every gap is 8, 16 or 24.
+/// The label column in every Options tab, so the controls line up (rule h).
+/// The automatic ladder: the policy order Qt listed. Read-only in automatic
+/// mode, which is what makes the rows informative rather than inert.
+pub(crate) const LADDER: [u8; 6] = [2, 13, 16, 18, 19, 7];
+
+pub(crate) const LABEL_W: f32 = 104.0;
+pub(crate) const SPACE_8: f32 = 8.0;
+pub(crate) const SPACE_16: f32 = 16.0;
+pub(crate) const SPACE_24: f32 = 24.0;
 
 pub(crate) enum RepairEvent {
     Started(u32),
@@ -222,7 +433,6 @@ pub const MODES: [&str; 5] = ["low", "medium", "auto", "aggressive", "extreme"];
 /// `--profile` presets, from Python's picker (`gui.py:5422`). `None` is "Auto".
 pub const PROFILES: [&str; 5] = ["mechanical", "organic", "scan", "miniature", "fast"];
 
-
 pub struct StartupOptions {
     /// Test hook: force the deviation reference for the After view.
     pub deviation_reference: Option<PathBuf>,
@@ -260,11 +470,57 @@ pub struct StartupOptions {
     /// in the whole-part view cannot be documented, and `--screenshot` has no
     /// input device to orbit or zoom with.
     pub focus: Option<([f32; 3], Option<f32>)>,
+    /// Capture hook: open Options on this tab as soon as the window appears.
+    pub options_tab: Option<OptionsTab>,
+    /// Capture hook: start the Methods tab on Manual with this sequence.
+    pub methods_manual: Option<String>,
+    /// Capture hook: where the Options body starts scrolled to.
+    pub options_scroll: Option<f32>,
     /// Give the selected file its own method list, as if the user had unticked
     /// "Use the panel selection" and picked these. Needed to show the per-file
     /// editor in a state other than "inherited" -- which is otherwise the same
     /// frame as the panel above it.
     pub file_methods: Option<Vec<u8>>,
+}
+
+/// The Options window's tabs, in Qt's shipped order.
+///
+/// The order is part of the layout: a user who learned where "Experimental"
+/// sits should not have to relearn it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OptionsTab {
+    General,
+    Repair,
+    Methods,
+    Experimental,
+    Updates,
+    Changelog,
+    Engines,
+}
+
+impl OptionsTab {
+    pub const ALL: [OptionsTab; 7] = [
+        OptionsTab::General,
+        OptionsTab::Repair,
+        OptionsTab::Methods,
+        OptionsTab::Experimental,
+        OptionsTab::Updates,
+        OptionsTab::Changelog,
+        OptionsTab::Engines,
+    ];
+
+    pub fn label(self) -> String {
+        let key = match self {
+            OptionsTab::General => "app.tab_general",
+            OptionsTab::Repair => "app.tab_repair",
+            OptionsTab::Methods => "app.tab_methods",
+            OptionsTab::Experimental => "app.tab_experimental",
+            OptionsTab::Updates => "app.tab_updates",
+            OptionsTab::Changelog => "app.tab_changelog",
+            OptionsTab::Engines => "app.tab_engines",
+        };
+        rust_i18n::t!(key).to_string()
+    }
 }
 
 /// Which overlay to show on the first frame.
@@ -286,7 +542,7 @@ pub struct SuturaApp {
     files: Vec<Entry>,
     selected: Option<usize>,
     loaded: Option<(usize, ViewMode)>,
-    language: Language,
+    pub(crate) language: Language,
     preview: Preview,
     log: Vec<String>,
     repair_rx: Option<Receiver<RepairEvent>>,
@@ -300,7 +556,7 @@ pub struct SuturaApp {
     /// The full repair settings the panel edits. This IS the source of truth:
     /// `options_from` turns it into `RepairOptions`, the same function the CLI
     /// uses, so a control here cannot drift from the CLI.
-    settings: RepairSettings,
+    pub(crate) settings: RepairSettings,
     batch: Vec<usize>,
     batch_total: usize,
     batch_done: usize,
@@ -317,7 +573,7 @@ pub struct SuturaApp {
     /// repair happened to move.
     deviation_reference: Option<PathBuf>,
     /// Updater state (check / download / install), driven on a worker thread.
-    updater: crate::updater_ui::Updater,
+    pub(crate) updater: crate::updater_ui::Updater,
     /// The "what's new" window, reading the snapshot off disk.
     notes_open: bool,
     screenshot_path: Option<PathBuf>,
@@ -363,6 +619,8 @@ pub struct SuturaApp {
     /// inside the scroll-area closures while `self` is already borrowed.
     settings_scroll_probe: Arc<std::sync::atomic::AtomicU32>,
     file_scroll_probe: Arc<std::sync::atomic::AtomicU32>,
+    /// The Options body's scroll offset, same purpose as the two above.
+    pub(crate) options_scroll_probe: Arc<std::sync::atomic::AtomicU32>,
     /// Method availability, from `self_check::run`. Process-wide, so it is
     /// computed once at startup rather than per file -- and with
     /// `run_fixtures:false`, the same cheap availability probe `--self-check`
@@ -376,20 +634,55 @@ pub struct SuturaApp {
     /// point of the crash log: a trace nobody is told about is not reporting.
     crash_open: bool,
     /// Result message of the last diagnostics export, shown in the dialog.
-    diagnostics_note: Option<String>,
+    pub(crate) diagnostics_note: Option<String>,
     /// Version history for the Changelog view: `(tag, body)` pairs, newest
     /// first. Fetched **on request and never written to disk** -- the on-disk
     /// snapshot has exactly one copy (`whatsnew::current/`), and a second one
     /// would drift from it.
-    changelog: Option<Vec<(String, String)>>,
+    pub(crate) changelog: Option<Vec<(String, String)>>,
     changelog_open: bool,
-    changelog_error: Option<String>,
+    pub(crate) changelog_error: Option<String>,
     /// Static before/after pair: two textures rasterised once when the window
     /// opens. `None` while closed. Python's default view is static
     /// (`gui.py:7373`); the live 3D preview is the interactive alternative.
     compare: Option<ComparePair>,
     /// Camera focus from `--focus`, applied when a mesh is loaded.
     focus: Option<([f32; 3], Option<f32>)>,
+    /// The General tab's preferences, which Qt kept in `config.json` and which
+    /// `RepairOptions` has no field for. They are applied around the repair in
+    /// `run_repair`, the same switches the CLI's `--no-*` flags set.
+    pub(crate) prefs: crate::state::GuiState,
+    /// Slicers found at startup. Computed once: a user does not install one
+    /// while the window is open, and detection walks PATH and /Applications.
+    slicers: Vec<crate::slicers::Slicer>,
+    /// Whether the Analysis card's defects list is expanded.
+    defects_open: bool,
+    /// Whether the batch summary's issue breakdown is open.
+    summary_issues_open: bool,
+    /// The last policy write's message and whether it succeeded.
+    policy_status: Option<(String, bool)>,
+    /// A failed save: (what could not be written, the reason, the wanted path).
+    ///
+    /// Its own field, not a log line, because "the file was not saved" is the one
+    /// outcome a user must not miss -- they will otherwise open a file that was
+    /// never written.
+    write_error: Option<(String, String, PathBuf)>,
+    /// Whether the first-run line has been shown this launch. Per session, not
+    /// per frame: a line that reappears on every redraw is not a greeting.
+    pub(crate) first_run_seen: bool,
+    /// A profile edit requested from the Repair tab. Applied after the frame,
+    /// because the dialog needs `&mut self.files`-free access to write the file.
+    profile_action: Option<ProfileAction>,
+    /// Pending name prompt for the profile buttons, and what to do with it.
+    profile_prompt: Option<(ProfileAction, String)>,
+    /// The Options window: Qt's 7-tab dialog, which replaced the settings
+    /// column. `None` while hidden.
+    pub(crate) options_open: bool,
+    pub(crate) options_tab: OptionsTab,
+    /// Capture hook: where the Options body starts scrolled to.
+    pub(crate) options_scroll: Option<f32>,
+    /// Capture hook: start the Methods tab on Manual with this sequence.
+    pub methods_manual: Option<String>,
 }
 
 impl SuturaApp {
@@ -435,6 +728,124 @@ impl SuturaApp {
     #[cfg(test)]
     pub fn add_file_for_test(&mut self, path: PathBuf) {
         self.add_path(path);
+    }
+
+    /// Test accessors for the Qt shell: the panels they name no longer exist
+    /// as panels, so these report the state the new layout uses.
+    #[cfg(test)]
+    pub fn options_open_for_test(&self) -> bool {
+        self.options_open
+    }
+
+    #[cfg(test)]
+    pub fn options_tab_for_test(&self) -> OptionsTab {
+        self.options_tab
+    }
+
+    #[cfg(test)]
+    pub fn open_options_for_test(&mut self, tab: OptionsTab) {
+        self.options_open = true;
+        self.options_tab = tab;
+    }
+
+    #[cfg(test)]
+    pub fn selected_index(&self) -> Option<usize> {
+        self.selected
+    }
+
+    #[cfg(test)]
+    pub fn set_output_for_test(&mut self, out: PathBuf) {
+        if let Some(i) = self.selected {
+            if let Some(slot) = self.files.get_mut(i) {
+                slot.output = Some(out);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn raise_write_error_for_test(&mut self, what: &str, reason: &str, path: PathBuf) {
+        self.write_error = Some((what.to_string(), reason.to_string(), path));
+    }
+
+    #[cfg(test)]
+    pub fn mark_method_unavailable_for_test(&mut self) {
+        self.method_health.push(serde_json::json!({
+            "num": 7,
+            "name": "ftetwild",
+            "status": "skip",
+            "reason": "fTetWild binary not found",
+        }));
+    }
+
+    #[cfg(test)]
+    pub fn log_for_test(&self) -> &[String] {
+        &self.log
+    }
+
+    #[cfg(test)]
+    pub fn selected_recommendations_for_test(&self) -> Vec<(u8, String, f64)> {
+        self.selected
+            .and_then(|i| self.files.get(i))
+            .and_then(|e| e.raw_report.as_ref())
+            .map(recommended_methods)
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub fn set_methods_for_test(&mut self, methods: &str) {
+        self.settings.methods = Some(methods.to_string());
+    }
+
+    #[cfg(test)]
+    pub fn policy_status_for_test(&self) -> Option<&(String, bool)> {
+        self.policy_status.as_ref()
+    }
+
+    #[cfg(test)]
+    pub fn slicers_for_test(&self) -> &[crate::slicers::Slicer] {
+        &self.slicers
+    }
+
+    #[cfg(test)]
+    pub fn set_raw_report_for_test(&mut self, raw: Value) {
+        if let Some(i) = self.selected {
+            if let Some(slot) = self.files.get_mut(i) {
+                slot.raw_report = Some(raw);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn select_first_for_test(&mut self) {
+        if !self.files.is_empty() {
+            self.selected = Some(0);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn clear_selection_for_test(&mut self) {
+        self.selected = None;
+    }
+
+    #[cfg(test)]
+    pub fn remove_file_for_test(&mut self, idx: usize) {
+        self.remove_file(idx);
+    }
+
+    #[cfg(test)]
+    pub fn file_scroll_offset(&self) -> f32 {
+        f32::from_bits(self.file_scroll_probe.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// The Options body's scroll offset. It lives in egui's own state rather than
+    /// a probe: the window is a `ScrollArea` and egui keeps the offset, so it is
+    /// read back from there after a frame.
+    #[cfg(test)]
+    pub fn options_scroll_offset(&self) -> f32 {
+        f32::from_bits(
+            self.options_scroll_probe
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 
     #[cfg(test)]
@@ -485,6 +896,11 @@ impl SuturaApp {
         self.updater_open = false;
         self.notes_open = false;
         self.changelog_open = false;
+    }
+
+    #[cfg(test)]
+    pub fn methods_manual_for_test(&self) -> bool {
+        self.settings.methods.is_some()
     }
 
     #[cfg(test)]
@@ -571,6 +987,7 @@ impl SuturaApp {
             settings_scroll: 0.0,
             settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            options_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
             ctx: None,
             saved_window_size: None,
@@ -585,6 +1002,20 @@ impl SuturaApp {
             changelog_open: false,
             changelog_error: None,
             compare: None,
+            focus: None,
+            options_open: false,
+            options_tab: OptionsTab::Repair,
+            options_scroll: None,
+            defects_open: false,
+            summary_issues_open: false,
+            policy_status: None,
+            write_error: None,
+            first_run_seen: false,
+            slicers: crate::slicers::detect(),
+            methods_manual: None,
+            prefs: crate::state::GuiState::default(),
+            profile_action: None,
+            profile_prompt: None,
         }
     }
 
@@ -600,6 +1031,8 @@ impl SuturaApp {
         // grey ghost -- which reads as a rendering bug and is not. Turning the
         // animation off for `--screenshot` makes the image show the final state;
         // an interactive run keeps its animation.
+        // Qt's palette and the 8 px grid, before any widget is built.
+        crate::theme::apply(&cc.egui_ctx);
         if options.screenshot_path.is_some() {
             cc.egui_ctx.all_styles_mut(|style| style.animation_time = 0.0);
         }
@@ -687,6 +1120,7 @@ impl SuturaApp {
             settings_scroll: options.settings_scroll,
             settings_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            options_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
             ctx: None,
             saved_window_size: saved.window_size,
@@ -702,9 +1136,26 @@ impl SuturaApp {
             changelog_error: None,
             compare: None,
             focus: options.focus,
+            options_open: options.options_tab.is_some(),
+            options_tab: options.options_tab.unwrap_or(OptionsTab::Repair),
+            options_scroll: options.options_scroll,
+            methods_manual: options.methods_manual.clone(),
+            profile_action: None,
+            profile_prompt: None,
+            defects_open: false,
+            policy_status: None,
+            write_error: None,
+            first_run_seen: false,
+            summary_issues_open: false,
+            slicers: crate::slicers::detect(),
+            prefs: crate::state::GuiState::default(),
         };
         for path in files {
             app.add_path(path);
+        }
+        // Capture hook: a Manual selection, so the Up/Down rows can be seen.
+        if let Some(seq) = &app.methods_manual {
+            app.settings.methods = Some(seq.clone());
         }
         if let Some(idx) = options.select {
             if idx < app.files.len() {
@@ -853,7 +1304,7 @@ impl SuturaApp {
     ///
     /// Failure is a message, not a silent empty list: "offline?" and "no
     /// releases" look identical otherwise.
-    fn fetch_changelog(&mut self) {
+    pub(crate) fn fetch_changelog(&mut self) {
         // The `/latest` endpoint returns one release; the list endpoint is what
         // a history needs.
         let url = sutura_core::updater::GITHUB_API.replace(
@@ -891,7 +1342,7 @@ impl SuturaApp {
     /// so a report from the GUI and one from the terminal contain the same
     /// files. Defaulted to the data directory so the button always produces
     /// something even if the picker is dismissed.
-    fn export_diagnostics(&mut self) {
+    pub(crate) fn export_diagnostics(&mut self) {
         let suggested = sutura_core::config::data_dir().join("sutura-diagnostics.zip");
         // The save dialog is the only part that cannot run headless: `rfd` needs a
         // native file picker, and it panics when there is no window server. The
@@ -942,6 +1393,13 @@ impl SuturaApp {
             } else {
                 self.saved_window_size
             },
+            history_enabled: self.prefs.history_enabled,
+            cache_enabled: self.prefs.cache_enabled,
+            fidelity_enabled: self.prefs.fidelity_enabled,
+            learning_enabled: self.prefs.learning_enabled,
+            check_for_updates: self.prefs.check_for_updates,
+            check_on_startup: self.prefs.check_on_startup,
+            last_check: self.prefs.last_check,
         };
         serde_json::to_string(&state).unwrap_or_default()
     }
@@ -967,18 +1425,10 @@ impl SuturaApp {
         if now == self.persisted {
             return;
         }
-        let state = crate::state::GuiState {
-            settings: self.settings.clone(),
-            intensity: Some(self.intensity.value().to_string()),
-            language: Some(self.language.code().to_string()),
-            // Only a resize is a choice; the opening size is a default and must
-            // not be frozen into the next launch.
-            window_size: if self.user_resized {
-                self.last_window_size
-            } else {
-                self.saved_window_size
-            },
-        };
+        // Built by the same function the change detector uses, so the two can
+        // never disagree about which fields are persisted.
+        let state: crate::state::GuiState =
+            serde_json::from_str(&now).unwrap_or_default();
         match crate::state::save(&state) {
             Ok(()) => self.persisted = now,
             // Logged, not fatal: a read-only config dir must not break the UI.
@@ -1074,7 +1524,7 @@ impl SuturaApp {
         self.loaded = Some(key);
     }
 
-    fn log(&mut self, line: String) {
+    pub(crate) fn log(&mut self, line: String) {
         eprintln!("{line}");
         self.log.push(line);
         if self.log.len() > 800 {
@@ -1149,8 +1599,9 @@ impl SuturaApp {
         // measured here, the output file appeared at 52 s while the UI still said
         // "repair started" at 62 s.
         let ctx_for_worker = self.ctx.clone();
+        let prefs = self.prefs.clone();
         std::thread::spawn(move || {
-            run_repair(&input, &output, settings, tx, cancel);
+            run_repair(&input, &output, settings, prefs, tx, cancel);
             if let Some(ctx) = ctx_for_worker {
                 ctx.request_repaint();
             }
@@ -1293,6 +1744,22 @@ impl SuturaApp {
                         self.log(
                             rust_i18n::t!("app.log_repair_failed", error = e).to_string(),
                         );
+                        // `run_repair` tags a failed save distinctly; a repair
+                        // that could not produce a mesh is a different outcome
+                        // and reads well enough in the row.
+                        if let Some(reason) = e.strip_prefix("write failed: ") {
+                            let path = self.files[idx]
+                                .output
+                                .clone()
+                                .unwrap_or_else(|| fixed_path(&self.files[idx].path));
+                            let name = self.files[idx]
+                                .path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            self.write_error =
+                                Some((name, reason.to_string(), path));
+                        }
                     }
                 }
                 if self.batch_active {
@@ -1371,6 +1838,14 @@ impl eframe::App for SuturaApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame_ui(ui);
     }
+
+    /// eframe's default clear colour is `from_rgba_unmultiplied(12, 12, 12, 180)`
+    /// -- alpha 180. With no `transparent()` request the window still composites
+    /// that against the desktop wherever a panel has not painted, which is the
+    /// half-transparent background a macOS report showed. Opaque, always.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        crate::theme::WINDOW.to_normalized_gamma_f32()
+    }
 }
 
 impl SuturaApp {
@@ -1382,6 +1857,16 @@ impl SuturaApp {
     /// it. `_frame` was never read.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if std::env::var_os("SUTURA_STYLE_LOG").is_some() && self.ready_frames == 0 {
+            let st = ui.style().spacing.scroll;
+            eprintln!(
+                "[style] floating={} bar_w={} fg_color={} handle_op={} inactive_bg={:?} theme={:?}",
+                st.floating, st.bar_width, st.foreground_color,
+                st.dormant_handle_opacity,
+                ui.visuals().widgets.inactive.bg_fill,
+                ctx.theme(),
+            );
+        }
         self.ctx = Some(ctx.clone());
         // Deferred so the panel closure can set it while `self.files` is borrowed.
         let mut clear_list = false;
@@ -1394,8 +1879,14 @@ impl SuturaApp {
             ctx.request_repaint();
         }
 
+        // `Ctrl+,` opens Options on the Repair tab, which is exactly what Qt's
+        // `QKeySequence.Preferences` shortcut did. There is no settings column
+        // to toggle any more.
         if settings_shortcut_pressed(&ctx) {
-            self.settings_open = !self.settings_open;
+            self.options_open = !self.options_open;
+            if self.options_open {
+                self.options_tab = OptionsTab::Repair;
+            }
         }
 
         // A drag in progress: `hovered_files` is populated between enter and
@@ -1459,1452 +1950,251 @@ impl SuturaApp {
             .map(|e| matches!(e.repair, RepairState::Running { .. }))
             .unwrap_or(false);
 
-        egui::containers::Panel::top("top").show(ui, |ui| {
-            // Wrapped, not a single `horizontal`: the toolbar carries twelve
-            // controls and a group pinned with `right_to_left`. In one row the
-            // pinned group is laid out from the same origin as the left group, so
-            // on a narrow window they drew over each other -- "Diagnostics… Re
-            // Changelog ir About" on a Steam Deck at 1280x800. Wrapping gives the
-            // extra controls a second line instead of a collision, and every
-            // button stays reachable at 720x480.
-            ui.horizontal_wrapped(|ui| {
-                ui.heading(rust_i18n::t!("app.title").to_string());
-                ui.separator();
-                if ui.button(rust_i18n::t!("app.add_files").to_string()).clicked() {
-                    if let Some(paths) = rfd::FileDialog::new()
-                        .add_filter("Meshes", &["stl", "obj", "ply", "3mf"])
-                        .pick_files()
-                    {
-                        for path in paths {
-                            self.add_path(path);
-                        }
-                    }
-                }
-                let can_repair = self
-                    .selected
-                    .and_then(|i| self.files.get(i))
-                    .map(|e| e.input.is_some() && !matches!(e.repair, RepairState::Running { .. }))
-                    .unwrap_or(false);
-                if ui
-                    .add_enabled(
-                        can_repair,
-                        egui::Button::new(rust_i18n::t!("app.repair").to_string()),
-                    )
-                    .clicked()
-                {
-                    if let Some(idx) = self.selected {
-                        self.start_repair(idx, false);
-                    }
-                }
-                let can_batch = self.files.iter().any(|e| e.input.is_some())
-                    && !self.batch_active
-                    && self.repair_rx.is_none();
-                if ui
-                    .add_enabled(
-                        can_batch,
-                        egui::Button::new(rust_i18n::t!("app.repair_all").to_string()),
-                    )
-                    .clicked()
-                {
-                    self.enqueue_all();
-                }
-                if running
-                    && ui
-                        .button(rust_i18n::t!("app.cancel").to_string())
-                        .clicked()
-                {
-                    cancel_clicked = true;
-                }
-                ui.separator();
-                {
-                    let lang_label =
-                        labelled(ui, rust_i18n::t!("app.language").to_string());
-                    egui::ComboBox::from_id_salt("language")
-                        .selected_text(self.language.label())
-                        .show_ui(ui, |ui| {
-                            for lang in [Language::System, Language::En, Language::Tr] {
-                                if ui
-                                    .selectable_value(&mut self.language, lang, lang.label())
-                                    .clicked()
-                                {
-                                    i18n::apply(lang);
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-                                        rust_i18n::t!("app.title").to_string(),
-                                    ));
-                                }
-                            }
-                        })
-                        .response
-                        .labelled_by(lang_label);
-                    if ui.button(rust_i18n::t!("app.updates").to_string()).clicked() {
-                        self.updater_open = true;
-                    }
-                    if ui.button(rust_i18n::t!("app.repeat_pick").to_string()).clicked() {
-                        self.open_repeat_picker();
-                    }
-                    // Python's static before/after pair is its default view
-                    // (`gui.py:7373`); here it is a window beside the live
-                    // preview rather than a replacement for it.
-                    if ui
-                        .add_enabled(
-                            self.selected
-                                .and_then(|i| self.files.get(i))
-                                .map(|e| e.input.is_some())
-                                .unwrap_or(false),
-                            egui::Button::new(rust_i18n::t!("app.compare").to_string()),
-                        )
-                        .on_hover_text(rust_i18n::t!("app.compare_tip").to_string())
-                        .clicked()
-                    {
-                        if let Some(entry) = self.selected.and_then(|i| self.files.get(i)) {
-                            if let Some(input) = entry.input.clone() {
-                                let title = entry
-                                    .path
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default();
-                                self.compare = Some(ComparePair::build(
-                                    &ctx,
-                                    title,
-                                    &input,
-                                    entry.result.as_deref(),
-                                    self.preview.heatmap,
-                                ));
-                            }
-                        }
-                    }
-                    if ui.button(rust_i18n::t!("app.about").to_string()).clicked() {
-                        self.about_open = true;
-                    }
-                    if ui
-                        .button(rust_i18n::t!("app.changelog").to_string())
-                        .on_hover_text(rust_i18n::t!("app.changelog_tip").to_string())
-                        .clicked()
-                    {
-                        self.changelog_open = true;
-                        if self.changelog.is_none() {
-                            self.fetch_changelog();
-                        }
-                    }
-                    if ui
-                        .button(rust_i18n::t!("app.diagnostics").to_string())
-                        .on_hover_text(rust_i18n::t!("app.diagnostics_tip").to_string())
-                        .clicked()
-                    {
-                        self.export_diagnostics();
-                    }
-                }
-                // Method-health band: one dot per method, from the same
-                // availability probe `--self-check` runs. Only shown when
-                // something is NOT fine -- a green strip every launch is noise,
-                // and the point is to notice a broken external engine without
-                // opening a terminal.
-                let unhealthy: Vec<&Value> = self
-                    .method_health
-                    .iter()
-                    .filter(|m| {
-                        m.get("status").and_then(|v| v.as_str()) != Some("ok")
-                    })
-                    .collect();
-                if !unhealthy.is_empty() {
-                    // Plain `horizontal`, not `horizontal_wrapped`: wrapping
-                    // inside the top panel made it claim the full window height
-                    // (verified in a screenshot -- the whole preview was pushed
-                    // off-screen). The list is short enough not to need it.
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(
-                                rust_i18n::t!("app.method_health", count = unhealthy.len() as i64)
-                                    .to_string(),
-                            )
-                            .small()
-                            .weak(),
-                        );
-                        for m in unhealthy {
-                            let num = m.get("num").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let name = m
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?");
-                            let status = m
-                                .get("status")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?");
-                            let reason = m
-                                .get("reason")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let colour = if status == "skip" {
-                                egui::Color32::from_rgb(0xc0, 0xa0, 0x40)
-                            } else {
-                                egui::Color32::LIGHT_RED
-                            };
-                            ui.label(
-                                egui::RichText::new(format!("#{num} {status}"))
-                                    .small()
-                                    .color(colour),
-                            )
-                            .on_hover_text(format!("{name}: {reason}"));
-                        }
-                    });
-                }
-            });
-        });
-
-        // The centre preview has to keep a usable width at every window size.
-        // Two side panels that each take their content width leave it none, and at
-        // ~800 px on a Steam Deck egui drew the settings panel *over* the preview:
-        // the model was clipped and "Defect colours" was hidden.
+        // ---- Qt v0.9.9 layout ------------------------------------------------
         //
-        // The budget is explicit and checked: centre >= CENTRE_MIN, and the side
-        // columns share what is left. Below the sum of the three floors the layout
-        // drops to the preview alone -- three columns that do not fit cannot be
-        // made to fit by squeezing, and overlapping is not an option.
-        const CENTRE_MIN: f32 = 360.0;
-        const FILES_MIN: f32 = 150.0;
-        const SETTINGS_MIN: f32 = 220.0;
-        let total = ui.available_width();
-        let panels_fit = total >= CENTRE_MIN + FILES_MIN + SETTINGS_MIN;
-        // Split the side budget so the settings column, whose controls clip first,
-        // keeps its floor and the files list takes the remainder.
-        let side_budget = (total - CENTRE_MIN).max(FILES_MIN + SETTINGS_MIN);
-        let files_w = (side_budget - SETTINGS_MIN).max(FILES_MIN).min(290.0);
-        let settings_w = (side_budget - files_w).max(SETTINGS_MIN).min(320.0);
-        let compact = settings_w < 260.0;
-        if std::env::var_os("SUTURA_LAYOUT_LOG").is_some() {
-            eprintln!(
-                "[layout] total={total:.0} files={files_w:.0} settings={settings_w:.0} centre={:.0} fit={panels_fit} compact={compact}",
-                total - files_w - settings_w
-            );
-        }
+        // The old body was three panes: Files | preview | Settings, with the
+        // settings controls living in a permanent right column. Qt's window is
+        // one vertical flow with no settings on it at all -- they are their own
+        // tabbed window -- and that is what a v0.9.9 user expects:
+        //
+        //   table · row 1 (file ops) · row 2 (analyze … repair) · progress ·
+        //   report · log · analysis · defects · repair log · bottom row
+        //
+        // Nothing was dropped. The settings columns became the 7-tab Options
+        // window (`options.rs`); the file panel's buttons became the rows below
+        // the table; the 3D preview opens from the bottom row the way Qt opened
+        // its dialogs. Panels with nothing to say collapse to nothing, so a
+        // fresh launch is the table plus two rows.
 
-        if panels_fit {
-        egui::containers::Panel::left("files")
-            .resizable(true)
-            .default_size(files_w)
-            // Bounded for the same reason as the right panel: two side panels
-            // that grow to their content leave the preview no floor, and it is
-            // the preview that has to stay usable on a 1280x800 screen.
-            .min_size(FILES_MIN)
-            .max_size(files_w.max(FILES_MIN))
+        const SPACE_8: f32 = 8.0;
+        const SPACE_16: f32 = 16.0;
+
+        let mut add_files = false;
+        let mut add_folder = false;
+        let mut clear_list = false;
+        let mut cancel_clicked = false;
+        let mut open_action: Option<(PathBuf, bool)> = None;
+        let mut open_heatmap = false;
+        let mut open_compare = false;
+
+        self.options_window(&ctx);
+
+        // ---- The main window: three cards on a charcoal surface -------------
+        //
+        // Arif's direction: the first screen is calm and professional, and
+        // anything that needs detail lives in Options. So the top bar carries a
+        // title and a gear, the middle is a Files card, an action row, and a
+        // Report card, and Mode / Profile / Methods moved into Options.
+
+        // ---- The main window, matched to the approved target ----------------
+        //
+        // Window → one large rounded panel, centred and capped at
+        // `PANEL_MAX_W` → cards inside it (darker than the panel), outline
+        // buttons, one green accent. Wide windows get two columns (Files and the
+        // action row on the left, Analysis on the right); narrow ones stack,
+        // which is exactly what the target shows.
+
+        // (6) No top panel: the title bar is the first row inside the main
+        // panel, so "Sutura", the version and the gear share the panel's left and
+        // right edges instead of floating above it.
+        egui::containers::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::WINDOW)
+                    .inner_margin(egui::Margin::symmetric(
+                        crate::theme::GAP_24 as i8,
+                        crate::theme::GAP_0 as i8,
+                    )),
+            )
             .show(ui, |ui| {
-                ui.heading(rust_i18n::t!("app.files").to_string());
-                ui.horizontal(|ui| {
-                    let can_clear = !self.files.is_empty() && !self.busy();
-                    if ui
-                        .add_enabled(
-                            can_clear,
-                            egui::Button::new(rust_i18n::t!("app.clear_list").to_string()),
-                        )
-                        .clicked()
-                    {
-                        clear_list = true;
-                    }
-                });
-                ui.separator();
-                let mut clicked = None;
-                let mut remove = None;
-                let files_out = egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (idx, entry) in self.files.iter().enumerate() {
-                        let name = entry
-                            .path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| entry.path.display().to_string());
-                        let selected = self.selected == Some(idx);
-                        let mut text = egui::RichText::new(name);
-                        if entry.error.is_some() {
-                            text = text.color(egui::Color32::LIGHT_RED);
-                        }
-                        ui.horizontal(|ui| {
-                            if ui.selectable_label(selected, text).clicked() {
-                                clicked = Some(idx);
-                            }
-                            // Per-file decision, Python's third column
-                            // (`gui.py:5181`). Shown in the list so a 20-file
-                            // batch can be judged without clicking through each
-                            // one, which is what the column is for.
-                            if let Some(decision) = entry.decision() {
-                                // Truncated to the column: the full sentence is
-                                // ~55 chars and the file panel is 290 px, so
-                                // untruncated it overflows into the preview.
-                                // The hover text always carries the whole
-                                // verdict and status, so nothing is lost.
-                                let short = truncate_decision(&decision.0, 22);
-                                ui.add(egui::Label::new(
-                                    egui::RichText::new(short).small().color(decision.1),
-                                ))
-                                .on_hover_text(decision.2);
-                            }
-                            // Removing the file being repaired would orphan the
-                            // worker's index, so it is disabled while busy.
-                            // Plain "x": egui's bundled font has no U+2715, so
-                            // "✕" rendered as a missing-glyph box.
-                            if ui
-                                .add_enabled(!self.busy(), egui::Button::new(" x "))
-                                .on_hover_text(
-                                    rust_i18n::t!("app.remove_file_tip").to_string(),
-                                )
-                                .clicked()
-                            {
-                                remove = Some(idx);
-                            }
-                        });
-                        match &entry.repair {
-                            RepairState::Running { step, total } => {
-                                ui.add(
-                                    egui::ProgressBar::new(*step as f32 / (*total).max(1) as f32)
-                                        .text(
-                                            rust_i18n::t!(
-                                                "app.progress",
-                                                step = *step as i64,
-                                                total = *total as i64
-                                            )
-                                            .to_string(),
-                                        ),
-                                );
-                            }
-                            RepairState::Failed(e) => {
-                                ui.label(
-                                    egui::RichText::new(e).small().color(egui::Color32::LIGHT_RED),
-                                );
-                            }
-                            _ => {}
-                        }
-                        if let Some(e) = &entry.error {
-                            ui.label(egui::RichText::new(e).small().color(egui::Color32::LIGHT_RED));
-                        }
-                    }
-                });
-                #[cfg(test)]
-                self.file_scroll_probe.store(
-                    files_out.state.clamped_offset().y.to_bits(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                if let Some(idx) = clicked {
-                    self.selected = Some(idx);
-                }
-                if let Some(idx) = remove {
-                    self.remove_file(idx);
-                }
-            });
-
-        if clear_list {
-            self.clear_files();
-        }
-
-        // Not creating the panel is what hides it: the central preview then
-        // takes the space back on its own.
-        if self.settings_open {
-        egui::containers::Panel::right("settings")
-            .resizable(true)
-            .default_size(280.0)
-            // Bounded: an unbounded side panel grows to fit its widest row
-            // (here the per-run limit fields), and at 1280x800 on a Steam Deck
-            // that squeezed the preview until "Defect colours" and half the
-            // model sat under the panel. The panel keeps its own width and the
-            // centre keeps its floor.
-            .min_size(240.0)
-            .max_size(420.0)
-            .show(ui, |ui| {
-                // Scrollable: on a 720-px window (the stated minimum)
-                // the per-run limits and the method list ran off the bottom
-                // and were unreachable. Same pattern as the other panels.
-                let mut area = egui::ScrollArea::vertical()
-                    .id_salt("settings_scroll")
-                    .auto_shrink([false, false]);
-                // `vertical_scroll_offset` writes straight into the area's
-                // persistent state every frame (`scroll_area.rs:823`:
-                // `state.offset.y = offset_y.unwrap_or(state.offset.y)`), so
-                // passing a constant re-zeroes the scroll on every frame and the
-                // wheel and the scrollbar both snap back. It may only be used to
-                // *seed* the position, once -- after that the user owns it.
+                // The panel: centred, never wider than PANEL_MAX_W.
                 //
-                // This was a real bug, not a screenshot artefact: the flag was
-                // added to capture a frame below the fold and made the panel
-                // unscrollable for everyone.
-                if self.settings_scroll != 0.0 {
-                    area = area.vertical_scroll_offset(self.settings_scroll);
-                    self.consume_settings_scroll();
-                }
-                #[cfg(test)]
-                let probe = self.settings_scroll_probe.clone();
-                let settings_out = area.show(ui, |ui| {
-                    // Rows must wrap inside the panel, never extend past it. A
-                    // `ui.horizontal` takes its natural width and a right-aligned
-                    // `Panel` then spills that to the left, off-screen -- which is
-                    // what a Steam Deck showed as "Settings" cut in half. Forcing
-                    // the wrap width makes the combos and boxes shrink to the
-                    // column instead of overflowing it.
-                    ui.set_max_width(ui.available_width());
-                    ui.heading(rust_i18n::t!("app.settings").to_string());
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        let label_id = labelled(ui, rust_i18n::t!("app.intensity").to_string());
-                        egui::ComboBox::from_id_salt("intensity")
-                            .selected_text(self.intensity.label())
-                            .show_ui(ui, |ui| {
-                                for value in [
-                                    Intensity::Quick,
-                                    Intensity::Balanced,
-                                    Intensity::Thorough,
-                                    Intensity::Extreme,
-                                ] {
-                                    ui.selectable_value(
-                                        &mut self.intensity,
-                                        value,
-                                        value.label(),
-                                    );
-                                }
-                            })
-                            .response.labelled_by(label_id);
-                    });
-                    // Every control below writes `self.settings` directly. Nothing
-                    // here builds a RepairOptions by hand: `options_from` does that,
-                    // in the core, for the CLI and the GUI alike.
-                    ui.horizontal(|ui| {
-                        let deep_label = labelled(ui, rust_i18n::t!("app.deep_repair").to_string());
-                        let current = self
-                            .settings
-                            .deep_repair
-                            .clone()
-                            .unwrap_or_else(|| "full".to_string());
-                        egui::ComboBox::from_id_salt("deep_repair")
-                            .selected_text(current.clone())
-                            .show_ui(ui, |ui| {
-                                for value in ["off", "local", "full"] {
-                                    if ui
-                                        .selectable_label(current == value, value)
-                                        .clicked()
-                                    {
-                                        self.settings.deep_repair = Some(value.to_string());
-                                    }
-                                }
-                            })
-                            .response.labelled_by(deep_label);
-                    });
-
-                    // Mode and profile change repair *results*, and neither was
-                    // reachable from the GUI at all -- a GUI user could not
-                    // reproduce what the CLI does with `--mode` or `--profile`.
-                    ui.horizontal(|ui| {
-                        let mode_label = labelled(ui, rust_i18n::t!("app.mode").to_string());
-                        let current = self
-                            .settings
-                            .mode
-                            .clone()
-                            .unwrap_or_else(|| "auto".to_string());
-                        egui::ComboBox::from_id_salt("mode")
-                            .selected_text(current.clone())
-                            .show_ui(ui, |ui| {
-                                for value in crate::app::MODES {
-                                    if ui
-                                        .selectable_label(current == value, value)
-                                        .clicked()
-                                    {
-                                        self.settings.mode = Some(value.to_string());
-                                    }
-                                }
-                            })
-                            .response.labelled_by(mode_label);
-                    });
-                    // Live description, as Python's dialog shows: it must follow
-                    // the combo. `t!` returns a `Cow`, so convert before styling.
-                    let desc = rust_i18n::t!(format!(
-                        "app.mode_desc_{}",
-                        self.settings.mode.as_deref().unwrap_or("auto")
+                // The centring is done with the FRAME's margin, not an
+                // `add_space` inside a `horizontal`: that put the panel's width
+                // on top of the layout's item spacing, so the content ran past
+                // the right edge and the Repair button was cut off at 720 px.
+                let avail = ui.available_width();
+                // 16 px of gutter on each side, plus whatever centring is left.
+                let side = ((avail
+                    - crate::theme::PANEL_MAX_W
+                    - 2.0 * crate::theme::GAP_16)
+                    .max(0.0))
+                    / 2.0;
+                egui::Frame::new()
+                    .fill(crate::theme::WINDOW)
+                    .inner_margin(egui::Margin::symmetric(
+                        (side + crate::theme::GAP_16) as i8,
+                        0,
                     ))
-                    .to_string();
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(desc).small().weak()).wrap(),
-                    );
-                    ui.horizontal_wrapped(|ui| {
-                        let label_id = labelled(ui, rust_i18n::t!("app.profile").to_string());
-                        let current = self.settings.profile.clone();
-                        egui::ComboBox::from_id_salt("profile")
-                            .selected_text(
-                                current
-                                    .clone()
-                                    .unwrap_or_else(|| rust_i18n::t!("app.profile_auto").to_string()),
-                            )
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(
-                                        current.is_none(),
-                                        rust_i18n::t!("app.profile_auto").to_string(),
-                                    )
-                                    .clicked()
-                                {
-                                    self.settings.profile = None;
-                                }
-                                for value in PROFILES {
-                                    if ui
-                                        .selectable_label(
-                                            current.as_deref() == Some(value),
-                                            value,
-                                        )
-                                        .clicked()
-                                    {
-                                        self.settings.profile = Some((*value).to_string());
-                                    }
-                                }
-                            })
-                            .response
-                            .on_hover_text(rust_i18n::t!("app.profile_tip").to_string());
-                    });
+                    .show(ui, |ui| {
+                        // The panel's content is taller than a 1000 px window
+                        // once a repair has a report, and a clipped result panel
+                        // hides the very rows the repair produced. Scrolling is
+                        // the window's job, so the panel scrolls rather than
+                        // growing past the frame.
+                        egui::ScrollArea::vertical()
+                            .id_salt("main_panel_scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                        crate::theme::panel().show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            let width = ui.available_width();
 
-                    ui.separator();
-                    ui.label(rust_i18n::t!("app.tiers").to_string());
-                    let mut tamponade = self.settings.no_tamponade == false;
-                    if ui
-                        .checkbox(&mut tamponade, rust_i18n::t!("app.tier_tamponade").to_string())
-                        .changed()
-                    {
-                        self.settings.no_tamponade = !tamponade;
-                        self.settings.experimental_tamponade = false;
-                    }
-                    let mut flap = self.settings.no_flap == false;
-                    if ui
-                        .checkbox(&mut flap, rust_i18n::t!("app.tier_flap").to_string())
-                        .changed()
-                    {
-                        self.settings.no_flap = !flap;
-                        self.settings.experimental_flap = false;
-                    }
-                    let mut coaptation = self.settings.no_coaptation == false;
-                    if ui
-                        .checkbox(
-                            &mut coaptation,
-                            rust_i18n::t!("app.tier_coaptation").to_string(),
-                        )
-                        .changed()
-                    {
-                        self.settings.no_coaptation = !coaptation;
-                        self.settings.experimental_coaptation = false;
-                    }
-                    // Splint is OFF by default, so it is expressed as an opt-in.
-                    ui.checkbox(
-                        &mut self.settings.experimental_splint,
-                        rust_i18n::t!("app.tier_splint").to_string(),
-                    );
-                    let mut dressing = self.settings.dressing;
-                    if ui
-                        .checkbox(&mut dressing, rust_i18n::t!("app.tier_dressing").to_string())
-                        .changed()
-                    {
-                        self.settings.dressing = dressing;
-                    }
-                    if self.settings.dressing {
-                        ui.checkbox(
-                            &mut self.settings.dressing_force_adopt,
-                            rust_i18n::t!("app.dressing_force_adopt").to_string(),
-                        );
-                        // The four dressing knobs, previously CLI-only. Each is
-                        // tri-state (`None` = CLI default), so a blank field
-                        // means "leave it to the intensity", exactly like the
-                        // per-run limits above.
-                        ui.indent("dressing_knobs", |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(rust_i18n::t!("app.dressing_drain").to_string());
-                                let mut text = self
-                                    .settings
-                                    .dressing_drain
-                                    .as_ref()
-                                    .map(|v| match v {
-                                        serde_json::Value::String(s) => s.clone(),
-                                        other => other.to_string(),
-                                    })
-                                    .unwrap_or_default();
-                                if ui
-                                    .add(
-                                        egui::TextEdit::singleline(&mut text)
-                                            .hint_text(rust_i18n::t!("app.dressing_drain_hint")),
-                                    )
-                                    .changed()
-                                {
-                                    let t = text.trim();
-                                    self.settings.dressing_drain = if t.is_empty() {
-                                        None
-                                    } else {
-                                        Some(match t.parse::<f64>() {
-                                            // Same shape the CLI produces: a bare
-                                            // number stays a number.
-                                            Ok(n) => serde_json::json!(n),
-                                            Err(_) => {
-                                                serde_json::Value::String(t.to_lowercase())
-                                            }
-                                        })
-                                    };
-                                }
-                            });
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(rust_i18n::t!("app.dressing_defects").to_string());
-                                let mut text = self
-                                    .settings
-                                    .dressing_defects
-                                    .clone()
-                                    .unwrap_or_default();
-                                if ui
-                                    .add(
-                                        egui::TextEdit::singleline(&mut text)
-                                            .hint_text(rust_i18n::t!("app.dressing_defects_hint")),
-                                    )
-                                    .changed()
-                                {
-                                    let t = text.trim();
-                                    self.settings.dressing_defects = if t.is_empty() {
-                                        None
-                                    } else {
-                                        Some(t.to_string())
-                                    };
-                                }
-                            });
-                            let mut knob = |ui: &mut egui::Ui, label: &str, value: &mut Option<f64>| {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(label);
-                                    let mut text =
-                                        value.map(|v| v.to_string()).unwrap_or_default();
-                                    if ui
-                                        .add(
-                                            egui::TextEdit::singleline(&mut text)
-                                                .desired_width(70.0),
-                                        )
-                                        .changed()
-                                    {
-                                        let t = text.trim();
-                                        *value = if t.is_empty() {
-                                            None
-                                        } else {
-                                            t.parse::<f64>().ok()
-                                        };
-                                    }
-                                });
-                            };
-                            knob(
-                                ui,
-                                &rust_i18n::t!("app.dressing_rmax_scale").to_string(),
-                                &mut self.settings.dressing_rmax_scale,
-                            );
-                            knob(
-                                ui,
-                                &rust_i18n::t!("app.dressing_sigma_scale").to_string(),
-                                &mut self.settings.dressing_sigma_scale,
-                            );
-                        });
-                    }
-
-                    ui.separator();
-                    // Graft and the fTetWild fallback: declared on the CLI since
-                    // the beginning, never reachable from the GUI.
-                    ui.label(rust_i18n::t!("app.advanced").to_string());
-                    ui.checkbox(
-                        &mut self.settings.experimental_graft,
-                        rust_i18n::t!("app.experimental_graft").to_string(),
-                    );
-                    // Python: the negative flag wins over the positive one, and
-                    // `options_from` keeps them as two independent booleans, so
-                    // the GUI must not let both be on.
-                    let mut no_graft = self.settings.no_graft;
-                    if ui
-                        .checkbox(&mut no_graft, rust_i18n::t!("app.no_graft").to_string())
-                        .changed()
-                    {
-                        self.settings.no_graft = no_graft;
-                    }
-                    ui.checkbox(
-                        &mut self.settings.experimental_fallback_ftetwild,
-                        rust_i18n::t!("app.experimental_fallback_ftetwild").to_string(),
-                    );
-                    let mut no_fallback = self.settings.no_fallback_ftetwild;
-                    if ui
-                        .checkbox(
-                            &mut no_fallback,
-                            rust_i18n::t!("app.no_fallback_ftetwild").to_string(),
-                        )
-                        .changed()
-                    {
-                        self.settings.no_fallback_ftetwild = no_fallback;
-                    }
-                    // `--classifier-engine` has NO control here on purpose:
-                    // `repair.rs:907` hard-codes "experimental", so writing
-                    // `settings.classifier_engine` would be a control that does
-                    // nothing -- the same bug class as a dead flag. It gets one
-                    // in İ6, where the analysis panel reads it.
-
-                    // External engines. `--engines` takes a list of *configured*
-                    // names (`repair_cmd.rs:145` rejects unknowns), so the only
-                    // sane control is a checkbox per configured engine. `None`
-                    // means "every configured engine", which is why unticking
-                    // one is what builds the list.
-                    {
-                        let (configured, _warnings) =
-                            sutura_core::config::load_all_engines(None);
-                        if !configured.is_empty() {
-                            ui.separator();
-                            ui.label(rust_i18n::t!("app.engines").to_string());
-                            ui.label(
-                                egui::RichText::new(rust_i18n::t!("app.engines_hint").to_string())
-                                    .small()
-                                    .weak(),
-                            );
-                            let selected: Vec<String> = self
-                                .settings
-                                .engines
-                                .clone()
-                                .unwrap_or_else(|| configured.keys().cloned().collect());
-                            for (name, engine) in &configured {
-                                let mut on = selected.iter().any(|s| s == name);
-                                let label = format!(
-                                    "{name}{}",
-                                    if engine.enabled { "" } else { " (disabled)" }
-                                );
-                                if ui.checkbox(&mut on, label).changed() {
-                                    let mut next = selected.clone();
-                                    if on {
-                                        if !next.iter().any(|s| s == name) {
-                                            next.push(name.clone());
-                                        }
-                                    } else {
-                                        next.retain(|s| s != name);
-                                    }
-                                    // The CLI rejects an empty list
-                                    // ("argument --engines: empty list"), so
-                                    // clearing every box means "default: all".
-                                    self.settings.engines = if next.is_empty()
-                                        || next.len() == configured.len()
-                                    {
-                                        None
-                                    } else {
-                                        next.sort();
-                                        Some(next)
-                                    };
-                                }
-                            }
-                        }
-                    }
-
-                    ui.separator();
-                    ui.horizontal_wrapped(|ui| {
-                        let si_label = labelled(ui, rust_i18n::t!("app.si_mode").to_string());
-                        let current = self
-                            .settings
-                            .si_mode
-                            .clone()
-                            .unwrap_or_else(|| "report".to_string());
-                        egui::ComboBox::from_id_salt("si_mode")
-                            .selected_text(current.clone())
-                            .show_ui(ui, |ui| {
-                                for value in ["repair", "report", "off"] {
-                                    if ui.selectable_label(current == value, value).clicked() {
-                                        self.settings.si_mode = Some(value.to_string());
-                                    }
-                                }
-                            })
-                            .response.labelled_by(si_label);
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        let solid_label = labelled(ui, rust_i18n::t!("app.solid_engine").to_string());
-                        let current = self
-                            .settings
-                            .solid_engine
-                            .clone()
-                            .unwrap_or_else(|| "ftetwild".to_string());
-                        egui::ComboBox::from_id_salt("solid_engine")
-                            .selected_text(current.clone())
-                            .show_ui(ui, |ui| {
-                                for value in ["ftetwild", "cdt"] {
-                                    if ui.selectable_label(current == value, value).clicked() {
-                                        self.settings.solid_engine = Some(value.to_string());
-                                    }
-                                }
-                            })
-                            .response.labelled_by(solid_label);
-                    });
-
-                    ui.separator();
-                    // Open by default: these replace the old "More settings will
-                    // arrive with the core profiles API" placeholder, and a
-                    // collapsed group nobody opens is the same as no group.
-                    egui::CollapsingHeader::new(rust_i18n::t!("app.bounds").to_string())
-                        .default_open(true)
-                        .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(rust_i18n::t!("app.bounds_hint").to_string())
-                                .small()
-                                .weak(),
-                        );
-                        // Every field here is an `Option`, and blank means "keep the
-                        // intensity's value" -- so a cleared box must write `None`,
-                        // not zero. A zero timeout would cap the tier at no time.
-                        opt_f64(ui, "gui_max_risk", &mut self.settings.max_risk,
-                                &rust_i18n::t!("app.max_risk"));
-                        opt_f64(ui, "gui_max_geom", &mut self.settings.max_geometry_change,
-                                &rust_i18n::t!("app.max_geometry_change"));
-                        opt_i64(ui, "gui_graft_faces", &mut self.settings.graft_max_faces,
-                                &rust_i18n::t!("app.graft_max_faces"));
-                        opt_f64(ui, "gui_graft_to", &mut self.settings.graft_timeout,
-                                &rust_i18n::t!("app.graft_timeout"));
-                        opt_i64(ui, "gui_dense_ratio", &mut self.settings.dense_ratio,
-                                &rust_i18n::t!("app.dense_ratio"));
-                        opt_i64(ui, "gui_dense_min", &mut self.settings.dense_min_faces,
-                                &rust_i18n::t!("app.dense_min_faces"));
-                        opt_i64(ui, "gui_ft_faces", &mut self.settings.ftetwild_max_faces,
-                                &rust_i18n::t!("app.ftetwild_max_faces"));
-                        opt_f64(ui, "gui_ft_to", &mut self.settings.ftetwild_timeout,
-                                &rust_i18n::t!("app.ftetwild_timeout"));
-                        opt_f64(ui, "gui_ft_haus", &mut self.settings.ftetwild_max_hausdorff_rel,
-                                &rust_i18n::t!("app.ftetwild_max_hausdorff"));
-                        // Wall-thicken target. Setting a value turns the tier on,
-                        // matching the CLI (`--wall-min-thickness` IS the switch):
-                        // a target with the tier off would silently do nothing.
-                        opt_f64(ui, "gui_wall_min", &mut self.settings.wall_min_thickness,
-                                &rust_i18n::t!("app.wall_min_thickness"));
-                        self.settings.wall_thicken =
-                            self.settings.wall_min_thickness.is_some();
-                        ui.separator();
-                        ui.checkbox(
-                            &mut self.settings.join_components,
-                            rust_i18n::t!("app.join_components").to_string(),
-                        );
-                        // Bind a local, not `&mut option.unwrap_or(false)`: a
-                        // temporary has no place to write back to, so the checkbox
-                        // would accept the click and discard it.
-                        let mut optimize_retry =
-                            self.settings.ftetwild_optimize_retry.unwrap_or(false);
-                        if ui
-                            .checkbox(
-                                &mut optimize_retry,
-                                rust_i18n::t!("app.ftetwild_optimize_retry").to_string(),
-                            )
-                            .changed()
-                        {
-                            self.settings.ftetwild_optimize_retry =
-                                if optimize_retry { Some(true) } else { None };
-                        }
-                        let mut escalation = self.settings.auto_escalation.is_some();
-                        if ui
-                            .checkbox(
-                                &mut escalation,
-                                rust_i18n::t!("app.auto_escalation").to_string(),
-                            )
-                            .changed()
-                        {
-                            self.settings.auto_escalation =
-                                if escalation { Some(true) } else { None };
-                        }
-                    });
-
-                    ui.separator();
-                    // Per-file methods (İ5). Python's Methods tab edits the
-                    // *selected* file's sequence (`gui.py:5093`); here the global
-                    // list stays the fallback and this overrides it for one file,
-                    // so customising one file does not change the next.
-                    //
-                    // No up/down reordering, deliberately: `forced_methods` is a
-                    // `Vec<u8>` that core only ever tests with `contains`
-                    // (`repair.rs:3727`), so an order control would promise
-                    // something nothing honours.
-                    ui.label(rust_i18n::t!("app.file_methods").to_string());
-                    if let Some(idx) = self.selected {
-                        if self.files.get(idx).is_some() {
-                            let global: Vec<u8> = self
-                                .settings
-                                .methods
-                                .as_deref()
-                                .map(|s| {
-                                    s.split(',')
-                                        .filter_map(|t| t.trim().parse::<u8>().ok())
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            let mut local = self.files[idx].methods.clone();
-                            let mut inherited = local.is_none();
+                            // The title bar, inside the panel.
                             ui.horizontal(|ui| {
-                                ui.checkbox(
-                                    &mut inherited,
-                                    rust_i18n::t!("app.file_methods_inherit").to_string(),
+                                ui.label(
+                                    egui::RichText::new(rust_i18n::t!("app.title").to_string())
+                                        .size(crate::theme::FONT_TITLE)
+                                        .color(crate::theme::TEXT),
                                 );
-                                if inherited && local.is_some() {
-                                    local = None;
-                                } else if !inherited && local.is_none() {
-                                    local = Some(global.clone());
-                                }
-                            });
-                            let effective = local.clone().unwrap_or_else(|| global.clone());
-                            if local.is_some() {
-                                let mut edited = effective.clone();
-                                let mut changed = false;
-                                egui::ScrollArea::vertical()
-                                    .id_salt("file_methods_scroll")
-                                    .max_height(110.0)
-                                    .show(ui, |ui| {
-                                        for (num, id, _cat, name) in
-                                            sutura_core::repair_settings::METHODS
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if gear_button(ui)
+                                            .on_hover_text(
+                                                rust_i18n::t!("app.options_btn").to_string(),
+                                            )
+                                            .clicked()
                                         {
-                                            let mut on = edited.contains(&num);
-                                            if ui
-                                                .checkbox(&mut on, format!("{num}. {name} ({id})"))
-                                                .changed()
-                                            {
-                                                if on {
-                                                    edited.push(num);
-                                                } else {
-                                                    edited.retain(|n| *n != num);
-                                                }
-                                                changed = true;
-                                            }
+                                            self.options_open = true;
+                                            self.options_tab = OptionsTab::Repair;
                                         }
-                                    });
-                                if changed {
-                                    edited.sort_unstable();
-                                    local = Some(edited);
-                                }
-                            }
-                            if local != self.files[idx].methods {
-                                self.files[idx].methods = local;
-                            }
-                            ui.label(
-                                egui::RichText::new(rust_i18n::t!(
-                                    "app.file_methods_count",
-                                    count = effective.len() as i64
-                                )
-                                .to_string())
-                                .small()
-                                .weak(),
-                            );
-                        }
-                    }
-
-                    ui.separator();
-                    ui.label(rust_i18n::t!("app.methods").to_string());
-                    // Multiple selection, not a sequence: `forced_methods` is a set
-                    // in the core (membership only), so offering reordering would
-                    // promise an order nothing honours.
-                    let mut selected: Vec<u8> = self
-                        .settings
-                        .methods
-                        .as_deref()
-                        .map(|s| {
-                            s.split(',')
-                                .filter_map(|t| t.trim().parse::<u8>().ok())
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let mut changed = false;
-                    egui::ScrollArea::vertical()
-                        .id_salt("methods_scroll")
-                        .max_height(140.0)
-                        .show(ui, |ui| {
-                            for (num, id, _category, name) in
-                                sutura_core::repair_settings::METHODS
-                            {
-                                let mut on = selected.contains(&num);
-                                if ui
-                                    .checkbox(&mut on, format!("{num}. {name} ({id})"))
-                                    .changed()
-                                {
-                                    if on {
-                                        selected.push(num);
-                                    } else {
-                                        selected.retain(|n| *n != num);
-                                    }
-                                    changed = true;
-                                }
-                            }
-                        });
-                    if changed {
-                        self.settings.methods = if selected.is_empty() {
-                            None
-                        } else {
-                            selected.sort_unstable();
-                            Some(
-                                selected
-                                    .iter()
-                                    .map(|n| n.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(","),
-                            )
-                        };
-                    }
-                    ui.separator();
-                    ui.label(rust_i18n::t!("app.engines_section").to_string());
-                    ui.horizontal(|ui| {
-                        ui.label(rust_i18n::t!("app.engines_ftetwild").to_string());
-                        match &self.ftetwild {
-                            // Python's Engines tab has install/remove buttons
-                            // because its sidecar is fetched on demand. Here it
-                            // ships inside the package, so the only useful
-                            // control is a status light -- an install button
-                            // would be a button that does nothing.
-                            Some(path) => ui
-                                .label(
-                                    egui::RichText::new(
-                                        rust_i18n::t!("app.engines_installed").to_string(),
-                                    )
-                                    .color(egui::Color32::from_rgb(0x6c, 0xc6, 0x7a)),
-                                )
-                                .on_hover_text(path.clone()),
-                            None => ui
-                                .label(
-                                    egui::RichText::new(
-                                        rust_i18n::t!("app.engines_missing").to_string(),
-                                    )
-                                    .color(egui::Color32::LIGHT_RED),
-                                )
-                                .on_hover_text(
-                                    rust_i18n::t!("app.engines_missing_tip").to_string(),
-                                ),
-                        }
-                    });
-                    // External engines, with their state. `load_all_engines` is
-                    // the same call the `--engines` validator uses, so the list
-                    // cannot disagree with what the CLI accepts.
-                    {
-                        let (configured, warnings) = sutura_core::config::load_all_engines(None);
-                        if configured.is_empty() {
-                            ui.label(
-                                egui::RichText::new(
-                                    rust_i18n::t!("app.engines_none").to_string(),
-                                )
-                                .small()
-                                .weak(),
-                            );
-                        }
-                        for (name, engine) in &configured {
-                            let state = if engine.enabled {
-                                rust_i18n::t!("app.engines_enabled").to_string()
-                            } else {
-                                rust_i18n::t!("app.engines_disabled").to_string()
-                            };
-                            ui.label(
-                                egui::RichText::new(format!("{name} — {state}"))
-                                    .small()
-                                    .weak(),
-                            )
-                            .on_hover_text(engine.command.join(" "));
-                        }
-                        for w in warnings {
-                            ui.label(
-                                egui::RichText::new(w)
-                                    .small()
-                                    .color(egui::Color32::from_rgb(0xc0, 0xa0, 0x40)),
-                            );
-                        }
-                    }
-
-                    ui.separator();
-                    ui.heading(rust_i18n::t!("app.report").to_string());
-                    if self.batch_active {
-                        ui.label(
-                            rust_i18n::t!(
-                                "app.batch_progress",
-                                done = self.batch_done as i64,
-                                total = self.batch_total as i64
-                            )
-                            .to_string(),
-                        );
-                    }
-                    // Analysis and the 3MF object list are computed here, before
-                    // the immutable `entry` binding below, so filling the cache
-                    // does not need a second borrow of `self.files`. Both calls
-                    // are the ones the headless parity hooks use
-                    // (`analyze_selected`, `object_rows`), so a panel that
-                    // drifts from the hook cannot pass the gate.
-                    if let Some(idx) = self.selected {
-                        if let Some(slot) = self.files.get_mut(idx) {
-                            if slot.analysis.is_none() {
-                                slot.analysis = Some(analyze_selected(&slot.path));
-                            }
-                            if slot.defects.is_none() {
-                                slot.defects = Some(defect_rows(&slot.path));
-                            }
-                            if slot.objects.is_none()
-                                && slot
-                                    .path
-                                    .extension()
-                                    .is_some_and(|e| e.eq_ignore_ascii_case("3mf"))
-                            {
-                                slot.objects = Some(object_rows(&slot.path));
-                            }
-                        }
-                    }
-                    let Some(entry) = self.selected.and_then(|i| self.files.get(i)) else {
-                        ui.label(rust_i18n::t!("app.report_empty").to_string());
-                        return;
-                    };
-                    if let RepairState::Running { step, total } = entry.repair {
-                        ui.add(
-                            egui::ProgressBar::new(step as f32 / total.max(1) as f32)
-                                .text(
-                                    rust_i18n::t!(
-                                        "app.progress",
-                                        step = step as i64,
-                                        total = total as i64
-                                    )
-                                    .to_string(),
-                                ),
-                        );
-                        if ui.button(rust_i18n::t!("app.cancel").to_string()).clicked() {
-                            cancel_in_panel = true;
-                        }
-                    }
-                    if let RepairState::Failed(e) = &entry.repair {
-                        ui.label(egui::RichText::new(e).color(egui::Color32::LIGHT_RED));
-                    }
-                    if let Some(report) = &entry.report {
-                        egui::Grid::new("report-grid")
-                            .num_columns(2)
-                            .spacing([12.0, 6.0])
-                            .show(ui, |ui| {
-                                ui.label(rust_i18n::t!("app.health").to_string());
-                                ui.label(fmt_score(report.health));
-                                ui.end_row();
-                                ui.label(rust_i18n::t!("app.risk").to_string());
-                                ui.label(fmt_score(report.risk));
-                                ui.end_row();
-                                ui.label(rust_i18n::t!("app.fidelity").to_string());
-                                ui.label(fmt_score(report.fidelity));
-                                ui.end_row();
-                                ui.label(rust_i18n::t!("app.confidence").to_string());
-                                ui.label(fmt_score(report.confidence));
-                                ui.end_row();
-                            });
-                        let verdict = verdict_text(report);
-                        let color = verdict_color(&report.verdict_code);
-                        ui.add_space(6.0);
-                        ui.label(rust_i18n::t!("app.verdict").to_string());
-                        ui.label(egui::RichText::new(verdict).color(color));
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}: {}",
-                                rust_i18n::t!("app.status"),
-                                status_text(&report.status_code)
-                            ))
-                            .weak(),
-                        );
-                    } else if !matches!(entry.repair, RepairState::Running { .. })
-                        && !matches!(entry.repair, RepairState::Failed(_))
-                    {
-                        ui.label(rust_i18n::t!("app.report_empty").to_string());
-                    }
-                    // Panels come last: they need `entry` only for an index
-                    // sanity check, and the data is already cached above.
-                    if let Some(idx) = self.selected {
-                        if self.files.get(idx).is_some() {
-                            egui::CollapsingHeader::new(
-                                rust_i18n::t!("app.analysis").to_string(),
-                            )
-                            .id_salt("analysis_header")
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                match &self.files[idx].analysis {
-                                    Some(Ok(a)) => {
-                                        let rows: [(String, String); 8] = [
-                                            (
-                                                rust_i18n::t!("app.an_type").to_string(),
-                                                format!(
-                                                    "{} ({}%)",
-                                                    a.mesh_type,
-                                                    (a.type_confidence * 100.0).round() as i64
-                                                ),
-                                            ),
-                                            (
-                                                rust_i18n::t!("app.an_faces").to_string(),
-                                                a.faces.to_string(),
-                                            ),
-                                            (
-                                                rust_i18n::t!("app.an_vertices").to_string(),
-                                                a.vertices.to_string(),
-                                            ),
-                                            (
-                                                rust_i18n::t!("app.an_components").to_string(),
-                                                a.components.to_string(),
-                                            ),
-                                            (
-                                                rust_i18n::t!("app.an_boundary_loops").to_string(),
-                                                a.boundary_loops.to_string(),
-                                            ),
-                                            (
-                                                rust_i18n::t!("app.an_non_manifold").to_string(),
-                                                a.non_manifold_edges.to_string(),
-                                            ),
-                                            (
-                                                rust_i18n::t!("app.an_self_intersections")
-                                                    .to_string(),
-                                                a.self_intersections.to_string(),
-                                            ),
-                                            (
-                                                rust_i18n::t!("app.an_open_area").to_string(),
-                                                format!("{:.2}%", a.open_area_ratio * 100.0),
-                                            ),
-                                        ];
-                                        egui::Grid::new("analysis-grid")
-                                            .num_columns(2)
-                                            .spacing([12.0, 4.0])
-                                            .show(ui, |ui| {
-                                                for (label, value) in rows {
-                                                    ui.label(label);
-                                                    ui.label(value);
-                                                    ui.end_row();
-                                                }
-                                            });
-                                    }
-                                    Some(Err(e)) => {
+                                        ui.add_space(crate::theme::GAP_16);
                                         ui.label(
-                                            egui::RichText::new(e)
-                                                .small()
-                                                .color(egui::Color32::LIGHT_RED),
+                                            egui::RichText::new(format!("v{}", SUTURA_VERSION))
+                                                .size(crate::theme::FONT_BODY)
+                                                .color(crate::theme::TEXT_MUTED),
                                         );
-                                    }
-                                    None => {}
-                                }
+                                    },
+                                );
                             });
-                            // Individual defects, as Python's plain-text panel
-                            // lists them (`gui.py:6755`): one line per hole and
-                            // per non-manifold region, with its centroid so the
-                            // user can locate it.
-                            match &self.files[idx].defects {
-                                Some(Ok(report))
-                                    if !report.holes.is_empty()
-                                        || !report.non_manifold.is_empty() =>
-                                {
-                                    let total = report.holes.len() + report.non_manifold.len();
-                                    egui::CollapsingHeader::new(
-                                        rust_i18n::t!("app.defects", count = total as i64)
-                                            .to_string(),
-                                    )
-                                    .id_salt("defects_header")
-                                    .default_open(true)
-                                    .show(ui, |ui| {
-                                        // Bound the list: a shattered mesh can
-                                        // have thousands, and the panel is a
-                                        // summary, not a table to scroll.
-                                        //
-                                        // The bound is not enough on its own:
-                                        // twenty rows is ~500 px, which pushed
-                                        // everything below it (the 3MF object
-                                        // list) off the bottom of the window.
-                                        // A bounded inner scroll keeps the
-                                        // section a fixed height whatever the
-                                        // mesh.
-                                        egui::ScrollArea::vertical()
-                                            .id_salt("defects_scroll")
-                                            .max_height(160.0)
-                                            .show(ui, |ui| {
-                                        const SHOWN: usize = 20;
-                                        for hole in report.holes.iter().take(SHOWN) {
-                                            let [x, y, z] = hole.centroid;
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "hole  ({x:.1}, {y:.1}, {z:.1})  d={:.2}",
-                                                    hole.diameter
-                                                ))
-                                                .small()
-                                                .monospace(),
-                                            );
-                                        }
-                                        for nm in report.non_manifold.iter().take(SHOWN) {
-                                            let [x, y, z] = nm.centroid;
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "non-manifold  ({x:.1}, {y:.1}, {z:.1})  faces={}",
-                                                    nm.faces
-                                                ))
-                                                .small()
-                                                .monospace(),
-                                            );
-                                        }
-                                        if total > SHOWN {
-                                            ui.label(
-                                                egui::RichText::new(
-                                                    rust_i18n::t!(
-                                                        "app.defects_more",
-                                                        rest = (total - SHOWN) as i64
-                                                    )
-                                                    .to_string(),
-                                                )
-                                                .small()
-                                                .weak(),
-                                            );
-                                        }
-                                        });
+                            // An unavailable part, in plain language, inside the
+                            // panel where it belongs. The old strip was a
+                            // full-width bar above the window reading
+                            // "1 method(s) unavailable: #7 skip", which is a
+                            // debug line, not something a user can act on.
+                            self.unavailable_notice(ui);
+                            ui.add_space(crate::theme::GAP_CARD);
+
+                            let wide = width >= crate::theme::TWO_COLUMN_MIN_W;
+                            if wide {
+                                let gap = crate::theme::GAP_CARD;
+                                let left_w = (ui.available_width() - gap) * 0.58;
+                                ui.horizontal_top(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.set_width(left_w);
+                                        self.files_card(ui, &mut add_files, &mut add_folder, &mut clear_list);
+                                        ui.add_space(gap);
+                                        self.action_row(ui, running, &mut cancel_clicked);
                                     });
-                                }
-                                Some(Err(e)) => {
-                                    ui.label(
-                                        egui::RichText::new(e)
-                                            .small()
-                                            .color(egui::Color32::LIGHT_RED),
-                                    );
-                                }
-                                _ => {}
+                                    ui.add_space(gap);
+                                    ui.vertical(|ui| {
+                                        ui.set_width(ui.available_width());
+                                        self.analysis_card(ui);
+                                    });
+                                });
+                            } else {
+                                // Stacked: the target's own layout.
+                                self.files_card(ui, &mut add_files, &mut add_folder, &mut clear_list);
+                                ui.add_space(crate::theme::GAP_CARD);
+                                self.action_row(ui, running, &mut cancel_clicked);
+                                ui.add_space(crate::theme::GAP_CARD);
+                                self.analysis_card(ui);
                             }
-                            if let Some(Ok(objects)) = &self.files[idx].objects {
-                                if !objects.is_empty() {
-                                    egui::CollapsingHeader::new(
+
+                            // The progress hairline belongs under whichever
+                            // layout ran, full panel width.
+                            if let Some((name, step, total)) = self.repair_progress() {
+                                ui.add_space(crate::theme::GAP_16);
+                                ui.add(
+                                    egui::ProgressBar::new(step as f32 / total.max(1) as f32)
+                                        .desired_height(crate::theme::PROGRESS_H)
+                                        .corner_radius(0)
+                                        .fill(crate::theme::ACCENT)
+                                        .animate(false),
+                                );
+                                ui.add_space(crate::theme::GAP_8);
+                                ui.label(
+                                    egui::RichText::new(
                                         rust_i18n::t!(
-                                            "app.objects",
-                                            count = objects.len() as i64
+                                            "app.repairing_stage",
+                                            name = name,
+                                            step = step as i64,
+                                            total = total as i64
                                         )
                                         .to_string(),
                                     )
-                                    .id_salt("objects_header")
-                                    // Open by default: a multi-object archive is
-                                    // opaque otherwise, and that is the whole
-                                    // reason the list exists.
-                                    .default_open(true)
-                                    .show(ui, |ui| {
-                                        egui::Grid::new("objects-grid")
-                                            .num_columns(3)
-                                            .spacing([12.0, 4.0])
-                                            .show(ui, |ui| {
-                                                ui.label(
-                                                    rust_i18n::t!("app.ob_model").to_string(),
-                                                );
-                                                ui.label(
-                                                    rust_i18n::t!("app.ob_faces").to_string(),
-                                                );
-                                                ui.label(
-                                                    rust_i18n::t!("app.ob_vertices").to_string(),
-                                                );
-                                                ui.end_row();
-                                                for row in objects {
-                                                    ui.label(
-                                                        row.get("model_name")
-                                                            .and_then(|v| v.as_str())
-                                                            .unwrap_or("-"),
-                                                    );
-                                                    ui.label(
-                                                        row.get("faces")
-                                                            .map(|v| v.to_string())
-                                                            .unwrap_or_else(|| "-".into()),
-                                                    );
-                                                    ui.label(
-                                                        row.get("vertices")
-                                                            .map(|v| v.to_string())
-                                                            .unwrap_or_else(|| "-".into()),
-                                                    );
-                                                    ui.end_row();
-                                                }
-                                            });
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    // Recommended methods, from the report's own ranking
-                    // (`ranking::recommendations_json`). They live per object
-                    // (`object_reports[i].recommendations`), not at the top
-                    // level -- verified against the CLI's own JSON, where the
-                    // key is absent from the root but present three times for
-                    // this 3MF. Every object's list is shown, labelled, so a
-                    // multi-part file does not silently show only the first.
-                    //
-                    // Read-only, not checkboxes: tagging a method is per-file
-                    // work (İ5) that does not exist yet, and a checkbox that
-                    // cannot tag would be the dead-control bug class again.
-                    if let Some(objects) = self
-                        .selected
-                        .and_then(|i| self.files.get(i))
-                        .and_then(|e| e.raw_report.as_ref())
-                        .and_then(|r| r.get("object_reports"))
-                        .and_then(|v| v.as_array())
-                        .filter(|a| {
-                            // Two shapes: the 3MF path stores
-                            // `{model_name, report}`; the single-mesh report
-                            // stores the report directly under `object_reports`.
-                            a.iter().any(|o| {
-                                let report = o.get("report").unwrap_or(o);
-                                report
-                                    .get("recommendations")
-                                    .and_then(|r| r.as_array())
-                                    .is_some_and(|r| !r.is_empty())
-                            })
-                        })
-                    {
-                        egui::CollapsingHeader::new(
-                            rust_i18n::t!("app.recommended").to_string(),
-                        )
-                        .id_salt("recommended_header")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            for (oi, object) in objects.iter().enumerate() {
-                                let report = object.get("report").unwrap_or(object);
-                                let recs = report
-                                    .get("recommendations")
-                                    .and_then(|v| v.as_array())
-                                    .cloned()
-                                    .unwrap_or_default();
-                                if recs.is_empty() {
-                                    continue;
-                                }
-                                if objects.len() > 1 {
-                                    ui.label(
-                                        egui::RichText::new(
-                                            rust_i18n::t!(
-                                                "app.rec_object",
-                                                index = oi as i64 + 1
-                                            )
-                                            .to_string(),
-                                        )
-                                        .small()
-                                        .weak(),
-                                    );
-                                }
-                                for rec in &recs {
-                                    let num = rec
-                                        .get("num")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0);
-                                    let name = rec
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("?");
-                                    let pct = rec
-                                        .get("score")
-                                        .and_then(|v| v.as_f64())
-                                        .map(|v| (v * 100.0).round() as i64)
-                                        .unwrap_or(0);
-                                    let reason = rec
-                                        .get("reason")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let row = ui.add(
-                                        egui::Label::new(format!("#{num}  {name}  {pct}%"))
-                                            .sense(egui::Sense::hover()),
-                                    );
-                                    if !reason.is_empty() {
-                                        row.on_hover_text(reason);
-                                    }
-                                }
+                                    .size(crate::theme::FONT_SECTION)
+                                    .color(crate::theme::TEXT_MUTED),
+                                );
                             }
                         });
-                    }
-
-                    if let Some(output) = &entry.output {
-                        ui.separator();
-                        ui.label(egui::RichText::new(output.display().to_string()).small().weak());
-                        if ui.button(rust_i18n::t!("app.open_result").to_string()).clicked() {
-                            open_action = Some((output.clone(), false));
-                        }
-                        if ui
-                            .button(rust_i18n::t!("app.show_in_folder").to_string())
-                            .clicked()
-                        {
-                            open_action = Some((output.clone(), true));
-                        }
-                    }
+                            });
                     });
-                #[cfg(test)]
-                probe.store(
-                    settings_out.state.clamped_offset().y.to_bits(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
             });
+
+        egui::containers::Panel::bottom("bottom")
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::WINDOW)
+                    .inner_margin(egui::Margin::symmetric(
+                        crate::theme::GAP_24 as i8,
+                        crate::theme::GAP_8 as i8,
+                    )),
+            )
+            .show(ui, |ui| {
+                let has_result = self
+                    .selected
+                    .and_then(|i| self.files.get(i))
+                    .map(|e| e.result.is_some())
+                    .unwrap_or(false);
+                ui.horizontal(|ui| {
+                    ui.add_space(
+                        ((ui.available_width() - crate::theme::PANEL_MAX_W).max(0.0) / 2.0)
+                            .max(0.0),
+                    );
+                    if ui
+                        .add_enabled(
+                            has_result,
+                            secondary_button(rust_i18n::t!("app.show_heatmap").to_string()),
+                        )
+                        .clicked()
+                    {
+                        open_heatmap = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            has_result,
+                            secondary_button(
+                                rust_i18n::t!("app.show_before_after").to_string(),
+                            ),
+                        )
+                        .clicked()
+                    {
+                        open_compare = true;
+                    }
+                });
+            });
+
+        if add_files {
+            if let Some(paths) = rfd::FileDialog::new()
+                .add_filter("Meshes", &["stl", "obj", "ply", "3mf"])
+                .pick_files()
+            {
+                for path in paths {
+                    self.add_path(path);
+                }
+            }
         }
+        if add_folder {
+            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                self.add_path(dir);
+            }
         }
-        if cancel_clicked || cancel_in_panel {
+        if clear_list {
+            self.clear_files();
+        }
+        if cancel_clicked {
             self.cancel_repair();
         }
         if let Some((path, reveal)) = open_action {
@@ -2912,89 +2202,6 @@ impl SuturaApp {
         }
 
         let mut view_changed = false;
-        egui::containers::CentralPanel::default().show(ui, |ui| {
-            if let Some(idx) = self.selected {
-                let (before, after, has_result) = self
-                    .files
-                    .get(idx)
-                    .map(|e| {
-                        (
-                            e.view == ViewMode::Before,
-                            e.view == ViewMode::After,
-                            e.result.is_some(),
-                        )
-                    })
-                    .unwrap_or((true, false, false));
-                // Wrapped: the centre column can be as narrow as 360 px, and the
-                // three switches plus their labels are wider than that. In one
-                // row "Defect colours" was the part that fell off the right edge
-                // -- exactly the control the Steam Deck report said was missing.
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .selectable_label(before, rust_i18n::t!("app.before").to_string())
-                        .clicked()
-                    {
-                        self.files[idx].view = ViewMode::Before;
-                        view_changed = true;
-                    }
-                    if ui
-                        .add_enabled(
-                            has_result,
-                            egui::Button::selectable(
-                                after,
-                                rust_i18n::t!("app.after").to_string(),
-                            ),
-                        )
-                        .clicked()
-                    {
-                        self.files[idx].view = ViewMode::After;
-                        view_changed = true;
-                    }
-                    let mut heat = self.preview.heatmap;
-                    if ui
-                        .checkbox(&mut heat, rust_i18n::t!("app.heatmap").to_string())
-                        .changed()
-                    {
-                        self.preview.heatmap = heat;
-                        self.preview.dirty = true;
-                    }
-                    // Python's "defect-colour" view mode (`gui.py:7512`): each
-                    // face painted by its defect kind. Mutually exclusive with
-                    // the heatmap -- both colour faces, and two colourings at
-                    // once is not a mode anyone asked for.
-                    let mut kinds = self.preview.defect_colors;
-                    if ui
-                        .checkbox(&mut kinds, rust_i18n::t!("app.defect_colors").to_string())
-                        .on_hover_text(rust_i18n::t!("app.defect_colors_tip").to_string())
-                        .changed()
-                    {
-                        self.preview.defect_colors = kinds;
-                        if kinds {
-                            self.preview.heatmap = false;
-                        }
-                        self.preview.dirty = true;
-                    }
-                });
-            }
-            self.preview.show(ui);
-        });
-        if view_changed {
-            self.apply_selection();
-        }
-
-        egui::containers::Panel::bottom("log")
-            .resizable(true)
-            .default_size(130.0)
-            .show(ui, |ui| {
-                ui.heading(rust_i18n::t!("app.log").to_string());
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for line in &self.log {
-                            ui.label(egui::RichText::new(line).monospace().small());
-                        }
-                    });
-            });
 
         if let Some(ids) = self.pending_batch.clone() {
             let existing = ids
@@ -3064,7 +2271,7 @@ impl SuturaApp {
                 .resizable(false)
                 .show(&ctx, |ui| {
                     ui.heading("Sutura");
-                    ui.label(format!("v{}", env!("CARGO_PKG_VERSION")));
+                    ui.label(format!("v{}", SUTURA_VERSION));
                     ui.separator();
                     ui.label(rust_i18n::t!("app.about_body").to_string());
                 });
@@ -3408,6 +2615,72 @@ impl SuturaApp {
                 });
         }
 
+        if let Some((what, reason, path)) = self.write_error.clone() {
+            let mut dismiss = false;
+            let mut choose_folder = false;
+            egui::Window::new(rust_i18n::t!("app.write_error_title").to_string())
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(&ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            rust_i18n::t!(
+                                "app.write_error_body",
+                                what = what.clone(),
+                                path = path.display().to_string()
+                            )
+                            .to_string(),
+                        )
+                        .size(crate::theme::FONT_BODY),
+                    );
+                    ui.add_space(crate::theme::GAP_8);
+                    ui.label(
+                        egui::RichText::new(reason.clone())
+                            .size(crate::theme::FONT_SECTION)
+                            .color(crate::theme::TEXT_MUTED),
+                    );
+                    ui.add_space(crate::theme::GAP_16);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(rust_i18n::t!("app.write_error_choose").to_string())
+                            .clicked()
+                        {
+                            choose_folder = true;
+                        }
+                        if ui
+                            .add(primary_button(rust_i18n::t!("app.ok").to_string()))
+                            .clicked()
+                        {
+                            dismiss = true;
+                        }
+                    });
+                });
+            if choose_folder {
+                // Re-run the same repair with the output in the folder the user
+                // picks: the mesh that failed to save is still in hand, but it
+                // lives in the thread that wrote it -- so the honest thing is to
+                // offer the choice and redo the write, not to invent a path into
+                // a dead thread's result.
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    if let Some(idx) = self.selected {
+                        let name = self.files[idx]
+                            .path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if let Some(slot) = self.files.get_mut(idx) {
+                            slot.output = Some(dir.join(name));
+                        }
+                        self.write_error = None;
+                        self.start_repair(idx, true);
+                    }
+                }
+            } else if dismiss {
+                self.write_error = None;
+            }
+        }
+
         // Progress is read from a channel inside a frame, so a running repair needs
         // frames even when nothing is happening in the window. Without this the
         // progress bar froze until the next stray input event.
@@ -3430,10 +2703,3072 @@ impl SuturaApp {
             }
         }
 
+        if let Some(action) = self.profile_action.take() {
+            match action {
+                ProfileAction::Delete => {
+                    if let Some(name) = self.settings.profile.clone() {
+                        let mut profiles = sutura_core::config::intensity::load_profiles(None);
+                        if profiles.remove(&name).is_some() {
+                            match sutura_core::config::intensity::save_profiles(&profiles, None) {
+                                Ok(()) => {
+                                    self.log(format!("deleted profile {name}"));
+                                    self.settings.profile = None;
+                                }
+                                Err(e) => self.log(format!("could not delete profile: {e}")),
+                            }
+                        }
+                    }
+                }
+                // The rest need a name, so they open the prompt below.
+                other => {
+                    let seed = match other {
+                        ProfileAction::Duplicate | ProfileAction::Rename => self
+                            .settings
+                            .profile
+                            .clone()
+                            .unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    self.profile_prompt = Some((other, seed));
+                }
+            }
+        }
+        if let Some((action, mut name)) = self.profile_prompt.clone() {
+            let mut open = true;
+            let mut accept = false;
+            let mut cancel = false;
+            egui::Window::new(rust_i18n::t!("app.profile_new").to_string())
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(&ctx, |ui| {
+                    ui.label(rust_i18n::t!("app.profile_name").to_string());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut name)
+                            .hint_text(rust_i18n::t!("app.profile_name_hint")),
+                    );
+                    ui.horizontal(|ui| {
+                        let ok = !name.trim().is_empty();
+                        if ui
+                            .add_enabled(
+                                ok,
+                                egui::Button::new(rust_i18n::t!("app.profile_save").to_string()),
+                            )
+                            .clicked()
+                        {
+                            accept = true;
+                        }
+                        if ui.button(rust_i18n::t!("app.cancel").to_string()).clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if accept {
+                let name = name.trim().to_string();
+                let mut profiles = sutura_core::config::intensity::load_profiles(None);
+                match action {
+                    // A new profile starts as a copy of the current selection's
+                    // base, which is what Qt's editor did.
+                    ProfileAction::New => {
+                        let base = self
+                            .settings
+                            .profile
+                            .clone()
+                            .or_else(|| Some(self.intensity.value().to_string()))
+                            .unwrap_or_else(|| "balanced".to_string());
+                        profiles.insert(
+                            name.clone(),
+                            sutura_core::config::intensity::ProfileEntry {
+                                base,
+                                overrides: Default::default(),
+                            },
+                        );
+                    }
+                    ProfileAction::Duplicate => {
+                        if let Some(src) = self
+                            .settings
+                            .profile
+                            .as_ref()
+                            .and_then(|n| profiles.get(n))
+                            .cloned()
+                        {
+                            profiles.insert(name.clone(), src);
+                        }
+                    }
+                    ProfileAction::Rename => {
+                        if let Some(old) = self.settings.profile.clone() {
+                            if let Some(entry) = profiles.remove(&old) {
+                                profiles.insert(name.clone(), entry);
+                            }
+                        }
+                    }
+                    ProfileAction::SaveAsNew => {
+                        let base = self.intensity.value().to_string();
+                        profiles.insert(
+                            name.clone(),
+                            sutura_core::config::intensity::ProfileEntry {
+                                base,
+                                overrides: Default::default(),
+                            },
+                        );
+                    }
+                    ProfileAction::Delete => {}
+                }
+                match sutura_core::config::intensity::save_profiles(&profiles, None) {
+                    Ok(()) => {
+                        self.log(format!("saved profile {name}"));
+                        self.settings.profile = Some(name);
+                    }
+                    Err(e) => self.log(format!("could not save profile: {e}")),
+                }
+                self.profile_prompt = None;
+            } else if cancel || !open {
+                self.profile_prompt = None;
+            } else {
+                self.profile_prompt = Some((action, name));
+            }
+        }
+
         self.apply_selection();
         self.maybe_screenshot(&ctx);
         self.persist_if_changed();
     }
+    /// The file table: Qt's three columns, File / Method / Result.
+    ///
+    /// Qt's `QTreeWidget` had explicit widths 330 / 300 / 140 and no row
+    /// styling beyond selection. Reproduced as a grid so the columns line up
+    /// whatever the file names are, with the rows themselves selectable.
+    /// The Files card: title, its buttons, and the table (or the drop area).
+    fn files_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        add_files: &mut bool,
+        add_folder: &mut bool,
+        clear_list: &mut bool,
+    ) {
+        crate::theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                crate::theme::card_title(ui, rust_i18n::t!("app.files").to_string());
+            });
+            ui.add_space(crate::theme::GAP_16);
+            self.file_table(ui);
+            ui.add_space(crate::theme::GAP_16);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(secondary_button(rust_i18n::t!("app.add_files").to_string()))
+                    .clicked()
+                {
+                    *add_files = true;
+                }
+                if ui
+                    .add(secondary_button(rust_i18n::t!("app.add_folder").to_string()))
+                    .clicked()
+                {
+                    *add_folder = true;
+                }
+                if ui
+                    .add_enabled(
+                        self.selected.is_some() && !self.busy(),
+                        secondary_button(rust_i18n::t!("app.remove").to_string()),
+                    )
+                    .clicked()
+                {
+                    if let Some(idx) = self.selected {
+                        self.remove_file(idx);
+                    }
+                }
+                if ui
+                    .add_enabled(
+                        !self.files.is_empty() && !self.busy(),
+                        secondary_button(rust_i18n::t!("app.clear_list").to_string()),
+                    )
+                    .clicked()
+                {
+                    *clear_list = true;
+                }
+            });
+        });
+    }
+
+    /// Analyze on the left; Repair / Repair all on the right.
+    fn action_row(&mut self, ui: &mut egui::Ui, running: bool, cancel_clicked: &mut bool) {
+        let can_repair = self
+            .selected
+            .and_then(|i| self.files.get(i))
+            .map(|e| e.input.is_some() && !matches!(e.repair, RepairState::Running { .. }))
+            .unwrap_or(false);
+        let multi = self.files.len() > 1;
+
+        let analyze = |app: &mut SuturaApp, ui: &mut egui::Ui| {
+            if ui
+                .add_enabled(
+                    app.selected.is_some(),
+                    secondary_button(rust_i18n::t!("app.analyze").to_string()),
+                )
+                .clicked()
+            {
+                if let Some(idx) = app.selected {
+                    if let Some(slot) = app.files.get_mut(idx) {
+                        slot.analysis = None;
+                        slot.defects = None;
+                    }
+                    // Qt's `_analyze_methods` (gui.py:7214): the ranking, not
+                    // just the topology. It is a subprocess run there because
+                    // Python did not link the core; here it is the same call the
+                    // repair makes, so the recommendation is the one the repair
+                    // would use.
+                    app.analyze_methods(idx);
+                }
+            }
+        };
+        let repair = |app: &mut SuturaApp,
+                      ui: &mut egui::Ui,
+                      multi: bool,
+                      can_repair: bool,
+                      running: bool,
+                      cancel: &mut bool| {
+            // The group is laid out right-to-left, so the FIRST widget added is
+            // the rightmost. "Repair" is the filled primary and sits at the far
+            // right; "Repair all" is the outline beside it.
+            if multi {
+                if ui
+                    .add_enabled(
+                        can_repair,
+                        primary_button(rust_i18n::t!("app.repair").to_string()),
+                    )
+                    .clicked()
+                {
+                    if let Some(idx) = app.selected {
+                        app.start_repair(idx, false);
+                    }
+                }
+                if ui
+                    .add_enabled(
+                        can_repair && !app.batch_active && app.repair_rx.is_none(),
+                        secondary_button(rust_i18n::t!("app.repair_all").to_string()),
+                    )
+                    .clicked()
+                {
+                    app.enqueue_all();
+                }
+            } else if ui
+                .add_enabled(
+                    can_repair,
+                    primary_button(rust_i18n::t!("app.repair").to_string()),
+                )
+                .clicked()
+            {
+                if let Some(idx) = app.selected {
+                    app.start_repair(idx, false);
+                }
+            }
+            if running
+                && ui
+                    .add(secondary_button(rust_i18n::t!("app.stop").to_string()))
+                    .clicked()
+            {
+                *cancel = true;
+            }
+        };
+
+        // Always one row: Analyze left, the repair group right. It fits because
+        // the table no longer demands a fixed width -- the earlier overflow was
+        // the columns, not the buttons.
+        ui.horizontal(|ui| {
+            analyze(self, ui);
+            // Once there is a repaired file and a slicer, the next thing a user
+            // does is open it. Qt offered this from the context menu only; the
+            // action row is where the result is, so it belongs here too.
+            let has_output = self
+                .selected
+                .and_then(|i| self.files.get(i))
+                .map(|e| e.output.is_some())
+                .unwrap_or(false);
+            if has_output && !self.slicers.is_empty() {
+                let installed = self.slicers.clone();
+                ui.menu_button(rust_i18n::t!("app.open_in_slicer").to_string(), |ui| {
+                    for (i, slicer) in installed.iter().enumerate() {
+                        if menu_action(ui, slicer.label.to_string()) {
+                            if let Some(idx) = self.selected {
+                                self.apply_row_action(RowAction::OpenInSlicer(idx, i));
+                            }
+                        }
+                    }
+                });
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                repair(self, ui, multi, can_repair, running, cancel_clicked)
+            });
+        });
+    }
+
+    /// The Analysis card: label/value rows, an amber count where a count is a
+    /// problem, then the defects row and its list.
+    fn analysis_card(&mut self, ui: &mut egui::Ui) {
+        crate::theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            self.report_and_logs(ui, &mut None);
+            self.batch_summary(ui);
+            self.small_parts_section(ui);
+            self.suggestions_block(ui);
+            self.result_suggestions(ui);
+            // This call was missing: `defects_panel` existed but nothing drew it,
+            // which is why the hairline and "N defects >" row never appeared.
+            self.defects_panel(ui);
+        });
+    }
+
+    /// The file table: Qt's `QTreeWidget`, three columns.
+    ///
+    /// A real table, not sized labels: the first version laid the header out with
+    /// `allocate_ui_with_layout` and the rows with `add_sized`, which do not
+    /// agree, and the "row" came out as one full-width button with the method
+    /// outside it. `TableBuilder` is the widget for exactly this.
+    ///
+    /// Qt's widths were 330 / 300 / 140 at 1055 px; the same proportions here so
+    /// the columns land in the same place.
+    pub(crate) fn file_table(&mut self, ui: &mut egui::Ui) {
+        use egui_extras::{Column, TableBuilder};
+
+        let mut clicked = None;
+        let mut removed = None;
+        // Set by the right-click menu; applied after the table's borrow ends.
+        let mut chosen: Option<RowAction> = None;
+
+        // Empty state takes one row, not a hundred (rule e).
+        let rows = if self.files.is_empty() {
+            0
+        } else {
+            self.files.len()
+        };
+        let row_h = crate::theme::ROW_H;
+        const HEADER_H: f32 = 28.0;
+        // Only used by the empty-state branch below.
+        let _rows = rows;
+
+        let table = TableBuilder::new(ui)
+            .id_salt("file_table")
+            .striped(false)
+            .resizable(false)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            // All three share what the card has: a fixed 330 + 300 demanded
+            // 630 px of a card that is ~590 inside a 720 px window, so the row
+            // ran past the panel edge and the Result column was off-screen.
+            .column(Column::remainder().at_least(150.0))
+            .column(Column::remainder().at_least(70.0))
+            .column(Column::remainder().at_least(80.0))
+            // Let the table take its natural height: `max_scroll_height` is the
+            // height of the *scrollable body*, not of the table, and pairing it
+            // with a `min_scrolled_height` of one row pinned the viewport to a
+            // single row -- four loaded files drew one.
+            .auto_shrink([false, true])
+            .sense(egui::Sense::click());
+
+
+
+        // (1) With no files there is no table: headers over an empty row read as
+        // a broken table. A dashed drop area takes its place.
+        if self.files.is_empty() {
+            let w = ui.available_width();
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 160.0), egui::Sense::hover());
+            let painter = ui.painter();
+            painter.rect_stroke(
+                rect,
+                egui::CornerRadius::same(crate::theme::RADIUS),
+                egui::Stroke::new(1.0, crate::theme::BORDER),
+                egui::StrokeKind::Inside,
+            );
+            // An upload arrow, drawn: the font has no glyph for it.
+            let c = rect.center();
+            let colour = crate::theme::TEXT_MUTED;
+            painter.line_segment(
+                [egui::pos2(c.x, c.y - 26.0), egui::pos2(c.x, c.y - 2.0)],
+                egui::Stroke::new(1.6, colour),
+            );
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(c.x, c.y - 30.0),
+                    egui::pos2(c.x - 5.0, c.y - 22.0),
+                    egui::pos2(c.x + 5.0, c.y - 22.0),
+                ],
+                colour,
+                egui::Stroke::NONE,
+            ));
+            painter.text(
+                egui::pos2(c.x, c.y + 6.0),
+                egui::Align2::CENTER_CENTER,
+                rust_i18n::t!("app.drop_hint").to_string(),
+                egui::FontId::proportional(crate::theme::FONT_BODY),
+                crate::theme::TEXT_MUTED,
+            );
+            painter.text(
+                egui::pos2(c.x, c.y + 28.0),
+                egui::Align2::CENTER_CENTER,
+                rust_i18n::t!("app.drop_hint_alt").to_string(),
+                egui::FontId::proportional(crate::theme::FONT_SECTION),
+                crate::theme::TEXT_MUTED,
+            );
+            return;
+        }
+
+        table
+            .header(HEADER_H, |mut header| {
+                // (2) Secondary and small: the headers were body-coloured and
+                // bold, which read as content rather than a label.
+                for key in ["app.col_file", "app.col_method", "app.col_result"] {
+                    header.col(|ui| {
+                        ui.label(
+                            egui::RichText::new(rust_i18n::t!(key).to_string())
+                                .size(crate::theme::FONT_SECTION)
+                                .color(crate::theme::TEXT_MUTED),
+                        );
+                    });
+                }
+            })
+            .body(|mut body| {
+                if self.files.is_empty() {
+                    body.row(row_h, |mut row| {
+                        row.col(|ui| {
+                            ui.label(
+                                egui::RichText::new(rust_i18n::t!("app.drop_hint").to_string())
+                                    .size(crate::theme::FONT_BODY)
+                                    .color(crate::theme::TEXT_MUTED),
+                            );
+                        });
+                        row.col(|_| {});
+                        row.col(|_| {});
+                    });
+                    return;
+                }
+                for (idx, entry) in self.files.iter().enumerate() {
+                    body.row(row_h, |mut row| {
+                        let selected = self.selected == Some(idx);
+                        // A selected row is tinted, not filled: Qt paints
+                        // `Highlight` behind the text, and a solid button per row
+                        // is what the first attempt got wrong.
+                        // H2: the row's own highlight, not egui's strong
+                        // selection fill. `set_selected` handles the tint; the
+                        // left bar is painted inside the first cell below.
+                        row.set_selected(selected);
+
+                        row.col(|ui| {
+                            let name = entry
+                                .path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| entry.path.display().to_string());
+                            let mut text = egui::RichText::new(name);
+                            if entry.error.is_some() {
+                                text = text.color(COLOR_ERROR);
+                            }
+                            // The 3 px accent bar on a selected row: the visual
+                            // half of H2, and it cannot be done with a
+                            // `set_selected` tint alone.
+                            if selected {
+                                let (r, _) = ui.allocate_exact_size(
+                                    egui::vec2(3.0, 18.0),
+                                    egui::Sense::hover(),
+                                );
+                                crate::theme::selection_bar(ui.painter(), r);
+                            }
+                            let response =
+                                ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                            if response.clicked() {
+                                clicked = Some(idx);
+                            }
+                            // Right-click, as Qt's `_on_tree_context_menu` did.
+                            // The menu is built here, closes over `idx`, and only
+                            // reports what was chosen: the actions run after the
+                            // table's borrow ends.
+                            response.context_menu(|ui| {
+                                if menu_action(ui, rust_i18n::t!("app.menu_analyze").to_string()) {
+                                    chosen = Some(RowAction::Analyze(idx));
+                                }
+                                ui.separator();
+                                if let Some(entry) = self.files.get(idx) {
+                                    if entry.output.is_some() {
+                                        if menu_action(
+                                            ui,
+                                            rust_i18n::t!("app.open_result").to_string(),
+                                        ) {
+                                            chosen = Some(RowAction::OpenOutput(idx, false));
+                                        }
+                                        if menu_action(
+                                            ui,
+                                            rust_i18n::t!("app.show_in_folder").to_string(),
+                                        ) {
+                                            chosen = Some(RowAction::OpenOutput(idx, true));
+                                        }
+                                        // "Open in..." only when a slicer is
+                                        // actually installed: a menu entry that
+                                        // cannot work is worse than none.
+                                        let installed = self.slicers.clone();
+                                        if !installed.is_empty() {
+                                            ui.menu_button(
+                                                rust_i18n::t!("app.open_in_slicer")
+                                                    .to_string(),
+                                                |ui| {
+                                                    for (i, slicer) in
+                                                        installed.iter().enumerate()
+                                                    {
+                                                        if menu_action(
+                                                            ui,
+                                                            slicer.label.to_string(),
+                                                        ) {
+                                                            chosen = Some(
+                                                                RowAction::OpenInSlicer(idx, i),
+                                                            );
+                                                        }
+                                                    }
+                                                },
+                                            );
+                                        }
+                                        ui.separator();
+                                    }
+                                }
+                                // "Recommended methods": the ranking the report
+                                // already carries, as a submenu. Qt built it in
+                                // `_build_recommended_menu`.
+                                let recs = self
+                                    .files
+                                    .get(idx)
+                                    .and_then(|e| e.raw_report.as_ref())
+                                    .map(recommended_methods)
+                                    .unwrap_or_default();
+                                ui.menu_button(
+                                    rust_i18n::t!("app.menu_recommended").to_string(),
+                                    |ui| {
+                                        if recs.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    rust_i18n::t!("app.menu_analyze_first")
+                                                        .to_string(),
+                                                )
+                                                .size(crate::theme::FONT_SECTION)
+                                                .color(crate::theme::TEXT_FAINT),
+                                            );
+                                            return;
+                                        }
+                                        for (num, name, score) in &recs {
+                                            let pct = (score * 100.0).round() as i64;
+                                            if menu_action(
+                                                ui,
+                                                format!("#{num}  {name}  {pct}%"),
+                                            ) {
+                                                chosen = Some(RowAction::TagMethod(idx, *num));
+                                            }
+                                        }
+                                    },
+                                );
+                                if menu_action(
+                                    ui,
+                                    rust_i18n::t!("app.menu_use_method").to_string(),
+                                ) {
+                                    chosen = Some(RowAction::EditMethods(idx));
+                                }
+                                ui.separator();
+                                if menu_action(
+                                    ui,
+                                    rust_i18n::t!("app.menu_clear_tags").to_string(),
+                                ) {
+                                    chosen = Some(RowAction::ClearTags(idx));
+                                }
+                            });
+                        });
+                        row.col(|ui| {
+                            let method = entry
+                                .methods
+                                .as_ref()
+                                .map(|m| {
+                                    m.iter()
+                                        .map(|n| n.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(",")
+                                })
+                                .unwrap_or_else(|| rust_i18n::t!("app.method_auto").to_string());
+                            ui.label(egui::RichText::new(method));
+                        });
+                        row.col(|ui| {
+                            match entry.decision() {
+                                Some((text, colour, tip)) => {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(truncate_decision(&text, 26))
+                                                .color(colour),
+                                        ),
+                                    )
+                                    .on_hover_text(tip);
+                                }
+                                None => {
+                                    // Qt leaves the Result cell empty until a
+                                    // report exists; removal is the toolbar's.
+                                    let _ = &mut removed;
+                                }
+                            }
+                        });
+                    });
+                }
+            });
+
+        if let Some(idx) = clicked {
+            self.selected = Some(idx);
+        }
+        if let Some(idx) = removed {
+            self.remove_file(idx);
+        }
+        if let Some(action) = chosen {
+            self.apply_row_action(action);
+        }
+
+        // Repair progress, if any, under the table rather than inside it: a
+        // progress bar in a cell makes the row height jump around.
+        if let Some(entry) = self.selected.and_then(|i| self.files.get(i)) {
+            if let RepairState::Running { step, total } = entry.repair {
+                ui.add(
+                    egui::ProgressBar::new(step as f32 / total.max(1) as f32)
+                        .desired_height(4.0)
+                        .corner_radius(0)
+                        .text(
+                            rust_i18n::t!(
+                                "app.progress",
+                                step = step as i64,
+                                total = total as i64
+                            )
+                            .to_string(),
+                        ),
+                );
+            }
+        }
+    }
+
+    /// The running repair's file name and step, for the line under the bar.
+    fn repair_progress(&self) -> Option<(String, u8, u8)> {
+        let entry = self.selected.and_then(|i| self.files.get(i))?;
+        let (step, total) = match entry.repair {
+            RepairState::Running { step, total } => (step, total),
+            _ => return None,
+        };
+        let name = entry
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Some((name, step, total))
+    }
+
+    /// The one-line status Qt shows at the right of the progress row.
+    fn status_line(&self) -> String {
+        if self.busy() {
+            rust_i18n::t!("app.status_working").to_string()
+        } else if self.batch_active {
+            rust_i18n::t!(
+                "app.batch_progress",
+                done = self.batch_done as i64,
+                total = self.batch_total as i64
+            )
+            .to_string()
+        } else {
+            rust_i18n::t!("app.ready").to_string()
+        }
+    }
+
+    /// The report, log, analysis, defects and repair-log sections.
+    ///
+    /// Panels collapse to nothing when they have nothing to show (rule e), so a
+    /// fresh launch is the table and the two button rows.
+    fn report_and_logs(
+        &mut self,
+        ui: &mut egui::Ui,
+        open_action: &mut Option<(PathBuf, bool)>,
+    ) {
+        let mut cancel_in_panel = false;
+        // (3) The state belongs next to the title, not on a line of its own that
+        // contradicts the analysis under it.
+        let repaired = self
+            .selected
+            .and_then(|i| self.files.get(i))
+            .map(|e| e.report.is_some())
+            .unwrap_or(false);
+        ui.horizontal(|ui| {
+            crate::theme::card_title(ui, rust_i18n::t!("app.report").to_string());
+            if !repaired {
+                ui.label(
+                    egui::RichText::new(rust_i18n::t!("app.not_repaired").to_string())
+                        .size(crate::theme::FONT_SECTION)
+                        .color(crate::theme::TEXT_MUTED),
+                );
+            }
+        });
+        if self.batch_active {
+            ui.label(
+                rust_i18n::t!(
+                    "app.batch_progress",
+                    done = self.batch_done as i64,
+                    total = self.batch_total as i64
+                )
+                .to_string(),
+            );
+        }
+        // Analysis and the 3MF object list are computed here, before
+        // the immutable `entry` binding below, so filling the cache
+        // does not need a second borrow of `self.files`. Both calls
+        // are the ones the headless parity hooks use
+        // (`analyze_selected`, `object_rows`), so a panel that
+        // drifts from the hook cannot pass the gate.
+        if let Some(idx) = self.selected {
+            if let Some(slot) = self.files.get_mut(idx) {
+                if slot.analysis.is_none() {
+                    slot.analysis = Some(analyze_selected(&slot.path));
+                }
+                if slot.defects.is_none() {
+                    slot.defects = Some(defect_rows(&slot.path));
+                }
+                if slot.objects.is_none()
+                    && slot
+                        .path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("3mf"))
+                {
+                    slot.objects = Some(object_rows(&slot.path));
+                }
+            }
+        }
+        let Some(entry) = self.selected.and_then(|i| self.files.get(i)) else {
+            return;
+        };
+        if let RepairState::Running { step, total } = entry.repair {
+            ui.add(
+                egui::ProgressBar::new(step as f32 / total.max(1) as f32)
+                    .text(
+                        rust_i18n::t!(
+                            "app.progress",
+                            step = step as i64,
+                            total = total as i64
+                        )
+                        .to_string(),
+                    ),
+            );
+            if ui.button(rust_i18n::t!("app.cancel").to_string()).clicked() {
+                cancel_in_panel = true;
+            }
+        }
+        if let RepairState::Failed(e) = &entry.repair {
+            ui.label(egui::RichText::new(e).color(egui::Color32::LIGHT_RED));
+        }
+        if let Some(report) = &entry.report {
+            // Three columns: label | bar | number. The bar is the point of the
+            // row -- eight ASCII blocks in a monospace font read as a debug
+            // dump -- and the number stays because a bar cannot be precise.
+            //
+            // Risk is inverted: on the other three a high score is good, and a
+            // risk of 5 is the best anything can be. Painting it red like a
+            // failure would be a lie.
+            egui::Grid::new("report-grid")
+                .num_columns(3)
+                .spacing([crate::theme::GAP_16, crate::theme::GAP_8])
+                .min_col_width(84.0)
+                .show(ui, |ui| {
+                    // Every cell is given the row's height and centred inside
+                    // it: a grid row aligns to the top, and a 6 px bar next to
+                    // a 16 px label made the number sit low against both.
+                    const ROW_H: f32 = 22.0;
+                    let mut row = |ui: &mut egui::Ui,
+                                   label: String,
+                                   score: Option<f64>,
+                                   higher_is_better: bool| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(84.0, ROW_H),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.label(label);
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(crate::theme::SCORE_BAR_W, ROW_H),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                score_bar_widget(ui, score, higher_is_better);
+                            },
+                        );
+                        // Normal text, right-aligned in a fixed column. The
+                        // bundled font has proportional digits, so a monospace
+                        // family was the only way to get tabular figures -- and
+                        // monospace read as code. Right-aligning in one column
+                        // lines the digits up without it.
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(44.0, ROW_H),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    egui::RichText::new(fmt_score(score))
+                                        .size(crate::theme::FONT_BODY)
+                                        .color(crate::theme::TEXT),
+                                );
+                            },
+                        );
+                        ui.end_row();
+                    };
+                    row(ui, rust_i18n::t!("app.health").to_string(), report.health, true);
+                    row(ui, rust_i18n::t!("app.risk").to_string(), report.risk, false);
+                    row(ui, rust_i18n::t!("app.fidelity").to_string(), report.fidelity, true);
+                    row(ui, rust_i18n::t!("app.confidence").to_string(), report.confidence, true);
+                });
+            let verdict = verdict_text(report);
+            // The text comes from the core and is not ours to change. Its COLOUR
+            // is: "Repaired, shape preserved" in green over "the model is still
+            // not closed" contradicts itself, so green is reserved for an output
+            // that is actually watertight. The brief decides that, not a string
+            // match on the verdict.
+            let color = match self
+                .selected
+                .and_then(|i| self.files.get(i))
+                .and_then(|e| e.raw_report.as_ref())
+                .and_then(output_watertight)
+            {
+                Some(false) => crate::theme::WARN,
+                // No report to judge by: keep the code's own colour.
+                _ => verdict_color(&report.verdict_code),
+            };
+            ui.add_space(6.0);
+            ui.label(rust_i18n::t!("app.verdict").to_string());
+            ui.label(egui::RichText::new(verdict).color(color));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}: {}",
+                    rust_i18n::t!("app.status"),
+                    status_text(&report.status_code)
+                ))
+                .weak(),
+            );
+        }
+        // The plain notes under the verdict: Qt's `report_notes`
+        // (`_render_report_brief`, gui.py:6595). Each one is a sentence a user
+        // can act on -- "thin wall", "budget exceeded", "SI escalation adopted"
+        // -- so they are listed, not counted. Outside the `report` binding on
+        // purpose: a note must not disappear because the typed parse failed.
+        if let Some(raw) = self
+            .selected
+            .and_then(|i| self.files.get(i))
+            .and_then(|e| e.raw_report.as_ref())
+        {
+            let b = sutura_core::report::brief::brief(raw);
+            let mut lines = self.note_lines(&b);
+            if b.verdict == "failed" {
+                if let Some(err) = b.error.clone() {
+                    lines.push(err);
+                }
+            }
+            for line in lines {
+                ui.label(
+                    egui::RichText::new(line)
+                        .size(crate::theme::FONT_SECTION)
+                        .color(crate::theme::TEXT_MUTED),
+                );
+            }
+        }
+        // Panels come last: they need `entry` only for an index
+        // sanity check, and the data is already cached above.
+        if let Some(idx) = self.selected {
+            if self.files.get(idx).is_some() {
+                ui.add_space(crate::theme::GAP_8);
+                // "Input analysis": the grid below describes the file that was
+                // dropped in, not the repaired output above it.
+                crate::theme::section_label(
+                    ui,
+                    rust_i18n::t!("app.input_analysis").to_string(),
+                );
+                ui.add_space(crate::theme::GAP_8);
+                {
+                    match &self.files[idx].analysis {
+                        Some(Ok(a)) => {
+                            let rows: [(String, String); 8] = [
+                                (
+                                    rust_i18n::t!("app.an_type").to_string(),
+                                    format!(
+                                        "{} ({}%)",
+                                        a.mesh_type,
+                                        (a.type_confidence * 100.0).round() as i64
+                                    ),
+                                ),
+                                (
+                                    rust_i18n::t!("app.an_faces").to_string(),
+                                    a.faces.to_string(),
+                                ),
+                                (
+                                    rust_i18n::t!("app.an_vertices").to_string(),
+                                    a.vertices.to_string(),
+                                ),
+                                (
+                                    rust_i18n::t!("app.an_components").to_string(),
+                                    a.components.to_string(),
+                                ),
+                                (
+                                    rust_i18n::t!("app.an_boundary_loops").to_string(),
+                                    a.boundary_loops.to_string(),
+                                ),
+                                (
+                                    rust_i18n::t!("app.an_non_manifold").to_string(),
+                                    a.non_manifold_edges.to_string(),
+                                ),
+                                (
+                                    rust_i18n::t!("app.an_self_intersections")
+                                        .to_string(),
+                                    a.self_intersections.to_string(),
+                                ),
+                                (
+                                    rust_i18n::t!("app.an_open_area").to_string(),
+                                    format!("{:.2}%", a.open_area_ratio * 100.0),
+                                ),
+                            ];
+                            // The target's grid: a wide label column, the value
+                            // starting at the halfway mark, roomy rows. Counts
+                            // that ARE problems are amber; counts that are merely
+                            // large (faces, vertices) are not.
+                            let amber: [usize; 4] = [4, 5, 6, 7];
+                            egui::Grid::new("analysis-grid")
+                                .num_columns(2)
+                                .min_col_width(220.0)
+                                .spacing([crate::theme::GAP_16, crate::theme::GAP_8])
+                                .show(ui, |ui| {
+                                    for (i, (label, value)) in rows.iter().enumerate() {
+                                        ui.label(
+                                            egui::RichText::new(label)
+                                                .size(crate::theme::FONT_BODY)
+                                                .color(crate::theme::TEXT),
+                                        );
+                                        let is_problem = amber.contains(&i)
+                                            && value.parse::<f64>().map(|v| v > 0.0).unwrap_or(
+                                                value.trim_end_matches('%')
+                                                    .parse::<f64>()
+                                                    .map(|v| v > 0.0)
+                                                    .unwrap_or(false),
+                                            );
+                                        let colour = if is_problem {
+                                            crate::theme::WARN
+                                        } else {
+                                            crate::theme::TEXT
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(value.clone())
+                                                .size(crate::theme::FONT_BODY)
+                                                .color(colour),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                        Some(Err(e)) => {
+                            ui.label(
+                                egui::RichText::new(e)
+                                    .small()
+                                    .color(egui::Color32::LIGHT_RED),
+                            );
+                        }
+                        None => {}
+                    }
+                    }
+                // Individual defects, as Python's plain-text panel
+                // lists them (`gui.py:6755`): one line per hole and
+                // per non-manifold region, with its centroid so the
+                // user can locate it.
+                if let Some(Ok(objects)) = &self.files[idx].objects {
+                    if !objects.is_empty() {
+                        egui::CollapsingHeader::new(
+                            rust_i18n::t!(
+                                "app.objects",
+                                count = objects.len() as i64
+                            )
+                            .to_string(),
+                        )
+                        .id_salt("objects_header")
+                        // Open by default: a multi-object archive is
+                        // opaque otherwise, and that is the whole
+                        // reason the list exists.
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            egui::Grid::new("objects-grid")
+                                .num_columns(3)
+                                .spacing([12.0, 4.0])
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        rust_i18n::t!("app.ob_model").to_string(),
+                                    );
+                                    ui.label(
+                                        rust_i18n::t!("app.ob_faces").to_string(),
+                                    );
+                                    ui.label(
+                                        rust_i18n::t!("app.ob_vertices").to_string(),
+                                    );
+                                    ui.end_row();
+                                    for row in objects {
+                                        ui.label(
+                                            row.get("model_name")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("-"),
+                                        );
+                                        ui.label(
+                                            row.get("faces")
+                                                .map(|v| v.to_string())
+                                                .unwrap_or_else(|| "-".into()),
+                                        );
+                                        ui.label(
+                                            row.get("vertices")
+                                                .map(|v| v.to_string())
+                                                .unwrap_or_else(|| "-".into()),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                    }
+                }
+            }
+        }
+
+        // Recommended methods, from the report's own ranking
+        // (`ranking::recommendations_json`). They live per object
+        // (`object_reports[i].recommendations`), not at the top
+        // level -- verified against the CLI's own JSON, where the
+        // key is absent from the root but present three times for
+        // this 3MF. Every object's list is shown, labelled, so a
+        // multi-part file does not silently show only the first.
+        //
+        // Read-only, not checkboxes: tagging a method is per-file
+        // work (İ5) that does not exist yet, and a checkbox that
+        // cannot tag would be the dead-control bug class again.
+        if let Some(objects) = self
+            .selected
+            .and_then(|i| self.files.get(i))
+            .and_then(|e| e.raw_report.as_ref())
+            .and_then(|r| r.get("object_reports"))
+            .and_then(|v| v.as_array())
+            .filter(|a| {
+                // Two shapes: the 3MF path stores
+                // `{model_name, report}`; the single-mesh report
+                // stores the report directly under `object_reports`.
+                a.iter().any(|o| {
+                    let report = o.get("report").unwrap_or(o);
+                    report
+                        .get("recommendations")
+                        .and_then(|r| r.as_array())
+                        .is_some_and(|r| !r.is_empty())
+                })
+            })
+        {
+            egui::CollapsingHeader::new(
+                rust_i18n::t!("app.recommended").to_string(),
+            )
+            .id_salt("recommended_header")
+            .default_open(true)
+            .show(ui, |ui| {
+                for (oi, object) in objects.iter().enumerate() {
+                    let report = object.get("report").unwrap_or(object);
+                    let recs = report
+                        .get("recommendations")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    if recs.is_empty() {
+                        continue;
+                    }
+                    if objects.len() > 1 {
+                        ui.label(
+                            egui::RichText::new(
+                                rust_i18n::t!(
+                                    "app.rec_object",
+                                    index = oi as i64 + 1
+                                )
+                                .to_string(),
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    }
+                    for rec in &recs {
+                        let num = rec
+                            .get("num")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let name = rec
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        let pct = rec
+                            .get("score")
+                            .and_then(|v| v.as_f64())
+                            .map(|v| (v * 100.0).round() as i64)
+                            .unwrap_or(0);
+                        let reason = rec
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let row = ui.add(
+                            egui::Label::new(format!("#{num}  {name}  {pct}%"))
+                                .sense(egui::Sense::hover()),
+                        );
+                        if !reason.is_empty() {
+                            row.on_hover_text(reason);
+                        }
+                    }
+                }
+            });
+        }
+
+        if let Some(output) = &entry.output {
+            ui.separator();
+            // One line: the path, then the two buttons at the right edge. It was
+            // three stacked rows, and the second button fell off the card.
+            ui.horizontal(|ui| {
+                let full = output.display().to_string();
+                let mut open_result = false;
+                let mut reveal = false;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(secondary_button(
+                            rust_i18n::t!("app.show_in_folder").to_string(),
+                        ))
+                        .clicked()
+                    {
+                        reveal = true;
+                    }
+                    if ui
+                        .add(secondary_button(
+                            rust_i18n::t!("app.open_result").to_string(),
+                        ))
+                        .clicked()
+                    {
+                        open_result = true;
+                    }
+                    // The path takes whatever the two buttons leave, and is
+                    // shortened in the middle when that is not enough. The
+                    // tooltip carries the full path, because a truncated path
+                    // without one is a dead end.
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(shorten_path(&full, ui.available_width()))
+                                    .size(crate::theme::FONT_SECTION)
+                                    .color(crate::theme::TEXT_MUTED),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(full.clone());
+                    });
+                });
+                if open_result {
+                    *open_action = Some((output.clone(), false));
+                }
+                if reveal {
+                    *open_action = Some((output.clone(), true));
+                }
+            });
+        }
+    }
+
+    /// Run a right-click action collected from the file table.
+    fn apply_row_action(&mut self, action: RowAction) {
+        match action {
+            RowAction::Analyze(idx) => {
+                if let Some(slot) = self.files.get_mut(idx) {
+                    slot.analysis = None;
+                    slot.defects = None;
+                }
+                self.selected = Some(idx);
+            }
+            RowAction::OpenOutput(idx, reveal) => {
+                if let Some(out) = self.files.get(idx).and_then(|e| e.output.clone()) {
+                    open_path(&out, reveal);
+                }
+            }
+            RowAction::EditMethods(idx) => {
+                self.selected = Some(idx);
+                self.options_open = true;
+                self.options_tab = OptionsTab::Methods;
+            }
+            RowAction::ClearTags(idx) => {
+                if let Some(slot) = self.files.get_mut(idx) {
+                    slot.methods = None;
+                }
+                self.log("method tags cleared; this file follows the global list".to_string());
+            }
+            RowAction::OpenInSlicer(idx, which) => {
+                let Some(slicer) = self.slicers.get(which) else {
+                    return;
+                };
+                let Some(out) = self.files.get(idx).and_then(|e| e.output.clone()) else {
+                    return;
+                };
+                match crate::slicers::open_in(slicer, &out) {
+                    Ok(()) => self.log(format!("opened {} in {}", out.display(), slicer.label)),
+                    Err(e) => self.log(format!("could not open the slicer: {e}")),
+                }
+            }
+            RowAction::TagMethod(idx, num) => {
+                // Appended, not sorted: the order is the sequence the core runs.
+                if let Some(slot) = self.files.get_mut(idx) {
+                    let mut list = slot.methods.take().unwrap_or_default();
+                    if !list.contains(&num) {
+                        list.push(num);
+                    }
+                    slot.methods = Some(list);
+                }
+                self.log(format!("method {num} added to this file"));
+            }
+        }
+    }
+
+    /// "Suggestions": what to try next, from the analysis.
+    ///
+    /// One row per suggestion with an Apply button, at the bottom of the Analysis
+    /// card. Applying sets the mode; it never starts a repair, because a mode is
+    /// a choice, not an action.
+    fn suggestions_block(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.selected else { return };
+        let Some(Ok(a)) = self.files.get(idx).and_then(|e| e.analysis.as_ref()) else {
+            return;
+        };
+        let list = crate::suggestions::suggestions(a);
+        if list.is_empty() {
+            return;
+        }
+        ui.add_space(crate::theme::GAP_16);
+        ui.separator();
+        ui.add_space(crate::theme::GAP_8);
+        crate::theme::section_label(ui, rust_i18n::t!("app.suggestions").to_string());
+        ui.add_space(crate::theme::GAP_8);
+
+        let mut apply: Option<&'static str> = None;
+        for sug in &list {
+            // Text takes the width the button does not need, then the button
+            // sits at the right edge. A plain `right_to_left` layout drew the
+            // button over the last line of text: the label had already claimed
+            // the full width before the button asked for its own.
+            const BUTTON_W: f32 = 76.0;
+            ui.horizontal(|ui| {
+                let text_w = (ui.available_width() - BUTTON_W - crate::theme::GAP_8).max(120.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(text_w, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(
+                                    rust_i18n::t!(sug.reason_key).to_string(),
+                                )
+                                .size(crate::theme::FONT_BODY)
+                                .color(crate::theme::TEXT),
+                            )
+                            .wrap(),
+                        );
+                    },
+                );
+                if let Some(mode) = sug.mode {
+                    if ui
+                        .add(secondary_button(rust_i18n::t!("app.apply").to_string()))
+                        .on_hover_text(
+                            rust_i18n::t!("app.apply_mode_tip", mode = mode).to_string(),
+                        )
+                        .clicked()
+                    {
+                        apply = Some(mode);
+                    }
+                }
+            });
+        }
+        if let Some(mode) = apply {
+            self.settings.mode = Some(mode.to_string());
+            self.log(format!("mode set to {mode} from a suggestion"));
+        }
+    }
+
+    /// Rank the methods for this file and keep the result where the panel and
+    /// the right-click submenu both read it (`_analyze_methods`).
+    ///
+    /// Qt ran `sutura --analyze` in a thread so the window stayed live; this is
+    /// an ordinary call, because the analysis is pure and takes well under a
+    /// frame on the meshes the window can open. If it ever becomes slow, this is
+    /// the call to move behind `repair_rx` like the repair itself.
+    pub fn analyze_methods(&mut self, idx: usize) {
+        let Some(entry) = self.files.get(idx) else { return };
+        let path = entry.path.clone();
+        let loaded = sutura_core::config::policy::load_policy(None)
+            .unwrap_or_else(|_| sutura_core::config::policy::default_policy().unwrap());
+        let report = sutura_core::analyze::analyze_report(
+            &path.display().to_string(),
+            &loaded,
+            self.settings
+                .classifier_engine
+                .as_deref()
+                .unwrap_or("experimental"),
+            true,
+            true,
+        );
+        let recs = recommended_methods(&report).len();
+        if let Some(slot) = self.files.get_mut(idx) {
+            slot.raw_report = Some(report);
+        }
+        self.log(format!(
+            "{}: {} method(s) ranked",
+            path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            recs
+        ));
+    }
+
+    /// A missing optional part, as one sentence with the button that fixes it.
+    ///
+    /// One notice, not a list: whatever is missing, the answer is the same
+    /// screen, and a list of internal names ("#7 skip") tells a user nothing.
+    fn unavailable_notice(&mut self, ui: &mut egui::Ui) {
+        let missing: Vec<&Value> = self
+            .method_health
+            .iter()
+            .filter(|m| m.get("status").and_then(|v| v.as_str()) != Some("ok"))
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        // fTetWild is the one that matters here: it is the solid fallback, and a
+        // repair silently takes the weaker path without it. Any other missing
+        // part is named by its own sentence; the raw id and status stay out.
+        let ftetwild = missing.iter().any(|m| {
+            m.get("name")
+                .and_then(|v| v.as_str())
+                .map(|n| n.to_lowercase().contains("ftetwild"))
+                .unwrap_or(false)
+        });
+        let text = if ftetwild {
+            rust_i18n::t!("app.notice_ftetwild_missing").to_string()
+        } else {
+            rust_i18n::t!("app.notice_part_missing", count = missing.len() as i64).to_string()
+        };
+        egui::Frame::new()
+            // Amber at 8% over the panel: the tint says "warning" without a
+            // second accent colour, which the design rules forbid.
+            .fill(lerp_color(
+                crate::theme::PANEL,
+                crate::theme::WARN,
+                0.08,
+            ))
+            .stroke(egui::Stroke::new(1.0, crate::theme::WARN))
+            .corner_radius(crate::theme::RADIUS_CARD)
+            .inner_margin(egui::Margin::symmetric(
+                crate::theme::GAP_16 as i8,
+                crate::theme::GAP_16 as i8,
+            ))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(text)
+                                .size(crate::theme::FONT_BODY)
+                                .color(crate::theme::TEXT),
+                        )
+                        .wrap(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(secondary_button(
+                                rust_i18n::t!("app.install_dots").to_string(),
+                            ))
+                            .on_hover_text(rust_i18n::t!("app.install_dots_tip").to_string())
+                            .clicked()
+                        {
+                            // Options → Engines, where Install lives.
+                            self.options_open = true;
+                            self.options_tab = OptionsTab::Engines;
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Write the ladder to the user policy. `_show_write_error`'s counterpart:
+    /// the outcome is a visible line, not a silent catch.
+    fn save_ladder(&mut self, selected: &[u8]) {
+        let tiers: Vec<String> = selected
+            .iter()
+            .filter_map(|n| {
+                sutura_core::repair_settings::METHODS
+                    .iter()
+                    .find(|m| m.0 == *n)
+                    .map(|m| m.1.to_string())
+            })
+            .collect();
+        if tiers.is_empty() {
+            self.policy_status = Some((
+                rust_i18n::t!("app.ladder_save_empty").to_string(),
+                false,
+            ));
+            return;
+        }
+        match sutura_core::config::policy::write_deep_tier_order(&tiers) {
+            Ok(path) => {
+                self.policy_status = Some((
+                    rust_i18n::t!("app.ladder_saved", path = path.display().to_string())
+                        .to_string(),
+                    true,
+                ));
+            }
+            Err(e) => {
+                self.policy_status = Some((
+                    rust_i18n::t!("app.ladder_save_failed", error = e.0).to_string(),
+                    false,
+                ));
+            }
+        }
+    }
+
+    /// `_save_auto_reorder`: persist the ladder auto-reorder opt-in.
+    ///
+    /// It lives in the GUI's own `gui.json`, which is where `auto_reorder` is
+    /// already read from, so this is the same file and the same key the checkbox
+    /// reads on the next launch.
+    fn save_auto_reorder(&mut self) {
+        let mut state = crate::state::load();
+        state.settings.auto_reorder = self.settings.auto_reorder;
+        match crate::state::save(&state) {
+            Ok(()) => {
+                self.log(format!(
+                    "auto-reorder saved: {}",
+                    self.settings.auto_reorder
+                ));
+            }
+            Err(e) => {
+                self.policy_status = Some((
+                    rust_i18n::t!("app.ladder_save_failed", error = e).to_string(),
+                    false,
+                ));
+            }
+        }
+    }
+
+    /// The localised text of a report's notes ("`_brief_note_lines`").
+    ///
+    /// One line per note. Unknown codes fall through as `code: args`, because a
+    /// caveat the GUI cannot phrase is still a caveat the user must see.
+    fn note_lines(&self, b: &sutura_core::report::brief::Brief) -> Vec<String> {
+        let mut out = Vec::new();
+        for note in &b.notes {
+            let a = &note.args;
+            let num = |k: &str| a.get(k).and_then(|v| v.as_f64());
+            let line = match note.code.as_str() {
+                "stage2_skipped" => rust_i18n::t!("app.brief_note_stage2_skipped").to_string(),
+                "stage2_error" => rust_i18n::t!("app.brief_note_stage2_error").to_string(),
+                "shape_changed" => rust_i18n::t!("app.brief_note_shape_changed").to_string(),
+                "volume_warning" => rust_i18n::t!("app.brief_note_volume").to_string(),
+                "graft_detail_loss" => rust_i18n::t!("app.brief_note_graft").to_string(),
+                "dressing_detail_loss" => rust_i18n::t!("app.brief_note_dressing").to_string(),
+                "reload_non_manifold_vertices" => {
+                    rust_i18n::t!("app.brief_note_reload_nm").to_string()
+                }
+                "unit_warning" => rust_i18n::t!("app.brief_note_unit").to_string(),
+                "material_discarded" => rust_i18n::t!("app.brief_note_material").to_string(),
+                "attribute_loss" => rust_i18n::t!(
+                    "app.brief_note_attr_loss",
+                    dropped = a.get("dropped").and_then(|v| v.as_i64()).unwrap_or(0),
+                    kept = a.get("kept").and_then(|v| v.as_i64()).unwrap_or(0),
+                    new_without = a.get("new_without").and_then(|v| v.as_i64()).unwrap_or(0)
+                )
+                .to_string(),
+                "budget" => rust_i18n::t!("app.brief_note_budget").to_string(),
+                "thin_wall" => {
+                    let mut line = rust_i18n::t!(
+                        "app.brief_note_thin_wall",
+                        ratio = format!("{:.1}", num("ratio").unwrap_or(0.0) * 100.0),
+                        threshold = format!("{:.1}", num("threshold").unwrap_or(0.0) * 100.0)
+                    )
+                    .to_string();
+                    if let Some(mm) = num("min_mm") {
+                        line += &rust_i18n::t!("app.brief_note_thin_wall_mm", mm = format!("{mm:.2}"))
+                            .to_string();
+                    }
+                    if a.get("estimated").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        line += &rust_i18n::t!("app.brief_note_estimated").to_string();
+                    }
+                    line
+                }
+                "holes_remaining" => rust_i18n::t!(
+                    "app.brief_note_holes_remaining",
+                    count = a.get("count").and_then(|v| v.as_i64()).unwrap_or(0)
+                )
+                .to_string(),
+                "not_closed" => rust_i18n::t!("app.brief_note_not_closed").to_string(),
+                "si_escalation" => {
+                    if a.get("outcome").and_then(|v| v.as_str()) == Some("adopted") {
+                        rust_i18n::t!("app.brief_note_si_adopted").to_string()
+                    } else {
+                        rust_i18n::t!("app.brief_note_si_unfixed").to_string()
+                    }
+                }
+                other => format!("{other}: {a}"),
+            };
+            out.push(line);
+        }
+        out
+    }
+
+    /// "Batch summary": how the last batch went, by category, plus the issue
+    /// breakdown behind a link.
+    ///
+    /// Qt rendered a rich-text strip whose "N issues" link called
+    /// `_on_summary_link` (gui.py:7665), which logged one line per issue code
+    /// with its count. The breakdown was the point of the link, so it is kept;
+    /// it opens under the counts instead of scrolling away in a log, and the link
+    /// says what it does.
+    fn batch_summary(&mut self, ui: &mut egui::Ui) {
+        let any_report = self.files.iter().any(|e| e.raw_report.is_some());
+        if !self.batch_active && self.batch_total == 0 && !any_report {
+            return;
+        }
+        let mut watertight = 0;
+        let mut warning = 0;
+        let mut failed = 0;
+        let mut issue_counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for entry in &self.files {
+            // Counted from the output's topology, like every other colour on
+            // screen. Two repaired open meshes used to count as "watertight"
+            // here while the verdict under them said "still not closed".
+            match entry.raw_report.as_ref().and_then(output_watertight) {
+                Some(true) => watertight += 1,
+                Some(false) => {
+                    if entry.report.as_ref().is_some_and(|r| r.verdict_code == "not_repaired") {
+                        failed += 1;
+                    } else {
+                        warning += 1;
+                    }
+                }
+                None => match entry.report.as_ref().map(|r| r.verdict_code.as_str()) {
+                    Some("preserved") | Some("preserved_notes") => watertight += 1,
+                    Some("not_repaired") => failed += 1,
+                    Some(_) => warning += 1,
+                    None => failed += 1,
+                },
+            }
+            if let Some(raw) = entry.raw_report.as_ref() {
+                let (_, issues, _) = sutura_core::report::classify::classify_value(raw);
+                for code in issues {
+                    *issue_counts.entry(code).or_insert(0) += 1;
+                }
+            }
+        }
+        let total_issues: usize = issue_counts.values().sum();
+        ui.add_space(crate::theme::GAP_8);
+        ui.horizontal(|ui| {
+            for (count, key, colour) in [
+                (watertight, "app.sum_watertight", crate::theme::OK),
+                (warning, "app.sum_warning", crate::theme::WARN),
+                (failed, "app.sum_error", crate::theme::ERROR),
+            ] {
+                ui.label(
+                    egui::RichText::new(format!("{count} {}", rust_i18n::t!(key).to_string()))
+                        .size(crate::theme::FONT_SECTION)
+                        .color(colour),
+                );
+                ui.label(
+                    egui::RichText::new("·")
+                        .size(crate::theme::FONT_SECTION)
+                        .color(crate::theme::TEXT_FAINT),
+                );
+            }
+            if total_issues > 0 {
+                if ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(
+                                rust_i18n::t!("app.sum_show_issues", n = total_issues as i64)
+                                    .to_string(),
+                            )
+                            .size(crate::theme::FONT_SECTION)
+                            .color(crate::theme::TEXT_MUTED),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text(rust_i18n::t!("app.sum_issues_detail").to_string())
+                    .clicked()
+                {
+                    self.summary_issues_open = !self.summary_issues_open;
+                }
+            }
+        });
+        if self.summary_issues_open && total_issues > 0 {
+            ui.indent("summary_issues", |ui| {
+                for (code, n) in &issue_counts {
+                    ui.label(
+                        egui::RichText::new(format!("{code}: {n}"))
+                            .size(crate::theme::FONT_SECTION)
+                            .color(crate::theme::TEXT_MUTED),
+                    );
+                }
+            });
+        }
+    }
+
+    /// "Small parts": what the pipeline considered debris.
+    ///
+    /// Qt printed this as text lines in the details (`_small_parts_section`,
+    /// gui.py:2327). It is a collapsible section here, closed by default: a
+    /// healthy repair has nothing to say and the section must not claim space.
+    fn small_parts_section(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.selected else { return };
+        let Some(raw) = self.files.get(idx).and_then(|e| e.raw_report.as_ref()) else {
+            return;
+        };
+        // Both keys live under `stage1` for a single mesh; a 3MF carries one
+        // `stage1` per object, which the object list already shows.
+        let Some(stage1) = raw.get("stage1") else { return };
+        let removed = stage1.get("removed_small_parts");
+        let debris = stage1.get("possible_debris");
+        let removed_n = removed
+            .and_then(|r| r.get("count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let debris_n = debris
+            .and_then(|d| d.get("count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if removed_n == 0 && debris_n == 0 {
+            return;
+        }
+        ui.add_space(crate::theme::GAP_8);
+        egui::CollapsingHeader::new(
+            rust_i18n::t!(
+                "app.small_parts",
+                count = (removed_n + debris_n) as i64
+            )
+            .to_string(),
+        )
+        .id_salt("small_parts_header")
+        .default_open(false)
+        .show(ui, |ui| {
+            let mut line = |ui: &mut egui::Ui, text: String, colour: egui::Color32| {
+                ui.label(
+                    egui::RichText::new(text)
+                        .size(crate::theme::FONT_SECTION)
+                        .color(colour),
+                );
+            };
+            if let Some(list) = removed.and_then(|r| r.get("parts")).and_then(|p| p.as_array()) {
+                for part in list {
+                    let faces = part.get("faces").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let size = part.get("size_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    line(
+                        ui,
+                        format!(
+                            "{}  {faces} faces, {size:.1}% of the mesh",
+                            rust_i18n::t!("app.small_removed").to_string()
+                        ),
+                        crate::theme::TEXT_MUTED,
+                    );
+                }
+            }
+            if let Some(list) = debris.and_then(|d| d.get("parts")).and_then(|p| p.as_array()) {
+                for part in list {
+                    let faces = part.get("faces").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let vol = part.get("volume_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    line(
+                        ui,
+                        format!(
+                            "{}  {faces} faces, {vol:.2}% of the volume",
+                            rust_i18n::t!("app.small_debris").to_string()
+                        ),
+                        crate::theme::WARN,
+                    );
+                }
+            }
+        });
+    }
+
+    /// Suggestions that come from a *result* rather than an analysis.
+    ///
+    /// Qt showed these as buttons under the report (`try_dressing_btn`) and a
+    /// modal on budget decline (`_ask_budget_rerun`). Here they are rows in the
+    /// same Suggestions list as the mode advice, because that is where a reader
+    /// looks for "what next" and a modal on top of a finished batch interrupts
+    /// nothing useful.
+    fn result_suggestions(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.selected else { return };
+        let Some(entry) = self.files.get(idx) else { return };
+
+        // A non-watertight result whose report offered dressing: the retry is
+        // the same files with force-adopt on.
+        let offered_dressing = entry
+            .raw_report
+            .as_ref()
+            .and_then(|r| r.get("suggestions"))
+            .and_then(|v| v.as_array())
+            .map(|list| {
+                list.iter()
+                    .any(|s| s.get("method").and_then(|m| m.as_str()) == Some("dressing"))
+            })
+            .unwrap_or(false);
+        // A declined save: the CLI wrote nothing, and `--force` is the answer.
+        let declined = entry
+            .raw_report
+            .as_ref()
+            .and_then(|r| r.get("status"))
+            .and_then(|v| v.as_str())
+            == Some("budget_declined");
+
+        if !offered_dressing && !declined {
+            return;
+        }
+        ui.add_space(crate::theme::GAP_8);
+        let mut apply_dressing = false;
+        let mut apply_force = false;
+        if offered_dressing {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            rust_i18n::t!("app.sug_try_dressing").to_string(),
+                        )
+                        .size(crate::theme::FONT_BODY)
+                        .color(crate::theme::TEXT),
+                    )
+                    .wrap(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(secondary_button(rust_i18n::t!("app.apply").to_string()))
+                        .clicked()
+                    {
+                        apply_dressing = true;
+                    }
+                });
+            });
+        }
+        if declined {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(rust_i18n::t!("app.sug_budget_rerun").to_string())
+                            .size(crate::theme::FONT_BODY)
+                            .color(crate::theme::TEXT),
+                    )
+                    .wrap(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(secondary_button(rust_i18n::t!("app.apply").to_string()))
+                        .clicked()
+                    {
+                        apply_force = true;
+                    }
+                });
+            });
+        }
+
+        if apply_dressing {
+            // The CLI's `--dressing-force-adopt` implies dressing, so the option
+            // is switched on with it; otherwise the re-run's own report would
+            // disagree with the flag that produced it.
+            self.settings.dressing = true;
+            self.settings.dressing_force_adopt = true;
+            self.start_repair(idx, true);
+        }
+        if apply_force {
+            self.start_repair(idx, true);
+        }
+    }
+
+    /// The selected file's individual defects, as its own panel.
+    ///
+    /// Qt had this as `Input defects (selected file):` with a fixed-height
+    /// text pane under the log; the plan put it there and not inside the
+    /// report, where it reads as part of the verdict.
+    pub(crate) fn defects_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.selected else { return };
+        // Filled on demand, the same call the headless hook uses.
+        if let Some(slot) = self.files.get_mut(idx) {
+            if slot.defects.is_none() {
+                slot.defects = Some(defect_rows(&slot.path));
+            }
+        }
+        let has_any = matches!(&self.files[idx].defects, Some(Ok(r)) if !r.holes.is_empty() || !r.non_manifold.is_empty());
+        if !has_any {
+            return;
+        }
+        match &self.files[idx].defects {
+                    Some(Ok(report))
+                        if !report.holes.is_empty()
+                            || !report.non_manifold.is_empty() =>
+                    {
+                        let total = report.holes.len() + report.non_manifold.len();
+                        // (5) The target's row: a hairline separator, then
+                        // "N defects >" as a plain clickable line. The arrow is
+                        // drawn because the font has no chevron glyph.
+                        ui.add_space(crate::theme::GAP_8);
+                        ui.separator();
+                        ui.add_space(crate::theme::GAP_8);
+                        let open = self.defects_open;
+                        let response = ui
+                            .add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!(
+                                        "{}  {}",
+                                        rust_i18n::t!("app.defects", count = total as i64)
+                                            .to_string(),
+                                        if open { "v" } else { ">" }
+                                    ))
+                                    .size(crate::theme::FONT_BODY)
+                                    .color(crate::theme::TEXT_MUTED),
+                                )
+                                .sense(egui::Sense::click()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if response.clicked() {
+                            self.defects_open = !self.defects_open;
+                        }
+                        if open {
+                            ui.add_space(crate::theme::GAP_8);
+                            {
+                            // Bound the list: a shattered mesh can
+                            // have thousands, and the panel is a
+                            // summary, not a table to scroll.
+                            //
+                            // The bound is not enough on its own:
+                            // twenty rows is ~500 px, which pushed
+                            // everything below it (the 3MF object
+                            // list) off the bottom of the window.
+                            // A bounded inner scroll keeps the
+                            // section a fixed height whatever the
+                            // mesh.
+                            egui::ScrollArea::vertical()
+                                .id_salt("defects_scroll")
+                                .max_height(160.0)
+                                .show(ui, |ui| {
+                            const SHOWN: usize = 20;
+                            for hole in report.holes.iter().take(SHOWN) {
+                                let [x, y, z] = hole.centroid;
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "hole  ({x:.1}, {y:.1}, {z:.1})  d={:.2}",
+                                        hole.diameter
+                                    ))
+                                    .small()
+                                    .monospace(),
+                                );
+                            }
+                            for nm in report.non_manifold.iter().take(SHOWN) {
+                                let [x, y, z] = nm.centroid;
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "non-manifold  ({x:.1}, {y:.1}, {z:.1})  faces={}",
+                                        nm.faces
+                                    ))
+                                    .small()
+                                    .monospace(),
+                                );
+                            }
+                            if total > SHOWN {
+                                ui.label(
+                                    egui::RichText::new(
+                                        rust_i18n::t!(
+                                            "app.defects_more",
+                                            rest = (total - SHOWN) as i64
+                                        )
+                                        .to_string(),
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                            }
+                            });
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        ui.label(
+                            egui::RichText::new(e)
+                                .small()
+                                .color(COLOR_ERROR),
+                        );
+                    }
+                    _ => {}
+        }
+    }
+
+    /// The settings controls, rendered in Options -> Repair.
+    ///
+    /// Moved out of the old right-hand column unchanged: every control still
+    /// writes the same field, so the CLI mapping cannot drift.
+    pub(crate) fn settings_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let label_id = labelled(ui, rust_i18n::t!("app.intensity").to_string());
+            egui::ComboBox::from_id_salt("intensity")
+                .selected_text(self.intensity.label())
+                .show_ui(ui, |ui| {
+                    for value in [
+                        Intensity::Quick,
+                        Intensity::Balanced,
+                        Intensity::Thorough,
+                        Intensity::Extreme,
+                    ] {
+                        ui.selectable_value(
+                            &mut self.intensity,
+                            value,
+                            value.label(),
+                        );
+                    }
+                })
+                .response.labelled_by(label_id);
+        });
+        // Every control below writes `self.settings` directly. Nothing
+        // here builds a RepairOptions by hand: `options_from` does that,
+        // in the core, for the CLI and the GUI alike.
+        ui.horizontal(|ui| {
+            let deep_label = labelled(ui, rust_i18n::t!("app.deep_repair").to_string());
+            let current = self
+                .settings
+                .deep_repair
+                .clone()
+                .unwrap_or_else(|| "full".to_string());
+            egui::ComboBox::from_id_salt("deep_repair")
+                .selected_text(current.clone())
+                .show_ui(ui, |ui| {
+                    for value in ["off", "local", "full"] {
+                        if ui
+                            .selectable_label(current == value, value)
+                            .clicked()
+                        {
+                            self.settings.deep_repair = Some(value.to_string());
+                        }
+                    }
+                })
+                .response.labelled_by(deep_label);
+        });
+
+        // Mode and profile change repair *results*, and neither was
+        // reachable from the GUI at all -- a GUI user could not
+        // reproduce what the CLI does with `--mode` or `--profile`.
+        ui.horizontal(|ui| {
+            let mode_label = labelled(ui, rust_i18n::t!("app.mode").to_string());
+            let current = self
+                .settings
+                .mode
+                .clone()
+                .unwrap_or_else(|| "auto".to_string());
+            egui::ComboBox::from_id_salt("mode")
+                .selected_text(current.clone())
+                .show_ui(ui, |ui| {
+                    for value in crate::app::MODES {
+                        if ui
+                            .selectable_label(current == value, value)
+                            .clicked()
+                        {
+                            self.settings.mode = Some(value.to_string());
+                        }
+                    }
+                })
+                .response.labelled_by(mode_label);
+        });
+        // Live description, as Python's dialog shows: it must follow
+        // the combo. `t!` returns a `Cow`, so convert before styling.
+        let desc = rust_i18n::t!(format!(
+            "app.mode_desc_{}",
+            self.settings.mode.as_deref().unwrap_or("auto")
+        ))
+        .to_string();
+        ui.add(
+            egui::Label::new(egui::RichText::new(desc).small().weak()).wrap(),
+        );
+        ui.horizontal_wrapped(|ui| {
+            let label_id = labelled(ui, rust_i18n::t!("app.profile").to_string());
+            let current = self.settings.profile.clone();
+            egui::ComboBox::from_id_salt("profile")
+                .selected_text(
+                    current
+                        .clone()
+                        .unwrap_or_else(|| rust_i18n::t!("app.profile_auto").to_string()),
+                )
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(
+                            current.is_none(),
+                            rust_i18n::t!("app.profile_auto").to_string(),
+                        )
+                        .clicked()
+                    {
+                        self.settings.profile = None;
+                    }
+                    for value in PROFILES {
+                        if ui
+                            .selectable_label(
+                                current.as_deref() == Some(value),
+                                value,
+                            )
+                            .clicked()
+                        {
+                            self.settings.profile = Some((*value).to_string());
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(rust_i18n::t!("app.profile_tip").to_string());
+        });
+
+        // Qt's profile management row. The user profiles live in the same
+        // `profiles.json` the CLI reads (`config::intensity`), so a profile
+        // created here is usable from `--intensity <name>`.
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_W);
+            let user_profiles = sutura_core::config::intensity::load_profiles(None);
+            let selected = self.settings.profile.clone();
+            let can_edit = selected
+                .as_ref()
+                .map(|n| user_profiles.contains_key(n))
+                .unwrap_or(false);
+            if ui.button(rust_i18n::t!("app.profile_new").to_string()).clicked() {
+                self.profile_action = Some(ProfileAction::New);
+            }
+            if ui
+                .add_enabled(
+                    can_edit,
+                    egui::Button::new(rust_i18n::t!("app.profile_duplicate").to_string()),
+                )
+                .clicked()
+            {
+                self.profile_action = Some(ProfileAction::Duplicate);
+            }
+            if ui
+                .add_enabled(
+                    can_edit,
+                    egui::Button::new(rust_i18n::t!("app.profile_rename").to_string()),
+                )
+                .clicked()
+            {
+                self.profile_action = Some(ProfileAction::Rename);
+            }
+            if ui
+                .add_enabled(
+                    can_edit,
+                    egui::Button::new(rust_i18n::t!("app.profile_delete").to_string()),
+                )
+                .clicked()
+            {
+                self.profile_action = Some(ProfileAction::Delete);
+            }
+        });
+
+        // The profile editor's fields. Qt put eleven here; eight of them are the
+        // per-run limits already in `RepairSettings`, so the group is the box
+        // around them rather than a second copy of the same numbers.
+        Self::option_section(ui, rust_i18n::t!("app.profile_settings").to_string());
+        ui.label(
+            egui::RichText::new(rust_i18n::t!("app.profile_settings_body").to_string())
+                .small()
+                .weak(),
+        );
+
+
+        ui.separator();
+        Self::option_section(ui, rust_i18n::t!("app.tiers_section").to_string());
+        let mut tamponade = self.settings.no_tamponade == false;
+        if ui
+            .checkbox(&mut tamponade, rust_i18n::t!("app.tier_tamponade").to_string())
+            .changed()
+        {
+            self.settings.no_tamponade = !tamponade;
+            self.settings.experimental_tamponade = false;
+        }
+        let mut flap = self.settings.no_flap == false;
+        if ui
+            .checkbox(&mut flap, rust_i18n::t!("app.tier_flap").to_string())
+            .changed()
+        {
+            self.settings.no_flap = !flap;
+            self.settings.experimental_flap = false;
+        }
+        let mut coaptation = self.settings.no_coaptation == false;
+        if ui
+            .checkbox(
+                &mut coaptation,
+                rust_i18n::t!("app.tier_coaptation").to_string(),
+            )
+            .changed()
+        {
+            self.settings.no_coaptation = !coaptation;
+            self.settings.experimental_coaptation = false;
+        }
+        ui.separator();
+        // Graft and the fTetWild fallback: declared on the CLI since
+        // the beginning, never reachable from the GUI.
+        Self::option_section(ui, rust_i18n::t!("app.advanced_section").to_string());
+        // Graft and the fTetWild fallback are each TWO booleans in the core: a
+        // positive (`experimental_*`) and a negative (`no_*`), and Python lets
+        // the negative win. Two checkboxes for one decision is a pair that can
+        // contradict itself on screen, so the choice is one tri-state combo and
+        // the two flags are derived from it.
+        {
+            // Graft: on / off / experimental.
+            let current = if self.settings.no_graft {
+                "off"
+            } else if self.settings.experimental_graft {
+                "experimental"
+            } else {
+                "on"
+            };
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [LABEL_W, 22.0],
+                    egui::Label::new(rust_i18n::t!("app.graft").to_string()),
+                );
+                egui::ComboBox::from_id_salt("graft-tier")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (value, key) in [
+                            ("on", "app.tier_on"),
+                            ("experimental", "app.tier_experimental"),
+                            ("off", "app.tier_off"),
+                        ] {
+                            if ui
+                                .selectable_label(current == value, rust_i18n::t!(key).to_string())
+                                .clicked()
+                            {
+                                self.settings.no_graft = value == "off";
+                                self.settings.experimental_graft = value == "experimental";
+                            }
+                        }
+                    });
+            });
+        }
+        {
+            // fTetWild fallback: the same shape.
+            let current = if self.settings.no_fallback_ftetwild {
+                "off"
+            } else if self.settings.experimental_fallback_ftetwild {
+                "experimental"
+            } else {
+                "on"
+            };
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [LABEL_W, 22.0],
+                    egui::Label::new(rust_i18n::t!("app.fallback_ftetwild").to_string()),
+                );
+                egui::ComboBox::from_id_salt("ftetwild-tier")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (value, key) in [
+                            ("on", "app.tier_on"),
+                            ("experimental", "app.tier_experimental"),
+                            ("off", "app.tier_off"),
+                        ] {
+                            if ui
+                                .selectable_label(current == value, rust_i18n::t!(key).to_string())
+                                .clicked()
+                            {
+                                self.settings.no_fallback_ftetwild = value == "off";
+                                self.settings.experimental_fallback_ftetwild =
+                                    value == "experimental";
+                            }
+                        }
+                    });
+            });
+        }
+        // `--classifier-engine`: `options_from` copies it and `repair.rs:913`
+        // reads it, so this is a live control; the two engines the classifier
+        // actually implements are "experimental" and "classic" (`classify.rs:237`).
+        {
+            let current = self
+                .settings
+                .classifier_engine
+                .clone()
+                .unwrap_or_else(|| "experimental".to_string());
+            egui::Grid::new("gui_classifier_engine")
+                .num_columns(2)
+                .spacing([crate::theme::GAP_16, crate::theme::GAP_8])
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            rust_i18n::t!("app.classifier_engine").to_string(),
+                        )
+                        .size(crate::theme::FONT_BODY)
+                        .color(crate::theme::TEXT_MUTED),
+                    );
+                    let mut chosen = match current.as_str() {
+                        "classic" => 1,
+                        _ => 0,
+                    };
+                    egui::ComboBox::from_id_salt("classifier_engine_combo")
+                        .selected_text(if chosen == 0 {
+                            rust_i18n::t!("app.classifier_experimental").to_string()
+                        } else {
+                            rust_i18n::t!("app.classifier_classic").to_string()
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut chosen,
+                                0,
+                                rust_i18n::t!("app.classifier_experimental").to_string(),
+                            );
+                            ui.selectable_value(
+                                &mut chosen,
+                                1,
+                                rust_i18n::t!("app.classifier_classic").to_string(),
+                            );
+                        });
+                    self.settings.classifier_engine = Some(
+                        if chosen == 1 { "classic" } else { "experimental" }.to_string(),
+                    );
+                    ui.end_row();
+                });
+        }
+
+        // External engines. `--engines` takes a list of *configured*
+        // names (`repair_cmd.rs:145` rejects unknowns), so the only
+        // sane control is a checkbox per configured engine. `None`
+        // means "every configured engine", which is why unticking
+        // one is what builds the list.
+        {
+            let (configured, _warnings) =
+                sutura_core::config::load_all_engines(None);
+            if !configured.is_empty() {
+                ui.separator();
+                ui.label(rust_i18n::t!("app.engines").to_string());
+                ui.label(
+                    egui::RichText::new(rust_i18n::t!("app.engines_hint").to_string())
+                        .small()
+                        .weak(),
+                );
+                let selected: Vec<String> = self
+                    .settings
+                    .engines
+                    .clone()
+                    .unwrap_or_else(|| configured.keys().cloned().collect());
+                for (name, engine) in &configured {
+                    let mut on = selected.iter().any(|s| s == name);
+                    let label = format!(
+                        "{name}{}",
+                        if engine.enabled { "" } else { " (disabled)" }
+                    );
+                    if ui.checkbox(&mut on, label).changed() {
+                        let mut next = selected.clone();
+                        if on {
+                            if !next.iter().any(|s| s == name) {
+                                next.push(name.clone());
+                            }
+                        } else {
+                            next.retain(|s| s != name);
+                        }
+                        // The CLI rejects an empty list
+                        // ("argument --engines: empty list"), so
+                        // clearing every box means "default: all".
+                        self.settings.engines = if next.is_empty()
+                            || next.len() == configured.len()
+                        {
+                            None
+                        } else {
+                            next.sort();
+                            Some(next)
+                        };
+                    }
+                }
+            }
+        }
+
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            let si_label = labelled(ui, rust_i18n::t!("app.si_mode").to_string());
+            let current = self
+                .settings
+                .si_mode
+                .clone()
+                .unwrap_or_else(|| "report".to_string());
+            egui::ComboBox::from_id_salt("si_mode")
+                .selected_text(current.clone())
+                .show_ui(ui, |ui| {
+                    for value in ["repair", "report", "off"] {
+                        if ui.selectable_label(current == value, value).clicked() {
+                            self.settings.si_mode = Some(value.to_string());
+                        }
+                    }
+                })
+                .response.labelled_by(si_label);
+        });
+        ui.horizontal_wrapped(|ui| {
+            let solid_label = labelled(ui, rust_i18n::t!("app.solid_engine").to_string());
+            let current = self
+                .settings
+                .solid_engine
+                .clone()
+                .unwrap_or_else(|| "ftetwild".to_string());
+            egui::ComboBox::from_id_salt("solid_engine")
+                .selected_text(current.clone())
+                .show_ui(ui, |ui| {
+                    for value in ["ftetwild", "cdt"] {
+                        if ui.selectable_label(current == value, value).clicked() {
+                            self.settings.solid_engine = Some(value.to_string());
+                        }
+                    }
+                })
+                .response.labelled_by(solid_label);
+        });
+
+        // The eleven per-run limits the profile saves. Qt called this group
+        // "Profile settings"; the button above pointed at "the per-run limits
+        // below" while this was headed "Per-run limits", so a reader saw neither.
+        Self::option_section(ui, rust_i18n::t!("app.profile_settings").to_string());
+        egui::CollapsingHeader::new(rust_i18n::t!("app.bounds").to_string())
+            .default_open(true)
+            .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(rust_i18n::t!("app.bounds_hint").to_string())
+                    .small()
+                    .weak(),
+            );
+            // A grid, so the labels form one column and the inputs another;
+            // `ui.horizontal` sized each row to its own caption, which is why
+            // every box sat at a different x.
+            egui::Grid::new("profile-limits")
+                .num_columns(2)
+                .spacing([SPACE_16, SPACE_8])
+                .min_col_width(LABEL_W)
+                .show(ui, |ui| {
+            // Every field here is an `Option`, and blank means "keep the
+            // intensity's value" -- so a cleared box must write `None`,
+            // not zero. A zero timeout would cap the tier at no time.
+            opt_f64(ui, "gui_max_risk", &mut self.settings.max_risk,
+                    &rust_i18n::t!("app.max_risk"));
+            opt_f64(ui, "gui_max_geom", &mut self.settings.max_geometry_change,
+                    &rust_i18n::t!("app.max_geometry_change"));
+            opt_i64(ui, "gui_graft_faces", &mut self.settings.graft_max_faces,
+                    &rust_i18n::t!("app.graft_max_faces"));
+            opt_f64(ui, "gui_graft_to", &mut self.settings.graft_timeout,
+                    &rust_i18n::t!("app.graft_timeout"));
+            opt_i64(ui, "gui_dense_ratio", &mut self.settings.dense_ratio,
+                    &rust_i18n::t!("app.dense_ratio"));
+            opt_i64(ui, "gui_dense_min", &mut self.settings.dense_min_faces,
+                    &rust_i18n::t!("app.dense_min_faces"));
+            opt_i64(ui, "gui_ft_faces", &mut self.settings.ftetwild_max_faces,
+                    &rust_i18n::t!("app.ftetwild_max_faces"));
+            opt_f64(ui, "gui_ft_to", &mut self.settings.ftetwild_timeout,
+                    &rust_i18n::t!("app.ftetwild_timeout"));
+            opt_f64(ui, "gui_ft_haus", &mut self.settings.ftetwild_max_hausdorff_rel,
+                    &rust_i18n::t!("app.ftetwild_max_hausdorff"));
+            // Wall-thicken target. Setting a value turns the tier on,
+            // matching the CLI (`--wall-min-thickness` IS the switch):
+            // a target with the tier off would silently do nothing.
+            opt_f64(ui, "gui_wall_min", &mut self.settings.wall_min_thickness,
+                    &rust_i18n::t!("app.wall_min_thickness"));
+                });
+            self.settings.wall_thicken =
+                self.settings.wall_min_thickness.is_some();
+            ui.separator();
+            ui.checkbox(
+                &mut self.settings.join_components,
+                rust_i18n::t!("app.join_components").to_string(),
+            );
+            // Bind a local, not `&mut option.unwrap_or(false)`: a
+            // temporary has no place to write back to, so the checkbox
+            // would accept the click and discard it.
+            let mut optimize_retry =
+                self.settings.ftetwild_optimize_retry.unwrap_or(false);
+            if ui
+                .checkbox(
+                    &mut optimize_retry,
+                    rust_i18n::t!("app.ftetwild_optimize_retry").to_string(),
+                )
+                .changed()
+            {
+                self.settings.ftetwild_optimize_retry =
+                    if optimize_retry { Some(true) } else { None };
+            }
+            let mut escalation = self.settings.auto_escalation.is_some();
+            if ui
+                .checkbox(
+                    &mut escalation,
+                    rust_i18n::t!("app.auto_escalation").to_string(),
+                )
+                .changed()
+            {
+                self.settings.auto_escalation =
+                    if escalation { Some(true) } else { None };
+            }
+        });
+
+        ui.separator();
+        // Per-file methods (İ5). Python's Methods tab edits the
+        // *selected* file's sequence (`gui.py:5093`); here the global
+        // list stays the fallback and this overrides it for one file,
+        // so customising one file does not change the next.
+        //
+        // No up/down reordering, deliberately: `forced_methods` is a
+        // `Vec<u8>` that core only ever tests with `contains`
+        // (`repair.rs:3727`), so an order control would promise
+        // something nothing honours.
+    }
+
+    /// The method pickers, rendered in Options -> Methods.
+    pub(crate) fn methods_controls(&mut self, ui: &mut egui::Ui) {
+        // Qt's Methods tab, in its order: the mode radios, then the automatic
+        // ladder (read-only when the policy is in charge), then the manual
+        // sequence. "Use the panel selection" was left over from a panel this
+        // window replaced, and "0 method(s) applied" told a reader nothing.
+        Self::option_section(ui, rust_i18n::t!("app.method_control").to_string());
+        let mut manual = self.settings.methods.is_some();
+        ui.horizontal(|ui| {
+            if ui
+                .radio(!manual, rust_i18n::t!("app.method_automatic"))
+                .clicked()
+            {
+                manual = false;
+            }
+            if ui
+                .radio(manual, rust_i18n::t!("app.method_manual"))
+                .clicked()
+            {
+                manual = true;
+            }
+        });
+        if !manual {
+            self.settings.methods = None;
+        } else if self.settings.methods.is_none() {
+            self.settings.methods = Some(String::new());
+        }
+
+        // The ladder. In automatic mode the policy picks and the rows are shown
+        // but not editable, which is what Qt meant by a fixed order.
+        Self::option_section(ui, rust_i18n::t!("app.automatic_ladder").to_string());
+        ui.label(
+            egui::RichText::new(rust_i18n::t!("app.automatic_ladder_body").to_string())
+                .small()
+                .weak(),
+        );
+        let mut selected: Vec<u8> = self
+            .settings
+            .methods
+            .as_deref()
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|t| t.trim().parse::<u8>().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let automatic = self.settings.methods.is_none();
+        let mut changed = false;
+        // Up/Down on the manual list. The sequence is what the core runs, so
+        // reordering is a real edit, not a display preference.
+        let mut reordered = false;
+        let mut move_up: Option<usize> = None;
+        let mut move_down: Option<usize> = None;
+        egui::ScrollArea::vertical()
+            .id_salt("methods_ladder")
+            .max_height(170.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for (num, id, _category, name) in sutura_core::repair_settings::METHODS {
+                    // The ladder is the policy order, not the whole registry:
+                    // Qt listed exactly these six and nothing else.
+                    if automatic && !LADDER.contains(&num) {
+                        continue;
+                    }
+                    let mut on = if automatic {
+                        true
+                    } else {
+                        selected.contains(&num)
+                    };
+                    if automatic {
+                        // A real checkbox, disabled: Qt's ladder was exactly
+                        // that. egui fades the tick with the *disabled* visuals,
+                        // which on this dark `Button` colour left six ticked rows
+                        // looking like one -- so the disabled style is raised
+                        // just for this row instead of drawing the mark by hand.
+                        let mut checked = on;
+                        ui.scope(|ui| {
+                            let v = &mut ui.style_mut().visuals.widgets;
+                            v.inactive.fg_stroke.color = COLOR_ACCENT;
+                            v.noninteractive.fg_stroke.color = COLOR_ACCENT;
+                            ui.add_enabled(
+                                false,
+                                egui::Checkbox::new(
+                                    &mut checked,
+                                    format!("{num}. {name} ({id})"),
+                                ),
+                            );
+                        });
+                    } else if ui
+                        .checkbox(&mut on, format!("{num}. {name} ({id})"))
+                        .changed()
+                    {
+                        if on {
+                            selected.push(num);
+                        } else {
+                            selected.retain(|n| *n != num);
+                        }
+                        changed = true;
+                    }
+                }
+            });
+        if reordered || changed {
+            // Order preserved, not sorted: the core takes the FIRST method as
+            // the deep-repair mode, so 1,3 and 3,1 repair differently.
+            self.settings.methods = Some(
+                selected
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+
+        // Save the ladder and the auto-reorder opt-in. Qt had this as
+        // `apply()` plus `_save_auto_reorder`, with `_show_write_error` turning a
+        // refused write into a visible message: a save that fails silently is
+        // worse than no save button.
+        let mut save_ladder = false;
+        let mut save_reorder = false;
+        Self::option_section(ui, rust_i18n::t!("app.automatic_ladder").to_string());
+        ui.label(
+            egui::RichText::new(rust_i18n::t!("app.ladder_save_body").to_string())
+                .small()
+                .weak(),
+        );
+        ui.horizontal(|ui| {
+            if !automatic {
+                if ui
+                    .add(secondary_button(
+                        rust_i18n::t!("app.ladder_save").to_string(),
+                    ))
+                    .on_hover_text(rust_i18n::t!("app.ladder_save_tip").to_string())
+                    .clicked()
+                {
+                    save_ladder = true;
+                }
+            }
+            let mut reorder = self.settings.auto_reorder;
+            if ui
+                .checkbox(&mut reorder, rust_i18n::t!("app.auto_reorder").to_string())
+                .changed()
+            {
+                self.settings.auto_reorder = reorder;
+                save_reorder = true;
+            }
+        });
+        // The outcome of the last policy write, beside the button that caused it.
+        if let Some((text, ok)) = self.policy_status.clone() {
+            ui.label(
+                egui::RichText::new(text)
+                    .size(crate::theme::FONT_SECTION)
+                    .color(if ok {
+                        crate::theme::OK
+                    } else {
+                        crate::theme::ERROR
+                    }),
+            );
+        }
+        if save_ladder {
+            self.save_ladder(&selected);
+        }
+        if save_reorder {
+            self.save_auto_reorder();
+        }
+
+        Self::option_section(ui, rust_i18n::t!("app.manual_sequence").to_string());
+        ui.label(
+            egui::RichText::new(rust_i18n::t!("app.manual_sequence_body").to_string())
+                .small()
+                .weak(),
+        );
+        if automatic {
+            ui.label(
+                egui::RichText::new(rust_i18n::t!("app.manual_sequence_hint").to_string())
+                    .small()
+                    .weak(),
+            );
+        } else {
+            // Qt's Up/Down pair under the manual list. The sequence is what the
+            // core runs -- `parse_methods_text` takes the first method as the
+            // deep-repair mode -- so this is a real edit, and it is why the list
+            // must not be sorted anywhere.
+            if selected.is_empty() {
+                ui.label(
+                    egui::RichText::new(rust_i18n::t!("app.manual_sequence_empty").to_string())
+                        .small()
+                        .weak(),
+                );
+            } else {
+                // One row per method, with its own arrows: a whole-list Up/Down
+                // would need a further selection UI to say which row moves.
+                let mut index = 0;
+                while index < selected.len() {
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            [24.0, 18.0],
+                            egui::Label::new(
+                                egui::RichText::new(format!("{}", index + 1)).small().weak(),
+                            ),
+                        );
+                        let n = selected[index];
+                        let name = sutura_core::repair_settings::METHODS
+                            .iter()
+                            .find(|m| m.0 == n)
+                            .map(|m| m.3)
+                            .unwrap_or("?");
+                        ui.label(format!("{n}. {name}"));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if arrow_button(ui, false, index + 1 < selected.len())
+                                .on_hover_text(rust_i18n::t!("app.manual_move_down").to_string())
+                                .clicked()
+                            {
+                                move_down = Some(index);
+                            }
+                            if arrow_button(ui, true, index > 0)
+                                .on_hover_text(rust_i18n::t!("app.manual_move_up").to_string())
+                                .clicked()
+                            {
+                                move_up = Some(index);
+                            }
+                        });
+                    });
+                    index += 1;
+                }
+            }
+            if let Some(i) = move_up {
+                selected.swap(i, i - 1);
+                reordered = true;
+            }
+            if let Some(i) = move_down {
+                selected.swap(i, i + 1);
+                reordered = true;
+            }
+        }
+
+        // The per-file editor sits here too: Qt edited the selected file's
+        // sequence from this tab.
+        Self::option_section(ui, rust_i18n::t!("app.file_methods").to_string());
+        if let Some(idx) = self.selected {
+            if self.files.get(idx).is_some() {
+                let global = selected.clone();
+                let mut local = self.files[idx].methods.clone();
+                let mut inherit = local.is_none();
+                ui.push_id("file-methods-inherit", |ui| {
+                    ui.checkbox(
+                        &mut inherit,
+                        rust_i18n::t!("app.file_methods_inherit").to_string(),
+                    );
+                });
+                if inherit && local.is_some() {
+                    local = None;
+                } else if !inherit && local.is_none() {
+                    local = Some(global.clone());
+                }
+                if let Some(edited) = local.clone() {
+                    let mut next = edited.clone();
+                    let mut dirty = false;
+                    egui::ScrollArea::vertical()
+                        .id_salt("file_methods_list")
+                        .max_height(120.0)
+                        .show(ui, |ui| {
+                            for (num, id, _cat, name) in sutura_core::repair_settings::METHODS {
+                                let mut on = next.contains(&num);
+                                if ui
+                                    .checkbox(&mut on, format!("{num}. {name} ({id})"))
+                                    .changed()
+                                {
+                                    if on {
+                                        next.push(num);
+                                    } else {
+                                        next.retain(|n| *n != num);
+                                    }
+                                    dirty = true;
+                                }
+                            }
+                        });
+                    if dirty {
+                        // Order preserved, for the same reason the global list
+                        // is: this list becomes `forced_methods`, which the core
+                        // runs in order.
+                        local = Some(next);
+                    }
+                }
+                if local != self.files[idx].methods {
+                    self.files[idx].methods = local;
+                }
+            }
+        } else {
+            ui.label(
+                egui::RichText::new(rust_i18n::t!("app.no_selection").to_string())
+                    .small()
+                    .weak(),
+            );
+        }
+    }
+
+
+    /// fTetWild and the external engines, rendered in Options -> Engines.
+    pub(crate) fn engines_controls(&mut self, ui: &mut egui::Ui) {
+        // One heading style for every tab (rule f): this used to be a plain
+        // label, so "Engines" was smaller than "Repair tiers" and the rest.
+        Self::option_section(ui, rust_i18n::t!("app.engines_section").to_string());
+        // One row: name, status, then the two buttons to the right of the
+        // status (rule d's grouping). They were on a second row indented to the
+        // label column, which read as an unrelated block.
+        ui.horizontal(|ui| {
+            ui.label(rust_i18n::t!("app.engines_ftetwild").to_string());
+            let installed = self.ftetwild.is_some();
+            match &self.ftetwild {
+                Some(path) => {
+                    ui.label(
+                        egui::RichText::new(
+                            rust_i18n::t!("app.engines_installed").to_string(),
+                        )
+                        .color(COLOR_OK),
+                    )
+                    .on_hover_text(path.clone());
+                }
+                None => {
+                    ui.label(
+                        egui::RichText::new(rust_i18n::t!("app.engines_missing").to_string())
+                            .color(COLOR_ERROR),
+                    )
+                    .on_hover_text(rust_i18n::t!("app.engines_missing_tip").to_string());
+                }
+            }
+            ui.add_space(SPACE_8);
+            // Install copies a binary the user picked into the managed
+            // directory; Remove deletes it. Neither downloads anything: the Rust
+            // build ships the sidecar in the package, so the alternative to this
+            // pair was no pair at all. Each is disabled when it could not apply.
+            if ui
+                .add_enabled(
+                    !installed,
+                    egui::Button::new(rust_i18n::t!("app.engines_install").to_string()),
+                )
+                .on_hover_text(rust_i18n::t!("app.engines_install_tip").to_string())
+                .clicked()
+            {
+                if let Some(src) = rfd::FileDialog::new()
+                    .set_title(rust_i18n::t!("app.engines_install").to_string())
+                    .pick_file()
+                {
+                    match sutura_core::ftetwild::install_binary(&src) {
+                        Ok(dest) => {
+                            self.log(format!("installed fTetWild at {}", dest.display()));
+                            self.ftetwild = sutura_core::ftetwild::find_binary();
+                        }
+                        Err(e) => self.log(format!("could not install fTetWild: {e}")),
+                    }
+                }
+            }
+            if ui
+                .add_enabled(
+                    installed,
+                    egui::Button::new(rust_i18n::t!("app.engines_remove").to_string()),
+                )
+                .on_hover_text(rust_i18n::t!("app.engines_remove_tip").to_string())
+                .clicked()
+            {
+                match sutura_core::ftetwild::remove_binary() {
+                    Ok(true) => {
+                        self.log("removed fTetWild".to_string());
+                        self.ftetwild = sutura_core::ftetwild::find_binary();
+                    }
+                    Ok(false) => self.log("no managed fTetWild binary to remove".to_string()),
+                    Err(e) => self.log(format!("could not remove fTetWild: {e}")),
+                }
+            }
+        });
+        // External engines, with their state. `load_all_engines` is
+        // the same call the `--engines` validator uses, so the list
+        // cannot disagree with what the CLI accepts.
+        {
+            let (configured, warnings) = sutura_core::config::load_all_engines(None);
+            if configured.is_empty() {
+                ui.label(
+                    egui::RichText::new(
+                        rust_i18n::t!("app.engines_none").to_string(),
+                    )
+                    .small()
+                    .weak(),
+                );
+            }
+            for (name, engine) in &configured {
+                let state = if engine.enabled {
+                    rust_i18n::t!("app.engines_enabled").to_string()
+                } else {
+                    rust_i18n::t!("app.engines_disabled").to_string()
+                };
+                ui.label(
+                    egui::RichText::new(format!("{name} — {state}"))
+                        .small()
+                        .weak(),
+                )
+                .on_hover_text(engine.command.join(" "));
+            }
+            for w in warnings {
+                ui.label(
+                    egui::RichText::new(w)
+                        .small()
+                        .color(COLOR_WARN),
+                );
+            }
+
+            // Qt's three actions under the list. Install / Remove are absent on
+            // purpose: the fTetWild sidecar ships inside the package, so both
+            // would be buttons that cannot do anything.
+            ui.add_space(SPACE_8);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(rust_i18n::t!("app.engines_reload").to_string())
+                    .clicked()
+                {
+                    self.method_health = sutura_core::self_check::run(false)
+                        .get("methods")
+                        .and_then(|m| m.as_object())
+                        .map(|m| {
+                            let mut v: Vec<Value> = m.values().cloned().collect();
+                            v.sort_by_key(|e| {
+                                e.get("num").and_then(|n| n.as_u64()).unwrap_or(0)
+                            });
+                            v
+                        })
+                        .unwrap_or_default();
+                    self.log("external engines reloaded".to_string());
+                }
+                if ui
+                    .button(rust_i18n::t!("app.engines_open_folder").to_string())
+                    .clicked()
+                {
+                    open_path(&sutura_core::config::engines_dir(), false);
+                }
+                if ui
+                    .button(rust_i18n::t!("app.engines_docs").to_string())
+                    .on_hover_text("docs/guide/engines.md")
+                    .clicked()
+                {
+                    open_path(
+                        std::path::Path::new(
+                            "https://github.com/Krateian/Sutura/blob/main/docs/guide/engines.md",
+                        ),
+                        false,
+                    );
+                }
+            });
+        }
+    }
+
+    /// The opt-in passes, rendered in Options -> Experimental.
+    pub(crate) fn experimental_controls(&mut self, ui: &mut egui::Ui) {
+        // Qt's Experimental tab: the opt-in passes, then the four Dressing
+        // knobs. Every pass below is a `RepairOptions` field, so each reaches
+        // the repair -- an opt-in that wrote nothing would be a dead control.
+        ui.add(egui::Label::new(
+            egui::RichText::new(rust_i18n::t!("app.experimental_hint").to_string())
+                .small()
+                .weak(),
+        ));
+        ui.add_space(SPACE_8);
+
+        ui.checkbox(
+            &mut self.settings.autorefine,
+            rust_i18n::t!("app.autorefine_label").to_string(),
+        );
+        ui.checkbox(
+            &mut self.settings.indirect_autorefine,
+            rust_i18n::t!("app.indirect_autorefine_label").to_string(),
+        );
+        ui.checkbox(
+            &mut self.settings.join_components,
+            rust_i18n::t!("app.join_components").to_string(),
+        );
+        // `--ftetwild-optimize`: separate from `-retry`, which only decides
+        // whether a rejected candidate is tried again.
+        ui.checkbox(
+            &mut self.settings.ftetwild_optimize,
+            rust_i18n::t!("app.ftetwild_optimize").to_string(),
+        );
+        // `--auto-reorder`: whether the ladder may reorder the list it was given.
+        ui.checkbox(
+            &mut self.settings.auto_reorder,
+            rust_i18n::t!("app.auto_reorder").to_string(),
+        );
+        // `--experimental-edge-tiebreak`: the classifier's extra features.
+        ui.checkbox(
+            &mut self.settings.extra_features,
+            rust_i18n::t!("app.edge_tiebreak").to_string(),
+        );
+        let dressing_on = self.settings.dressing;
+        ui.checkbox(
+            &mut self.settings.dressing,
+            rust_i18n::t!("app.tier_dressing").to_string(),
+        );
+        ui.indent("dressing_extra", |ui| {
+            ui.add_enabled_ui(dressing_on, |ui| {
+                ui.checkbox(
+                    &mut self.settings.dressing_force_adopt,
+                    rust_i18n::t!("app.dressing_force_adopt").to_string(),
+                );
+            });
+        });
+        ui.checkbox(
+            &mut self.settings.experimental_splint,
+            rust_i18n::t!("app.tier_splint").to_string(),
+        );
+
+        // The four Dressing knobs, as combos: Drain, Defects, Bridge radius,
+        // Influence width. The two scale factors map to `rmax_scale` and
+        // `sigma_scale`; the other two are fixed vocabularies.
+        ui.add_space(SPACE_8);
+        // Indented, and inert while Dressing is off: these four only configure
+        // it, so leaving them live would be four controls that do nothing.
+        ui.indent("dressing-knobs", |ui| {
+        ui.add_enabled_ui(dressing_on, |ui| {
+        let mut choice = |ui: &mut egui::Ui,
+                          key: &str,
+                          salt: &str,
+                          options: &[(&str, &str)],
+                          current: Option<String>,
+                          set: &mut dyn FnMut(Option<String>)|
+        {
+            ui.horizontal(|ui| {
+                let id = labelled(ui, rust_i18n::t!(key).to_string());
+                let preset = rust_i18n::t!("app.dressing_preset").to_string();
+                let shown = current.clone().unwrap_or_else(|| preset.clone());
+                egui::ComboBox::from_id_salt(salt)
+                    .selected_text(shown.clone())
+                    .show_ui(ui, |ui| {
+                        for (value, label_key) in options {
+                            let label = rust_i18n::t!(*label_key).to_string();
+                            if ui.selectable_label(shown == label, label).clicked() {
+                                set(if value.is_empty() {
+                                    None
+                                } else {
+                                    Some((*value).to_string())
+                                });
+                            }
+                        }
+                    })
+                    .response
+                    .labelled_by(id);
+            });
+        };
+        let drain_options: [(&str, &str); 5] = [
+            ("", "app.dressing_preset"),
+            ("off", "app.dressing_drain_off"),
+            ("half", "app.dressing_drain_half"),
+            ("full", "app.dressing_drain_full"),
+            ("deep", "app.dressing_drain_deep"),
+        ];
+        let mut drain = self
+            .settings
+            .dressing_drain
+            .as_ref()
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            });
+        choice(
+            ui,
+            "app.dressing_drain",
+            "dressing-drain",
+            &drain_options,
+            drain.clone(),
+            &mut |v| {
+                self.settings.dressing_drain =
+                    v.map(|s| serde_json::json!(s)).or(None)
+            },
+        );
+        let defect_options: [(&str, &str); 3] = [
+            ("", "app.dressing_preset"),
+            ("all", "app.dressing_defects_all"),
+            ("holes_nm", "app.dressing_defects_holes_nm"),
+        ];
+        let defects = self.settings.dressing_defects.clone();
+        choice(
+            ui,
+            "app.dressing_defects",
+            "dressing-defects",
+            &defect_options,
+            defects,
+            &mut |v| self.settings.dressing_defects = v,
+        );
+
+        let mut scale = |ui: &mut egui::Ui, key: &str, salt: &str, value: &mut Option<f64>| {
+            ui.horizontal(|ui| {
+                let id = labelled(ui, rust_i18n::t!(key).to_string());
+                let preset = rust_i18n::t!("app.dressing_preset").to_string();
+                let current = value.map(|v| format!("x{}", trim_float(v))).unwrap_or(preset.clone());
+                egui::ComboBox::from_id_salt(salt)
+                    .selected_text(current.clone())
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current == preset, preset.clone()).clicked() {
+                            *value = None;
+                        }
+                        for factor in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0] {
+                            let label = format!("x{}", trim_float(factor));
+                            if ui.selectable_label(current == label, label.clone()).clicked() {
+                                *value = Some(factor);
+                            }
+                        }
+                    })
+                    .response
+                    .labelled_by(id);
+            });
+        };
+        scale(
+            ui,
+            "app.dressing_rmax_scale",
+            "dressing-rmax",
+            &mut self.settings.dressing_rmax_scale,
+        );
+        scale(
+            ui,
+            "app.dressing_sigma_scale",
+            "dressing-sigma",
+            &mut self.settings.dressing_sigma_scale,
+        );
+        });
+        });
+    }
+
+    /// The repeat points, rendered in Options -> Methods.
+    ///
+    /// Qt opened these from a toolbar button; they are two coordinates that the
+    /// CLI takes as `--repeat-source` / `--repeat-target`, and the Methods tab is
+    /// where a user looks for a per-repair option like them.
+    pub(crate) fn repeat_point_controls(&mut self, ui: &mut egui::Ui) {
+        Self::option_section(ui, rust_i18n::t!("app.repeat_pick").to_string());
+        let fmt = |p: Option<[f64; 3]>| match p {
+            Some([x, y, z]) => format!("({x:.2}, {y:.2}, {z:.2})"),
+            None => rust_i18n::t!("app.repeat_pick_unset").to_string(),
+        };
+        ui.label(
+            egui::RichText::new(rust_i18n::t!(
+                "app.repeat_pick_state",
+                source = fmt(self.settings.repeat_source),
+                target = fmt(self.settings.repeat_target)
+            )
+            .to_string())
+            .small()
+            .weak(),
+        );
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    self.selected.is_some(),
+                    egui::Button::new(rust_i18n::t!("app.repeat_pick").to_string()),
+                )
+                .clicked()
+            {
+                self.open_repeat_picker();
+            }
+            if (self.settings.repeat_source.is_some() || self.settings.repeat_target.is_some())
+                && ui
+                    .button(rust_i18n::t!("app.repeat_pick_clear").to_string())
+                    .clicked()
+            {
+                self.settings.repeat_source = None;
+                self.settings.repeat_target = None;
+            }
+        });
+    }
+
 }
 
 impl Drop for SuturaApp {
@@ -3452,6 +5787,29 @@ fn fmt_point(p: Option<[f64; 3]>) -> String {
         Some([x, y, z]) => format!("({x:.2}, {y:.2}, {z:.2})"),
         None => "-".to_string(),
     }
+}
+
+/// A score with its bar: `====---- 0.52`.
+pub(crate) fn fmt_score_with_bar(v: Option<f64>) -> String {
+    match v {
+        Some(score) => format!("{}  {}", score_bar(score), fmt_score(Some(score))),
+        None => fmt_score(None),
+    }
+}
+
+/// Qt's `_score_bar`: a small block bar for a 0..1 score.
+///
+/// Eight blocks, filled in proportion, with the number beside it elsewhere. The
+/// bar is what makes two scores comparable at a glance; the number is what makes
+/// them precise, so both are shown.
+pub(crate) fn score_bar(score: f64) -> String {
+    const BLOCKS: usize = 8;
+    let filled = ((score.clamp(0.0, 1.0)) * BLOCKS as f64).round() as usize;
+    let mut s = String::with_capacity(BLOCKS * 3);
+    for i in 0..BLOCKS {
+        s.push(if i < filled { '=' } else { '-' });
+    }
+    s
 }
 
 fn fmt_score(v: Option<f64>) -> String {
@@ -3481,12 +5839,14 @@ fn verdict_text(report: &RepairReport) -> String {
 
 fn verdict_color(code: &str) -> egui::Color32 {
     match code {
-        "preserved" | "preserved_notes" => egui::Color32::from_rgb(120, 200, 140),
+        // Green for a clean fix, amber for a shape change, red for a failure --
+        // the same three meanings the analysis counts use.
+        "preserved" | "preserved_notes" => crate::theme::OK,
         "changed" | "changed_no_area" | "low_confidence" | "low_confidence_no_area" => {
-            egui::Color32::from_rgb(230, 190, 90)
+            crate::theme::WARN
         }
-        "not_repaired" => egui::Color32::LIGHT_RED,
-        _ => egui::Color32::GRAY,
+        "not_repaired" => crate::theme::ERROR,
+        _ => crate::theme::TEXT_FAINT,
     }
 }
 
@@ -3539,7 +5899,9 @@ pub fn headless_repair(
     }
 
     let settings = RepairSettings::from_intensity(intensity.value(), false);
-    run_repair(input, output, settings, tx, cancel);
+    // The headless path has no UI, so it runs with the defaults rather than a
+    // user's General tab -- a gate must not change behaviour with a GUI file.
+    run_repair(input, output, settings, crate::state::GuiState::default(), tx, cancel);
 
     let observed = cancel_started.elapsed();
     if cancel_after_ms.is_some() {
@@ -3836,61 +6198,49 @@ pub fn fixed_path(input: &Path) -> PathBuf {
 /// A numeric box that distinguishes "blank" (`None`, keep the tier's value) from
 /// zero. Required by the per-run limits: `Some(0.0)` on a timeout means the run
 /// gets no time at all, which is not what an empty field means.
+/// One label/input pair inside a `Grid`, so every field starts at the same x.
+///
+/// `ui.horizontal` took the label's natural width, which is why "Max risk" and
+/// "fTetWild max Hausdorff" put their boxes at different columns.
+fn opt_cell(ui: &mut egui::Ui, id: &str, text: &mut String, label: &str) {
+    let label_id = ui.label(label).id;
+    // `hint_text` gives the box an accessible name -- egui's TextEdit does not
+    // take one from `labelled_by`, which is why the accessibility check listed
+    // ten anonymous boxes. A single space rather than the label: with the label
+    // as the hint, an empty field rendered "Max risk Max risk" beside itself.
+    let _ = label_id;
+    ui.add(
+        egui::TextEdit::singleline(text)
+            .id_salt(id)
+            .hint_text(" ")
+            .desired_width(120.0),
+    )
+    .labelled_by(label_id);
+}
+
 fn opt_f64(ui: &mut egui::Ui, id: &str, value: &mut Option<f64>, label: &str) {
-    ui.horizontal(|ui| {
-        let label_id = ui.label(label).id;
-        let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
-        // `hint_text` gives the box an accessible name -- egui's TextEdit does not
-        // take one from `labelled_by`, which is why the accessibility check listed
-        // ten anonymous boxes. It is set to a single space rather than the label:
-        // with the label as the hint, an empty field rendered "Max risk Max risk"
-        // beside its own caption.
-        if ui
-            .add(
-                egui::TextEdit::singleline(&mut text)
-                    .id_salt(id)
-                    .hint_text(" ")
-                    .desired_width(90.0),
-            )
-            .labelled_by(label_id)
-            .changed()
-        {
-            *value = if text.trim().is_empty() {
-                None
-            } else {
-                text.trim().parse::<f64>().ok()
-            };
-        }
-    });
+    let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
+    opt_cell(ui, id, &mut text, label);
+    ui.end_row();
+    // Blank means "keep the intensity's value", so a cleared box writes `None`,
+    // not zero: a zero timeout would cap the tier at no time.
+    *value = if text.trim().is_empty() {
+        None
+    } else {
+        text.trim().parse::<f64>().ok()
+    };
 }
 
 /// The integer twin of [`opt_f64`].
 fn opt_i64(ui: &mut egui::Ui, id: &str, value: &mut Option<i64>, label: &str) {
-    ui.horizontal(|ui| {
-        let label_id = ui.label(label).id;
-        let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
-        // `hint_text` gives the box an accessible name -- egui's TextEdit does not
-        // take one from `labelled_by`, which is why the accessibility check listed
-        // ten anonymous boxes. It is set to a single space rather than the label:
-        // with the label as the hint, an empty field rendered "Max risk Max risk"
-        // beside its own caption.
-        if ui
-            .add(
-                egui::TextEdit::singleline(&mut text)
-                    .id_salt(id)
-                    .hint_text(" ")
-                    .desired_width(90.0),
-            )
-            .labelled_by(label_id)
-            .changed()
-        {
-            *value = if text.trim().is_empty() {
-                None
-            } else {
-                text.trim().parse::<i64>().ok()
-            };
-        }
-    });
+    let mut text = value.map(|v| format!("{v}")).unwrap_or_default();
+    opt_cell(ui, id, &mut text, label);
+    ui.end_row();
+    *value = if text.trim().is_empty() {
+        None
+    } else {
+        text.trim().parse::<i64>().ok()
+    };
 }
 
 /// Repair one file in-process, through `sutura_core::repair`.
@@ -3907,6 +6257,7 @@ fn run_repair(
     input: &Path,
     output: &Path,
     settings: RepairSettings,
+    prefs: crate::state::GuiState,
     tx: mpsc::Sender<RepairEvent>,
     cancel: Arc<CancelToken>,
 ) {
@@ -3996,6 +6347,16 @@ fn run_repair(
     if opts.deep_repair != sutura_core::repair::DeepRepair::Off {
         stage(4, 8);
     }
+    // The General tab's four switches, applied exactly where the CLI applies its
+    // `--no-*` flags: two are environment variables the core reads, and the other
+    // two gate the history write below.
+    if prefs.learning_enabled == Some(false) {
+        std::env::set_var("SUTURA_LEARNING_TRIAGE", "0");
+    }
+    if prefs.cache_enabled == Some(false) {
+        std::env::set_var("SUTURA_NO_CACHE", "1");
+    }
+
     let sink = GuiSink { tx: tx.clone() };
     // Keep the inputs: scoring compares the repaired mesh against them, and
     // `verts`/`tris` are shadowed by the outcome below.
@@ -4095,6 +6456,14 @@ fn run_repair(
         .map(|f| [f[0] as i32, f[1] as i32, f[2] as i32])
         .collect();
     sutura_core::report::add_scores(&mut scored, &in_f64, &in_i32, &out_f64, &out_i32);
+    // The CLI's report builder adds `output`; the core's own `repair` report does
+    // not. Without it `report::brief` reads this as a run that wrote nothing and
+    // appends "the model is still not closed" to a file that was written and is
+    // closed -- which is exactly the contradiction this fixes.
+    scored.insert(
+        "output".into(),
+        Value::from(output.display().to_string()),
+    );
     let scored = Value::Object(scored);
     let _ = tx.send(RepairEvent::Finished {
         output: output.to_path_buf(),
@@ -4147,8 +6516,129 @@ fn finish_from_output_with(
 /// `egui_kittest` turned that into a hard failure listing sixteen unnamed
 /// widgets. `labelled_by` is the standard way to associate a label with a
 /// control, and it costs one id.
-fn labelled(ui: &mut egui::Ui, text: String) -> egui::Id {
-    let response = ui.label(text);
+/// `%g`-ish: no trailing zeros, so a scale factor reads "x1" not "x1.000".
+/// A small button with a painted triangle, up or down.
+///
+/// egui's bundled Ubuntu-Light has neither U+25B2/U+25BC nor U+2713 -- every one
+/// of those attempts drew a missing-glyph box -- so the arrow is drawn.
+/// A secondary button: card height, control surface, hairline border.
+pub(crate) fn secondary_button(text: String) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text)
+            .size(crate::theme::FONT_BODY)
+            .color(crate::theme::TEXT),
+    )
+    .fill(egui::Color32::TRANSPARENT)
+    .stroke(egui::Stroke::new(
+        crate::theme::BORDER_W,
+        crate::theme::BUTTON_BORDER,
+    ))
+    .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BUTTON))
+    .min_size(egui::vec2(0.0, crate::theme::BUTTON_H))
+}
+
+/// The one filled button: accent fill, dark text.
+pub(crate) fn primary_button(text: String) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text)
+            .size(crate::theme::FONT_BODY)
+            .color(crate::theme::ON_ACCENT),
+    )
+    .fill(crate::theme::ACCENT)
+    .stroke(egui::Stroke::NONE)
+    .min_size(egui::vec2(0.0, crate::theme::BUTTON_H))
+}
+
+/// The Options gear, painted. Same reason as the arrows: no glyph in the font.
+pub(crate) fn gear_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(theme_gear_size(), theme_gear_size()),
+        egui::Sense::click(),
+    );
+    if ui.is_rect_visible(rect) {
+        let visuals = *ui.style().interact(&response);
+        let c = rect.center();
+        let colour = visuals.fg_stroke.color;
+        let painter = ui.painter();
+        let r_out = 7.0;
+        let r_in = 4.6;
+        // Eight teeth as short radial spokes between two rings.
+        for i in 0..8 {
+            let a = std::f32::consts::TAU * (i as f32) / 8.0;
+            let (sa, ca) = a.sin_cos();
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + ca * r_in, c.y + sa * r_in),
+                    egui::pos2(c.x + ca * r_out, c.y + sa * r_out),
+                ],
+                egui::Stroke::new(2.6, colour),
+            );
+        }
+        painter.circle_stroke(c, r_in, egui::Stroke::new(2.4, colour));
+        painter.circle_filled(c, 1.6, colour);
+    }
+    response
+}
+
+fn theme_gear_size() -> f32 {
+    32.0
+}
+
+pub(crate) fn arrow_button(ui: &mut egui::Ui, up: bool, enabled: bool) -> egui::Response {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 20.0), sense);
+    if ui.is_rect_visible(rect) {
+        let mut visuals = *ui.style().interact(&response);
+        if !enabled {
+            visuals.fg_stroke.color = ui.visuals().weak_text_color();
+            visuals.weak_bg_fill = ui.visuals().faint_bg_color;
+        }
+        ui.painter().rect(
+            rect,
+            4.0,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        let c = rect.center();
+        let (w, h) = (4.5, 3.5);
+        let points = if up {
+            vec![
+                egui::pos2(c.x, c.y - h),
+                egui::pos2(c.x - w, c.y + h),
+                egui::pos2(c.x + w, c.y + h),
+            ]
+        } else {
+            vec![
+                egui::pos2(c.x, c.y + h),
+                egui::pos2(c.x - w, c.y - h),
+                egui::pos2(c.x + w, c.y - h),
+            ]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(
+            points,
+            visuals.fg_stroke.color,
+            egui::Stroke::NONE,
+        ));
+    }
+    response
+}
+
+pub(crate) fn trim_float(v: f64) -> String {
+    let s = format!("{v:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    s.to_string()
+}
+
+pub(crate) fn labelled(ui: &mut egui::Ui, text: String) -> egui::Id {
+    // A fixed label column, so every control in a tab starts at the same x
+    // (rule h). `add_sized` rather than `label`: the latter takes its natural
+    // width and the combos then land in ragged columns.
+    let response = ui.add_sized([LABEL_W, 22.0], egui::Label::new(text));
     response.id
 }
 
@@ -4210,8 +6700,7 @@ impl sutura_core::repair::ProgressSink for GuiSink {
 }
 
 
-
-fn open_path(path: &Path, reveal: bool) {
+pub(crate) fn open_path(path: &Path, reveal: bool) {
     #[cfg(target_os = "macos")]
     {
         let mut cmd = Command::new("open");
@@ -4402,13 +6891,8 @@ mod tests {
     /// never reads is the dead-flag bug class, and only this direction catches
     /// it.
     ///
-    /// Two of the plan's thirteen are deliberately absent here:
-    /// * `time_budget_s` is `None` on the CLI too (`repair_cmd.rs:272`), so its
-    ///   absence is parity, not a gap.
-    /// * `classifier_engine` is a live field in `RepairSettings` that
-    ///   `options_from` never reads, and `repair.rs:907` hard-codes
-    ///   "experimental". The GUI has **no** control for it rather than a dead
-    ///   one; it returns in İ6 with the analysis panel as its consumer.
+    /// `time_budget_s` is the one plan item deliberately absent: it is `None` on
+    /// the CLI too (`repair_cmd.rs`), so its absence is parity, not a gap.
     #[test]
     fn previously_missing_settings_reach_core() {
         use sutura_core::repair_settings::options_from;
@@ -4424,6 +6908,11 @@ mod tests {
             dressing_rmax_scale: Some(1.5),
             dressing_sigma_scale: Some(0.75),
             engines: Some(vec!["alpha".into()]),
+            // The three this round added: each had a flag and no control.
+            classifier_engine: Some("classic".into()),
+            ftetwild_optimize: true,
+            auto_reorder: true,
+            extra_features: true,
             ..Default::default()
         };
         let (opts, _, _) = options_from(&settings).expect("valid settings");
@@ -4440,6 +6929,23 @@ mod tests {
         assert_eq!(opts.dressing_rmax_scale, Some(1.5));
         assert_eq!(opts.dressing_sigma_scale, Some(0.75));
         assert_eq!(opts.engines, Some(vec!["alpha".to_string()]));
+        assert_eq!(
+            opts.classifier_engine.as_deref(),
+            Some("classic"),
+            "the classifier engine must reach core; `repair.rs` reads it"
+        );
+        assert!(
+            opts.ftetwild_optimize,
+            "the optimiser switch must reach core; `repair.rs` reads it"
+        );
+        assert!(
+            opts.auto_reorder,
+            "auto-reorder must reach core; the ladder reads it"
+        );
+        assert!(
+            opts.extra_features,
+            "edge-tiebreak must reach core; the classifier reads it"
+        );
 
         // The negative flags must win when both are set, or the GUI could leave
         // a user with a "no" that does nothing.
@@ -4906,10 +7412,38 @@ mod tests {
         assert!(given, "the global selection is a real selection");
         assert_eq!(methods, vec![2, 3]);
 
-        // A per-file list wins, and the order in the string does not matter.
+        // A per-file list wins outright.
         let (_, given, methods) = options_from(&build(Some(vec![15]))).unwrap();
         assert!(given);
         assert_eq!(methods, vec![15], "the file's list must replace the global one");
+
+        // The ORDER of the list is part of the request: `parse_methods_text`
+        // takes the first method as the deep-repair mode, so 1,3 and 3,1 are not
+        // the same repair. The Methods tab's Up/Down edits exactly this string,
+        // which is why it must never be sorted on the way out.
+        let ordered = |text: &str| {
+            let settings = RepairSettings {
+                methods: Some(text.to_string()),
+                ..Default::default()
+            };
+            let (opts, given, methods) = options_from(&settings).unwrap();
+            assert!(given, "{text:?} is an explicit selection");
+            (
+                methods,
+                opts.forced_methods,
+                opts.deep_repair,
+            )
+        };
+        let (a_methods, a_forced, a_deep) = ordered("1,3");
+        let (b_methods, b_forced, b_deep) = ordered("3,1");
+        assert_eq!(a_methods, vec![1, 3], "the list keeps the user's order");
+        assert_eq!(b_methods, vec![3, 1], "and the reverse, reversed");
+        assert_eq!(a_forced, vec![1, 3], "forced_methods carries that order");
+        assert_eq!(b_forced, vec![3, 1]);
+        assert_ne!(
+            a_deep, b_deep,
+            "the first method picks the deep-repair mode, so the two differ"
+        );
 
         // An empty selection is NOT an error in the core: it yields
         // `methods_given = true` with an empty list, i.e. "run no forced
@@ -5072,36 +7606,26 @@ mod tests {
         assert_eq!(app.settings_scroll, 0.0);
     }
 
-    /// The settings panel must be inside a scroll area.
+    /// The Options window must be inside a scroll area.
     ///
     /// A static screenshot cannot show this: egui only paints the scrollbar
-    /// while hovering, and at scroll offset 0 the frame is identical either
-    /// way. The window is a fixed 1024x720 with a 720x480 minimum
-    /// (`main.rs:174-175`), so at the minimum size the panel is taller than the
-    /// window and the lower controls (wall thickness, join components, retries,
-    /// the whole method list) are unreachable without this.
+    /// while hovering, and at offset 0 the frame is identical either way. Two of
+    /// the seven tabs (Repair, Methods) are taller than the window, and the lower
+    /// controls (per-run limits, the method lists) are unreachable without it.
+    ///
+    /// The panel moved from a `Panel::right` to the Options window when the Qt
+    /// layout landed, so this looks there now.
     #[test]
-    fn settings_panel_is_scrollable() {
-        let src = include_str!("app.rs");
-        let start = src
-            .find("Panel::right(\"settings\")")
-            .expect("settings panel exists");
-        let end = src[start..]
-            .find("\n            });")
-            .map(|i| start + i)
-            .expect("settings panel ends");
-        let panel = &src[start..end];
-        // `vertical()`, not `horizontal()`: only vertical scrolling makes the
-        // lower controls reachable, and a substring check for "ScrollArea"
-        // alone would pass either way.
+    fn options_window_is_scrollable() {
+        let src = include_str!("options.rs");
         assert!(
-            panel.contains("ScrollArea::vertical()"),
-            "the settings panel must scroll vertically, or its lower half is \
-             unreachable at 720x480"
+            src.contains("ScrollArea::vertical()"),
+            "the Options body must scroll: two tabs are taller than the window"
         );
+        // `options-scroll`, not an inner list: this is the body itself.
         assert!(
-            !panel.contains("ScrollArea::horizontal()"),
-            "horizontal scrolling does not make the lower controls reachable"
+            src.contains(".id_salt(\"options-scroll\")"),
+            "the body scroll area must be the one that carries the id"
         );
     }
 }

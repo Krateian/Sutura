@@ -22,8 +22,8 @@ app:
   dressing_drain_hint: blank = default
   dressing_defects: Defects
   dressing_defects_hint: blank = default
-  dressing_rmax_scale: Rmax scale
-  dressing_sigma_scale: Sigma scale
+  dressing_rmax_scale: Bridge radius
+  dressing_sigma_scale: Influence width
   advanced: Advanced
   experimental_graft: Graft (experimental)
   no_graft: No graft
@@ -77,11 +77,11 @@ app:
   compare_none: "(not rendered)"
   compare_no_after: "No repair yet: the right panel shows the original."
   file_methods: "Methods for this file"
-  file_methods_inherit: "Use the panel selection"
+  file_methods_inherit: "Use the global method settings"
   file_methods_count: "%{count} method(s) applied"
   defect_colors: "Defect colours"
   defect_colors_tip: "Paint each face by its defect kind (non-manifold, duplicate, degenerate…). Needs a full diagnosis on first use."
-  drop_hint: Drop an STL / OBJ / PLY / 3MF file here
+  drop_hint: Drop STL or 3MF files here, or use Add files
   repair_running: Repairing…
   triangles: "%{count} triangles"
   lang_system: System
@@ -194,3 +194,165 @@ app:
   repeat_pick_state: "source: %{source}    target: %{target}"
   repeat_pick_apply: Use these points
   repeat_pick_cancel: Cancel
+  col_file: File
+  col_method: Method
+  col_result: Result
+  add_folder: Add folder...
+  remove: Remove selected
+  no_files: No files yet.
+  method_auto: Auto
+  status_working: Working...
+  ready: Ready
+  show_heatmap: Show heatmap
+  show_before_after: Show before/after
+  methods_btn: Methods
+  options_btn: Options
+  analyze: Analyze
+  mode_btn: "Mode: %{mode}"
+  tab_general: General
+  tab_repair: Repair
+  tab_methods: Methods
+  tab_experimental: Experimental
+  tab_updates: Updates
+  tab_changelog: Changelog
+  tab_engines: Engines
+  opt_graft: Keep the Graft pass enabled
+  opt_graft_tip: The last-resort solid rebuild. Off means no Graft tier at all.
+  opt_fidelity: Show the Fidelity shape score (report only)
+  opt_fidelity_tip: A report-only measurement. It can never change the repaired mesh.
+  opt_clear_cache: Clear cache
+  opt_reset_learning: Reset learning
+  opt_learning_body: A small, bounded bonus from the anonymised (object type, method) success and time recorded locally. No network.
+  section_language: Language
+  repeat_pick_unset: not set
+  repeat_pick_clear: Clear
+  experimental_hint: These passes are experimental and off by default. Each one is adopted only when its result is not worse than the default chain, but it can make a repair much slower.
+  method_control: Method control
+  method_automatic: Automatic (policy order)
+  method_manual: Manual (exact order)
+  opt_usage_history: Anonymous usage history (no file names or paths)
+  opt_already_recorded: Always on; the shared history file is what the learning triage reads.
+  opt_chart_cache: Suture chart cache (~/.cache/sutura/)
+  diagnostics_title: Diagnostics
+  graft: Graft
+  fallback_ftetwild: fTetWild fallback
+  tier_on: On
+  tier_experimental: Experimental
+  tier_off: Off
+  input_defects: Input defects (selected file)
+  automatic_ladder: Automatic ladder
+  automatic_ladder_body: The automatic order is fixed. Pick Manual to run a custom order.
+  manual_sequence: Manual sequence
+  manual_sequence_body: Checked methods become the file tags; the CLI receives them as --methods.
+  manual_sequence_hint: Switch to Manual (exact order) to edit this list.
+  no_selection: Select a file to edit its methods.
+  opt_learning: "Learning triage: rank methods from the local repair history"
+  tiers_section: Repair tiers
+  advanced_section: Advanced
+  opt_version: "Installed version: %{version}"
+  opt_never: never
+  opt_auto_updates: Automatic updates
+  opt_check_on_start: Check on every start
+  opt_auto_note: Automatic updates check every 7 days. With "Check on every start" they check each time Sutura opens. A new version is only installed after you confirm it.
+  engines_reload: Reload
+  engines_open_folder: Open engines folder
+  engines_docs: Engine documentation
+  autorefine_label: Autorefine self-intersections
+  indirect_autorefine_label: Indirect autorefine (exact)
+  dressing_preset: Preset default
+  dressing_drain_off: Off
+  dressing_drain_half: Half
+  dressing_drain_full: Full
+  dressing_drain_deep: Deep
+  dressing_defects_all: All defects
+  dressing_defects_holes_nm: Holes and non-manifold
+  profile_new: New
+  profile_duplicate: Duplicate
+  profile_rename: Rename
+  profile_delete: Delete
+  profile_settings: Profile settings
+  profile_settings_body: These are the per-run limits below, saved under this profile's name.
+  profile_save_as_new: Save as new profile
+  profile_name: Profile name
+  profile_name_hint: e.g. my-scan
+  profile_save: Save
+  opt_last_check: "Last check: %{when}"
+  engines_install: Install...
+  engines_install_tip: "Copy an fTetWild binary into the managed folder. There is no download: the release ships it beside the app."
+  engines_remove: Remove...
+  engines_remove_tip: Delete the managed fTetWild binary.
+  manual_sequence_empty: No methods selected yet. Tick them in the list above.
+  manual_move_up: Move up
+  manual_move_down: Move down
+  repairing_stage: "Repairing %{name} — stage %{step}/%{total}"
+  drop_hint_alt: or use Add files
+  not_repaired: Not repaired yet
+  suggestions: Suggestions
+  apply: Apply
+  apply_mode_tip: "Use %{mode} for the next repair"
+  sug_si_many: "Extreme mode's extra cleanup passes may help with these self-intersections."
+  sug_si_few: "A few self-intersections were found; Thorough is a safe step up."
+  sug_holes_many: "Probably scan-derived; Aggressive or Extreme close large holes more easily."
+  sug_holes_few: "A few holes were found; the Medium mode closes these more readily."
+  sug_nm: "Complex geometry may leave a few micro-cracks."
+  sug_cc: "If this is an assembly, the current mode's debris cutoff may remove small parts."
+  sug_unknown: "The type was not determined; default thresholds will be used."
+  sug_watertight: "The input is already watertight - the Quick mode is probably enough."
+  sug_low_conf: "Trying the next mode up and comparing results could help."
+  sug_extreme_caveat: "Extreme can delete parts with fewer than 20 faces entirely - be careful with assemblies."
+  menu_analyze: Analyze
+  menu_use_method: Methods for this file...
+  menu_clear_tags: Clear tags (use global list)
+  menu_recommended: Recommended methods
+  menu_analyze_first: Analyze this file first
+  sug_try_dressing: "Dressing can close this shape, but may deform it. Re-run with it on?"
+  sug_budget_rerun: "This file was declined by the time/geometry budget, so nothing was written. Re-run anyway?"
+  open_in_slicer: Open in...
+  small_parts: "Small parts (%{count})"
+  small_removed: Removed
+  small_debris: Debris
+  sum_watertight: watertight
+  sum_warning: warning
+  sum_error: error
+  ftetwild_optimize: Optimise the fTetWild result
+  auto_reorder: Let the pipeline reorder methods
+  classifier_experimental: Experimental (default)
+  classifier_classic: Classic
+  edge_tiebreak: Classifier edge tiebreak features
+  sum_show_issues: "%{n} issues >"
+  sum_issues_detail: Show the issue breakdown
+  brief_note_stage2_skipped: The final solid check was skipped; the closed model was kept.
+  brief_note_stage2_error: The final solid check could not confirm the model.
+  brief_note_shape_changed: The shape changed; check it in the slicer.
+  brief_note_volume: The volume changed; check it in the slicer.
+  brief_note_graft: The surface was smoothed, so fine detail may be reduced.
+  brief_note_dressing: The surface was coated, so it may sit slightly outside the original.
+  brief_note_reload_nm: The saved file reopens with a topology problem.
+  brief_note_unit: The model may not be in millimetres.
+  brief_note_material: OBJ material references were not preserved.
+  brief_note_attr_loss: "Painted/seam/support attributes were lost on %{dropped} triangles; %{kept} kept, %{new_without} new ones without."
+  brief_note_budget: The result was not saved because the repair went over its size or risk limit.
+  brief_note_thin_wall: "Some walls are thin: ~%{ratio}% of the surface is thinner than %{threshold}% of the model size"
+  brief_note_thin_wall_mm: " (thinnest ~%{mm} mm)"
+  brief_note_estimated: " [estimated]"
+  brief_note_si_adopted: Overlapping surfaces were fixed with a stronger repair method.
+  brief_note_si_unfixed: Overlapping surfaces remain; the safer repair was kept.
+  brief_note_holes_remaining: "%{count} hole(s) remain."
+  brief_note_not_closed: The model is still not closed.
+  ladder_save: Save ladder
+  ladder_save_tip: Write this order to your policy file
+  ladder_save_body: The ladder is the policy order. Reordering it is a real edit, so it must be saved.
+  ladder_saved: "Ladder saved to %{path}"
+  ladder_save_failed: "Could not save: %{error}"
+  ladder_save_empty: Pick at least one method before saving.
+  first_run_msg: "First run: the two questions below (automatic updates, anonymous usage history) are all we ask. Nothing leaves this machine."
+  methods_ranked: "%{n} method(s) ranked for this file"
+  write_error_title: Could not save the result
+  write_error_body: "Sutura could not write %{what} to %{path}"
+  write_error_choose: Choose another folder...
+  ok: OK
+  notice_ftetwild_missing: "fTetWild isn't installed, so the solid fallback is off."
+  notice_part_missing: "%{count} optional part(s) are missing, so some repairs will take the weaker path."
+  install_dots: Install…
+  install_dots_tip: Open Options > Engines
+  input_analysis: Input analysis
