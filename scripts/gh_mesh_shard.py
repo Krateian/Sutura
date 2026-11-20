@@ -323,6 +323,12 @@ def main():
     log_lines = []
     err = None
     sp = os.path.join(outdir, 'summary.json')
+    # Opt-in stage fingerprints: only when ENV_CAND names the flag, so a
+    # normal shard pays nothing.
+    want_stage_fp = stage_fp_requested(env_c)
+    # Summary rows carry the mesh stem, not the manifest path; map it back so
+    # the fingerprint run opens the real file instead of a missing one.
+    by_stem = {os.path.splitext(os.path.basename(f))[0]: f for f in files}
     if os.path.exists(sp):
         summary_items = json.load(open(sp))
         log_lines = numeric_log_lines(summary_items)

@@ -160,6 +160,7 @@ jobs:
           SHARD: '${{ matrix.shard }}'
           SHARDS: '${{ matrix.shards }}'
           ENV_CAND: '${{ inputs.env_candidate }}'
+          EXTRA_ARGS: '${{ inputs.extra_args }}'
           ENV_BASE: '${{ inputs.env_base }}'
           SUTURA_STAGE_FP: '${{ inputs.stage_fingerprints }}'
       - uses: actions/setup-python@v7
@@ -325,4 +326,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: board, path: board.md, retention-days: 7 }
       - name: Verdict check (fails on WORSE/ERROR/MISSING/TIMEOUT)
+        if: inputs.report_only != '1'
         run: python3 scripts/gh_mesh_board.py --check --plan plan.json summaries
