@@ -16,7 +16,7 @@
   <img src="https://img.shields.io/badge/core-Rust-dea584?logo=rust&logoColor=white" alt="Rust core">
   <br>
   <a href="https://github.com/Krateian/Sutura/actions/workflows/ci.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/Krateian/Sutura/actions/workflows/build-sutura-geom.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/build-sutura-geom.yml/badge.svg" alt="sutura_geom wheels"></a>
+  <a href="https://github.com/Krateian/Sutura/actions/workflows/build-rust.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/build-rust.yml/badge.svg" alt="Rust packages"></a>
   <a href="https://github.com/Krateian/Sutura/actions/workflows/linux-install.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/linux-install.yml/badge.svg" alt="Linux install E2E"></a>
   <a href="https://github.com/Krateian/Sutura/actions/workflows/macos-install.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/macos-install.yml/badge.svg" alt="macOS install E2E"></a>
   <a href="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
