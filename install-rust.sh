@@ -134,6 +134,19 @@ fi
 if [ -f "$APP_DIR/share/applications/$APP_NAME" ]; then
     run install -m 0644 "$APP_DIR/share/applications/$APP_NAME" "$APPLICATIONS_DIR/$APP_NAME"
 fi
+# The desktop session does not have ~/.local/bin on PATH on every system (the
+# SteamOS/KDE session PATH does not), so a bare `Exec=sutura` in the right-click
+# menu or the app launcher fails silently there. Point both entries at the
+# absolute paths of the links installed above.
+if [ "$DRY_RUN" != "1" ]; then
+    for entry in "$SERVICE_DIR/$SERVICE_NAME" "$APPLICATIONS_DIR/$APP_NAME"; do
+        [ -f "$entry" ] || continue
+        sed -i -e "s|^Exec=sutura-gui\b|Exec=$BIN_DIR/sutura-gui|" \
+               -e "s|^Exec=sutura\b|Exec=$BIN_DIR/sutura|" \
+               -e "s|^TryExec=sutura-gui\b|TryExec=$BIN_DIR/sutura-gui|" \
+               -e "s|^TryExec=sutura\b|TryExec=$BIN_DIR/sutura|" "$entry"
+    done
+fi
 
 # Icons: install every size the package carries and refresh the caches.
 if [ -d "$APP_DIR/share/icons/hicolor" ]; then
