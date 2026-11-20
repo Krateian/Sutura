@@ -41,10 +41,21 @@ if [ -n "${SUTURA_QA_APP+x}" ]; then
     APP="$SUTURA_QA_APP"
     [ -d "$APP" ] || APP=""
 else
+    # The Rust installer writes ~/Applications/Sutura.app. An older Python
+    # Sutura.app left in /Applications must not win over it: prefer a bundle
+    # that carries the Rust CLI (Contents/MacOS/sutura, exact case -- APFS is
+    # case-insensitive and the Python launcher is Contents/MacOS/Sutura), and
+    # only fall back to the first bundle found.
     APP=""
-    for cand in "/Applications/Sutura.app" "$HOME/Applications/Sutura.app"; do
-        if [ -d "$cand" ]; then APP="$cand"; break; fi
+    FIRST=""
+    for cand in "$HOME/Applications/Sutura.app" "/Applications/Sutura.app"; do
+        [ -d "$cand" ] || continue
+        [ -n "$FIRST" ] || FIRST="$cand"
+        if ls "$cand/Contents/MacOS" 2>/dev/null | grep -qxF sutura; then
+            APP="$cand"; break
+        fi
     done
+    [ -n "$APP" ] || APP="$FIRST"
 fi
 
 CLI_CMD=()
