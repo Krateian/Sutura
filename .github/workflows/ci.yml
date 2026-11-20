@@ -65,7 +65,7 @@ jobs:
       - name: Smoke test (broken cube)
         run: |
           ./venv/bin/python tests/make_broken_stl.py /tmp/broken.stl
-          ./venv/bin/python sutura/repair.py /tmp/broken.stl >/tmp/out.json 2>&1 || true
+          ./venv/bin/python sutura/repair.py /tmp/broken.stl >/tmp/out.json 2>/tmp/out.err || true; cat /tmp/out.err
           cat /tmp/out.json
           test -s /tmp/out.json
           ./venv/bin/python -c "import json; d=json.load(open('/tmp/out.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0"

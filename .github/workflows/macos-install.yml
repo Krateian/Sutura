@@ -68,7 +68,7 @@ jobs:
       - name: "Check a: CLI repair on broken mesh and 3 real-world samples"
         run: |
           python3 tests/make_broken_stl.py /tmp/broken.stl
-          "$HOME/.local/bin/sutura" /tmp/broken.stl > /tmp/broken.json 2>&1 || true
+          "$HOME/.local/bin/sutura" /tmp/broken.stl > /tmp/broken.json 2>/tmp/broken.err || true
           cat /tmp/broken.json
           "$ENV_PY" -c "import json; d=json.load(open('/tmp/broken.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
 
@@ -290,7 +290,7 @@ jobs:
       - name: CLI smoke on the built-from-source install
         run: |
           python3 tests/make_broken_stl.py /tmp/broken.stl
-          "$HOME/.local/bin/sutura" /tmp/broken.stl > /tmp/broken.json 2>&1 || true
+          "$HOME/.local/bin/sutura" /tmp/broken.stl > /tmp/broken.json 2>/tmp/broken.err || true
           "$ENV_PY" -c "import json; d=json.load(open('/tmp/broken.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
 
       - name: Uninstall removes the bootstrapped toolchain
