@@ -2004,7 +2004,7 @@ fn apply_si_escalation(
 
     // Evaluate the SI candidate with the same reload-strict holes/nm rule as
     // the Python ladder (`_evaluate`); the raw `method_reached_watertight` flag
-    // is pre-reload and rejected an accepted scaffold on broken_40261.
+    // is pre-reload and rejected an accepted scaffold on a private sample.
     let (watertight, eval_holes, eval_nm, eval_reason) =
         ladder_eval(&cand_v, &cand_t, &cand_report);
     let geom_change = geom_change_pct(&cand_report);
@@ -3216,7 +3216,7 @@ fn repair_impl(
     // `verts`/`tris`. The wall tier measures `v`/`t` (`pipeline.py:897`), so it
     // sees the Flap output but never the Stage-1 output. Tracking it separately
     // is what makes the tier read the same mesh as Python: measuring `cur_v`
-    // gave 17250 faces on broken_37011 where Python measured 17308.
+    // gave 17250 faces on a private sample where Python measured 17308.
     let mut py_v = quantize(verts);
     let mut py_t = tris.to_vec();
     let mut stage1_snapshot: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>)> = None;
@@ -4286,7 +4286,7 @@ fn repair_impl(
         // Python's tier input is `v`/`t`: the input rounded to float32 at
         // pipeline entry, rebound by Flap but **not** by the Stage-1 chain. That
         // is why the measured face count follows the Flap output (17308 on
-        // broken_37011) rather than the Stage-1 output (17250).
+        // a private sample) rather than the Stage-1 output (17250).
         let outcome = crate::wall_tier::run(
             &py_v,
             &py_t,

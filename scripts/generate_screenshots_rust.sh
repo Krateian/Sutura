@@ -55,7 +55,7 @@ if [ -z "$FTETWILD" ]; then
     "$REPO/third_party/ftetwild/bin/ftetwild" \
     "$(dirname "$BIN")/ftetwild" \
     "$(dirname "$BIN")/../Resources/bin/ftetwild" \
-    /Users/krateian/sutura-wt/ftw-bin/third_party/ftetwild/bin/ftetwild \
+    "${FTW_WORKTREE:-$HOME/sutura-wt/ftw-bin}/third_party/ftetwild/bin/ftetwild" \
     "$HOME"'/.local/share/sutura/bin/ftetwild'
   do
     if [ -x "$candidate" ]; then FTETWILD=$candidate; break; fi
@@ -65,7 +65,7 @@ fi
 # The sample corpus ships with the benchmark checkout, not the repo: the Artec
 # scans are CC BY 4.0 third-party data (see tests/real-world-samples/
 # ATTRIBUTION.md) and are not vendored here.
-SAMPLES=${SAMPLES:-/Users/krateian/sutura-bench/wt-main/tests/real-world-samples}
+SAMPLES=${SAMPLES:-$HOME/sutura-bench/wt-main/tests/real-world-samples}
 
 # The injector needs numpy and the Rust geom extension; the repo venv has both.
 PY=${PY:-/tmp/p10fx-venv/bin/python}

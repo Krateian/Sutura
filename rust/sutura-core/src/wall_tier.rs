@@ -6,7 +6,7 @@
 //!
 //! * `sutura_geom::wall` owns the geometry — the sampled SDF, the thickness
 //!   estimate, the dilation and the marching-tetrahedra extraction. All of it is
-//!   byte-identical to `sutura_engine/wall.py` (verified on `broken_37402`:
+//!   byte-identical to `sutura_engine/wall.py` (verified on a private sample:
 //!   verts `dd40320a…`, faces `d2687e32…`).
 //! * this module owns the tier: run the producer on the **original input**,
 //!   clean the candidate with the Stage-1 chain, then hand it to
@@ -84,7 +84,7 @@ fn clean_and_orient(v: &[[f64; 3]], t: &[[i64; 3]]) -> (Vec<[f64; 3]>, Vec<[i64;
 /// adoption path at `pipeline.py:181-182` — Flap rebinds them at `:504-506`
 /// *after* this tier, so the wall tier never sees the Flap output.
 ///
-/// Verified by dumping the tier's actual argument on `broken_37011`: 17288
+/// Verified by dumping the tier's actual argument on a private sample: 17288
 /// faces, byte-identical to the loaded input cast to float32. An earlier
 /// version of this function measured `cur_v` on the theory that Flap had
 /// already rebased it; that produced `thin_before` 2357 against Python's 2537

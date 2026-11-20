@@ -7,10 +7,13 @@ when the corpus is large; the Rust probe is built by the caller.
 """
 import json
 import os
+import pathlib
 import subprocess
 import sys
 
-sys.path.insert(0, '/Users/krateian/Sutura/sutura')
+# The `sutura` package sits beside `scripts/` in this checkout; resolving it
+# from `__file__` keeps the script runnable from any clone.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'sutura'))
 from sutura_engine.pipeline.mesh_io import load_mesh  # noqa: E402
 import mesh_classifier  # noqa: E402
 import mesh_classifier_v2  # noqa: E402

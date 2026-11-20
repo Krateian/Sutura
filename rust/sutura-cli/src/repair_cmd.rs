@@ -1744,7 +1744,7 @@ fn process_3mf(
 /// the whole file ONCE more with Flap off and keeps the better result.
 ///
 /// Without it the Rust CLI reported a different mesh from Python on
-/// `broken_37402`: Python's net chose the flap-OFF run (stage 1 9478 faces), the
+/// On a private sample: Python's net chose the flap-OFF run (stage 1 9478 faces), the
 /// Rust CLI had no net at all (12914).
 ///
 /// This is orchestration only. The decision rules are the core's own

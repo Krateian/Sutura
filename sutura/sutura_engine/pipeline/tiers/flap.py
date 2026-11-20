@@ -226,7 +226,7 @@ def _flap_off_preferred(on_verdict, off_verdict):
 # Flap work budget by intensity preset, in deterministic work units.
 # ``quick`` disables Flap entirely. The balanced budget was 75 M before the
 # exact-SI/fairing work charges landed; those charges are what make the budget a
-# real bound, and an *adopted* case (broken_37402) then needs 76.5 M, so the
+# real bound, and an *adopted* case (a private sample) then needs 76.5 M, so the
 # preset is raised to keep it adopted (the rule: raise the preset, never loosen
 # a guard). The 75 M->100 M step leaves headroom for the rest of the adopted set
 # (37989 69.6 M, 37785 19.3 M, 41937 8.7 M). See the local Flap tail-budget

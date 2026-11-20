@@ -217,7 +217,7 @@ def estimate_wall_thickness(verts, tris, resolution=DEFAULT_GRID_RESOLUTION,
     **Single source:** this calls the Rust kernel
     (``sutura_geom.wall_estimate_thickness``), which is byte-identical to the
     NumPy implementation below (verified: ``per_vertex`` md5
-    ``156810316e613d2e3e69af2241757d49`` on ``broken_37402``). The NumPy path is
+    ``156810316e613d2e3e69af2241757d49`` on a private sample). The NumPy path is
     kept only as a fallback for an older ``sutura_geom`` build; it must not
     diverge, and is covered by the same byte gate.
     """
@@ -392,7 +392,7 @@ def thicken_to_min(verts, tris, min_thickness=None,
 
     **Single source:** this calls the Rust kernel
     (``sutura_geom.wall_thicken_to_min``), byte-identical to the NumPy
-    implementation below (verified on ``broken_37402``: verts md5
+    implementation below (verified on a private sample: verts md5
     ``dd40320a292e9a40838235b4be3ae1d5``, faces md5
     ``d2687e326343c7c5ba614975a0d86687``). The NumPy path is a fallback for an
     older ``sutura_geom`` build.

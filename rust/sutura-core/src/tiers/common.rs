@@ -52,7 +52,7 @@ fn norm3(a: [f64; 3], b: [f64; 3]) -> f64 {
 ///
 /// Using the vertex count for `topology_summary` made `stage1.components`
 /// disagree with Python on meshes where the two partitions differ: on
-/// `broken_37402`, 29 against Python's 33 (and 5 vs 7 on `broken_38318`). Since
+/// a private sample, 29 against Python's 33 (and 5 vs 7 on another). Since
 /// `repair.rs`'s SI gate rejects a candidate when `parts` rises, a wrong count
 /// there is a wrong adoption decision, not just a wrong report field.
 fn count_face_components(n_faces: usize, tris: &[[i64; 3]]) -> usize {
@@ -1068,7 +1068,7 @@ mod component_count_tests {
     /// Two triangles that share no edge but do share a vertex: ONE
     /// vertex-connected component, TWO face-connected ones. This is the case
     /// where the two notions disagree, and where using the wrong one made
-    /// `stage1.components` differ from Python (broken_37402: 29 vs 33).
+    /// `stage1.components` differ from Python (a private sample: 29 vs 33).
     #[test]
     fn vertex_union_merges_where_face_union_does_not() {
         let v = vec![

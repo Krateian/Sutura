@@ -3783,7 +3783,7 @@ fn classifier_features<'py>(
 ///
 /// Returns `(per_vertex, {min, median, mean, min_thickness, thin_count,
 /// resolution, method})`. Byte-identical to the Python implementation: pinned by
-/// `per_vertex` md5 `156810316e613d2e3e69af2241757d49` on `broken_37402`.
+/// `per_vertex` md5 `156810316e613d2e3e69af2241757d49` on a private sample.
 #[pyfunction]
 #[pyo3(signature = (verts, tris, resolution=40, samples=40000, seed=0, min_thickness=None))]
 fn wall_estimate_thickness<'py>(

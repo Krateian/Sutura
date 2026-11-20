@@ -823,7 +823,7 @@ pub fn thicken_to_min(
         // (`wall.py:435-438`): `min_after` is the unchanged minimum and
         // `thin_after` the unchanged thin count. Omitting them made the Rust
         // record say `min_after: null` where Python said the real number, which
-        // the tier gate caught on `broken_37890` (no wall below target).
+        // the tier gate caught on a private sample (no wall below target).
         report.min_after = Some(before_min);
         report.thin_after = Some(report.thin_before);
         report.notes.push("no wall below the target; nothing to thicken".to_string());
@@ -1033,7 +1033,7 @@ mod tests {
     /// A real mesh must reproduce Python's numbers, not merely look plausible.
     ///
     /// Pinned from `sutura_engine.wall.estimate_wall_thickness` on
-    /// `broken_37402` (`resolution=40, samples=40000, seed=0`): the per-vertex
+    /// A private sample (`resolution=40, samples=40000, seed=0`): the per-vertex
     /// array hashes to `156810316e613d2e3e69af2241757d49` and the summary is
     /// `min=0.076084157, thin_count=1265, mean=6.478264086,
     /// median=3.817594924`. The mesh itself is not in the repo, so this asserts
@@ -1128,7 +1128,7 @@ mod tests {
         // The early return must still report the measured values. Python sets
         // `min_after = before['min']` and `thin_after = before['thin_count']`
         // here (`wall.py:435-436`); leaving them `None` made the Rust record
-        // disagree with Python on `broken_37890`, which the wall-tier gate
+        // disagree with Python on a private sample, which the wall-tier gate
         // caught as `min_after: 3.433…!=None`.
         assert_eq!(
             r.min_after,
