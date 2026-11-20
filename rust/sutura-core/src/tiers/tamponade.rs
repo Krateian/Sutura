@@ -147,7 +147,7 @@ fn shape_card_full(
     if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
         return json!({"skip": true, "reason": "cancelled"});
     }
-    let area = common::surface_area(v, t);
+    let area = crate::repair::py_surface_area(v, t);
     let vol = common::signed_volume(v, t).abs();
     let compactness = if area > 0.0 {
         36.0 * std::f64::consts::PI * vol * vol / (area * area * area)
@@ -423,6 +423,7 @@ fn annotation_json(info: &TamponadeInfo) -> Map<String, Value> {
         );
     }
     m.insert("trimmed_vertices".into(), json!(info.trimmed_vertices));
+    m.insert("patch_vertices".into(), json!(info.patch_vertices));
     m.insert("plugs_rolled_back".into(), json!(info.plugs_rolled_back));
     m.insert("plugs_leaking".into(), json!(info.plugs_leaking));
     m.insert("plugs_double_wall".into(), json!(info.plugs_double_wall));
@@ -720,6 +721,7 @@ pub fn run_with_cancel(
     }
     rec.insert("reason".into(), json!(info.reason));
     rec.insert("ran".into(), json!(true));
+    rec.insert("h_min".into(), json!(h_min));
 
     let out_t_i64 = common::to_i64_tris(&out_t);
     let cand_f = out_v.clone();

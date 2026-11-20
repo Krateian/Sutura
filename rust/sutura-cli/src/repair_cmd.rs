@@ -664,7 +664,7 @@ const FLAP_ORDER: [&str; 36] = [
     "budget_exceeded", "adopted_final", "final_fallback",
 ];
 
-const TAMPONADE_ORDER: [&str; 69] = [
+const TAMPONADE_ORDER: [&str; 72] = [
     "tier", "ran", "adopted", "placement", "watertight", "reload_watertight",
     "reason", "reject_reason", "intensity", "work_budget", "work_units", "h_min",
     "input_faces", "output_faces", "seconds", "input_holes", "input_non_manifold",
@@ -682,7 +682,8 @@ const TAMPONADE_ORDER: [&str; 69] = [
     "baseline_self_intersections", "si_policy", "si_checked", "si_flagged",
     "gate", "shape", "reason_key", "patch_vertices", "trimmed_vertices",
     "reference_used", "reference_fallback", "stent_used", "stent_subplugs",
-    "stent_rejected", "plug_metrics",
+    "stent_rejected", "plug_metrics", "base_local_si", "cand_local_si",
+    "shell_prepass",
 ];
 
 const COAPTATION_ORDER: [&str; 27] = [
@@ -1022,7 +1023,13 @@ fn budget_temp_path(output: &Path) -> PathBuf {
     ))
 }
 
-fn si_escalation(stage1: &Value, exact_si: &Value, deep: DeepRepair) -> Value {
+fn si_escalation(
+    stage1: &Value,
+    exact_si: &Value,
+    deep: DeepRepair,
+    dev_pct: Value,
+    vol_pct: Value,
+) -> Value {
     let stage1_si = stage1
         .get("self_intersections_remaining")
         .and_then(Value::as_i64)
@@ -1049,7 +1056,8 @@ fn si_escalation(stage1: &Value, exact_si: &Value, deep: DeepRepair) -> Value {
         exact_si.clone()
     };
     let mut baseline = json!({"si": baseline_si, "holes": holes, "nm": nm,
-                              "parts": parts, "dev_pct": 0.0, "vol_pct": 0.0});
+                              "parts": parts, "dev_pct": dev_pct,
+                              "vol_pct": vol_pct});
     if deep != DeepRepair::Off {
         baseline["si_stage1"] = Value::from(stage1_si);
     }
@@ -1235,17 +1243,21 @@ fn augment_report(
     if let Some(coaptation) = obj.get_mut("coaptation") {
         coaptation_patch(coaptation);
     }
-    let cad = if opts.deep_repair == DeepRepair::Full {
-        cad_likeness(&in_f64, &input.tris)
-    } else {
-        Value::Null
-    };
     let produced = obj
         .get("solid_engine")
         .and_then(|s| s.get("produced"))
         .cloned();
     if let Some(deep) = obj.get_mut("deep_repair").and_then(Value::as_object_mut) {
-        deep.insert("cad_likeness".into(), cad);
+        if deep.get("cad_likeness").is_none() {
+            deep.insert(
+                "cad_likeness".into(),
+                if opts.deep_repair == DeepRepair::Full {
+                    cad_likeness(&in_f64, &input.tris)
+                } else {
+                    Value::Null
+                },
+            );
+        }
         if let Some(coaptation) = deep.get_mut("coaptation") {
             coaptation_patch(coaptation);
         }
@@ -1425,13 +1437,6 @@ fn augment_report(
     }
     obj.insert("timings".into(), Value::Object(timings));
 
-    if opts.deep_repair != DeepRepair::Local && !obj.contains_key("si_escalation") {
-        obj.insert(
-            "si_escalation".into(),
-            si_escalation(obj.get("stage1").unwrap(), &si_value, opts.deep_repair),
-        );
-    }
-
     let report_snapshot = Value::Object(obj.clone());
     let cfg = sutura_core::report::score_cfg();
     // Fidelity only reads the pipeline fields; feeding it the pre-print
@@ -1473,6 +1478,29 @@ fn augment_report(
         Some(&out_i32),
     ) {
         obj.insert("print_report".into(), pr);
+    }
+    if opts.deep_repair != DeepRepair::Local && !obj.contains_key("si_escalation") {
+        let dev = obj
+            .get("print_report")
+            .and_then(|p| p.get("geometry"))
+            .and_then(|g| g.get("deviation_max_pct"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let vol = obj
+            .get("stage1")
+            .and_then(|s| s.get("volume_change_percent"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        obj.insert(
+            "si_escalation".into(),
+            si_escalation(
+                obj.get("stage1").unwrap(),
+                &si_value,
+                opts.deep_repair,
+                dev,
+                vol,
+            ),
+        );
     }
 
     let confidence = sutura_core::report::repair_confidence_value(&Value::Object(obj.clone()));

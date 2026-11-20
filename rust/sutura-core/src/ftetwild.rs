@@ -498,6 +498,7 @@ pub fn run_binary_with_timeout_cancel(
         ));
         return Ok((Vec::new(), Vec::new(), report));
     }
+    report["returncode"] = json!(0);
 
     let sf_obj = tmp.path().join("out.msh__sf.obj");
     if !sf_obj.is_file() {
