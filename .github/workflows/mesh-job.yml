@@ -220,21 +220,21 @@ jobs:
           # The extracted chunk is the authoritative list for this shard.
           ls corpus/bench115 | grep '\.stl$' | sort > corpus/sets/bench115.txt
           echo "bench115 files staged: $(wc -l < corpus/sets/bench115.txt)"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: wheel-base, path: wheels-base }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: wheel-tools, path: wheels-tools }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: inputs.candidate_ref != ''
         with: { name: wheel-cand, path: wheels-cand }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: inputs.candidate_ref != ''
         with: { name: sutura-cli-cand, path: cand-bin }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         if: inputs.candidate_ref == ''
         with: { name: sutura-cli-base, path: cand-bin }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         if: inputs.candidate_ref != ''
         with: { name: wheel-cand-py, path: wheels-cand-py }
@@ -333,7 +333,7 @@ jobs:
               inc += [{'set':name,'mode':mode,'shard':i,'shards':n} for i in range(n)]
           print(json.dumps({'include':inc}))
           PY
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with: { pattern: 'summary-*', merge-multiple: true, path: summaries }
       - name: Board

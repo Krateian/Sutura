@@ -50,9 +50,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with: { ref: '${{ inputs.candidate_ref }}' }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: rust-ab-baseline, path: baseline-bin }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: rust-ab-candidate, path: candidate-bin }
       - name: Gate the tracked public corpus
         env:
