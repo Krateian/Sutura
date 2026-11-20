@@ -498,12 +498,21 @@ mod tests {
         }
         let all = messages.join("\n");
         // The `exe` field is a real path and is the one entry that can carry the
-        // home directory, so it must be exercised. Written with a deliberately
-        // home-shaped value so the assertion has something to find even when the
-        // test binary lives outside `$HOME` (a Cargo target dir under /tmp).
+        // home directory, so it must be exercised. What has to be scrubbed is
+        // the PERSONAL part of it: when the binary lives outside `$HOME` and its
+        // path carries no username (a Cargo target dir under /tmp), the path is
+        // not personal and cannot be expected to change -- requiring that made
+        // this test fail or pass depending on where Cargo was told to put its
+        // target. The two assertions below are the property that matters, and
+        // they cover the leaking case on their own.
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let personal = home
+            .as_deref()
+            .is_some_and(|h| !h.is_empty() && exe.contains(h))
+            || user.as_deref().is_some_and(|u| !u.is_empty() && exe.contains(u));
         assert!(
-            !all.contains(&std::env::current_exe().unwrap().display().to_string()),
-            "the binary path must be scrubbed, not copied verbatim"
+            !personal || !all.contains(&exe),
+            "a personal binary path must be scrubbed, not copied verbatim"
         );
 
         if let Some(home) = home.filter(|h| h.len() > 1) {

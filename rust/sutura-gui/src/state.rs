@@ -52,6 +52,9 @@ pub struct GuiState {
     pub check_on_startup: Option<bool>,
     /// Unix seconds of the last update check, for the "Last check" line.
     pub last_check: Option<i64>,
+    /// Folder repaired files are written to (the CLI's `--output`). `None`
+    /// writes each one beside its input as `<name>_fixed.<ext>`.
+    pub output_dir: Option<PathBuf>,
 }
 
 /// `<config dir>/gui.json`, beside the CLI's `config.json`.
@@ -161,9 +164,11 @@ mod tests {
             check_for_updates: Some(true),
             check_on_startup: Some(false),
             last_check: Some(1_700_000_000),
+            output_dir: Some(PathBuf::from("/tmp/sutura-out")),
         };
         let text = serde_json::to_string(&state).unwrap();
         let back: GuiState = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.output_dir, Some(PathBuf::from("/tmp/sutura-out")));
         assert_eq!(back.settings.mode.as_deref(), Some("aggressive"));
         assert_eq!(back.settings.profile.as_deref(), Some("scan"));
         assert!(back.settings.no_flap);
