@@ -88,6 +88,16 @@ pub const PROGRESS_H: f32 = 4.0;
 pub const PANEL_MAX_W: f32 = 1400.0;
 /// Above this width the layout is two columns; at or below it, one stacked one.
 pub const TWO_COLUMN_MIN_W: f32 = 1100.0;
+/// The header row's height; on macOS the traffic lights sit inside it.
+pub const HEADER_H: f32 = 36.0;
+/// Content is centred and never wider than this on a very wide screen.
+pub const CONTENT_MAX_W: f32 = 1480.0;
+/// The single centred column shown before any file is added.
+pub const EMPTY_MAX_W: f32 = 820.0;
+/// The 3D preview card never gets shorter than this.
+pub const PREVIEW_MIN_H: f32 = 300.0;
+/// The preview's height in the stacked (narrow) layout.
+pub const PREVIEW_STACKED_H: f32 = 380.0;
 
 pub const FONT_BODY: f32 = 16.0;
 pub const FONT_TITLE: f32 = 20.0;

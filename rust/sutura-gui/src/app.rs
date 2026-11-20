@@ -1966,15 +1966,11 @@ impl SuturaApp {
         // its dialogs. Panels with nothing to say collapse to nothing, so a
         // fresh launch is the table plus two rows.
 
-        const SPACE_8: f32 = 8.0;
-        const SPACE_16: f32 = 16.0;
-
         let mut add_files = false;
         let mut add_folder = false;
         let mut clear_list = false;
         let mut cancel_clicked = false;
         let mut open_action: Option<(PathBuf, bool)> = None;
-        let mut open_heatmap = false;
         let mut open_compare = false;
 
         self.options_window(&ctx);
@@ -1994,146 +1990,22 @@ impl SuturaApp {
         // action row on the left, Analysis on the right); narrow ones stack,
         // which is exactly what the target shows.
 
-        // (6) No top panel: the title bar is the first row inside the main
-        // panel, so "Sutura", the version and the gear share the panel's left and
-        // right edges instead of floating above it.
+        // ---- Main window -----------------------------------------------------
+        //
+        // Cards sit directly on the window surface; there is no second rounded
+        // panel inside the window (it left a gutter on every edge and read as a
+        // window inside a window). On macOS the native title bar is transparent
+        // and the traffic lights sit inside our header row, so there is one
+        // header, not two.
+        //
+        //   header (title · version · gear)
+        //   notice (only when something is unavailable)
+        //   wide:   [ Files | action row | Preview ]   [ Report ]
+        //   narrow:   Files · action row · Preview · Report   (scrolls)
+        let header_inset = if cfg!(target_os = "macos") { 76.0 } else { 0.0 };
+        let mut toggle_heatmap = false;
+        let mut set_view: Option<ViewMode> = None;
         egui::containers::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(crate::theme::WINDOW)
-                    .inner_margin(egui::Margin::symmetric(
-                        crate::theme::GAP_24 as i8,
-                        crate::theme::GAP_0 as i8,
-                    )),
-            )
-            .show(ui, |ui| {
-                // The panel: centred, never wider than PANEL_MAX_W.
-                //
-                // The centring is done with the FRAME's margin, not an
-                // `add_space` inside a `horizontal`: that put the panel's width
-                // on top of the layout's item spacing, so the content ran past
-                // the right edge and the Repair button was cut off at 720 px.
-                let avail = ui.available_width();
-                // 16 px of gutter on each side, plus whatever centring is left.
-                let side = ((avail
-                    - crate::theme::PANEL_MAX_W
-                    - 2.0 * crate::theme::GAP_16)
-                    .max(0.0))
-                    / 2.0;
-                egui::Frame::new()
-                    .fill(crate::theme::WINDOW)
-                    .inner_margin(egui::Margin::symmetric(
-                        (side + crate::theme::GAP_16) as i8,
-                        0,
-                    ))
-                    .show(ui, |ui| {
-                        // The panel's content is taller than a 1000 px window
-                        // once a repair has a report, and a clipped result panel
-                        // hides the very rows the repair produced. Scrolling is
-                        // the window's job, so the panel scrolls rather than
-                        // growing past the frame.
-                        egui::ScrollArea::vertical()
-                            .id_salt("main_panel_scroll")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                        crate::theme::panel().show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            let width = ui.available_width();
-
-                            // The title bar, inside the panel.
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(rust_i18n::t!("app.title").to_string())
-                                        .size(crate::theme::FONT_TITLE)
-                                        .color(crate::theme::TEXT),
-                                );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if gear_button(ui)
-                                            .on_hover_text(
-                                                rust_i18n::t!("app.options_btn").to_string(),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.options_open = true;
-                                            self.options_tab = OptionsTab::Repair;
-                                        }
-                                        ui.add_space(crate::theme::GAP_16);
-                                        ui.label(
-                                            egui::RichText::new(format!("v{}", SUTURA_VERSION))
-                                                .size(crate::theme::FONT_BODY)
-                                                .color(crate::theme::TEXT_MUTED),
-                                        );
-                                    },
-                                );
-                            });
-                            // An unavailable part, in plain language, inside the
-                            // panel where it belongs. The old strip was a
-                            // full-width bar above the window reading
-                            // "1 method(s) unavailable: #7 skip", which is a
-                            // debug line, not something a user can act on.
-                            self.unavailable_notice(ui);
-                            ui.add_space(crate::theme::GAP_CARD);
-
-                            let wide = width >= crate::theme::TWO_COLUMN_MIN_W;
-                            if wide {
-                                let gap = crate::theme::GAP_CARD;
-                                let left_w = (ui.available_width() - gap) * 0.58;
-                                ui.horizontal_top(|ui| {
-                                    ui.vertical(|ui| {
-                                        ui.set_width(left_w);
-                                        self.files_card(ui, &mut add_files, &mut add_folder, &mut clear_list);
-                                        ui.add_space(gap);
-                                        self.action_row(ui, running, &mut cancel_clicked);
-                                    });
-                                    ui.add_space(gap);
-                                    ui.vertical(|ui| {
-                                        ui.set_width(ui.available_width());
-                                        self.analysis_card(ui);
-                                    });
-                                });
-                            } else {
-                                // Stacked: the target's own layout.
-                                self.files_card(ui, &mut add_files, &mut add_folder, &mut clear_list);
-                                ui.add_space(crate::theme::GAP_CARD);
-                                self.action_row(ui, running, &mut cancel_clicked);
-                                ui.add_space(crate::theme::GAP_CARD);
-                                self.analysis_card(ui);
-                            }
-
-                            // The progress hairline belongs under whichever
-                            // layout ran, full panel width.
-                            if let Some((name, step, total)) = self.repair_progress() {
-                                ui.add_space(crate::theme::GAP_16);
-                                ui.add(
-                                    egui::ProgressBar::new(step as f32 / total.max(1) as f32)
-                                        .desired_height(crate::theme::PROGRESS_H)
-                                        .corner_radius(0)
-                                        .fill(crate::theme::ACCENT)
-                                        .animate(false),
-                                );
-                                ui.add_space(crate::theme::GAP_8);
-                                ui.label(
-                                    egui::RichText::new(
-                                        rust_i18n::t!(
-                                            "app.repairing_stage",
-                                            name = name,
-                                            step = step as i64,
-                                            total = total as i64
-                                        )
-                                        .to_string(),
-                                    )
-                                    .size(crate::theme::FONT_SECTION)
-                                    .color(crate::theme::TEXT_MUTED),
-                                );
-                            }
-                        });
-                            });
-                    });
-            });
-
-        egui::containers::Panel::bottom("bottom")
             .frame(
                 egui::Frame::new()
                     .fill(crate::theme::WINDOW)
@@ -2143,39 +2015,171 @@ impl SuturaApp {
                     )),
             )
             .show(ui, |ui| {
-                let has_result = self
-                    .selected
-                    .and_then(|i| self.files.get(i))
-                    .map(|e| e.result.is_some())
-                    .unwrap_or(false);
+                // Header. With a transparent title bar the window is dragged from
+                // here, so the empty part of the row starts a window drag.
+                let mut drag_rect: Option<egui::Rect> = None;
                 ui.horizontal(|ui| {
-                    ui.add_space(
-                        ((ui.available_width() - crate::theme::PANEL_MAX_W).max(0.0) / 2.0)
-                            .max(0.0),
+                    ui.set_min_height(crate::theme::HEADER_H);
+                    ui.add_space(header_inset);
+                    ui.label(
+                        egui::RichText::new(rust_i18n::t!("app.title").to_string())
+                            .size(crate::theme::FONT_TITLE)
+                            .color(crate::theme::TEXT),
                     );
-                    if ui
-                        .add_enabled(
-                            has_result,
-                            secondary_button(rust_i18n::t!("app.show_heatmap").to_string()),
-                        )
-                        .clicked()
-                    {
-                        open_heatmap = true;
-                    }
-                    if ui
-                        .add_enabled(
-                            has_result,
-                            secondary_button(
-                                rust_i18n::t!("app.show_before_after").to_string(),
-                            ),
-                        )
-                        .clicked()
-                    {
-                        open_compare = true;
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if gear_button(ui)
+                            .on_hover_text(rust_i18n::t!("app.options_btn").to_string())
+                            .clicked()
+                        {
+                            self.options_open = true;
+                            self.options_tab = OptionsTab::Repair;
+                        }
+                        ui.add_space(crate::theme::GAP_16);
+                        // Qt had an About button on the main window; the
+                        // redesign dropped it and left no way to open the dialog.
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(rust_i18n::t!("app.about").to_string())
+                                        .size(crate::theme::FONT_SECTION)
+                                        .color(crate::theme::TEXT_MUTED),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            self.about_open = true;
+                        }
+                        ui.add_space(crate::theme::GAP_8);
+                        ui.label(
+                            egui::RichText::new(format!("v{}", SUTURA_VERSION))
+                                .size(crate::theme::FONT_SECTION)
+                                .color(crate::theme::TEXT_FAINT),
+                        );
+                        // Whatever is left between the title and these controls
+                        // is the drag handle. It must not overlap the buttons: a
+                        // drag area laid over the whole row swallowed their
+                        // clicks (About and the gear did nothing).
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), crate::theme::HEADER_H),
+                            egui::Sense::hover(),
+                        );
+                        drag_rect = Some(rect);
+                    });
+                });
+                let drag = ui.interact(
+                    drag_rect.unwrap_or(egui::Rect::NOTHING),
+                    egui::Id::new("header_drag"),
+                    egui::Sense::click_and_drag(),
+                );
+                if drag.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if drag.double_clicked() {
+                    let max = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+                }
+                ui.add_space(crate::theme::GAP_8);
+
+                // Centre the content and cap its width on very wide screens.
+                let avail = ui.available_width();
+                // First launch (no files): one calm, centred column with the drop
+                // area and the actions. The report and preview only appear once
+                // there is something to show.
+                let empty = self.files.is_empty();
+                let max_w = if empty {
+                    crate::theme::EMPTY_MAX_W
+                } else {
+                    crate::theme::CONTENT_MAX_W
+                };
+                let content_w = avail.min(max_w);
+                let side = ((avail - content_w) / 2.0).max(0.0);
+                let wide = !empty && content_w >= crate::theme::TWO_COLUMN_MIN_W;
+                let gap = crate::theme::GAP_CARD;
+
+                ui.horizontal_top(|ui| {
+                    ui.add_space(side);
+                    ui.vertical(|ui| {
+                        ui.set_width(content_w);
+                        // Same width as the cards under it.
+                        self.unavailable_notice(ui);
+                        if wide {
+                            let left_w = ((content_w - gap) * 0.56).floor();
+                            let right_w = content_w - gap - left_w;
+                            let full_h = ui.available_height();
+                            ui.horizontal_top(|ui| {
+                                // Left: what you work on.
+                                ui.vertical(|ui| {
+                                    ui.set_width(left_w);
+                                    self.files_card(ui, &mut add_files, &mut add_folder, &mut clear_list);
+                                    ui.add_space(gap);
+                                    self.action_row(ui, running, &mut cancel_clicked);
+                                    self.progress_line(ui);
+                                    // No files: no preview. An empty viewer under an
+                                    // empty table only repeated the drop hint.
+                                    if !self.files.is_empty() {
+                                        ui.add_space(gap);
+                                        // Leave the window's bottom margin free so the
+                                        // card's lower edge is never cut off.
+                                        let h = (ui.available_height() - crate::theme::GAP_16)
+                                            .max(crate::theme::PREVIEW_MIN_H);
+                                        self.preview_card(ui, h, &mut toggle_heatmap, &mut set_view, &mut open_compare);
+                                    }
+                                });
+                                ui.add_space(gap);
+                                // Right: what came out. Scrolls on its own so a
+                                // long report never pushes the left column.
+                                ui.vertical(|ui| {
+                                    ui.set_width(right_w);
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("report_scroll")
+                                        .max_height((full_h - crate::theme::GAP_16).max(200.0))
+                                        .auto_shrink([false, true])
+                                        .show(ui, |ui| {
+                                            self.analysis_card(ui, &mut open_action);
+                                        });
+                                });
+                            });
+                        } else {
+                            egui::ScrollArea::vertical()
+                                .id_salt("main_scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    self.files_card(ui, &mut add_files, &mut add_folder, &mut clear_list);
+                                    ui.add_space(gap);
+                                    self.action_row(ui, running, &mut cancel_clicked);
+                                    self.progress_line(ui);
+                                    if !self.files.is_empty() {
+                                        ui.add_space(gap);
+                                        self.preview_card(ui, crate::theme::PREVIEW_STACKED_H, &mut toggle_heatmap, &mut set_view, &mut open_compare);
+                                    }
+                                    if !self.files.is_empty() {
+                                        ui.add_space(gap);
+                                        self.analysis_card(ui, &mut open_action);
+                                    }
+                                    ui.add_space(gap);
+                                });
+                        }
+                    });
                 });
             });
 
+        if toggle_heatmap {
+            self.preview.heatmap = !self.preview.heatmap;
+            // The two colourings paint the same faces; only one at a time.
+            if self.preview.heatmap {
+                self.preview.defect_colors = false;
+            }
+            self.preview.dirty = true;
+        }
+        if let Some(view) = set_view {
+            if let Some(entry) = self.selected.and_then(|i| self.files.get_mut(i)) {
+                entry.view = view;
+            }
+        }
+        if open_compare {
+            self.pending_compare = true;
+        }
         if add_files {
             if let Some(paths) = rfd::FileDialog::new()
                 .add_filter("Meshes", &["stl", "obj", "ply", "3mf"])
@@ -2977,38 +2981,162 @@ impl SuturaApp {
         // the columns, not the buttons.
         ui.horizontal(|ui| {
             analyze(self, ui);
-            // Once there is a repaired file and a slicer, the next thing a user
-            // does is open it. Qt offered this from the context menu only; the
-            // action row is where the result is, so it belongs here too.
-            let has_output = self
-                .selected
-                .and_then(|i| self.files.get(i))
-                .map(|e| e.output.is_some())
-                .unwrap_or(false);
-            if has_output && !self.slicers.is_empty() {
-                let installed = self.slicers.clone();
-                ui.menu_button(rust_i18n::t!("app.open_in_slicer").to_string(), |ui| {
-                    for (i, slicer) in installed.iter().enumerate() {
-                        if menu_action(ui, slicer.label.to_string()) {
-                            if let Some(idx) = self.selected {
-                                self.apply_row_action(RowAction::OpenInSlicer(idx, i));
-                            }
-                        }
-                    }
-                });
-            }
+            // "Open in…" lives on the output line in the report, next to
+            // "Open result" and "Show in folder": it acts on the repaired file,
+            // not on the selection.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 repair(self, ui, multi, can_repair, running, cancel_clicked)
             });
         });
     }
 
-    /// The Analysis card: label/value rows, an amber count where a count is a
-    /// problem, then the defects row and its list.
-    fn analysis_card(&mut self, ui: &mut egui::Ui) {
+    /// The progress hairline and its one status line, under the action row.
+    /// Nothing at all when no repair is running.
+    fn progress_line(&mut self, ui: &mut egui::Ui) {
+        let Some((name, step, total)) = self.repair_progress() else {
+            return;
+        };
+        ui.add_space(crate::theme::GAP_8);
+        ui.add(
+            egui::ProgressBar::new(step as f32 / total.max(1) as f32)
+                .desired_height(crate::theme::PROGRESS_H)
+                .corner_radius(2)
+                .fill(crate::theme::ACCENT)
+                .animate(false),
+        );
+        ui.add_space(crate::theme::GAP_8);
+        ui.label(
+            egui::RichText::new(
+                rust_i18n::t!(
+                    "app.repairing_stage",
+                    name = name,
+                    step = step as i64,
+                    total = total as i64
+                )
+                .to_string(),
+            )
+            .size(crate::theme::FONT_SECTION)
+            .color(crate::theme::TEXT_MUTED),
+        );
+    }
+
+    /// The live 3D preview in its own card, with the view controls on top:
+    /// Before / After (once there is a result), Heatmap (on the After view),
+    /// Defect colours, and the side-by-side comparison.
+    ///
+    /// The preview was built but no longer drawn after the layout rewrite, and
+    /// the bottom-row buttons that should have replaced it set flags nothing
+    /// read. This puts the viewer back where the empty space was.
+    fn preview_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        height: f32,
+        toggle_heatmap: &mut bool,
+        set_view: &mut Option<ViewMode>,
+        open_compare: &mut bool,
+    ) {
+        let (has_result, view) = self
+            .selected
+            .and_then(|i| self.files.get(i))
+            .map(|e| (e.result.is_some(), e.view))
+            .unwrap_or((false, ViewMode::Before));
         crate::theme::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            self.report_and_logs(ui, &mut None);
+            ui.horizontal(|ui| {
+                crate::theme::card_title(ui, rust_i18n::t!("app.preview").to_string());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if has_result {
+                        if ui
+                            .add(toggle_button(rust_i18n::t!("app.side_by_side").to_string(), false))
+                            .on_hover_text(rust_i18n::t!("app.compare_tip").to_string())
+                            .clicked()
+                        {
+                            *open_compare = true;
+                        }
+                        if view == ViewMode::After
+                            && ui
+                                .add(toggle_button(
+                                    rust_i18n::t!("app.heatmap_short").to_string(),
+                                    self.preview.heatmap,
+                                ))
+                                .clicked()
+                        {
+                            *toggle_heatmap = true;
+                        }
+                    }
+                    if ui
+                        .add(toggle_button(
+                            rust_i18n::t!("app.defect_colors").to_string(),
+                            self.preview.defect_colors,
+                        ))
+                        .clicked()
+                    {
+                        self.preview.defect_colors = !self.preview.defect_colors;
+                        if self.preview.defect_colors {
+                            self.preview.heatmap = false;
+                        }
+                        self.preview.dirty = true;
+                    }
+                    if has_result {
+                        ui.add_space(crate::theme::GAP_8);
+                        for (mode, key) in [
+                            (ViewMode::After, "app.after"),
+                            (ViewMode::Before, "app.before"),
+                        ] {
+                            if ui
+                                .add(toggle_button(rust_i18n::t!(key).to_string(), view == mode))
+                                .clicked()
+                            {
+                                *set_view = Some(mode);
+                            }
+                        }
+                    }
+                });
+            });
+            ui.add_space(crate::theme::GAP_8);
+            let w = ui.available_width();
+            let inner_h = (height - 2.0 * crate::theme::PAD_CARD - crate::theme::BUTTON_H - crate::theme::GAP_8)
+                .max(crate::theme::PREVIEW_MIN_H * 0.6);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, inner_h), egui::Sense::hover());
+            ui.painter().rect_filled(
+                rect,
+                egui::CornerRadius::same(crate::theme::RADIUS_BUTTON),
+                crate::theme::WINDOW,
+            );
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+            child.set_clip_rect(rect);
+            self.preview.show(&mut child);
+            // The heatmap is normalised over the 1st-99th percentile of the
+            // per-vertex distance to the original. When nearly nothing moved that
+            // range is zero and the ramp is one flat colour, which looked exactly
+            // like "the button does nothing". Say so instead.
+            if self.preview.heatmap && view == ViewMode::After && has_result {
+                let flat = self
+                    .preview
+                    .mesh
+                    .as_ref()
+                    .map(|m| m.dev_idx.iter().all(|&i| i == 0))
+                    .unwrap_or(true);
+                let key = if flat { "app.heatmap_flat" } else { "app.heatmap_legend" };
+                ui.painter().text(
+                    rect.right_bottom() + egui::vec2(-12.0, -10.0),
+                    egui::Align2::RIGHT_BOTTOM,
+                    rust_i18n::t!(key).to_string(),
+                    egui::FontId::proportional(crate::theme::FONT_SECTION),
+                    crate::theme::TEXT_MUTED,
+                );
+            }
+        });
+    }
+
+    /// The Analysis card: label/value rows, an amber count where a count is a
+    /// problem, then the defects row and its list.
+    fn analysis_card(&mut self, ui: &mut egui::Ui, open_action: &mut Option<(PathBuf, bool)>) {
+        crate::theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // A real slot, not `&mut None`: with a temporary here "Open result"
+            // and "Show in folder" set a value nobody read and did nothing.
+            self.report_and_logs(ui, open_action);
             self.batch_summary(ui);
             self.small_parts_section(ui);
             self.suggestions_block(ui);
@@ -3098,7 +3226,7 @@ impl SuturaApp {
             painter.text(
                 egui::pos2(c.x, c.y + 6.0),
                 egui::Align2::CENTER_CENTER,
-                rust_i18n::t!("app.drop_hint").to_string(),
+                rust_i18n::t!("app.drop_title").to_string(),
                 egui::FontId::proportional(crate::theme::FONT_BODY),
                 crate::theme::TEXT_MUTED,
             );
@@ -3383,6 +3511,9 @@ impl SuturaApp {
         open_action: &mut Option<(PathBuf, bool)>,
     ) {
         let mut cancel_in_panel = false;
+        // Set by the output row's "Open in…" menu; applied once the borrow of
+        // the selected entry has ended.
+        let mut slicer_pick: Option<usize> = None;
         // (3) The state belongs next to the title, not on a line of its own that
         // contradicts the analysis under it.
         let repaired = self
@@ -3824,6 +3955,22 @@ impl SuturaApp {
                 let mut open_result = false;
                 let mut reveal = false;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Right to left: "Open in…" (when a slicer exists), then
+                    // "Show in folder", then "Open result". Everything that acts
+                    // on the repaired file sits on the line that names it.
+                    if !self.slicers.is_empty() {
+                        let installed = self.slicers.clone();
+                        ui.menu_button(
+                            rust_i18n::t!("app.open_in_slicer").to_string(),
+                            |ui| {
+                                for (i, slicer) in installed.iter().enumerate() {
+                                    if menu_action(ui, slicer.label.to_string()) {
+                                        slicer_pick = Some(i);
+                                    }
+                                }
+                            },
+                        );
+                    }
                     if ui
                         .add(secondary_button(
                             rust_i18n::t!("app.show_in_folder").to_string(),
@@ -3863,6 +4010,9 @@ impl SuturaApp {
                     *open_action = Some((output.clone(), true));
                 }
             });
+        }
+        if let (Some(which), Some(idx)) = (slicer_pick, self.selected) {
+            self.apply_row_action(RowAction::OpenInSlicer(idx, which));
         }
     }
 
@@ -4259,23 +4409,35 @@ impl SuturaApp {
         let total_issues: usize = issue_counts.values().sum();
         ui.add_space(crate::theme::GAP_8);
         ui.horizontal(|ui| {
-            for (count, key, colour) in [
+            for count in [
                 (watertight, "app.sum_watertight", crate::theme::OK),
                 (warning, "app.sum_warning", crate::theme::WARN),
                 (failed, "app.sum_error", crate::theme::ERROR),
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                // A separator BETWEEN items only; it used to trail the last one.
+                if count.0 > 0 {
+                    ui.label(
+                        egui::RichText::new("·")
+                            .size(crate::theme::FONT_SECTION)
+                            .color(crate::theme::TEXT_FAINT),
+                    );
+                }
+                let (count, key, colour) = count.1;
                 ui.label(
                     egui::RichText::new(format!("{count} {}", rust_i18n::t!(key).to_string()))
                         .size(crate::theme::FONT_SECTION)
                         .color(colour),
                 );
+            }
+            if total_issues > 0 {
                 ui.label(
                     egui::RichText::new("·")
                         .size(crate::theme::FONT_SECTION)
                         .color(crate::theme::TEXT_FAINT),
                 );
-            }
-            if total_issues > 0 {
                 if ui
                     .add(
                         egui::Label::new(
@@ -6521,6 +6683,32 @@ fn finish_from_output_with(
 ///
 /// egui's bundled Ubuntu-Light has neither U+25B2/U+25BC nor U+2713 -- every one
 /// of those attempts drew a missing-glyph box -- so the arrow is drawn.
+/// A two-state button: outline when off, accent outline and tint when on.
+pub(crate) fn toggle_button(text: String, on: bool) -> egui::Button<'static> {
+    let (fill, stroke, colour) = if on {
+        (
+            crate::theme::ACCENT.gamma_multiply(0.18),
+            crate::theme::ACCENT,
+            crate::theme::TEXT,
+        )
+    } else {
+        (
+            egui::Color32::TRANSPARENT,
+            crate::theme::BUTTON_BORDER,
+            crate::theme::TEXT_MUTED,
+        )
+    };
+    egui::Button::new(
+        egui::RichText::new(text)
+            .size(crate::theme::FONT_SECTION)
+            .color(colour),
+    )
+    .fill(fill)
+    .stroke(egui::Stroke::new(crate::theme::BORDER_W, stroke))
+    .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BUTTON))
+    .min_size(egui::vec2(0.0, crate::theme::BUTTON_H - 6.0))
+}
+
 /// A secondary button: card height, control surface, hairline border.
 pub(crate) fn secondary_button(text: String) -> egui::Button<'static> {
     egui::Button::new(

@@ -81,12 +81,18 @@ app:
   file_methods_count: "%{count} method(s) applied"
   defect_colors: "Defect colours"
   defect_colors_tip: "Paint each face by its defect kind (non-manifold, duplicate, degenerate…). Needs a full diagnosis on first use."
+  drop_title: "Drop STL or 3MF files here"
   drop_hint: Drop STL or 3MF files here, or use Add files
   repair_running: Repairing…
   triangles: "%{count} triangles"
   lang_system: System
   lang_english: English
   lang_turkish: Turkish
+  preview: "Preview"
+  heatmap_flat: "Almost nothing moved: no measurable change from the original"
+  heatmap_legend: "Heatmap: blue unchanged, red moved most"
+  heatmap_short: "Heatmap"
+  side_by_side: "Side by side"
   before: Before
   after: After
   open_result: Open result
