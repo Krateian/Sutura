@@ -1036,7 +1036,6 @@ impl SuturaApp {
             changelog_open: false,
             changelog_error: None,
             compare: None,
-            focus: None,
             options_open: false,
             options_tab: OptionsTab::Repair,
             options_scroll: None,
