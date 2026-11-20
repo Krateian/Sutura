@@ -29,7 +29,7 @@ jobs:
       - name: Build release CLI
         working-directory: rust
         run: cargo build --release -p sutura-cli
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: rust-ab-baseline, path: rust/target/release/sutura, retention-days: 3 }
 
   build-candidate:
@@ -41,7 +41,7 @@ jobs:
       - name: Build release CLI
         working-directory: rust
         run: cargo build --release -p sutura-cli
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: rust-ab-candidate, path: rust/target/release/sutura, retention-days: 3 }
 
   gate:

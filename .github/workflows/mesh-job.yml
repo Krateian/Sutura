@@ -85,9 +85,9 @@ jobs:
         if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
         working-directory: rust
         run: cargo build --release -p sutura-cli
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: wheel-base, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
         with: { name: sutura-cli-base, path: rust/target/release/sutura, retention-days: 3 }
   build-cand:
@@ -123,12 +123,12 @@ jobs:
             echo "candidate has no sutura-py crate; bridge wheel skipped"
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: wheel-cand, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
         with: { name: sutura-cli-cand, path: rust/target/release/sutura, retention-days: 3 }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.bridge.outputs.present == 'true'
         with: { name: wheel-cand-py, path: rust/sutura-py/dist/*.whl, retention-days: 3 }
   # The harness, the shard/board scripts and the geometry kernel they import
@@ -147,7 +147,7 @@ jobs:
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: wheel-tools, path: rust/sutura-geom/dist/*.whl, retention-days: 3 }
   shard:
     needs: [preflight, build-base, build-cand, build-tools]
@@ -291,7 +291,7 @@ jobs:
         if: failure()
         run: |
           [ -f error.json ] && cat error.json >> "$GITHUB_STEP_SUMMARY" || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: 'summary-${{ matrix.set }}-${{ matrix.mode }}-${{ matrix.shard }}'
@@ -299,7 +299,7 @@ jobs:
             shard-*.json
             shard-*.log
           retention-days: 7
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with: { name: 'error-${{ matrix.set }}-${{ matrix.mode }}-${{ matrix.shard }}', path: error.json, retention-days: 7, if-no-files-found: ignore }
   aggregate:
@@ -343,7 +343,7 @@ jobs:
           cat board.md >> "$GITHUB_STEP_SUMMARY"
       # Upload the board before the verdict check so a failing run still
       # leaves the board to read.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: board, path: board.md, retention-days: 7 }
       - name: Verdict check (fails on WORSE/ERROR/MISSING/TIMEOUT)
         if: inputs.report_only != '1'
