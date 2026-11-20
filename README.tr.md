@@ -45,6 +45,18 @@ platformda doldurur: mesh'i seçin, onarın ve dilimleyicilerin kabul ettiği
 onarılmış bir kopya alın — GUI'den, komut satırından, dosya yöneticisinde sağ
 tıkla ya da bir OrcaSlicer eklentisiyle.
 
+> **0.9.10'da yeni**
+>
+> - **Baştan sona Rust.** Paket Python veya PyMeshLab gerektirmez: yerel CLI,
+>   yerel egui GUI, Rust geometri çekirdeği, platform başına tek paket.
+> - **Kurulumun küçük bir kısmı.** 20–24 MB indirme ve yaklaşık 45–66 MB
+>   kurulum; Python 0.9.9 paketinin yaklaşık 195–203 MB indirmesine ve macOS'ta
+>   459.5 MB kurulumuna karşı.
+> - **Aynı girdi, aynı baytlar.** macOS arm64 ve Linux x86_64 aynı mesh için
+>   bayt bayt aynı çıktıyı verir (MD5 eşleşir).
+> - **Her şey pakette.** fTetWild pakette gelir; Dolphin ve Finder sağ tık
+>   onarımı ekler, OrcaSlicer 2.5.0+ eklentisi kullanılabilir (deneysel).
+
 <p align="center">
   <img src="assets/screenshot.png" alt="Sutura ana penceresi" width="820">
 </p>
@@ -67,16 +79,20 @@ tıkla ya da bir OrcaSlicer eklentisiyle.
   söyler; Sağlık, Risk ve Sadakat puanları **Ayrıntılar** arkasında sunulur.
 - **Çok araç, tek düğme.** On dokuz kayıtlı onarım yöntemi tek bir *Onar*
   düğmesinin arkasındadır; triage motoru etkin olanlar arasından seçer.
-- **Yerel ve çevrimdışı.** Geometriyi Rust çekirdeği (`sutura_geom`) yapar;
-  kurulumdan sonra internet bağlantısı gerekmez.
+- **Rust ile yerel ve çevrimdışı.** CLI, GUI ve geometri çekirdeği Rust'tır;
+  paket Python veya PyMeshLab gerektirmez ve kurulumdan sonra internet
+  istemez.
+- **İki ana hedefte aynı baytlar.** macOS arm64 ve Linux x86_64 aynı girdi
+  için bayt bayt aynı çıktıyı verir (MD5 eşleşir).
 - **İş akışına uyar.** KDE'de Dolphin servis menüsü, macOS'ta Finder Quick
   Action, deneysel bir OrcaSlicer eklentisi (2.5.0+, ayrıca kurulur),
   toplu onarım ve çok nesneli 3MF.
 
 ## Kurulum
 
-Sutura yerel bir programdır: Python, sanal ortam ve conda yoktur.
-**Linux (x86_64, aarch64)** ve **macOS (Apple Silicon, Intel)** üzerinde çalışır.
+Sutura yerel bir Rust programıdır: Python, sanal ortam, conda ve PyMeshLab
+yoktur. **Linux (x86_64, aarch64)** ve **macOS (Apple Silicon, Intel)** üzerinde
+çalışır.
 
 Makineniz için paketi
 [sürümler sayfasından](https://github.com/Krateian/Sutura/releases/latest)
@@ -91,10 +107,6 @@ Her paket yanında bir `.sha256` taşır ve kurulumcu bunu doğrular. İki
 kurulumcu da mimarinizi algılar, bu yüzden yanlış paketi tahmin etmek yerine
 reddeder; `--dry-run` neyin yazılacağını yazdırır.
 
-> Rust paketleri bugün iş akışı çıktısı olarak derleniyor — derleme henüz bir
-> sürüm oluşturmuyor. İlk Rust sürümü yayımlanana kadar kurulumcular yanlarına
-> koyduğunuz bir paketle çalışır.
-
 Gereksinimler, bütünlük kontrolü, güncelleme ve kaldırma
 [Kurulum ve gereksinimler](docs/guide/tr/install.md) sayfasında anlatılır.
 
@@ -102,24 +114,16 @@ Gereksinimler, bütünlük kontrolü, güncelleme ve kaldırma
 
 Bir Python kurulumu yeniden kurulmaz, taşınır: geçmiş ve öğrenme verileriniz
 aktarılır, önceki kurulum geri dönebileceğiniz bir yerde saklanır ve yeni sürüm
-sağlık kontrolünü geçmeden hiçbir şey silinmez. Son Python sürümü kendi kendine
-devredebilir veya doğrudan çalıştırabilirsiniz — bkz.
+sağlık kontrolünü geçmeden hiçbir şey silinmez. Bkz.
 [Python sürümünden geçiş](MIGRATE.tr.md).
 
-### Arka uç seçimi (geçiş)
+### Python arka ucu (kullanımdan kaldırıldı)
 
-CLI, GUI ve tüm giriş noktaları varsayılan olarak Rust işlem hattını kullanır.
-Önceki Python arka ucu bir sürüm boyunca kullanılabilir kalır:
-
-```sh
-SUTURA_BACKEND=python sutura model.stl      # ortam değişkeni
-sutura --backend python model.stl          # başlatıcı bayrağı (ortam değişkenini ezer)
-```
-
-`--backend` bir **başlatıcı** bayrağıdır: `~/.local/bin/sutura` başlatıcısı onu
-okur ve eski Python giriş noktasını çalıştırır. Rust ikili dosyası bu bayrağı
-kabul etmez. Python arka ucu tek satırlık bir kullanımdan kaldırma notu basar ve
-sonraki sürümde kaldırılır.
+Paket Python gerektirmez. Bir sürüm boyunca eski bir Python kurulumu
+`SUTURA_BACKEND=python` veya başlatıcı bayrağı `sutura --backend python` ile
+seçilebilir; bayrağı başlatıcı (`~/.local/bin/sutura`) okur, Rust ikilisi kabul
+etmez. Tek satırlık bir kullanımdan kaldırma notu basar ve sonraki sürümde
+kaldırılır.
 
 ## Kullanım
 
@@ -141,6 +145,37 @@ sutura --update         # kur — önce sorar, varsayılan yanıt hayırdır
 sutura --rollback       # en yeni yedeği geri yükle
 sutura --whats-new      # son kurulumun sürüm notları, çevrimdışı
 ```
+
+- **GUI:** uygulama menüsünden veya Spotlight'tan *Sutura*'yı açın, dosya ekleyin
+  (veya sürükleyip bırakın) ve **Onar**'a basın.
+- **KDE Dolphin:** bir modele sağ tıklayın → **Repair with Sutura**.
+- **macOS Finder:** sağ tık → *Quick Actions* → **Sutura — Repair**.
+- **Bir şeyler ters giderse:** sert bir çökme, Sutura'nın kullanıcı verisi
+  klasöründe sınırlı boyutlu bir `crash.log` bırakır; yakalanmayan hatalar kısa
+  bir iletişim penceresi gösterir, yerel çökme ise günlüğü bir sonraki açılışa
+  bırakır. `sutura --diagnostics out.zip` temizlenmiş bir kopyayı hata
+  bildirimine eklenmek üzere paketler. Günlük, siz eklemedikçe makineden
+  çıkmaz. Bkz. [Sorun giderme](docs/guide/tr/troubleshooting.md).
+- **3MF boya, dikiş ve destekler mümkün olduğunca korunur.** Değişmeden kalan
+  üçgenlerde kalır; yeni oluşturulan üçgenlere hiçbiri atanmaz. Onarım bunları
+  kaybettiğinde rapor bunu korunan / düşen / yeni sayılarıyla söyler. Bkz.
+  [Kullanım](docs/guide/tr/usage.md).
+- **Ayrı küçük parçalar raporlanır, sessizce değiştirilmez.** Rapor, onarımın
+  kaldırdığı küçük bileşenleri (etkin Aşama 1 küçük parça eşiğinin altında,
+  `mincomponentsize`; varsayılan 8 yüz) boyutları ve ana gövdeye uzaklıklarıyla
+  listeler; korunan küçük ayrı parçaları da (bilgilendirme, hüküm değişmez)
+  listeler — hiçbir şeyi silmeden. Bkz. [Kullanım](docs/guide/tr/usage.md).
+- **Onarım başına tek hüküm.** Hem CLI hem GUI tek bir başlık hükmü gösterir
+  (şekil kontrolü dahil); tam rapor **Ayrıntılar** arkasında ve İngilizce ile
+  Türkçe olarak sunulur. Bkz. [Kullanım](docs/guide/tr/usage.md).
+- **Son çare katı motor (deneysel):** `--solid-engine cdt|ftetwild`, başka her
+  şey başarısız olduğunda kullanılan yeniden inşayı seçer (Options → Repair
+  altında da vardır ve entegrasyonlara geçer). Varsayılan **fTetWild** olarak
+  kalır; `cdt` deneysel ve kesin bir yeniden inşadır, Coaptation'dan sonra ve
+  fTetWild'dan önce çalışır, başarısız olur veya zaman aşımına uğrarsa
+  fTetWild'a döner. Şimdilik yavaştır: birkaç bin yüzlü modellerde bile zaman
+  sınırı içinde bitmez ve Sutura otomatik olarak fTetWild'a döner. Küçük veya
+  basit modellerde ya da özgün yüzey tam olarak korunmak istendiğinde kullanın.
 
 ## Nasıl çalışır
 
@@ -190,7 +225,7 @@ Sutura, havacılık bakımında tam zamanlı bir işin yanında tek bir gelişti
 tarafından sürdürülür. Sürümler sabit bir takvime bağlı değildir: çalışmalar
 sürekli olarak `main`'e eklenir ve bir grup iş hazır olduğunda sürüm çıkarılır;
 bu yüzden düzenli bir sürüm temposu beklenmemelidir. Proje aktif olarak
-geliştirilmektedir; Linux tek satırlık kurulum her zaman `main`'i takip eder.
+geliştirilmektedir; sürüm paketleri Rust ağacından derlenir.
 
 ## Katkı
 

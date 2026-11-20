@@ -25,17 +25,18 @@ lifecycle debounce and the notification de-duplication. It remains an
 early-stage feature: treat it as a verified starting point, not a
 guaranteed-working product, and report issues (see "Feedback" below).
 
-## Platform: Linux primary, macOS bonus verification
+## Platform: Linux and macOS
 
 - On **both** Linux and macOS the Sutura CLI is installed at the **same path,
-  `~/.local/bin/sutura`** (`install.sh` on Linux, `install-macos.sh` on macOS;
-  only the Python interpreter behind the wrapper differs).
+  `~/.local/bin/sutura`** (`install-rust.sh` on Linux, `install-macos-rust.sh`
+  on macOS).
 - Windows is not supported.
-- macOS-specific behaviour: the repaired file is loaded back with the native
-  `open -b com.orcaslicer.OrcaSlicer <path>` (bundle-ID matching, skipped when
-  more than one OrcaSlicer process is running); Linux uses
-  `orca-slicer --single-instance <path>` (the binary name can be overridden
-  with the `ORCA_BIN` environment variable).
+- macOS loads the repaired file back with the native `open -b
+  com.orcaslicer.OrcaSlicer <path>` (bundle-ID matching, skipped when more than
+  one OrcaSlicer process is running). Linux loads it back onto the plate through
+  OrcaSlicer's D-Bus listener.
+- **Verified reload.** Linux reload is verified with OrcaSlicer 2.5.1 Flatpak on
+  SteamOS (`5d53f74`), and the macOS reload is verified on 2.5.1.
 
 **File name.** The single file is `sutura_repair_linux_x86_64.py`. That name
 reflects the OrcaCloud/plugin naming convention, not a platform restriction —
@@ -179,8 +180,8 @@ rather than by a declaration.
 
 ## Install (OrcaSlicer 2.5.0+)
 
-1. Install Sutura first: `./install.sh` (Linux) or `install-macos.sh` (macOS),
-   so `~/.local/bin/sutura` exists.
+1. Install Sutura first with `install-rust.sh` (Linux) or
+   `install-macos-rust.sh` (macOS), so `~/.local/bin/sutura` exists.
 2. Copy the plugin folder into OrcaSlicer's plugin dir:
 
    ```sh
@@ -212,8 +213,8 @@ Plugins dialog without the manual copy.
   Ctrl/Cmd+Z to remove it (OrcaSlicer records a "Load File" undo snapshot).
 - Because the export is in world coordinates, OrcaSlicer may re-centre the
   imported object on reload (or drop it on some builds), which places it on
-  top of the original. The exact placement after reload has not yet been verified
-  on 2.5.x (owner live test pending); the A (Arrange) shortcut is the
+  top of the original. Reload is verified on 2.5.1 on Linux and macOS, but
+  other 2.5.x builds may still re-centre; the A (Arrange) shortcut is the
   intended way to separate the copy.
 - The export is a per-object triangle soup of its model parts; Sutura repairs
   the union surface. Overlapping or intentionally separate parts are treated

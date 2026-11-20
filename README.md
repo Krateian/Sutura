@@ -44,6 +44,19 @@ available on Linux or macOS. Sutura fills that gap on both: pick a mesh, repair
 it, and get a repaired copy that slicers accept — from a GUI, the command line,
 a file-manager right-click or an OrcaSlicer plugin.
 
+> **What's new in 0.9.10**
+>
+> - **Rust all the way down.** The package needs no Python or PyMeshLab:
+>   native CLI, native egui GUI, Rust geometry core, one package per platform.
+> - **A fraction of the install.** 20–24 MB download and about 45–66 MB
+>   installed, versus about 195–203 MB download and 459.5 MB installed on macOS
+>   for the Python 0.9.9 package.
+> - **Same input, same bytes.** macOS arm64 and Linux x86_64 produce
+>   byte-identical output for the same mesh (matching MD5).
+> - **Everything in the box.** fTetWild ships in the package; Dolphin and
+>   Finder add right-click repair, and the OrcaSlicer 2.5.0+ plugin is
+>   available (experimental).
+
 <p align="center">
   <img src="assets/screenshot.png" alt="Sutura main window" width="820">
 </p>
@@ -66,16 +79,20 @@ a file-manager right-click or an OrcaSlicer plugin.
   risk, and fidelity scores behind **Details**.
 - **Many tools, one button.** Nineteen registered repair methods sit behind a
   single *Repair* button; the triage engine picks from the enabled ones.
-- **Native and offline.** A Rust core (`sutura_geom`) does the geometry; no
-  network access is needed after installation.
+- **Rust-native and offline.** The CLI, the GUI and the geometry core are
+  Rust; the package needs no Python or PyMeshLab and no network after
+  installation.
+- **Same bytes on the two primary targets.** macOS arm64 and Linux x86_64
+  produce byte-identical output for the same input (matching MD5).
 - **Fits the workflow.** Dolphin service menu on KDE, Finder Quick Action on
   macOS, an experimental OrcaSlicer plugin (2.5.0+, installed
   separately), batch repair and multi-object 3MF.
 
 ## Install
 
-Sutura is a native program: no Python, no virtualenv, no conda. It runs on
-**Linux (x86_64, aarch64)** and **macOS (Apple Silicon, Intel)**.
+Sutura is a native Rust program: no Python, no virtualenv, no conda, no
+PyMeshLab. It runs on **Linux (x86_64, aarch64)** and **macOS (Apple Silicon,
+Intel)**.
 
 Download the package for your machine from the
 [releases page](https://github.com/Krateian/Sutura/releases/latest), put the
@@ -90,35 +107,23 @@ Every package ships a `.sha256` beside it, and the installer verifies it. Both
 installers detect your architecture, so they refuse the wrong package instead of
 guessing; `--dry-run` prints what would be written.
 
-> The Rust packages are built as workflow artifacts today — the build creates no
-> release yet. Until the first Rust release is published, the installers work
-> with a package you place beside them.
-
 Requirements, the integrity check, updates and uninstalling are covered in
 [Install and requirements](docs/guide/install.md).
 
-### Upgrading from the Python version
+### Coming from the Python version
 
 A Python install is migrated, not reinstalled: your history and learning data
 carry over, the previous install is saved where you can get back to it, and
-nothing is removed until the new build has passed its health check. The last
-Python release can hand over by itself, or you can run it directly — see
+nothing is removed until the new build has passed its health check. See
 [Moving from the Python version](MIGRATE.md).
 
-### Backend selection (transition)
+### Python backend (deprecated)
 
-The CLI, the GUI and every entry point use the Rust pipeline by default. The
-previous Python backend stays available for one release:
-
-```sh
-SUTURA_BACKEND=python sutura model.stl      # environment variable
-sutura --backend python model.stl          # launcher flag (wins over the env)
-```
-
-`--backend` is a **launcher** flag: the launcher (`~/.local/bin/sutura`) reads
-it and starts the legacy Python entry point. The Rust binary itself does not
-accept it. The Python backend prints a one-line deprecation note and will be
-removed in the next release.
+The package itself needs no Python. For one release, a legacy Python install
+can still be selected with `SUTURA_BACKEND=python` or the launcher flag
+`sutura --backend python`; the launcher (`~/.local/bin/sutura`) reads the flag,
+the Rust binary does not. It prints a one-line deprecation note and is removed
+in the next release.
 
 ## Use
 
@@ -223,7 +228,7 @@ Sutura is developed by a single maintainer alongside a full-time role in
 aircraft maintenance. Releases do not follow a fixed schedule: work is merged
 into `main` continuously and a release is cut when a batch of it is ready, so a
 regular release cadence should not be expected. The project is actively
-developed; the Linux one-line installer always tracks `main`.
+developed; release packages are built from the Rust tree.
 
 ## Contributing
 
