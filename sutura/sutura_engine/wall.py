@@ -213,9 +213,37 @@ def estimate_wall_thickness(verts, tris, resolution=DEFAULT_GRID_RESOLUTION,
     Returns ``{'per_vertex', 'min', 'median', 'mean', 'min_thickness',
     'thin_count', 'resolution', 'method'}``. ``per_vertex`` is a float array
     usable directly as a heatmap-ready per-vertex value.
+
+    **Single source:** this calls the Rust kernel
+    (``sutura_geom.wall_estimate_thickness``), which is byte-identical to the
+    NumPy implementation below (verified: ``per_vertex`` md5
+    ``156810316e613d2e3e69af2241757d49`` on a private sample). The NumPy path is
+    kept only as a fallback for an older ``sutura_geom`` build; it must not
+    diverge, and is covered by the same byte gate.
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
+    if hasattr(sutura_geom, 'wall_estimate_thickness'):
+        per_vertex, meta = sutura_geom.wall_estimate_thickness(
+            verts, tris, resolution=int(resolution), samples=int(samples),
+            seed=0, min_thickness=min_thickness)
+        return {
+            'per_vertex': np.asarray(per_vertex, dtype=np.float64),
+            'min': float(meta['min']),
+            'median': float(meta['median']),
+            'mean': float(meta['mean']),
+            'min_thickness': float(meta['min_thickness']),
+            'thin_count': int(meta['thin_count']),
+            'resolution': int(meta['resolution']),
+            'method': str(meta['method']),
+        }
+    return _estimate_wall_thickness_numpy(
+        verts, tris, resolution, samples, min_thickness)
+
+
+def _estimate_wall_thickness_numpy(verts, tris, resolution, samples,
+                                   min_thickness):
+    """The original NumPy implementation. Fallback only; see the docstring above."""
     diag = _diag(verts) if len(verts) else 0.0
     grid = build_sdf_grid(verts, tris, resolution=resolution, samples=samples)
     pts, nrm = sample_surface(verts, tris, n_samples=samples)
@@ -361,9 +389,29 @@ def thicken_to_min(verts, tris, min_thickness=None,
     target is returned unchanged. The whole surface is offset (this is a true
     morphological dilation, not an outer-surface-preserving offset), so thin
     features are guaranteed to gain material.
+
+    **Single source:** this calls the Rust kernel
+    (``sutura_geom.wall_thicken_to_min``), byte-identical to the NumPy
+    implementation below (verified on a private sample: verts md5
+    ``dd40320a292e9a40838235b4be3ae1d5``, faces md5
+    ``d2687e326343c7c5ba614975a0d86687``). The NumPy path is a fallback for an
+    older ``sutura_geom`` build.
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
+    if hasattr(sutura_geom, 'wall_thicken_to_min'):
+        out_v, out_t, rep = sutura_geom.wall_thicken_to_min(
+            verts, tris, min_thickness=min_thickness,
+            resolution=int(resolution), samples=int(samples), seed=0)
+        report = dict(rep)
+        report.setdefault('notes', [])
+        return (np.asarray(out_v, dtype=np.float64),
+                np.asarray(out_t, dtype=np.int64), report)
+    return _thicken_to_min_numpy(verts, tris, min_thickness, resolution, samples)
+
+
+def _thicken_to_min_numpy(verts, tris, min_thickness, resolution, samples):
+    """The original NumPy implementation. Fallback only; see the docstring above."""
     diag = _diag(verts)
     target = min_thickness if min_thickness else DEFAULT_MIN_THICKNESS_REL * diag
     before = estimate_wall_thickness(

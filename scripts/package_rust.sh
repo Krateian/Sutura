@@ -14,7 +14,14 @@
 #
 # Usage:
 #   scripts/package_rust.sh --platform macos-arm64
+#   scripts/package_rust.sh --platform macos-x86_64
 #   scripts/package_rust.sh --platform linux-x86_64
+#   scripts/package_rust.sh --platform linux-aarch64
+#
+# Every platform the Python distribution shipped has a target here. A missing
+# one is not just a packaging gap: `install::asset_name` returns None without it,
+# which silently disables `--check-update` and `--repair-install` on that
+# machine.
 #
 # Overridable environment:
 #   OUT_DIR        output directory (default: <repo>/dist)
@@ -40,10 +47,19 @@ done
 
 die() { echo "error: $*" >&2; exit 1; }
 
-[ -n "$PLATFORM" ] || die "--platform is required (macos-arm64 or linux-x86_64)"
+[ -n "$PLATFORM" ] || die "--platform is required (macos-arm64, macos-x86_64, linux-x86_64, linux-aarch64)"
 case "$PLATFORM" in
-    macos-arm64|linux-x86_64) ;;
-    *) die "unknown platform: $PLATFORM (expected macos-arm64 or linux-x86_64)" ;;
+    macos-arm64|macos-x86_64|linux-x86_64|linux-aarch64) ;;
+    *) die "unknown platform: $PLATFORM (expected macos-arm64, macos-x86_64, linux-x86_64 or linux-aarch64)" ;;
+esac
+
+# The arch label used in the asset name. It is the ONLY thing that separates a
+# macOS arm64 package from an Intel one (and the Linux pair likewise), so it must
+# match `install::asset_name` exactly or the updater will never find the file.
+case "$PLATFORM" in
+    macos-arm64|linux-arm64) ARCH="arm64" ;;
+    macos-x86_64|linux-x86_64) ARCH="x86_64" ;;
+    linux-aarch64) ARCH="aarch64" ;;
 esac
 
 # The product version still comes from repair.py while it is the single source
@@ -86,6 +102,16 @@ copy_payload() { # $1 = destination root
     if [ -f "$REPO_ROOT/docs/ATTRIBUTION.md" ]; then
         install -m 0644 "$REPO_ROOT/docs/ATTRIBUTION.md" "$root/ATTRIBUTION.md"
     fi
+    # The migration note must travel with the package: a user upgrading from the
+    # Python build needs to know where the old install went and how to get back,
+    # and they may not have the repository checked out at that moment.
+    if [ -f "$REPO_ROOT/MIGRATE.md" ]; then
+        install -m 0644 "$REPO_ROOT/MIGRATE.md" "$root/MIGRATE.md"
+    fi
+    # P10 launchers: Rust CLI/GUI by default, SUTURA_BACKEND=python legacy.
+    mkdir -p "$root/share/launchers"
+    install -m 0755 "$REPO_ROOT/bin/sutura" "$root/share/launchers/sutura"
+    install -m 0755 "$REPO_ROOT/bin/sutura-gui" "$root/share/launchers/sutura-gui"
     # Vendored third-party licences. These are the obligations ATTRIBUTION.md
     # points at, so they ship next to it rather than only in the repo.
     local lic
@@ -149,29 +175,45 @@ PLIST
         cp -R "$REPO_ROOT/share/Sutura Quick Action.workflow" "$res/"
     fi
 
-    # Ad-hoc signature, INSIDE OUT: the inner binaries first, `--deep` last.
-    # Signing the bundle before its children would invalidate the outer seal.
+    # Ad-hoc signature, INSIDE OUT: every executable in the bundle first, then
+    # the bundle itself. Deliberately **no** `--deep`: Apple deprecated it, and
+    # on the macOS 15 Intel runner it fails with
+    #
+    #   Contents/MacOS/sutura-gui: code object is not signed at all
+    #   In subcomponent: Contents/MacOS/ftetwild
+    #
+    # which is `--deep` refusing to sign an outer item while a nested
+    # executable is unsigned. Signing each binary explicitly and then the
+    # bundle seals the same way without depending on traversal order.
     # No notarization: that needs an Apple Developer ID, which this project does
     # not have (the Python .dmg was unsigned for the same reason).
     if command -v codesign >/dev/null 2>&1; then
-        codesign --force --sign - "$macos/sutura" >/dev/null
-        codesign --force --sign - "$macos/sutura-gui" >/dev/null
-        [ -n "$FTW" ] && codesign --force --sign - "$macos/ftetwild" >/dev/null
-        codesign --force --deep --sign - "$app" >/dev/null
-        echo "==> ad-hoc signed"
+        local signed=0
+        for bin in "$macos"/*; do
+            [ -f "$bin" ] || continue
+            [ -x "$bin" ] || continue
+            codesign --force --sign - "$bin" >/dev/null || {
+                echo "error: codesign failed for $bin" >&2; return 1
+            }
+            signed=$((signed + 1))
+        done
+        codesign --force --sign - "$app" >/dev/null || {
+            echo "error: codesign failed for $app" >&2; return 1
+        }
+        echo "==> ad-hoc signed ($signed executable(s) + bundle)"
     else
         echo "==> codesign unavailable; leaving the bundle unsigned"
     fi
 
     if command -v hdiutil >/dev/null 2>&1; then
-        local dmg="$OUT_DIR/Sutura-rust-v${VERSION}-arm64.dmg"
+        local dmg="$OUT_DIR/Sutura-rust-v${VERSION}-${ARCH}.dmg"
         rm -f "$dmg"
         hdiutil create -volname "Sutura" -srcfolder "$app" \
             -ov -format UDZO "$dmg" >/dev/null
         echo "==> $dmg ($(du -h "$dmg" | cut -f1))"
     else
         # No hdiutil (e.g. Linux CI): keep the .app tree for inspection.
-        local out="$OUT_DIR/Sutura-rust-v${VERSION}-arm64.app.tar.gz"
+        local out="$OUT_DIR/Sutura-rust-v${VERSION}-${ARCH}.app.tar.gz"
         tar -C "$WORK" -czf "$out" "Sutura.app"
         echo "==> $out ($(du -h "$out" | cut -f1))"
     fi
@@ -194,22 +236,22 @@ package_linux() {
     # share/sutura-app.desktop), with the venv python replaced by the binaries.
     sed 's#%HOME%/.local/share/sutura/open.sh#sutura#' \
         "$REPO_ROOT/share/sutura.desktop" > "$root/share/applications/sutura.desktop"
-    sed -e 's#%HOME%/.local/share/sutura/venv/bin/python %HOME%/.local/share/sutura/gui.py#sutura-gui#' \
+    sed -e 's#%HOME%/.local/bin/sutura-gui#sutura-gui#' \
         "$REPO_ROOT/share/sutura-app.desktop" > "$root/share/applications/sutura-app.desktop"
     if [ -f "$REPO_ROOT/assets/icon/sutura-256.png" ]; then
         install -m 0644 "$REPO_ROOT/assets/icon/sutura-256.png" \
             "$root/share/icons/hicolor/256x256/apps/sutura.png"
     fi
 
-    local out="$OUT_DIR/Sutura-rust-v${VERSION}-x86_64.tar.gz"
+    local out="$OUT_DIR/Sutura-rust-v${VERSION}-${ARCH}.tar.gz"
     rm -f "$out"
     tar -C "$WORK" -czf "$out" "Sutura"
     echo "==> $out ($(du -h "$out" | cut -f1))"
 }
 
-echo "==> packaging $PLATFORM (version $VERSION)"
+echo "==> packaging $PLATFORM (version $VERSION, arch $ARCH)"
 case "$PLATFORM" in
-    macos-arm64) package_macos ;;
-    linux-x86_64) package_linux ;;
+    macos-arm64|macos-x86_64) package_macos ;;
+    linux-x86_64|linux-aarch64) package_linux ;;
 esac
 echo "==> done; artifacts in $OUT_DIR"

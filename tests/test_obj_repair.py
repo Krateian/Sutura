@@ -20,6 +20,9 @@ import sys
 import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# `repair.main()` enables crash logging and creates `<data>/crash.log`
+# before doing any work, so every child must get a throwaway HOME.
+from _cli import cli_env  # noqa: E402
 REPAIR_PY = os.path.join(REPO, 'sutura', 'repair.py')
 MAKER = os.path.join(REPO, 'tests', 'make_broken_obj.py')
 
@@ -37,8 +40,8 @@ def _run_repair(path, env):
 def test_broken_obj_repairs():
     with tempfile.TemporaryDirectory(prefix='sutura-obj-') as tmp:
         src = os.path.join(tmp, 'broken.obj')
-        subprocess.run([sys.executable, MAKER, src], check=True)
-        env = dict(os.environ, SUTURA_DIR=tmp)
+        subprocess.run([sys.executable, MAKER, src], check=True, env=cli_env())
+        env = cli_env({'SUTURA_DIR': tmp})
         p = _run_repair(src, env)
         assert p.returncode == 0, p.stdout + p.stderr
         fixed = os.path.join(tmp, 'broken_fixed.obj')
@@ -63,13 +66,13 @@ def _repair_json(path, env):
 def test_material_references_flagged():
     with tempfile.TemporaryDirectory(prefix='sutura-obj-') as tmp:
         src = os.path.join(tmp, 'broken_mat.obj')
-        subprocess.run([sys.executable, MAKER, src, '--material'], check=True)
-        env = dict(os.environ, SUTURA_DIR=tmp)
+        subprocess.run([sys.executable, MAKER, src, '--material'], check=True, env=cli_env())
+        env = cli_env({'SUTURA_DIR': tmp})
         d = _repair_json(src, env)
         # cosmetic warning: the material flag must NOT change the category
         # vs the plain broken OBJ (same geometry); it only adds a field
         plain = os.path.join(tmp, 'broken.obj')
-        subprocess.run([sys.executable, MAKER, plain], check=True)
+        subprocess.run([sys.executable, MAKER, plain], check=True, env=cli_env())
         d_plain = _repair_json(plain, env)
         assert d['category'] == d_plain['category'], (d['category'],
                                                       d_plain['category'])
@@ -81,8 +84,8 @@ def test_material_references_flagged():
 def test_human_report_shows_material_line():
     with tempfile.TemporaryDirectory(prefix='sutura-obj-') as tmp:
         src = os.path.join(tmp, 'broken_mat.obj')
-        subprocess.run([sys.executable, MAKER, src, '--material'], check=True)
-        env = dict(os.environ, SUTURA_DIR=tmp)
+        subprocess.run([sys.executable, MAKER, src, '--material'], check=True, env=cli_env())
+        env = cli_env({'SUTURA_DIR': tmp})
         p = subprocess.run([sys.executable, REPAIR_PY, src, '--human'],
                            capture_output=True, text=True, env=env)
         assert 'Material:' in p.stdout, p.stdout

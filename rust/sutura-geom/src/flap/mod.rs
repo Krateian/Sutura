@@ -31,7 +31,7 @@ const ZERO_VOL_FRAC: f64 = 1e-3;
 
 // Deterministic work charges for the phases the profiled "FLAP TAIL" case
 // spends its time in. The exact-SI safety check (`patch_safety`) dominates
-// (broken_38558: 594 s for 4_556_806 charged units) and used to be free;
+// (a private sample: 594 s for 4_556_806 charged units) and used to be free;
 // charging it makes the preset `work_budget` a real bound. Every charge is a
 // pure function of the input and the preset, and a step that cannot pay its
 // charge is skipped *before* it runs -- there is no wall-clock anywhere.

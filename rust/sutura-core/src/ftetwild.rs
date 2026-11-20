@@ -78,6 +78,58 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// Where a user-installed binary lives: `<data>/bin/ftetwild`.
+///
+/// The GUI's Install button copies a binary here and Remove deletes it. There is
+/// no download: the Rust build ships the sidecar in the package and there is no
+/// release asset to fetch, so the alternative to this pair is no pair at all.
+pub fn managed_binary_path() -> PathBuf {
+    crate::config::learning::data_dir()
+        .join("bin")
+        .join("ftetwild")
+}
+
+/// Copy `source` into [`managed_binary_path`], and make it executable.
+///
+/// Refuses to overwrite a different file: a mis-click must not replace a working
+/// binary. Returns the destination.
+pub fn install_binary(source: &Path) -> Result<PathBuf, String> {
+    if !source.is_file() {
+        return Err(format!("{} is not a file", source.display()));
+    }
+    let dest = managed_binary_path();
+    if dest.is_file() {
+        return Err(format!(
+            "{} already exists; remove it first",
+            dest.display()
+        ));
+    }
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::copy(source, &dest).map_err(|e| format!("copy: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&dest)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&dest, perms).map_err(|e| e.to_string())?;
+    }
+    Ok(dest)
+}
+
+/// Delete the managed binary. `Ok(false)` means there was none.
+pub fn remove_binary() -> Result<bool, String> {
+    let dest = managed_binary_path();
+    if !dest.exists() {
+        return Ok(false);
+    }
+    std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// Locate the standalone fTetWild CLI the way the Python manager does.
 ///
 /// `FTETWILD_BIN` is Python's override; `SUTURA_FTETWILD_BIN` is the name the
@@ -88,6 +140,33 @@ pub fn find_binary() -> Option<String> {
             let path = PathBuf::from(raw);
             if is_executable(&path) {
                 return Some(abspath(&path));
+            }
+        }
+    }
+
+    // Packaged sidecar: macOS `.app/Contents/MacOS/ftetwild`, a tarball
+    // beside `sutura`, and the user data dir the installers populate.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [
+                dir.join("ftetwild"),
+                dir.join("../Resources/bin/ftetwild"),
+                dir.join("../MacOS/ftetwild"),
+            ] {
+                if is_executable(&candidate) {
+                    return Some(abspath(&candidate));
+                }
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for candidate in [
+            home.join(".local/share/sutura/bin/ftetwild"),
+            home.join(".local/share/sutura/ftetwild/bin/ftetwild"),
+        ] {
+            if is_executable(&candidate) {
+                return Some(abspath(&candidate));
             }
         }
     }
@@ -117,6 +196,16 @@ pub fn params_from_env() -> Value {
     } else {
         Value::Null
     }
+}
+
+/// User parameters for one tier run: `--ftetwild-optimize` forces the
+/// optimizing attempt; otherwise the env/config value is used (Python
+/// `ftetwild_params()`).
+pub fn params_for_optimize(flag: bool) -> Value {
+    if flag {
+        return json!({"optimize": true});
+    }
+    params_from_env()
 }
 
 fn resolve_optimize() -> bool {
@@ -461,6 +550,7 @@ pub fn run_binary_with_timeout_cancel(
         ));
         return Ok((Vec::new(), Vec::new(), report));
     }
+    report["returncode"] = json!(0);
 
     let sf_obj = tmp.path().join("out.msh__sf.obj");
     if !sf_obj.is_file() {
@@ -1071,11 +1161,12 @@ pub fn run_tier_with_cancel(
     spec: &IntensitySpec,
     tuning: &TierTuning,
     force_si: bool,
+    user_params: Value,
     cancel: Option<&dyn sutura_geom::cancel::Cancel>,
 ) -> Option<TierResult> {
     run_tier_with_params_cancel(
         cur_v, cur_t, input_v, input_t, after, bin, spec, tuning, force_si,
-        params_from_env(), cancel,
+        user_params, cancel,
     )
 }
 

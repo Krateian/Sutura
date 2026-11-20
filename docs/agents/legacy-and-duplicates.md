@@ -139,3 +139,7 @@ flagged here for a later, separate review. This pass only marks them.
 | `AGENTS.md` 211-218 -> `pipeline-stages.md` | DUP | Measure-helper differences overlap `docs/agents/diagnosis-classifier.md` and `docs/agents/verification-bench.md`; keep one canonical explanation later. |
 | `tests/test_updater.py:116` | CODE-COMMENT | Mentions AGENTS.md in a code comment; this docs-only task does not edit code. |
 | `sutura/sutura_engine/pipeline/utils.py:159` (`_internal_wall_count`, >=1.5 both sides) vs `rust/sutura-geom/src/shell.rs` `buried_face_mask` (>=1-delta, delta 0.1) | DISTINCT | The Tamponade gate counts a stricter overlap; the metric mask is report-only. Do not merge. |
+
+- mirror (14) artec_plastic-bolt: 2400 s icinde iki tarafta da bitmiyor (parite ayni, regresyon yok); kullanici icin zaman butcesi/erken cikis gerekli - P10 kapsami disinda.
+
+- fTetWild: `--solid-engine ftetwild` secildiginde bile produced=graft ve reason=None; sidecar bulunamazsa sessiz dusus var (kullanici hatasi). Ayrica --methods 7 full_mend e dusuyor.

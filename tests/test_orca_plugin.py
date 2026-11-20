@@ -323,6 +323,7 @@ def _load_plugin(model, data_dir):
     spec = importlib.util.spec_from_file_location(name, PLUGIN)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    mod.LOAD_BACK_WAIT_S = 0.3  # the stub host never adds an object
     # Simulate the installed layout so the plugin derives the data dir from its
     # own location: <data_dir>/orca_plugins/<flavor>/<file>.py
     mod.__file__ = os.path.join(data_dir, 'orca_plugins', 'SuturaRepair',
@@ -1017,7 +1018,7 @@ def test_staging_kept_when_load_back_fails():
     done = _posts(handle, 'job')[-1]
     out_path = done['result']['output_path']
     assert os.path.exists(out_path), out_path
-    assert 'load-back failed' in done['message'], done
+    assert 'File > Import' in done['message'] and done['result']['loaded'] is False, done
     assert _work_children(d) == [], _work_children(d)
     assert os.path.basename(out_path) in _out_files(d), _out_files(d)
 

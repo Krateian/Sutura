@@ -12,10 +12,13 @@ Usage:
 """
 import json
 import os
+import pathlib
 import subprocess
 import sys
 
-sys.path.insert(0, '/Users/krateian/sutura-wt/p10-cli/sutura')
+# Resolve the sibling `sutura` package from this file, so the script works in
+# any checkout instead of one machine's worktree.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'sutura'))
 os.environ.setdefault('SUTURA_LEARNING_TRIAGE', '0')
 
 from sutura_engine.diagnosis import analyze_file  # noqa: E402

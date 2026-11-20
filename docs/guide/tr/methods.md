@@ -252,7 +252,6 @@ otomatik davranışı korur. Dosya başına etiketlenen motorlar CLI'de
 `--engines AD[,AD]` ile seçilir (`None` yapılandırılmış tüm etkin motorları
 çalıştırır).
 
-![Dosya listesi sağ tık yöntem menüsü](../../../assets/method-menu.png)
 
 ### Yöntem denetim paneli (Seçenekler → Yöntemler)
 

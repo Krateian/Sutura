@@ -37,6 +37,64 @@ fn norm3(a: [f64; 3], b: [f64; 3]) -> f64 {
     (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
+/// Face-connected component count, matching `mesh_topology`'s
+/// `connected_components_number` (`sutura-geom/src/topology.rs:1459`).
+///
+/// This is deliberately **not** [`count_vertex_components`]. Python has two
+/// different notions and uses each in its own place:
+///
+/// * `topology.mesh_topology(...)['connected_components_number']` unions the
+///   **faces** that share an edge. This is what `stage1.components` /
+///   `components_before` report (pipeline.py:434, :946) and what the SI
+///   escalation gate compares (`repair.rs` "parts worse").
+/// * `_count_vertex_components` unions the **vertices** of each triangle, and
+///   is what the flap/tamponade/dressing "parts" guards use.
+///
+/// Using the vertex count for `topology_summary` made `stage1.components`
+/// disagree with Python on meshes where the two partitions differ: on
+/// a private sample, 29 against Python's 33 (and 5 vs 7 on another). Since
+/// `repair.rs`'s SI gate rejects a candidate when `parts` rises, a wrong count
+/// there is a wrong adoption decision, not just a wrong report field.
+fn count_face_components(n_faces: usize, tris: &[[i64; 3]]) -> usize {
+    if n_faces == 0 {
+        return 0;
+    }
+    let mut parent: Vec<usize> = (0..n_faces).collect();
+    fn find(p: &mut [usize], mut x: usize) -> usize {
+        let mut root = x;
+        while p[root] != root {
+            root = p[root];
+        }
+        while p[x] != root {
+            let next = p[x];
+            p[x] = root;
+            x = next;
+        }
+        root
+    }
+    // Faces sharing an edge share a component; the same edge key as the
+    // boundary/non-manifold pass above.
+    let mut by_edge: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let k = if a <= b { (a, b) } else { (b, a) };
+            by_edge.entry(k).or_default().push(fi);
+        }
+    }
+    for faces in by_edge.values() {
+        for &other in &faces[1..] {
+            let r0 = find(&mut parent, faces[0]);
+            let ro = find(&mut parent, other);
+            if ro != r0 {
+                parent[ro] = r0;
+            }
+        }
+    }
+    let mut roots: Vec<usize> = (0..n_faces).map(|i| find(&mut parent, i)).collect();
+    roots.sort_unstable();
+    roots.dedup();
+    roots.len()
+}
 /// Vertex-connected component count over referenced vertices.
 ///
 /// Python's `_count_vertex_components` unions the three vertices of each
@@ -849,7 +907,33 @@ pub struct TopologySummary {
     pub faces: usize,
 }
 
+thread_local! {
+    static TOPO_CACHE: std::cell::RefCell<Vec<(u64, TopologySummary)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub fn topology_summary(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> TopologySummary {
+    let key = sutura_geom::mesh_hash_i64(verts, tris);
+    if let Some(hit) = TOPO_CACHE.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, s)| *s)
+    }) {
+        return hit;
+    }
+    let out = topology_summary_uncached(verts, tris);
+    TOPO_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 8 {
+            c.remove(0);
+        }
+        c.push((key, out));
+    });
+    out
+}
+
+fn topology_summary_uncached(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> TopologySummary {
     let nv = verts.len();
     let nf = tris.len();
     if nf == 0 {
@@ -934,12 +1018,115 @@ pub fn topology_summary(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> TopologySummar
             nm_vertices += 1;
         }
     }
-    let components = count_vertex_components(nv, tris);
+    // `components` means Python's `mesh_topology` value here: FACE-connected,
+    // not vertex-connected. See `count_face_components`.
+    let components = count_face_components(nf, tris);
     TopologySummary {
         boundary_edges: boundary,
         non_two_manifold_edges: nm_edges,
         non_two_manifold_vertices: nm_vertices,
         components,
         faces: nf,
+    }
+}
+
+#[cfg(test)]
+mod component_count_tests {
+    use super::*;
+
+    /// Four vertices, two triangles sharing edge (0,1): one face-connected
+    /// component, one vertex-connected component.
+    fn two_triangles() -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
+        let v = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let t = vec![[0i64, 1, 2], [0, 2, 3]];
+        (v, t)
+    }
+
+    /// The two counts are different notions and must not be interchanged.
+    ///
+    /// `topology_summary().components` has to be the FACE-union, because that
+    /// is Python's `mesh_topology['connected_components_number']`
+    /// (`sutura-geom/src/topology.rs:1459`) and both the reported
+    /// `stage1.components` and the SI-escalation "parts worse" gate use it.
+    /// `count_vertex_components` stays the vertex-union for the
+    /// flap/tamponade/dressing "parts" guards.
+    #[test]
+    fn face_and_vertex_components_are_distinct_notions() {
+        let (v, t) = two_triangles();
+        // Faces 0 and 1 share edge (0,2) -> one face component.
+        assert_eq!(count_face_components(t.len(), &t), 1);
+        // All four vertices are joined through the two triangles -> also one.
+        assert_eq!(count_vertex_components(v.len(), &t), 1);
+        assert_eq!(topology_summary(&v, &t).components, 1);
+    }
+
+    /// Two triangles that share no edge but do share a vertex: ONE
+    /// vertex-connected component, TWO face-connected ones. This is the case
+    /// where the two notions disagree, and where using the wrong one made
+    /// `stage1.components` differ from Python (a private sample: 29 vs 33).
+    #[test]
+    fn vertex_union_merges_where_face_union_does_not() {
+        let v = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [-0.5, -1.0, 0.0],
+        ];
+        // {0,1,2} and {0,4,3} share vertex 0 only; their edges are
+        // (0,1),(1,2),(0,2) and (0,4),(3,4),(0,3) -- no shared edge.
+        let t = vec![[0i64, 1, 2], [0, 4, 3]];
+        assert_eq!(count_face_components(t.len(), &t), 2, "no shared edge");
+        assert_eq!(count_vertex_components(v.len(), &t), 1, "shared vertex");
+        // The reported field must follow the face union.
+        assert_eq!(
+            topology_summary(&v, &t).components,
+            2,
+            "topology_summary.components must be the FACE-union"
+        );
+    }
+
+    /// Disjoint triangles stay separate under both notions.
+    #[test]
+    fn disjoint_triangles_count_two() {
+        let v = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [6.0, 0.0, 0.0],
+            [5.0, 1.0, 0.0],
+        ];
+        let t = vec![[0i64, 1, 2], [3, 4, 5]];
+        assert_eq!(count_face_components(t.len(), &t), 2);
+        assert_eq!(count_vertex_components(v.len(), &t), 2);
+        assert_eq!(topology_summary(&v, &t).components, 2);
+    }
+
+    /// A three-triangle strip is one face component even though its faces are
+    /// only transitively connected.
+    #[test]
+    fn a_strip_is_one_face_component() {
+        let v = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ];
+        let t = vec![[0i64, 1, 2], [0, 2, 3], [1, 4, 2]];
+        assert_eq!(count_face_components(t.len(), &t), 1);
+    }
+
+    /// Empty geometry is zero, not a panic.
+    #[test]
+    fn empty_is_zero() {
+        assert_eq!(count_face_components(0, &[]), 0);
+        assert_eq!(count_vertex_components(0, &[]), 0);
     }
 }

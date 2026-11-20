@@ -44,12 +44,30 @@ In an installed or AppImage layout `sutura_engine` is a top-level package; in a 
 * **Triage escalation policy (`sutura_engine.triage`).** Couples per-object geometric feature diagnosis (component structure, open-boundary ratios, symmetry scores) with ranked method recommendations and a count-budgeted fallback ladder (at most three candidates, each with a deterministic tier budget; a very high wall-clock watchdog is reported explicitly if it ever trips). The fallback order can also skip a method the diagnosed damage makes pointless (duplicate faces skip Join; interior faces/regions skip Transplant and Wall Thicken); `SUTURA_TRIAGE_PRUNE=0` restores the previous order. When usage history is enabled, a bounded Bayesian update (Beta(2, 2) posterior mean) locally adjusts method selection probabilities without network communication.
 * **Chart content-addressed cache (`sutura_engine.chart`).** Caches intermediate and final repair artifacts by SHA-256 geometry hash under `~/.cache/sutura/` with a 500 MB LRU eviction policy. The cache transparently accelerates repetitive pipeline runs and multi-object 3MF processing, automatically invalidating entries across version bumps or parameter modifications.
 
-### Roadmap: moving hot paths to the Rust core
+### Moving hot paths to the Rust core — complete
 
-Future development aims to reduce Python runtime overhead by migrating performance-sensitive paths to `rust/sutura-geom`:
-- **Phase 0 (Python Hot-Path Reductions):** Removal of unconditional `trimesh` imports from the outer-shell check shipped in v0.7.0; vectorization of candidate transforms in rotational symmetry detection shipped in v0.7.2 (batched, threaded nearest-neighbour queries, identical results, ~2-3.7x faster on the sample/corpus detector).
-- **Phase 1 (Rust Topology Layer):** Implement deterministic array operations in native Rust (X-Ray reload welding, strict hole/non-manifold detection, and boundary loop defect walking), using native BVH structures for nearest-neighbor spatial queries.
-- **Phase 1c (Rust Hole Triangulation — completed):** the native Rust `sutura_geom.close_holes` ear-clipping closer (matching VCGLib `meshing_close_holes` semantics) now backs Stage-1 hole closure directly on NumPy arrays. A Liepa-style minimum-weight triangulation remains future work.
-- **Phase 2 (PyMeshLab Independence — completed):** duplicate/degenerate face removal, non-manifold repair, coherent orientation, duplicate/unreferenced-vertex removal and vertex welding are implemented natively in Rust (`sutura_geom`) with a pure-numpy fallback, so PyMeshLab is no longer an external C++ runtime dependency.
-- **Phase 3 (Native Manifold — completed):** Manifold is linked directly into the Rust extension through `manifold-csg`; Stage 2, the outer-shell union, repeated-element CSG and the Graft local stitch run in `sutura_geom`, the Python `manifold3d` bridges are gone, and the 3.11 virtualenv remains only as the fTetWild fallback when the main interpreter is out of range.
-- **Phase 4 (Standalone Rust CLI):** remains future work toward an independent Rust CLI executable.
+The migration this roadmap used to describe is finished. The Rust core is now the
+program, not an extension of a Python one:
+
+- **Phase 0 (Python Hot-Path Reductions):** removal of unconditional `trimesh`
+  imports from the outer-shell check, and vectorized candidate transforms in
+  rotational symmetry detection.
+- **Phase 1 / 1c (Rust Topology Layer):** deterministic array operations in
+  native Rust — X-Ray reload welding, strict hole/non-manifold detection,
+  boundary loop walking, and the ear-clipping hole closer that backs Stage-1 hole
+  closure directly on the arrays.
+- **Phase 2 (PyMeshLab Independence):** duplicate/degenerate face removal,
+  non-manifold repair, coherent orientation, duplicate/unreferenced-vertex
+  removal and vertex welding are native.
+- **Phase 3 (Native Manifold):** Manifold is linked directly into the Rust core;
+  Stage 2, the outer-shell union, repeated-element CSG and the Graft local stitch
+  all run there.
+- **Phase 4 (Standalone Rust CLI) — done.** The CLI and GUI are Rust binaries.
+  There is no Python process, no virtualenv and no interpreter at runtime; the
+  Python packages are retained only while the previous release is still
+  supported, and an existing install is migrated rather than reinstalled (see
+  [MIGRATE.md](../../MIGRATE.md)).
+
+The Stage-1 filter chain, Manifold, the exact predicates, morphology, Flap,
+Dressing, Tamponade and the SDF/dual-contouring work in the table above are all
+part of `rust/sutura-geom` and `rust/sutura-core` today.

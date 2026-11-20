@@ -6,7 +6,7 @@
 # name = "Sutura Repair"
 # description = "Sutura mesh repair in an OrcaSlicer dock panel: repairs the model parts on the plate with the Sutura CLI and loads the repaired copy back as a new object."
 # author = "Krateian"
-# version = "0.9.9"
+# version = "0.9.10"
 # ///
 """Sutura Repair - OrcaSlicer script plugin (v2, dock panel).
 
@@ -27,11 +27,11 @@ it. A numpy-free fallback path is kept (``vertex(i)``/``triangle(i)``) so the
 plugin still imports and reads geometry even where numpy is unavailable, but
 without numpy the host cannot hand out transform matrices, so volume/instance
 placements are then treated as identity. Repair itself always runs in the
-external Sutura CLI (``~/.local/bin/sutura``), which carries its own
-numpy/pymeshlab environment.
+external Sutura CLI (``~/.local/bin/sutura``), a native Rust binary with no
+Python runtime and no PyMeshLab.
 
-EXPERIMENTAL - the OrcaSlicer Python plugin system exists only in nightly
-builds / releases NEWER than 2.4.2; stable 2.4.2 has no "Plugins" menu.
+EXPERIMENTAL - requires OrcaSlicer 2.5.0 or newer. The script-plugin API shipped
+in the 2.5.0 stable release; 2.4.x has no "Plugins" menu.
 
 Scope: the export contains every ``is_model_part()`` volume of an object,
 with each volume's local-to-object matrix and the first instance's
@@ -51,16 +51,17 @@ coordinates and is added as a NEW object, so it lands on top of the original;
 press A (Arrange) to separate it, and Ctrl/Cmd+Z removes it (OrcaSlicer records
 a "Load File" undo snapshot). The original object is never modified.
 
-Permissions (OrcaSlicer 2.5): ``register_capabilities()`` declares the existing
+Permissions (OrcaSlicer 2.5.0+): ``register_capabilities()`` declares the existing
 ``fs_read`` paths plus ``threading`` and the two stable process targets it can
 name ahead of time (the OrcaSlicer process-count probe and the fixed-folder
-reveal command). A build whose ``request_permissions`` accepts those keywords
-prompts once at load. A build that accepts only ``fs_read`` -- the shipped
-2.5.0-alpha -- falls back to the ``fs_read``-only declaration (preserving the
-existing read grant), so it prompts for file reads at load and then raises ONE
-reactive "create a thread" prompt on the first thread start; approving it
-persists the grant, and no further prompt appears for Repair, Analyze or Show
-file. The CLI repair/analyze spawns happen inside plugin-created worker threads,
+reveal command). Grants are reviewed and managed from the Permissions tab of the
+plugin dialog. A build whose ``request_permissions`` accepts those keywords
+prompts once at load. A build older than 2.5.0 that accepts only ``fs_read``
+falls back to the ``fs_read``-only declaration (preserving the existing read
+grant), so it prompts for file reads at load and then raises ONE reactive
+"create a thread" prompt on the first thread start; approving it persists the
+grant, and no further prompt appears for Repair, Analyze or Show file. The CLI
+repair/analyze spawns happen inside plugin-created worker threads,
 whose audit context is empty, so on 2.5 they are not audited; a denial on a
 thread start or a spawn is reported as a panel message that names the operation
 that actually failed -- a red banner only when the repair or Analyze job itself
@@ -499,7 +500,11 @@ button, input { font-family: inherit; font-size: inherit; }
       }
       h += `</div>`;
       if (job.phase === 'done') {
-        h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+        if (job.result?.loaded === false) {
+          h += `<div class="result-hint">Saved, but OrcaSlicer did not add it automatically. Import it with <b>File &gt; Import</b> (<b>Ctrl/Cmd+I</b>); <b>Show file</b> opens its folder.</div>`;
+        } else {
+          h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+        }
         if (job.result?.suggestion) {
           h += `<div class="result-hint result-suggestion">Tip: ${esc(job.result.suggestion)}</div>`;
         }
@@ -1335,6 +1340,64 @@ def _running_orca_processes():
         return None
 
 
+# OrcaSlicer's own "another instance" listener on Linux: every running
+# instance owns a session-bus name built from this prefix plus a hash, with the
+# object path and interface derived the same way (src/slic3r/GUI/InstanceCheck.cpp).
+# The message is the command line as OrcaSlicer escapes it: each argument in
+# double quotes, joined with ';', argument 0 being the executable (skipped).
+_ORCA_DBUS_PREFIX = 'com.orcaslicer.OrcaSlicer.InstanceCheck.Object'
+_ORCA_DBUS_PATH = '/com/orcaslicer/OrcaSlicer/InstanceCheck/Object'
+
+
+def _orca_cstyle(arg):
+    return '"%s"' % arg.replace('\\', '\\\\').replace('"', '\\"')
+
+
+# How long to wait for the reloaded object to appear on the plate.
+LOAD_BACK_WAIT_S = 15.0
+
+
+def _load_back_dbus(out_path):
+    """Hand the repaired file to the running OrcaSlicer over D-Bus (Linux).
+
+    `orca-slicer --single-instance <path>` only forwards the file when the
+    running instance was itself started in single-instance mode, which is off
+    by default; the listener, however, always runs. Talking to it directly is
+    what works for the AppImage, a distro package and the Flatpak alike.
+    Returns True when exactly one instance was found and the message was sent.
+    """
+    try:
+        listing = subprocess.run(
+            ['dbus-send', '--session', '--print-reply', '--dest=org.freedesktop.DBus',
+             '/org/freedesktop/DBus', 'org.freedesktop.DBus.ListNames'],
+            capture_output=True, text=True, timeout=10)
+    except Exception as exc:  # noqa: BLE001 - dbus-send missing or bus down
+        sys.stderr.write('[sutura] load-back (dbus): cannot list names: %s\n' % exc)
+        return False
+    names = []
+    for line in listing.stdout.splitlines():
+        line = line.strip()
+        if line.startswith('string "%s' % _ORCA_DBUS_PREFIX):
+            names.append(line[len('string "'):-1])
+    if len(names) != 1:
+        sys.stderr.write('[sutura] load-back (dbus): %d OrcaSlicer instance(s) on the bus\n'
+                         % len(names))
+        return False
+    name = names[0]
+    suffix = name[len(_ORCA_DBUS_PREFIX):]
+    message = ';'.join([_orca_cstyle('orca-slicer'), _orca_cstyle(out_path)])
+    try:
+        proc = subprocess.run(
+            ['dbus-send', '--session', '--type=method_call', '--dest=' + name,
+             _ORCA_DBUS_PATH + suffix, name + '.AnotherInstance', 'string:' + message],
+            capture_output=True, text=True, timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write('[sutura] load-back (dbus) error: %s\n' % exc)
+        return False
+    sys.stderr.write('[sutura] load-back (dbus): %s -> rc=%d\n' % (name, proc.returncode))
+    return proc.returncode == 0
+
+
 def _load_back(out_path):
     """Best-effort: reload the repaired file into the slicer.
 
@@ -1348,7 +1411,7 @@ def _load_back(out_path):
 
     TODO(owner live test): the export is in WORLD coordinates, so OrcaSlicer
     may re-centre the imported object or, on some builds, drop it; the exact
-    placement after reload has not been verified on a real nightly and needs
+    placement after reload has not yet been verified on 2.5.x and needs
     the owner's live check."""
     try:
         if sys.platform == 'darwin':
@@ -1359,6 +1422,8 @@ def _load_back(out_path):
                 return False
             cmd = ['open', '-b', 'com.orcaslicer.OrcaSlicer', out_path]
         else:
+            if _load_back_dbus(out_path):
+                return True
             cmd = [_ORCA_BIN, '--single-instance', out_path]
     except Exception as exc:  # noqa: BLE001
         sys.stderr.write('[sutura] load-back error: %s\n' % exc)
@@ -1844,13 +1909,27 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
                 self._emit_job(oid, 'failed', time.time() - start, msg or 'repair failed')
                 return
             self._emit_job(oid, 'loading', time.time() - start, 'Loading result...')
+            before = len(self._iter_objects())
+            result = _job_result(report, out_path)
+            # The launch returning 0 does not mean OrcaSlicer added the object:
+            # on Linux (and inside a Flatpak) `--single-instance` can start or
+            # reach no instance and exit cleanly. Only a new object on the plate
+            # counts, so wait briefly for one before saying it was added.
+            loaded = False
             if _load_back(out_path):
-                self._emit_job(oid, 'done', time.time() - start, 'Repaired',
-                               _job_result(report, out_path))
+                deadline = time.time() + LOAD_BACK_WAIT_S
+                while time.time() < deadline:
+                    if len(self._iter_objects()) > before:
+                        loaded = True
+                        break
+                    time.sleep(0.5)
+            result['loaded'] = loaded
+            if loaded:
+                self._emit_job(oid, 'done', time.time() - start, 'Repaired', result)
             else:
                 self._emit_job(oid, 'done', time.time() - start,
-                               'Repaired; automatic load-back failed, file kept at %s'
-                               % out_path, _job_result(report, out_path))
+                               'Repaired; import it with File > Import (Ctrl+I): %s'
+                               % out_path, result)
         except Exception as exc:  # noqa: BLE001 - never crash the worker
             self._emit_job(oid, 'failed', time.time() - start, str(exc))
         finally:
@@ -1955,9 +2034,9 @@ class SuturaRepairPlugin(orca.base):
             orca.register_capability(SuturaRepair)
             return
         except (TypeError, ValueError):
-            # Older nightly without the threading=/process= keywords (or an
-            # implementation that rejects them): fall back to the fs_read-only
-            # declaration so it is never lost on the fallback.
+            # A build older than 2.5.0 without the threading=/process= keywords
+            # (or an implementation that rejects them): fall back to the
+            # fs_read-only declaration so it is never lost on the fallback.
             pass
         except Exception:  # noqa: BLE001
             orca.register_capability(SuturaRepair)

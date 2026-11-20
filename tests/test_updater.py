@@ -255,7 +255,14 @@ def test_perform_update_geom_failure_rolls_back():
     orig = (updater.VERSION, updater.is_appimage,
             updater.crosses_license_boundary, updater.backup_install,
             updater.download_source, updater.install_source,
-            updater.health_check, updater.rollback)
+            updater.health_check, updater.rollback, updater.fetch_release_json,
+            updater.APP_DIR)
+    # No Rust artifact in this release, so these tests keep covering the
+    # source-tarball path and never touch the network. `APP_DIR` is also pinned:
+    # without it the layout guard reads the tester's real install and the result
+    # depends on what happens to be on their machine.
+    updater.fetch_release_json = lambda: None
+    updater.APP_DIR = '/nonexistent/sutura-test-app'
     updater.VERSION = '0.9.1'
     updater.is_appimage = lambda: False
     updater.crosses_license_boundary = lambda v, t: False
@@ -275,7 +282,8 @@ def test_perform_update_geom_failure_rolls_back():
         (updater.VERSION, updater.is_appimage,
          updater.crosses_license_boundary, updater.backup_install,
          updater.download_source, updater.install_source,
-         updater.health_check, updater.rollback) = orig
+         updater.health_check, updater.rollback,
+         updater.fetch_release_json, updater.APP_DIR) = orig
     assert ok is False, (ok, msg)
     assert prev == '0.9.1', prev
     assert calls == ['backup', 'download', 'install', 'rollback:0.9.1'], calls
@@ -289,7 +297,14 @@ def test_perform_update_cancels_before_install():
     orig = (updater.VERSION, updater.is_appimage,
             updater.crosses_license_boundary, updater.backup_install,
             updater.download_source, updater.install_source,
-            updater.health_check, updater.rollback)
+            updater.health_check, updater.rollback, updater.fetch_release_json,
+            updater.APP_DIR)
+    # No Rust artifact in this release, so these tests keep covering the
+    # source-tarball path and never touch the network. `APP_DIR` is also pinned:
+    # without it the layout guard reads the tester's real install and the result
+    # depends on what happens to be on their machine.
+    updater.fetch_release_json = lambda: None
+    updater.APP_DIR = '/nonexistent/sutura-test-app'
     updater.VERSION = '0.9.1'
     updater.is_appimage = lambda: False
     updater.crosses_license_boundary = lambda v, t: False
@@ -306,7 +321,8 @@ def test_perform_update_cancels_before_install():
         (updater.VERSION, updater.is_appimage,
          updater.crosses_license_boundary, updater.backup_install,
          updater.download_source, updater.install_source,
-         updater.health_check, updater.rollback) = orig
+         updater.health_check, updater.rollback,
+         updater.fetch_release_json, updater.APP_DIR) = orig
     assert ok is False, (ok, msg)
     assert prev == '0.9.1', prev
     assert calls == ['backup', 'download'], calls
@@ -431,7 +447,14 @@ def test_perform_update_verifies_source_modules():
     orig = (updater.VERSION, updater.is_appimage,
             updater.crosses_license_boundary, updater.backup_install,
             updater.download_source, updater.install_source,
-            updater.health_check, updater.rollback)
+            updater.health_check, updater.rollback, updater.fetch_release_json,
+            updater.APP_DIR)
+    # No Rust artifact in this release, so these tests keep covering the
+    # source-tarball path and never touch the network. `APP_DIR` is also pinned:
+    # without it the layout guard reads the tester's real install and the result
+    # depends on what happens to be on their machine.
+    updater.fetch_release_json = lambda: None
+    updater.APP_DIR = '/nonexistent/sutura-test-app'
     updater.VERSION = '0.9.1'
     updater.is_appimage = lambda: False
     updater.crosses_license_boundary = lambda v, t: False
@@ -451,10 +474,165 @@ def test_perform_update_verifies_source_modules():
         (updater.VERSION, updater.is_appimage,
          updater.crosses_license_boundary, updater.backup_install,
          updater.download_source, updater.install_source,
-         updater.health_check, updater.rollback) = orig
+         updater.health_check, updater.rollback,
+         updater.fetch_release_json, updater.APP_DIR) = orig
         shutil.rmtree(tmp, ignore_errors=True)
     assert ok is True, (ok, msg)
     assert seen == [['__init__.py', 'brand_new_module.py', 'repair.py']], seen
+
+
+def test_rust_layout_refuses_to_update():
+    """The Python updater must never overwrite a Rust install with a source tree.
+
+    ``perform_update`` unpacks a GitHub source tarball over APP_DIR. On a machine
+    the Rust installer set up, that is not an upgrade -- it is a downgrade to a
+    Python tree, and once the Python pipeline is retired the tree has no working
+    pipeline at all. The guard runs before the backup and before any download.
+    """
+    import tempfile
+    import updater
+
+    orig = updater.APP_DIR
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            # A Rust layout: no venv, just the installed binary.
+            os.makedirs(os.path.join(tmp, 'bin'))
+            with open(os.path.join(tmp, 'bin', 'sutura'), 'w') as f:
+                f.write('#!/bin/sh\n')
+            updater.APP_DIR = tmp
+            assert updater._rust_layout_installed() is True
+
+            # Refused, and refused without reaching the network: a tag that
+            # does not exist would raise if download_source ran.
+            ok, msg, _ver = updater.perform_update('v99.99.99')
+            assert ok is False, 'a Rust layout must not be updated'
+            assert 'Rust updater' in msg, msg
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # A Python layout: venv, no bin/sutura.
+            os.makedirs(os.path.join(tmp, 'venv', 'bin'))
+            with open(os.path.join(tmp, 'repair.py'), 'w') as f:
+                f.write('')
+            updater.APP_DIR = tmp
+            assert updater._rust_layout_installed() is False
+
+        # macOS bundle layout is recognised too.
+        with tempfile.TemporaryDirectory() as tmp:
+            macos = os.path.join(tmp, 'Contents', 'MacOS')
+            os.makedirs(macos)
+            with open(os.path.join(macos, 'sutura'), 'w') as f:
+                f.write('')
+            updater.APP_DIR = tmp
+            assert updater._rust_layout_installed() is True
+
+        # The APFS case trap: the Python .app's launcher is
+        # `Contents/MacOS/Sutura`, and a plain isfile('.../sutura') finds it on
+        # a case-insensitive filesystem. Treating that as a Rust layout would
+        # make this updater refuse to update an ordinary Python install.
+        with tempfile.TemporaryDirectory() as tmp:
+            macos = os.path.join(tmp, 'Contents', 'MacOS')
+            os.makedirs(macos)
+            with open(os.path.join(macos, 'Sutura'), 'w') as f:
+                f.write('python launcher')
+            # Only meaningful where the filesystem really is case-insensitive.
+            if os.path.isfile(os.path.join(macos, 'sutura')):
+                updater.APP_DIR = tmp
+                assert updater._rust_layout_installed() is False, (
+                    'a `Sutura` GUI launcher must not read as the Rust CLI')
+    finally:
+        updater.APP_DIR = orig
+
+
+def test_release_with_a_rust_asset_uses_the_handoff():
+    """A release that publishes a Rust artifact must be installed by the Rust
+    binary's own migration, not by unpacking the source tarball.
+
+    This is the bridge: once the Rust build is the distribution, the source
+    tarball for that tag is not an upgrade, and after the Python pipeline is
+    retired it has no working pipeline at all. So the decision is made on the
+    release payload, before the backup and before download_source.
+    """
+    import updater
+
+    orig = (updater.VERSION, updater.is_appimage,
+            updater.crosses_license_boundary, updater.fetch_release_json,
+            updater.find_rust_asset, updater.perform_rust_handoff,
+            updater.download_source, updater.backup_install,
+            updater._rust_layout_installed)
+    calls = []
+    try:
+        updater.VERSION = '0.9.9'
+        updater.is_appimage = lambda: False
+        updater.crosses_license_boundary = lambda v, t: False
+        updater._rust_layout_installed = lambda: False
+        updater.fetch_release_json = lambda: {'assets': [{'name': 'x'}]}
+        updater.find_rust_asset = lambda rel, tag: ('u', 's')
+        updater.perform_rust_handoff = (
+            lambda tag, progress=None, released=None: (
+                calls.append('handoff:%s' % tag),
+                (True, 'updated to %s' % tag, '0.9.9'))[1])
+        updater.download_source = lambda tag, d: calls.append('download')
+        updater.backup_install = lambda: calls.append('backup')
+
+        ok, msg, prev = updater.perform_update('v0.10.0')
+        assert ok is True, msg
+        assert calls == ['handoff:v0.10.0'], calls
+        assert prev == '0.9.9', prev
+    finally:
+        (updater.VERSION, updater.is_appimage,
+         updater.crosses_license_boundary, updater.fetch_release_json,
+         updater.find_rust_asset, updater.perform_rust_handoff,
+         updater.download_source, updater.backup_install,
+         updater._rust_layout_installed) = orig
+
+
+def test_rust_asset_names_match_the_rust_updater():
+    """The bridge looks for the exact names install::asset_name writes.
+
+    A mismatch here would make the bridge silently find nothing on release day
+    and fall back to the source tarball, which is the failure this whole path
+    exists to prevent. The Rust table is read from source rather than trusted,
+    so a rename there fails here with both spellings visible.
+    """
+    import updater
+
+    install_rs = os.path.join(REPO, 'rust', 'sutura-core', 'src', 'install.rs')
+    with open(install_rs) as f:
+        src = f.read()
+
+    # The Rust side formats `Sutura-rust-v{ver}-<tail>`; the bridge writes
+    # `Sutura-rust-v%s-<tail>`. Both must name the same file per platform.
+    # All four shipped targets: dropping one here would strand those users on a
+    # Python build that can no longer be updated.
+    expected = {
+        'darwin-arm64': 'Sutura-rust-v{ver}-arm64.dmg',
+        'darwin-x86_64': 'Sutura-rust-v{ver}-x86_64.dmg',
+        'linux-x86_64': 'Sutura-rust-v{ver}-x86_64.tar.gz',
+        'linux-aarch64': 'Sutura-rust-v{ver}-aarch64.tar.gz',
+    }
+    assert set(updater.RUST_ASSETS) == set(expected), (
+        'bridge platforms %r do not match the shipped set %r'
+        % (sorted(updater.RUST_ASSETS), sorted(expected)))
+    for key, rust_name in expected.items():
+        assert '"%s"' % rust_name in src, (
+            'install.rs no longer formats %r; update RUST_ASSETS to match'
+            % rust_name)
+        py_name = updater.RUST_ASSETS[key] % 'VER'
+        assert py_name == rust_name.replace('{ver}', 'VER'), (
+            'bridge asset for %s is %r, Rust writes %r'
+            % (key, py_name, rust_name.replace('{ver}', 'VER')))
+
+
+def test_sha256_parsing_matches_the_rust_side():
+    """`shasum`/`sha256sum` output parses, junk does not."""
+    import updater
+
+    good = 'a' * 64
+    assert updater._parse_sha256('%s  Sutura-rust-v1.0.0.tar.gz' % good) == good
+    assert updater._parse_sha256('%s\n' % good.upper()) == good
+    assert updater._parse_sha256('not-a-digest') is None
+    assert updater._parse_sha256('') is None
+    assert updater._parse_sha256('abc  file') is None
 
 
 def main():

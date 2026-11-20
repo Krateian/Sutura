@@ -288,12 +288,19 @@ if [ -d "$SRC/.git/hooks" ] && [ -f "$SRC/scripts/pre-push-security-check.sh" ];
     install -m 0755 "$SRC/scripts/pre-push-security-check.sh" "$SRC/.git/hooks/pre-push"
 fi
 
-echo "==> CLI wrapper"
-cat > "$BIN_DIR/sutura" <<EOF
+echo "==> CLI/GUI launchers (Rust default, SUTURA_BACKEND=python legacy)"
+cat > "$APP_DIR/sutura-py" <<EOF
 #!/usr/bin/env bash
-exec "\$HOME/.local/share/sutura/venv/bin/python" "\$HOME/.local/share/sutura/repair.py" "\$@"
+exec "$APP_DIR/venv/bin/python" "$APP_DIR/repair.py" "\$@"
 EOF
-chmod 0755 "$BIN_DIR/sutura"
+chmod 0755 "$APP_DIR/sutura-py"
+cat > "$APP_DIR/sutura-gui-py" <<EOF
+#!/usr/bin/env bash
+exec "$APP_DIR/venv/bin/python" "$APP_DIR/gui.py" "\$@"
+EOF
+chmod 0755 "$APP_DIR/sutura-gui-py"
+install -m 0755 "$SRC/bin/sutura" "$BIN_DIR/sutura"
+install -m 0755 "$SRC/bin/sutura-gui" "$BIN_DIR/sutura-gui"
 
 echo "==> Dolphin service menu"
 sed "s|%HOME%|$HOME|g" "$SRC/share/sutura.desktop" > "$SERVICE_DIR/sutura.desktop"

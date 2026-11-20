@@ -7,19 +7,31 @@ description = "Sutura desktop GUI (egui + eframe + wgpu)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Krateian/Sutura"
 
+[dev-dependencies]
+# Drives a real egui `Context` without opening a window: click, scroll, hover.
+# The whole point is that these tests never create a native window, so running
+# them cannot pop a GUI up on someone's screen.
+egui_kittest = { version = "0.37", features = ["wgpu"] }
+
 [dependencies]
 sutura-core = { path = "../sutura-core" }
 sutura-geom = { path = "../sutura-geom", default-features = false, features = ["decimate"] }
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 egui = "0.37"
 egui-wgpu = "0.37"
+# egui has no table widget, and building rows out of sized widgets is what made
+# the file list render as one full-width button instead of columns. Qt's
+# QTreeWidget equivalent, with real headers and per-column widths.
+egui_extras = { version = "0.37", default-features = false }
 rfd = "0.18"
+pollster = "1"
 rust-i18n = "4"
 tiny-skia = "0.11"
 image = { version = "0.25", default-features = false, features = ["png"] }
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 sys-locale = "0.3"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
 

@@ -92,7 +92,8 @@ def build(tmp):
 
 def run_sutura(path):
     try:
-        r = subprocess.run(_cli.cli_command([path]), capture_output=True,
+        r = subprocess.run(_cli.cli_command([path]), env=_cli.cli_env(),
+                            capture_output=True,
                            text=True, timeout=120)
     except subprocess.TimeoutExpired:
         return 124, {}   # hung, not a clean rejection -> treated as a failure

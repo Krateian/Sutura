@@ -2,7 +2,7 @@
 Type=Application
 Name=Sutura
 Comment=Repair STL/3MF meshes
-Exec=%HOME%/.local/share/sutura/venv/bin/python %HOME%/.local/share/sutura/gui.py
+Exec=%HOME%/.local/bin/sutura-gui
 Icon=sutura
 Terminal=false
 Categories=Graphics;3DGraphics;

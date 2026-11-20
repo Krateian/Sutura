@@ -2,8 +2,14 @@
 # Remove the Rust (Python-free) Sutura install, on Linux or macOS.
 #
 #   bash uninstall-rust.sh            # remove the program, KEEP user data
-#   bash uninstall-rust.sh --purge    # also remove history/learning and config
+#   bash uninstall-rust.sh --purge    # also remove history/learning, config
+#                                     # and update backups
 #   SUTURA_DRY_RUN=1 bash uninstall-rust.sh   # show what would be removed
+#
+# `--purge` also removes the update backups in `sutura.backup/` and the
+# quarantined Python-era backup `sutura.backup.python-*`. They sit beside the
+# install rather than inside it, so the program removal below never reaches
+# them; without this they would outlive a purge.
 #
 # The counterpart of `uninstall.sh`. That script also has to unwind a conda env;
 # this one removes a plain directory tree, so it has no environment step. It keeps
@@ -48,6 +54,7 @@ say "removing the Rust Sutura install"
 # Programs and integration first; user data is decided last.
 remove_path "$BIN_DIR/sutura"
 remove_path "$BIN_DIR/sutura-gui"
+remove_path "$BIN_DIR/ftetwild"
 # macOS: the bundle and its Finder integration (no-ops elsewhere).
 remove_path "$HOME/Applications/Sutura.app"
 remove_path "$HOME/Library/Services/Sutura Quick Action.workflow"
@@ -62,6 +69,16 @@ if [ "$PURGE" = "1" ]; then
     say "removing $APP_DIR (including user data) because of --purge"
     remove_path "$APP_DIR"
     remove_path "$CONFIG_DIR"
+    # Backups live beside the install, not inside it, so nothing above touches
+    # them. --purge means "leave nothing behind", and a backups directory that
+    # silently survives a purge is exactly the surprise to avoid. This also
+    # includes the quarantined Python-era backup (`sutura.backup.python-*`),
+    # which the migration deliberately keeps out of the rotating set.
+    say "removing backups in $(dirname "$APP_DIR")/sutura.backup*"
+    for b in "$(dirname "$APP_DIR")"/sutura.backup "$(dirname "$APP_DIR")"/sutura.backup.python-*; do
+        [ -e "$b" ] || continue
+        remove_path "$b"
+    done
 else
     say "removing $APP_DIR (keeping user data)"
     # Remove everything except data/, so history and learning survive.
@@ -74,6 +91,9 @@ else
     fi
     if [ -d "$APP_DIR/data" ]; then
         say "user data kept at $APP_DIR/data (use --purge to remove it)"
+    fi
+    if [ -d "$(dirname "$APP_DIR")/sutura.backup" ]; then
+        say "update backups kept in $(dirname "$APP_DIR")/sutura.backup (use --purge to remove them)"
     fi
 fi
 

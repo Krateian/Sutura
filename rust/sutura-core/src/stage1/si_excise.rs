@@ -68,7 +68,13 @@ fn distances(cand_v: &[[f64; 3]], cand_t: &[[i64; 3]], pts: &[[f64; 3]]) -> Opti
         .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
         .collect();
     let bvh = MeshBvh::from_arrays(cand_v, &ut);
-    Some(pts.iter().map(|p| bvh.closest_point(*p).1).collect())
+    // Parallel closest-point queries (same values/order as the scalar loop).
+    Some(
+        bvh.closest_points_par(pts)
+            .into_iter()
+            .map(|(_, d, _)| d)
+            .collect(),
+    )
 }
 
 fn visible_from_distance(d: &[f64], buried: Option<&[bool]>) -> Option<(f64, f64)> {
@@ -346,6 +352,10 @@ pub fn run(
     let mut accepted_any = false;
 
     for round_idx in 0..max_rounds {
+        if sutura_geom::cancel::is_cancelled() {
+            report.insert("reason".into(), json!("cancelled"));
+            return (v, t, Value::Object(report));
+        }
         let before = common::topology_summary(&v, &t);
         let saved_v = v.clone();
         let saved_t = t.clone();
@@ -353,8 +363,13 @@ pub fn run(
             init_mask.clone()
         } else {
             let ut: Vec<[usize; 3]> = t.iter().map(|r| [r[0] as usize, r[1] as usize, r[2] as usize]).collect();
-            let (m, _s, _k) = sutura_geom::self_intersections_core(&v, &ut);
-            m
+            match sutura_geom::self_intersections_core_cancellable(&v, &ut) {
+                Ok((m, _s, _k)) => m,
+                Err(()) => {
+                    report.insert("reason".into(), json!("cancelled"));
+                    return (v, t, Value::Object(report));
+                }
+            }
         };
         let mut accepted = false;
         for attempt in 0..2usize {

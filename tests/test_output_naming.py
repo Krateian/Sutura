@@ -7,6 +7,9 @@ import sys
 import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# `repair.main()` enables crash logging and creates `<data>/crash.log`
+# before doing any work, so every child must get a throwaway HOME.
+from _cli import cli_env  # noqa: E402
 REPAIR = os.path.join(REPO, 'sutura', 'repair.py')
 MAKE = os.path.join(REPO, 'tests', 'make_broken_stl.py')
 
@@ -17,14 +20,14 @@ def _sha(path):
 
 def _run(args):
     return subprocess.run([sys.executable, REPAIR, '--no-history', '--no-cache']
-                          + args, capture_output=True, text=True, timeout=300)
+                          + args, capture_output=True, text=True, timeout=300, env=cli_env())
 
 
 def main():
     tmp = tempfile.mkdtemp(prefix='sutura-outname-')
     src = os.path.join(tmp, 'part.stl')
     subprocess.run([sys.executable, MAKE, src], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=cli_env())
     first = os.path.join(tmp, 'part_fixed.stl')
     second = os.path.join(tmp, 'part_fixed_2.stl')
     r = _run([src])

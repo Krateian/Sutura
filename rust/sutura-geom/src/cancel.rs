@@ -11,13 +11,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
+/// Public read for crates that cannot take a `&dyn Cancel` (the geometry
+/// kernels use this global instead).
 #[inline]
-pub(crate) fn is_cancelled() -> bool {
+pub fn is_cancelled() -> bool {
     CANCELLED.load(Ordering::Relaxed)
 }
 
-pub(crate) fn reset() {
+/// Clear the global flag before a new repair run in the same process.
+pub fn reset() {
     CANCELLED.store(false, Ordering::Relaxed);
+}
+
+/// Set the global flag from the caller's cancel token, so geometry kernels
+/// that cannot take `&dyn Cancel` observe the same request.
+pub fn request() {
+    CANCELLED.store(true, Ordering::Relaxed);
 }
 
 #[cfg(unix)]

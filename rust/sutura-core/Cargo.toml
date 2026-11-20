@@ -13,11 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 sutura-geom = { path = "../sutura-geom", default-features = false, features = ["decimate"] }
-# zip 9's `deflate` feature enables `deflate-zopfli`, whose output differs from
-# zlib's — and our 3MF writer must stay byte-identical to Python's zipfile, which
-# uses zlib. `deflate-flate2-zlib-rs` is the flate2/zlib-rs path alone: same
-# compressed bytes as before the upgrade, without zopfli.
-zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 toml = "0.8"

@@ -14,13 +14,29 @@ sutura /tmp/broken.stl --human
 The generator produces a cube with a missing face, an inverted winding, a
 duplicated face, a fin triangle and a self-intersecting triangle.
 
-Regression suites:
+The Rust crates carry the main suite:
 
 ```sh
-# These spawn the in-repo sutura/repair.py, so run them with the CLI's Python:
-~/.local/share/sutura/venv/bin/python tests/make_layered_multiobject_3mf.py --check   # layered multi-object 3MF
-~/.local/share/sutura/venv/bin/python tests/test_adversarial.py                       # malformed-input handling
+cd rust
+cargo test --workspace              # everything
+cargo test -p sutura-core --lib     # the repair core
+cargo test -p sutura-cli            # CLI contract tests
+cargo test -p sutura-geom --lib wall::   # one module, while iterating
 ```
+
+The Python suites are still in `tests/` and still run in CI. They exercise the
+legacy Python entry points, which spawn `sutura/repair.py`; that path is still
+shipped in 0.9.10 as the selectable Python backend, so run them with a Python
+that can import it, and pin `SUTURA_DATA_DIR` and `HOME` at a temporary
+directory so a test cannot write into your real install:
+
+```sh
+SUTURA_DATA_DIR=/tmp/sutura-test HOME=/tmp/sutura-test-home \
+  python3 tests/test_adversarial.py
+```
+
+`tests/_cli.py::cli_env()` builds exactly that throwaway environment; prefer it
+in a new test over inheriting the ambient one.
 
 Real-world samples in `tests/real-world-samples/` come from the
 [Thingi10K](https://ten-thousand-models.appspot.com/) dataset (Zhou &
@@ -64,7 +80,7 @@ and edge-point propagation").
 Torture tests cover hard-but-printable geometry:
 
 ```sh
-~/.local/share/sutura/venv/bin/python tests/torture_tests.py
+python3 tests/torture_tests.py
 ```
 
 Rust core (`rust/sutura-geom`, needs a Rust toolchain; results in the crate
@@ -128,7 +144,7 @@ while `two_sided_max_all_mm` / `i2o_max_all_mm` and `buried_faces_removed` /
 From the repository root:
 
 ```sh
-~/.local/share/sutura/venv/bin/python \
+python3 \
   .claude/skills/sutura-verify/scripts/verify_visual_qa.py \
   original.stl repaired.stl --input original.stl \
   --contact-sheet /tmp/visual-qa.png --no-v2

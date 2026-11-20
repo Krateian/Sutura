@@ -2,6 +2,128 @@
 
 All notable changes to this project are documented here.
 
+## [0.9.10] - 2026-11-20
+
+### Deprecated
+
+- **The Python backend.** `SUTURA_BACKEND=python` or the launcher flag
+  `sutura --backend python` still select it in 0.9.10 and print a one-line note
+  on stderr; it will be removed in the next release.
+
+### Added
+
+- **A redesigned window.** Repairs are shown as result cards with a plain
+  verdict and the suggested next step; the report's **Open in…** button opens
+  the repaired model in your slicer, and the layout adapts to the window size
+  instead of hiding controls. The preview has its own card with After/Before,
+  side by side, and a heatmap with a legend (or a note when nothing moved). A
+  custom header carries the title, version, About and settings; **Open result**
+  and **Show in folder** act on the report. Save even when over the risk or
+  change limit (`--force`), output folder (`--output`) and Run self-check
+  (`--self-check`) are in Options.
+- **`sutura --update` and `sutura --rollback`.** Until now an update could only
+  be started from the GUI, and a backup could only be restored by the updater
+  deciding to do it. `--update` installs the newest release (verify, back up,
+  swap, health-check, roll back on failure); `--rollback` restores the newest
+  backup on demand. Both ask first, and the answer defaults to **no**; `--yes`
+  answers for you, and a run with no terminal declines rather than assuming
+  consent. Two backups are kept.
+- **Packages for Intel Macs and arm64 Linux.** The Rust build shipped only
+  macOS arm64 and Linux x86_64, while the Python version it replaces supported
+  both architectures on both platforms. All four targets now build and install,
+  so nobody loses `--check-update` or `--repair-install` by upgrading.
+- **`MIGRATE.md`**, shipped inside the release package: what moving from the
+  Python version carries over, where the previous install is saved, and how to
+  get back to it.
+
+### Changed
+
+- **The Rust engine is the default.** Repairs run on the Rust core unless you
+  ask for the Python backend, which still works in 0.9.10 and then goes away.
+  The Python install is kept as a backup when you migrate.
+- **"fTetWild not needed" is explained.** When the normal repair already
+  produces a watertight solid, the report now says fTetWild was skipped on
+  purpose instead of leaving a bare "skipped" that looked like a failure.
+- **The GUI remembers its settings.** It previously started from scratch every
+  time: intensity, language and every control in the settings panel were lost on
+  quit. They are now saved to `gui.json` beside the CLI's `config.json` (two
+  separate files, so neither can clobber the other's keys) and restored on
+  launch. Deliberately stricter than the Python GUI, which persisted twelve keys
+  and kept the tier switches in memory only: the whole settings struct
+  round-trips here. An explicit `--intensity` or `--lang` still wins over the
+  saved value.
+- **`--wall-min-thickness` now does something.** The flag was documented,
+  accepted, and completely inert: it set a target but never turned the Wall
+  Thicken tier on, and nothing in the pipeline read it. Passing it now enables
+  the tier, which measures wall thickness and thickens anything below the
+  target. The report gains a `wall_thicken` block. Because it creates geometry it
+  is gated like every other tier: the result is kept only when the topology does
+  not get worse.
+- **`--repair-install` asks before replacing files**, and the answer defaults to
+  no. It previously required `--yes` and did not prompt at all, which the
+  documentation described incorrectly.
+- **`--purge` now removes update backups** (`sutura.backup/`, and a quarantined
+  Python-era `sutura.backup.python-*`). They live beside the install rather than
+  inside it, so a purge used to leave two full copies of the program behind.
+- **Release notes are written only after an install succeeds.** They are fetched
+  before the swap so the "what's new" view never waits on a download, but a
+  failed or rolled-back update leaves the previous notes in place instead of
+  describing a version that is not installed. `--whats-new` also now works on a
+  CLI-only install; it previously only had notes if the GUI had done the update.
+- **Installed binaries are matched by exact name.** APFS is case-insensitive, so
+  on macOS `Contents/MacOS/sutura` resolved to the Python bundle's `Sutura` GUI
+  launcher. That could make the updater health-check the wrong program, and make
+  migration decide a Python install was already a Rust one and skip itself.
+
+### Fixed
+
+- **The reported genus is right for multi-part and open models.** It used to
+  assume a single closed shell, which gave impossible values (including
+  negative ones) wherever the mesh had several parts or an open boundary. It
+  now follows the same topology rules as the rest of the report.
+- **Method health tells the truth about fTetWild.** The health list said the
+  fTetWild helper was missing even when it ran and its output was used. It now
+  resolves the helper through the same `find_binary` path as the tier, so a
+  packaged sidecar or an override is reported correctly.
+- **A result is only called watertight when the solid check agrees.** If the
+  final solid rebuild cannot confirm the mesh, the repair keeps trying the other
+  methods instead of reporting success on a shape the checker rejected. This
+  also covers some meshes where a Stage-2 rebuild that its own checker rejected
+  was previously accepted as watertight.
+- **Three report values are no longer guessed.** `components_before` now uses
+  the component count before the repair, `si_stage1` is the Stage-1
+  self-intersection count rather than the final one, and `cad_likeness` is
+  sampled from the post-outer-shell print snapshot. `vol_pct` is left null when
+  the report has no measured volume change instead of being filled with `0.0`.
+- **Sixteen report fill-ins now match the Python report.** This covers the
+  tamponade `base_local_si`, `cand_local_si`, `shell_prepass`, `h_min`,
+  `patch_vertices` and `shape.compactness` fields; fTetWild `returncode` at the
+  top level and on each attempt; the deep-repair `tiers_run` graft entry;
+  `solid_engine.reason`; Stage-1 `removed_small_parts`; the coaptation block
+  when that tier did not run; and the SI `geom_change_pct`. It is report-only:
+  repaired meshes are byte-identical to the previous build.
+- **Stop responds promptly.** Cancelling a repair now stops within about a
+  second even while the heaviest self-intersection work is running. The cdt2d
+  constraint construction used by the shell and SI paths is cancellable too, so
+  a long constraint batch no longer delays the stop.
+- **The macOS background window no longer crashes on Add files.** Opening the
+  file picker from a window that was in the background could crash; the crash is
+  fixed.
+- **The heatmap button works in the GPU view.** It previously did nothing while
+  the GPU renderer was active.
+- **General settings are restored at launch.** The controls were saved but not
+  reloaded, so the General tab started from defaults.
+- **Options child windows no longer stay behind.** The profile and repeat-picker
+  windows opened from Options now come to the front.
+- **The documentation described things the program did not do.** The install
+  guide covered the Python product (conda, virtualenvs, the AppImage), several
+  troubleshooting entries named failures a native build cannot hit, and the
+  update section promised behaviour that did not exist. All of it is rewritten
+  against the Rust build, in English and Turkish. The install and update pages
+  now state what is actually true, including the limits: which platforms have
+  packages, that `--rollback` reaches only the newest backup, and that the
+  download-from-Releases step is not live until the first Rust release.
+
 ## [0.9.9] - 2026-11-12
 
 ### Added

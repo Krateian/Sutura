@@ -26,6 +26,9 @@ import tempfile
 import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# `repair.main()` enables crash logging and creates `<data>/crash.log`
+# before doing any work, so every child must get a throwaway HOME.
+from _cli import cli_env  # noqa: E402
 SUTURA = os.path.join(REPO, 'sutura')
 sys.path.insert(0, SUTURA)
 
@@ -37,7 +40,7 @@ REPAIR_PY = os.path.join(SUTURA, 'repair.py')
 
 def _run(args):
     r = subprocess.run([sys.executable, REPAIR_PY] + args,
-                       capture_output=True, text=True, timeout=600)
+                       capture_output=True, text=True, timeout=600, env=cli_env())
     return r
 
 

@@ -14,13 +14,29 @@ sutura /tmp/broken.stl --human
 Üretici; eksik bir yüzü, ters sarmalanmış bir yüzü, yinelenen bir yüzü, bir
 yüzgeç üçgenini ve kendisiyle kesişen bir üçgeni olan bir küp üretir.
 
-Regresyon süitleri:
+Ana süit Rust crate'lerindedir:
 
 ```sh
-# İkisi de depo içindeki sutura/repair.py'yi çalıştırır; CLI'nin kendi Python'u ile çalıştırın:
-~/.local/share/sutura/venv/bin/python tests/make_layered_multiobject_3mf.py --check   # katmanlı çok nesneli 3MF
-~/.local/share/sutura/venv/bin/python tests/test_adversarial.py                       # bozuk girdi işleme
+cd rust
+cargo test --workspace              # her şey
+cargo test -p sutura-core --lib     # onarım çekirdeği
+cargo test -p sutura-cli            # CLI sözleşme testleri
+cargo test -p sutura-geom --lib wall::   # tek modül, geliştirirken
 ```
+
+Python süitleri hâlâ `tests/` içindedir ve CI'da hâlâ çalışır. Eski Python giriş
+noktalarını denerler ve `sutura/repair.py`'yi başlatırlar; bu yol 0.9.10'da
+seçilebilir Python arka ucu olarak hâlâ paketlenir, yani içe aktarabilen bir
+Python ile çalıştırın ve bir testin gerçek kurulumunuza yazamaması için
+`SUTURA_DATA_DIR` ile `HOME` değişkenlerini geçici bir dizine sabitleyin:
+
+```sh
+SUTURA_DATA_DIR=/tmp/sutura-test HOME=/tmp/sutura-test-home \
+  python3 tests/test_adversarial.py
+```
+
+`tests/_cli.py::cli_env()` tam olarak bu geçici ortamı kurar; yeni bir testte
+ortamı olduğu gibi devralmak yerine onu tercih edin.
 
 `tests/real-world-samples/` içindeki gerçek dünya örnekleri
 [Thingi10K](https://ten-thousand-models.appspot.com/) veri kümesinden ve Artec
@@ -64,7 +80,7 @@ README'si, "Sloan flips and edge-point propagation").
 İşkence testleri zor ama basılabilir geometriyi kapsar:
 
 ```sh
-~/.local/share/sutura/venv/bin/python tests/torture_tests.py
+python3 tests/torture_tests.py
 ```
 
 Rust çekirdeği (`rust/sutura-geom`, Rust araç zinciri gerekir; sonuçlar crate
@@ -130,7 +146,7 @@ ayrıntısını korur.
 Depo kökünden:
 
 ```sh
-~/.local/share/sutura/venv/bin/python \
+python3 \
   .claude/skills/sutura-verify/scripts/verify_visual_qa.py \
   original.stl repaired.stl --input original.stl \
   --contact-sheet /tmp/visual-qa.png --no-v2

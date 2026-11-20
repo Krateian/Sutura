@@ -689,6 +689,12 @@ fn ray_tri_hit(o: [f64; 3], d: [f64; 3], tri: &Tri, t_max: f64) -> TriHit {
     }
 }
 
+thread_local! {
+    /// Set only while the cancellable SI query runs; the regular query must
+    /// keep ignoring the global so it cannot poison the cached mask.
+    static POLL_CANCEL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl MeshBvh {
     pub fn from_arrays(verts: &[[f64; 3]], tris_idx: &[[usize; 3]]) -> Self {
         let mut tris = Vec::with_capacity(tris_idx.len());
@@ -804,6 +810,68 @@ impl MeshBvh {
             sa / (4.0 * std::f64::consts::PI),
             sb / (4.0 * std::f64::consts::PI),
         )
+    }
+
+    /// Variant of [`Self::winding_at_pair`] with a caller-supplied far-field
+    /// tolerance; the two point accumulations keep the same left/right order.
+    pub fn winding_at_pair_tol(
+        &self,
+        a: [f64; 3],
+        b: [f64; 3],
+        tol: f64,
+    ) -> (f64, f64) {
+        if self.nodes.is_empty() {
+            return (0.0, 0.0);
+        }
+        let (sa, sb) = self.winding_node_pair_tol(0, a, b, tol);
+        (
+            sa / (4.0 * std::f64::consts::PI),
+            sb / (4.0 * std::f64::consts::PI),
+        )
+    }
+
+    fn winding_node_pair_tol(
+        &self,
+        idx: usize,
+        a: [f64; 3],
+        b: [f64; 3],
+        tol: f64,
+    ) -> (f64, f64) {
+        let node = &self.nodes[idx];
+        if node.left < 0 {
+            let start = node.start as usize;
+            let end = start + node.count as usize;
+            let mut sa = 0.0;
+            let mut sb = 0.0;
+            for i in start..end {
+                let tri = &self.tris[self.order[i] as usize];
+                sa += tri.solid_angle(a);
+                sb += tri.solid_angle(b);
+            }
+            return (sa, sb);
+        }
+        let d2 = node.bbox.dist2(a);
+        let far_a = d2 > 0.0 && node.area_sum / d2 < tol;
+        let d2b = node.bbox.dist2(b);
+        let far_b = d2b > 0.0 && node.area_sum / d2b < tol;
+        let mut res = (0.0, 0.0);
+        if far_a {
+            res.0 = winding_dipole(node, a);
+        }
+        if far_b {
+            res.1 = winding_dipole(node, b);
+        }
+        if !far_a || !far_b {
+            let left = self.winding_node_pair_tol(node.left as usize, a, b, tol);
+            let right = self.winding_node_pair_tol(node.right as usize, a, b, tol);
+            if !far_a {
+                res.0 = left.0 + right.0;
+            }
+            if !far_b {
+                res.1 = left.1 + right.1;
+            }
+        }
+        res
     }
 
     fn winding_node_pair(&self, idx: usize, a: [f64; 3], b: [f64; 3]) -> (f64, f64) {
@@ -1449,12 +1517,22 @@ impl MeshBvh {
             .map(|_| std::sync::atomic::AtomicBool::new(false))
             .collect();
 
+        // Cancellation is polled every 4096 stack pops. The flag is shared by
+        // the Rayon tasks so one cancelled traversal stops the whole query.
+        let aborted = std::sync::atomic::AtomicBool::new(false);
+        let poll_cancel = POLL_CANCEL.with(|c| c.get());
         // For small meshes (f < 1024), run sequentially on caller thread to avoid thread-pool overhead.
         if f < 1024 {
             let mut stack = Vec::with_capacity(64);
             stack.push((0, 0));
+            let mut steps = 0usize;
 
             while let Some((a_idx, b_idx)) = stack.pop() {
+                steps += 1;
+                if steps & 4095 == 0 && poll_cancel && crate::cancel::is_cancelled() {
+                    aborted.store(true, std::sync::atomic::Ordering::Relaxed);
+                    break;
+                }
                 let na = &self.nodes[a_idx];
                 let nb = &self.nodes[b_idx];
                 if !na.bbox.overlaps(&nb.bbox) {
@@ -1491,6 +1569,9 @@ impl MeshBvh {
                         stack.push((a_idx, nb.right as usize));
                     }
                 }
+            }
+            if aborted.load(std::sync::atomic::Ordering::Relaxed) {
+                return (vec![false; f], -2, true);
             }
             let res_mask: Vec<bool> = mask.into_iter().map(|b| b.into_inner()).collect();
             let count = res_mask.iter().filter(|&&b| b).count() as i64;
@@ -1549,8 +1630,14 @@ impl MeshBvh {
         work_tasks.into_par_iter().for_each(|initial_pair| {
             let mut stack = Vec::with_capacity(128);
             stack.push(initial_pair);
+            let mut steps = 0usize;
 
             while let Some((a_idx, b_idx)) = stack.pop() {
+                steps += 1;
+                if steps & 4095 == 0 && poll_cancel && crate::cancel::is_cancelled() {
+                    aborted.store(true, std::sync::atomic::Ordering::Relaxed);
+                    break;
+                }
                 let na = &self.nodes[a_idx];
                 let nb = &self.nodes[b_idx];
                 if !na.bbox.overlaps(&nb.bbox) {
@@ -1590,9 +1677,30 @@ impl MeshBvh {
             }
         });
 
+        if aborted.load(std::sync::atomic::Ordering::Relaxed) {
+            return (vec![false; f], -2, true);
+        }
         let res_mask: Vec<bool> = mask.into_iter().map(|b| b.into_inner()).collect();
         let count = res_mask.iter().filter(|&&b| b).count() as i64;
         (res_mask, count, false)
+    }
+    /// Cancellable form: `Err(())` means the caller cancelled; `-2` never
+    /// leaves this method.
+    pub fn self_intersections_cancellable(
+        &self,
+        verts: &[[f64; 3]],
+        tris: &[[usize; 3]],
+    ) -> Result<(Vec<bool>, i64, bool), ()> {
+        POLL_CANCEL.with(|c| c.set(true));
+        let out = self.self_intersections(verts, tris);
+        POLL_CANCEL.with(|c| c.set(false));
+        match out {
+            (mask, -2, true) => {
+                let _ = mask;
+                Err(())
+            }
+            out => Ok(out),
+        }
     }
 }
 

@@ -62,6 +62,17 @@ pub struct Preview {
     pub size: [u32; 2],
     pub error: Option<String>,
     pub heatmap: bool,
+    /// Last backend/heatmap combination logged, so the note prints on a change
+    /// rather than every frame.
+    logged_backend: Option<String>,
+    /// A file is being dragged over the window. Purely cosmetic: the drop hint
+    /// turns into an accent-coloured frame so the target is unmistakable.
+    /// Python has no such feedback (`gui.py:6059` only accepts the event), so
+    /// this is an addition, not a port.
+    pub drop_active: bool,
+    /// Paint each face by its defect kind instead of by shading. The palette is
+    /// Python's (`mesh::DEFECT_COLORS`); this is its "defect-colour" view mode.
+    pub defect_colors: bool,
 }
 
 impl Preview {
@@ -97,6 +108,33 @@ impl Preview {
             size: [0, 0],
             error: None,
             heatmap: false,
+            logged_backend: None,
+            drop_active: false,
+            defect_colors: false,
+        }
+    }
+
+    /// A CPU-only preview, for tests: building the real one needs an
+    /// `eframe::CreationContext`, which cannot be constructed in a unit test.
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        Self {
+            camera: Camera {
+                yaw: -0.55,
+                pitch: 0.32,
+                zoom: 1.0,
+                target: Vec3::ZERO,
+                radius: 1.0,
+            },
+            viewer: Viewer::Cpu(cpu_view::CpuViewer::new()),
+            mesh: None,
+            dirty: true,
+            size: [0, 0],
+            error: None,
+            heatmap: false,
+            logged_backend: None,
+            drop_active: false,
+            defect_colors: false,
         }
     }
 
@@ -109,6 +147,36 @@ impl Preview {
         self.mesh = Some(mesh);
         self.dirty = true;
         self.error = None;
+    }
+
+    /// Drop the displayed mesh (the file list was emptied or the selection was
+    /// removed). Without this the preview would keep showing a file that is no
+    /// longer in the list.
+    ///
+    /// Clearing `Preview.mesh` is enough: the viewer is handed this mesh every
+    /// frame, so there is no per-backend copy to clear (and `cpu_view`'s
+    /// `set_mesh` is a no-op — it reads from here).
+    pub fn clear_mesh(&mut self) {
+        self.mesh = None;
+        self.dirty = true;
+        self.error = None;
+    }
+
+    /// Rasterise one mesh for a static side-by-side view.
+    ///
+    /// Uses the CPU renderer regardless of what the live preview picked: the
+    /// static pair is a still image, and forcing one renderer keeps the two
+    /// halves consistent with each other. Same `Camera::from_mesh` framing as
+    /// the live view, so the pictures match what the user was just looking at.
+    pub fn rasterize_for_still(
+        mesh: &DisplayMesh,
+        size: [u32; 2],
+        heatmap: bool,
+    ) -> Result<tiny_skia::Pixmap, String> {
+        let camera = Camera::from_mesh(mesh);
+        let aspect = size[0] as f32 / size[1].max(1) as f32;
+        let vp = camera.view_proj(aspect);
+        cpu_view::CpuViewer::new().rasterize(mesh, vp, size, heatmap)
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
@@ -138,15 +206,54 @@ impl Preview {
             self.dirty = true;
         }
 
+        if self.defect_colors {
+            // Fill the palette on first use rather than at load: the diagnosis is
+            // the expensive part and most sessions never ask for this view.
+            if let Some(mesh) = &self.mesh {
+                if mesh.defect_colors.is_empty() {
+                    let mut copy = (**mesh).clone();
+                    if let Err(e) = copy.ensure_defect_colors() {
+                        self.error = Some(e);
+                    } else {
+                        self.mesh = Some(std::sync::Arc::new(copy));
+                        self.dirty = true;
+                    }
+                }
+            }
+        }
+
         if let Some(mesh) = self.mesh.clone() {
             if self.dirty {
                 let aspect = size[0] as f32 / size[1].max(1) as f32;
                 let vp = self.camera.view_proj(aspect);
+                // Which path drew this frame, printed once so a rendering report
+                // ("flat on RADV, shaded on macOS") can be traced to a renderer
+                // instead of guessed at. The two paths are separate code and have
+                // already diverged once.
+                if std::env::var_os("SUTURA_GUI_BACKEND_LOG").is_some() {
+                    let name = match &self.viewer {
+                        Viewer::Wgpu(_) => "wgpu",
+                        Viewer::Cpu(_) => "cpu",
+                    };
+                    let key = format!("{name}-{}", self.heatmap);
+                    if self.logged_backend.as_deref() != Some(key.as_str()) {
+                        eprintln!(
+                            "preview backend: {name} (heatmap={})",
+                            self.heatmap
+                        );
+                        self.logged_backend = Some(key);
+                    }
+                }
                 let result = match &mut self.viewer {
                     Viewer::Wgpu(v) => v.render(&mesh, vp, self.size, self.heatmap),
-                    Viewer::Cpu(v) => {
-                        v.render(ui.ctx(), &mesh, vp, self.size, self.heatmap)
-                    }
+                    Viewer::Cpu(v) => v.render_with(
+                        ui.ctx(),
+                        &mesh,
+                        vp,
+                        self.size,
+                        self.heatmap,
+                        self.defect_colors,
+                    ),
                 };
                 if let Err(e) = result {
                     self.error = Some(e);
@@ -200,12 +307,26 @@ impl Preview {
                 );
             }
         } else {
+            if self.drop_active {
+                // A frame inside the panel, so it reads as a target rather than
+                // as a border of the window.
+                ui.painter().rect_stroke(
+                    rect.shrink(6.0),
+                    6.0,
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(90, 170, 230)),
+                    egui::StrokeKind::Inside,
+                );
+            }
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 rust_i18n::t!("app.drop_hint").to_string(),
                 egui::FontId::proportional(16.0),
-                egui::Color32::from_gray(160),
+                if self.drop_active {
+                    egui::Color32::from_rgb(120, 190, 245)
+                } else {
+                    egui::Color32::from_gray(160)
+                },
             );
         }
         if let Some(e) = &self.error {

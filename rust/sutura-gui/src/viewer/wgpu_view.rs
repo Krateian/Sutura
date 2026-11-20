@@ -19,6 +19,11 @@ struct Vertex {
     /// Deviation-ramp index / 256, so 0..1 reaches the shader as a float.
     /// -1.0 means "no ramp available", which selects the defect path instead.
     ramp: f32,
+    /// Defect-KIND colour in 0..1 sRGB, or all `-1.0` when this face has no kind
+    /// (or the mode is off). The CPU path paints the same palette from
+    /// `mesh.defect_colors`; without this attribute the GPU path could not show
+    /// the defect-colour mode at all.
+    kind: [f32; 3],
 }
 
 #[repr(C)]
@@ -59,6 +64,9 @@ pub struct WgpuViewer {
     vertex_buffer: Option<wgpu::Buffer>,
     index_buffer: Option<wgpu::Buffer>,
     index_count: u32,
+    /// `defect_colors.len()` at the last upload, so a lazily-computed palette
+    /// triggers a re-upload that the index count alone would miss.
+    uploaded_kind_len: usize,
     color_texture: Option<wgpu::Texture>,
     color_view: Option<wgpu::TextureView>,
     depth_view: Option<wgpu::TextureView>,
@@ -95,8 +103,9 @@ impl WgpuViewer {
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
-        let attrs =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32];
+        let attrs = wgpu::vertex_attr_array![
+            0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32, 4 => Float32x3
+        ];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sutura-mesh-pipeline"),
             layout: Some(&layout),
@@ -162,6 +171,7 @@ impl WgpuViewer {
             vertex_buffer: None,
             index_buffer: None,
             index_count: 0,
+            uploaded_kind_len: 0,
             color_texture: None,
             color_view: None,
             depth_view: None,
@@ -187,6 +197,21 @@ impl WgpuViewer {
                     .get(i / 3)
                     .map(|idx| *idx as f32 / 256.0)
                     .unwrap_or(-1.0),
+                // Indexed by FACE, like `ramp`: the soup has three vertices per
+                // face in order, so `i / 3` is the face id.
+                kind: mesh
+                    .defect_colors
+                    .get(i / 3)
+                    .copied()
+                    .flatten()
+                    .map(|c| {
+                        [
+                            c[0] as f32 / 255.0,
+                            c[1] as f32 / 255.0,
+                            c[2] as f32 / 255.0,
+                        ]
+                    })
+                    .unwrap_or([-1.0, -1.0, -1.0]),
             })
             .collect();
         self.vertex_buffer = Some(self.state.device.create_buffer_init(
@@ -265,7 +290,16 @@ impl WgpuViewer {
         size: [u32; 2],
         heatmap: bool,
     ) -> Result<(), String> {
-        if self.index_count == 0 || mesh.indices.len() as u32 != self.index_count {
+        // Re-upload when the vertex data changed, not just the index count. The
+        // defect-kind colours are computed lazily the first time that mode is
+        // switched on, so the geometry is identical while the per-vertex colour
+        // is not -- keying on `indices.len()` alone kept the upload from ever
+        // happening and the mode showed the plain surface.
+        if self.index_count == 0
+            || mesh.indices.len() as u32 != self.index_count
+            || self.uploaded_kind_len != mesh.defect_colors.len()
+        {
+            self.uploaded_kind_len = mesh.defect_colors.len();
             self.set_mesh(Arc::new(mesh.clone()));
         }
         self.ensure_targets(size);
@@ -353,12 +387,15 @@ struct VsIn {
     @location(1) nrm: vec3<f32>,
     @location(2) defect: f32,
     @location(3) ramp: f32,
+    // Defect-kind colour, or all-negative when the face has no kind.
+    @location(4) kind: vec3<f32>,
 };
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) nrm: vec3<f32>,
     @location(1) defect: f32,
     @location(2) ramp: f32,
+    @location(3) kind: vec3<f32>,
 };
 
 @vertex
@@ -368,6 +405,7 @@ fn vs(input: VsIn) -> VsOut {
     out.nrm = input.nrm;
     out.defect = input.defect;
     out.ramp = input.ramp;
+    out.kind = input.kind;
     return out;
 }
 
@@ -395,11 +433,27 @@ fn fs(input: VsOut) -> @location(0) vec4<f32> {
     // Precedence, as `heatmap.draw_frame`: an available deviation ramp wins over
     // the binary defect blend. `input.ramp < 0` means the ramp was not computed
     // (the Before view), so the defect tint still applies there.
+    // The ramp is shaded the same way `CpuViewer::rasterize_with` shades it, and
+    // for the same reason: every face of a scanned part lands on nearly the same
+    // deviation, so an unshaded ramp is one flat silhouette with no readable
+    // shape. That is what the After + Heatmap view looked like on a Steam Deck --
+    // the CPU path had been fixed and this one had not, so the two renderers
+    // disagreed about the same frame.
+    //
+    // Same constants as the CPU path: 0.35 / 0.65 ambient/diffuse, and the same
+    // 35% lift on the ramp's own entries so the navy low end stays a surface
+    // rather than a hole. The value -> colour map is untouched.
     let ramp_rgb = deviation_colour(input.ramp);
+    let ramp_shade = 0.35 + 0.65 * d;
+    let ramp_lifted = ramp_rgb + (vec3<f32>(1.0) - ramp_rgb) * 0.35;
+    let ramp_rgb_shaded = ramp_lifted * ramp_shade;
     let defect_c = mix(base, hot, clamp(input.defect, 0.0, 1.0) * u.heat.x);
-    // The ramp is NOT shaded (Python uses `dev_lut[idx]` verbatim); only the
-    // neutral body takes the diffuse term. Shading it dimmed the dark navy end.
-    let c = select(defect_c, ramp_rgb, input.ramp >= 0.0);
-    return vec4<f32>(c, 1.0);
+    let c = select(defect_c, ramp_rgb_shaded, input.ramp >= 0.0 && u.heat.x > 0.5);
+    // The defect-KIND colour wins over everything, matching the CPU path: Python's
+    // "defects" view is a mode of its own, not an overlay on the deviation ramp.
+    // `kind.x < 0` means the face has no kind (or the mode is off).
+    let kind_c = input.kind;
+    let final_c = select(c, kind_c, kind_c.x >= 0.0);
+    return vec4<f32>(final_c, 1.0);
 }
 "#;

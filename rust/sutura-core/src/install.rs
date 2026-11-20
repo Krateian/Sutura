@@ -58,7 +58,7 @@ pub fn backup_root() -> PathBuf {
 /// The Rust binaries take it from `sutura/repair.py` at build time; this reads
 /// the same value when the caller has not supplied one.
 pub fn current_version() -> String {
-    std::env::var("SUTURA_PRODUCT_VERSION").unwrap_or_else(|_| "0.9.9".to_string())
+    std::env::var("SUTURA_PRODUCT_VERSION").unwrap_or_else(|_| "0.9.10".to_string())
 }
 
 /// Names inside `app_dir()` the updater must never touch.
@@ -82,18 +82,40 @@ pub fn protected_entries() -> Vec<String> {
 
 /// The asset file name for this platform, matching `scripts/package_rust.sh`.
 ///
-/// | target          | asset                                  |
-/// |-----------------|----------------------------------------|
-/// | macOS arm64     | `Sutura-rust-v<ver>-arm64.dmg`          |
-/// | Linux x86_64    | `Sutura-rust-v<ver>-x86_64.tar.gz`      |
+/// | target                    | asset                                |
+/// |---------------------------|--------------------------------------|
+/// | macOS arm64               | `Sutura-rust-v<ver>-arm64.dmg`        |
+/// | macOS x86_64 (Intel)      | `Sutura-rust-v<ver>-x86_64.dmg`       |
+/// | Linux x86_64              | `Sutura-rust-v<ver>-x86_64.tar.gz`    |
+/// | Linux aarch64             | `Sutura-rust-v<ver>-aarch64.tar.gz`   |
+///
+/// The macOS pair is distinguished by the arch label only, because the file
+/// extension already says "macOS"; the Linux pair likewise. That keeps the
+/// naming consistent across targets instead of encoding the OS twice.
+///
+/// Every target the Python build shipped must be here. `None` means "no update
+/// and no repair possible on this machine", so a missing arm64-linux or Intel
+/// entry is a silent feature loss, not just a packaging gap.
 pub fn asset_name(tag: &str) -> Option<String> {
+    asset_name_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        tag,
+    )
+}
+
+/// [`asset_name`] for an explicit platform, so every target is testable from one
+/// host. `cfg!` alone can only ever exercise the machine the test runs on, which
+/// is how the Intel Mac and arm64 Linux arms could go missing without a single
+/// failing test.
+pub fn asset_name_for(os: &str, arch: &str, tag: &str) -> Option<String> {
     let ver = tag.strip_prefix('v').unwrap_or(tag);
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some(format!("Sutura-rust-v{ver}-arm64.dmg"))
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some(format!("Sutura-rust-v{ver}-x86_64.tar.gz"))
-    } else {
-        None
+    match (os, arch) {
+        ("macos", "aarch64") => Some(format!("Sutura-rust-v{ver}-arm64.dmg")),
+        ("macos", "x86_64") => Some(format!("Sutura-rust-v{ver}-x86_64.dmg")),
+        ("linux", "x86_64") => Some(format!("Sutura-rust-v{ver}-x86_64.tar.gz")),
+        ("linux", "aarch64") => Some(format!("Sutura-rust-v{ver}-aarch64.tar.gz")),
+        _ => None,
     }
 }
 
@@ -282,6 +304,80 @@ pub fn rollback() -> Result<PathBuf, String> {
     Ok(backup)
 }
 
+/// True when `path` is a file **whose name matches exactly**.
+///
+/// `Path::is_file` alone is not enough on macOS: APFS is case-insensitive, so
+/// `Contents/MacOS/sutura` resolves to the Python bundle's `Contents/MacOS/Sutura`
+/// GUI launcher. A plain `is_file()` check therefore reports the Python launcher
+/// as "the Rust CLI", and `health_check` would run it -- which is the same trap
+/// that kept macOS install E2E red on main (`share/macos-quick-action.sh`,
+/// fixed there by requiring an exact name).
+///
+/// Confirmed on APFS: with only `Sutura` present, `is_file(".../sutura")` is
+/// true and the file reads as the launcher. Compare the directory entry's own
+/// name to get a case-sensitive answer.
+pub fn is_exact_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    let Some(want) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some(dir) = path.parent() else {
+        return false;
+    };
+    // Read the directory and compare the *stored* name. `read_dir` returns the
+    // on-disk spelling, so a case-insensitive lookup that matched `Sutura`
+    // yields "Sutura" here and the comparison fails, as it should.
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // Fall back to the plain answer rather than reporting "missing": a
+        // permission problem must not look like an absent binary.
+        return true;
+    };
+    entries.filter_map(Result::ok).any(|e| {
+        e.file_name()
+            .to_str()
+            .map(|n| n == want)
+            .unwrap_or(false)
+    })
+}
+
+/// Where the CLI lands inside the installed app tree.
+///
+/// The *artifact* decides the layout, not the OS: `apply_artifact` detects a
+/// gzip (Linux tarball, `Sutura/` root) versus a disk image (macOS,
+/// `Sutura.app`) from the bytes. So this checks what is actually on disk rather
+/// than trusting `cfg!(target_os)`, which would name the wrong file whenever
+/// those two disagree -- as they do on a macOS machine that installed the
+/// tarball.
+///
+/// Each candidate is matched by **exact name** ([`is_exact_file`]): on
+/// case-insensitive APFS `Contents/MacOS/sutura` otherwise resolves to the
+/// Python bundle's `Sutura` GUI launcher.
+pub fn installed_binary() -> PathBuf {
+    let app = app_dir();
+    let candidates: [PathBuf; 3] = [
+        // Linux tarball layout.
+        app.join("bin/sutura"),
+        // macOS bundle, copied in as the bundle root.
+        app.join("Contents/MacOS/sutura"),
+        // macOS bundle, copied in whole.
+        app.join("Sutura.app/Contents/MacOS/sutura"),
+    ];
+    for path in &candidates {
+        if is_exact_file(path) {
+            return path.clone();
+        }
+    }
+    // Nothing installed yet: fall back to this platform's expected path so the
+    // caller gets a useful "not found" rather than a wrong hit.
+    if cfg!(target_os = "macos") {
+        candidates[1].clone()
+    } else {
+        candidates[0].clone()
+    }
+}
+
 /// The health check from `updater.health_check`: the new binary reports the
 /// expected version and can actually repair a small mesh.
 ///
@@ -293,6 +389,14 @@ pub fn health_check(
     binary: &Path,
 ) -> Result<(), String> {
     let want = expected_tag.strip_prefix('v').unwrap_or(expected_tag);
+    // Refuse to probe a path that only matches case-insensitively. On APFS,
+    // `Contents/MacOS/sutura` resolves to the Python bundle's `Sutura` GUI
+    // launcher, so without this the gate would test the *old* application and
+    // roll back a good migration (or, if the launcher answered `--version`,
+    // pass the wrong binary). Absent is the honest answer.
+    if !is_exact_file(binary) {
+        return Err(format!("{} is missing", binary.display()));
+    }
     let (code, out) = run(binary, &["--version"]);
     if code != 0 {
         return Err(format!("version check failed (exit {code})"));
@@ -453,9 +557,64 @@ fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The one guard for every test that mutates `SUTURA_APP_DIR`.
+///
+/// Lives at the module root, not inside `mod tests`, because `migrate.rs`'s
+/// tests must take the *same* lock. Two independent mutexes serialise nothing:
+/// those tests ran alongside the ones below, a `scratch` call in one module
+/// pointed the env at a temp tree while the other was mid-`backup_install`, and
+/// a write escaped into the real `~/.local/share/sutura`.
+#[cfg(test)]
+pub(crate) fn tests_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every platform the Python distribution shipped must have an asset name.
+    ///
+    /// `asset_name` returns None without one, which disables `--check-update` and
+    /// `--repair-install` on that machine — so a missing target is a silent
+    /// feature loss. `cfg!`-based dispatch can only test the host, which is
+    /// exactly how Intel Mac and arm64 Linux went missing: no test could have
+    /// caught it. These are pinned against `scripts/package_rust.sh`.
+    #[test]
+    fn every_shipped_platform_has_an_asset_name() {
+        let cases = [
+            ("macos", "aarch64", "Sutura-rust-v0.9.10-arm64.dmg"),
+            ("macos", "x86_64", "Sutura-rust-v0.9.10-x86_64.dmg"),
+            ("linux", "x86_64", "Sutura-rust-v0.9.10-x86_64.tar.gz"),
+            ("linux", "aarch64", "Sutura-rust-v0.9.10-aarch64.tar.gz"),
+        ];
+        for (os, arch, want) in cases {
+            assert_eq!(
+                asset_name_for(os, arch, "v0.9.10").as_deref(),
+                Some(want),
+                "{os}/{arch} must resolve to {want}"
+            );
+        }
+        // The tag is accepted with or without the `v`.
+        assert_eq!(
+            asset_name_for("linux", "x86_64", "0.9.10").as_deref(),
+            Some("Sutura-rust-v0.9.10-x86_64.tar.gz")
+        );
+        // Genuinely unsupported targets still answer None rather than guessing.
+        for (os, arch) in [("windows", "x86_64"), ("linux", "riscv64")] {
+            assert_eq!(asset_name_for(os, arch, "v0.9.10"), None, "{os}/{arch}");
+        }
+    }
+
+    /// The host's own answer must match what the platform table says, so the two
+    /// cannot drift.
+    #[test]
+    fn host_asset_name_agrees_with_the_table() {
+        let host = asset_name("v1.2.3");
+        let table = asset_name_for(std::env::consts::OS, std::env::consts::ARCH, "v1.2.3");
+        assert_eq!(host, table);
+    }
 
     #[test]
     fn sha256_hex_is_lowercase_and_correct() {
@@ -514,7 +673,17 @@ mod tests {
     /// fails. This is the gate between "installed" and "adopted".
     #[test]
     fn health_check_verifies_version_and_exit() {
-        let bin = Path::new("/nonexistent/sutura");
+        // A real file: `health_check` refuses to probe a path that does not
+        // exist by exact name (see `exact_name_ignores_a_differently_cased_file`),
+        // so a made-up path would test the guard rather than the version match.
+        // Deliberately not `scratch()`: this test needs no `SUTURA_APP_DIR` and
+        // should not take the env lock for a directory it only reads back.
+        let base = std::env::temp_dir().join(format!("sutura-health-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let bin_path = base.join("sutura");
+        std::fs::write(&bin_path, "").unwrap();
+        let bin = bin_path.as_path();
         let ok = |_: &Path, _: &[&str]| (0, "sutura 0.10.0".to_string());
         assert!(health_check("v0.10.0", &ok, bin).is_ok());
         // A tag without 'v' still matches the printed version.
@@ -525,6 +694,7 @@ mod tests {
 
         let nonzero = |_: &Path, _: &[&str]| (1, "boom".to_string());
         assert!(health_check("v0.10.0", &nonzero, bin).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The licence boundary blocks an automatic install, with Python's wording.
@@ -539,8 +709,10 @@ mod tests {
     /// A scratch install root, so no test touches the real one.
     ///
     /// `SUTURA_APP_DIR` is process-global, so the tests that use this hold
-    /// [`ENV_LOCK`] for their whole body; otherwise the default parallel runner
-    /// lets them overwrite each other's install root.
+    /// [`tests_env_lock`] for their whole body. Sharing that one guard with
+    /// `migrate.rs` is what keeps the two modules' tests from interleaving: it
+    /// is the lock, not the cleanup, that makes this safe, since every test
+    /// sets the variable itself before touching the filesystem.
     fn scratch(name: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(
             "sutura-install-{name}-{}",
@@ -552,10 +724,8 @@ mod tests {
         base
     }
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        super::tests_env_lock()
     }
 
     /// Three versions in a row leave exactly the newest two, the oldest is
@@ -610,6 +780,154 @@ mod tests {
         assert_eq!(ver, "0.9.9", "the newest backup is restored");
         let hist = std::fs::read_to_string(base.join("app/data/history.jsonl")).unwrap();
         assert_eq!(hist, "NEWER\n", "data written after the backup survives");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `installed_binary` follows what is actually on disk, not the OS.
+    ///
+    /// The artifact decides the layout (`apply_artifact` sniffs gzip vs a disk
+    /// image), so a macOS machine that installed the tarball must be checked at
+    /// `bin/sutura`. Getting this wrong made the health check run a path that
+    /// did not exist and report "version check failed (exit -1)".
+    #[test]
+    fn installed_binary_follows_the_installed_layout() {
+        let _guard = lock_env();
+        let base = scratch("layout");
+        let app = base.join("app");
+
+        // Nothing installed: a plausible path, not an empty one.
+        assert!(installed_binary().ends_with("bin/sutura")
+            || installed_binary().ends_with("Contents/MacOS/sutura"));
+
+        // Tarball layout wins when present, whatever the OS.
+        std::fs::create_dir_all(app.join("bin")).unwrap();
+        std::fs::write(app.join("bin/sutura"), "").unwrap();
+        assert_eq!(installed_binary(), app.join("bin/sutura"));
+
+        // A bundle layout is found when that is what is there.
+        std::fs::remove_file(app.join("bin/sutura")).unwrap();
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::write(app.join("Contents/MacOS/sutura"), "").unwrap();
+        assert_eq!(installed_binary(), app.join("Contents/MacOS/sutura"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The APFS case trap: `Contents/MacOS/Sutura` must not satisfy `sutura`.
+    ///
+    /// The Python `.app` ships a GUI launcher named `Sutura`; APFS is
+    /// case-insensitive, so `Path::is_file("Contents/MacOS/sutura")` finds it.
+    /// Before the exact-name check, `installed_binary()` would return that path
+    /// and `health_check` would run the GUI launcher as the CLI -- and
+    /// `migrate::has_rust_layout` would call a Python install "already Rust"
+    /// and skip the migration entirely.
+    ///
+    /// Only meaningful on a case-insensitive filesystem; skipped elsewhere
+    /// rather than asserted vacuously.
+    #[test]
+    fn exact_name_ignores_a_differently_cased_file() {
+        let _guard = lock_env();
+        let base = scratch("apfs");
+        let app = base.join("app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::write(app.join("Contents/MacOS/Sutura"), "python launcher").unwrap();
+
+        // Confirm this filesystem actually is case-insensitive before asserting;
+        // on a case-sensitive one the trap cannot occur and the test would be
+        // testing nothing.
+        let probe = app.join("Contents/MacOS/sutura");
+        if !probe.is_file() {
+            eprintln!("case-sensitive filesystem: APFS trap not applicable");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        // The plain check is fooled...
+        assert!(probe.is_file(), "case-insensitive lookup does find it");
+        // ...the exact-name check is not.
+        assert!(
+            !is_exact_file(&probe),
+            "a file spelled `Sutura` must not count as `sutura`"
+        );
+        // The consumers must not be fooled either. `installed_binary` still
+        // returns its platform default (so the caller gets a useful "not
+        // found"), but the health gate must refuse to run it: otherwise the
+        // migration would probe the Python GUI launcher, and roll back a good
+        // install when it fails to answer `--version`.
+        let picked = installed_binary();
+        let ran = std::cell::Cell::new(false);
+        let probe_run = |_p: &Path, _a: &[&str]| {
+            ran.set(true);
+            (0, "sutura 0.58.0".to_string())
+        };
+        let verdict = health_check("v0.58.0", &probe_run, &picked);
+        assert!(
+            verdict.is_err(),
+            "health_check must refuse the case-insensitive match"
+        );
+        assert!(
+            !ran.get(),
+            "the launcher must never be executed as the CLI"
+        );
+        assert!(
+            !crate::migrate::has_rust_layout(&app),
+            "a Python .app launcher must not read as an existing Rust layout"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The gate between "installed" and "adopted": a binary that fails its
+    /// health check must be rolled back, and a healthy one must not.
+    ///
+    /// Before this was wired, `health_check` and `rollback` had **no production
+    /// caller** — a bad release was installed and kept, and the only recovery
+    /// was a manual reinstall. This test pins the two outcomes so the wiring
+    /// cannot silently disappear again.
+    #[test]
+    fn a_failed_health_check_rolls_back_and_a_healthy_one_stays() {
+        let _guard = lock_env();
+        let base = scratch("gate");
+
+        // Build the tree at a real layout path, then let `installed_binary`
+        // discover it -- the same discovery the health check does.
+        let bin = base.join("app/bin/sutura");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "GOOD").unwrap();
+        assert_eq!(installed_binary(), bin, "discovery agrees with the tree");
+
+        // A good install, backed up.
+        std::fs::write(base.join("app/data/history.jsonl"), "HISTORY\n").unwrap();
+        backup_install("0.9.9").unwrap();
+
+        // The update lands, but the binary reports the version it replaced.
+        std::fs::write(&bin, "BAD").unwrap();
+        let broken = |_: &Path, _: &[&str]| (0, "sutura 0.9.9".to_string());
+        let err = health_check("v0.10.0", &broken, &bin).unwrap_err();
+        assert!(err.contains("version mismatch"), "{err}");
+
+        rollback().expect("rollback after a failed check");
+        assert_eq!(
+            std::fs::read_to_string(&bin).unwrap(),
+            "GOOD",
+            "the previous build is back"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("app/data/history.jsonl")).unwrap(),
+            "HISTORY\n",
+            "user data is never rolled back"
+        );
+
+        // The same sequence with a healthy binary must keep the new build.
+        std::fs::write(&bin, "NEWER").unwrap();
+        let healthy = |_: &Path, _: &[&str]| (0, "sutura 0.10.0".to_string());
+        health_check("v0.10.0", &healthy, &bin).expect("healthy build is adopted");
+        assert_eq!(
+            std::fs::read_to_string(&bin).unwrap(),
+            "NEWER",
+            "a passing check must not roll anything back"
+        );
+
         let _ = std::fs::remove_dir_all(&base);
     }
 

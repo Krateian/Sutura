@@ -25,6 +25,7 @@ hand on a Mac):
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -344,9 +345,125 @@ def download_source(tag, dest_dir):
     return top
 
 
-# ---------------------------------------------------------------- hashes
+# ------------------------------------------------ bridge release (source -> Rust)
 
-def _file_hash(path):
+# Asset names the Rust updater expects (rust/sutura-core/src/install.rs::
+# asset_name). Kept in sync by hand: a mismatch is caught by the test below
+# rather than silently shipping.
+#
+# All four targets the Python distribution supported are listed, because the
+# bridge runs ON the Python install's platform: leaving Intel Mac or arm64 Linux
+# out would strand those users on a Python build that can never be updated again.
+RUST_ASSETS = {
+    'darwin-arm64': 'Sutura-rust-v%s-arm64.dmg',
+    'darwin-x86_64': 'Sutura-rust-v%s-x86_64.dmg',
+    'linux-x86_64': 'Sutura-rust-v%s-x86_64.tar.gz',
+    'linux-aarch64': 'Sutura-rust-v%s-aarch64.tar.gz',
+}
+MIGRATE_FLAG = '--migrate-from-python'
+
+
+def rust_asset_platform():
+    """The platform key for RUST_ASSETS, or None when unsupported.
+
+    Matches install::asset_name's compile-time platform list exactly: macOS on
+    Apple silicon or Intel, Linux on x86_64 or aarch64. Everything else has no
+    Rust build, so the bridge must leave those installs alone rather than guess.
+    """
+    machine = platform.machine()
+    if sys.platform == 'darwin':
+        if machine in ('arm64', 'aarch64'):
+            return 'darwin-arm64'
+        if machine in ('x86_64', 'AMD64'):
+            return 'darwin-x86_64'
+        return None
+    if sys.platform.startswith('linux'):
+        if machine in ('x86_64', 'AMD64'):
+            return 'linux-x86_64'
+        if machine in ('aarch64', 'arm64'):
+            return 'linux-aarch64'
+    return None
+
+
+def find_rust_asset(release, tag):
+    """(asset_url, sha256_url) for this platform from a release payload.
+
+    Both must exist: the Rust updater refuses an artifact without its digest
+    (install::download_verified), so downloading one here would only defer the
+    failure to a worse place.
+    """
+    key = rust_asset_platform()
+    if key is None or not release:
+        return None
+    version = tag.lstrip('v')
+    want = RUST_ASSETS[key] % version
+    by_name = {a.get('name'): a.get('browser_download_url')
+               for a in release.get('assets') or []}
+    url, sha = by_name.get(want), by_name.get(want + '.sha256')
+    if not url or not sha:
+        return None
+    return url, sha
+
+
+def fetch_release_json():
+    """The full /releases/latest payload, or None. Offline is not an error."""
+    try:
+        req = urllib.request.Request(GITHUB_API,
+                                     headers={'User-Agent': 'sutura-updater'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+
+def _parse_sha256(text):
+    """The first whitespace-delimited token when it is a 64-char hex digest.
+
+    Mirrors install::parse_sha256_file so the same file satisfies both sides.
+    """
+    token = (text or '').split()[0] if (text or '').split() else ''
+    token = token.lower()
+    if len(token) != 64 or any(c not in '0123456789abcdef' for c in token):
+        return None
+    return token
+
+
+def download_rust_asset(release, tag, dest_dir):
+    """Download and verify the Rust artifact for this platform.
+
+    Returns (path, None) on success or (None, reason) on failure. Nothing is
+    installed here -- the caller hands the path to the downloaded binary.
+    """
+    found = find_rust_asset(release, tag)
+    if not found:
+        return None, ('no Rust build for this platform in %s' % tag)
+    url, sha_url = found
+    try:
+        req = urllib.request.Request(url,
+                                     headers={'User-Agent': 'sutura-updater'})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = resp.read()
+        req = urllib.request.Request(sha_url,
+                                     headers={'User-Agent': 'sutura-updater'})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            want = _parse_sha256(resp.read().decode())
+    except Exception as exc:
+        return None, 'download failed: %s' % exc
+    if not want:
+        return None, 'missing or malformed .sha256 for %s' % tag
+    got = hashlib.sha256(data).hexdigest()
+    if got != want:
+        # Refuse before anything touches the install.
+        return None, ('checksum mismatch for %s (expected %s, got %s)'
+                      % (tag, want[:12], got[:12]))
+    name = os.path.basename(url.rstrip('/'))
+    path = os.path.join(dest_dir, name)
+    with open(path, 'wb') as f:
+        f.write(data)
+    return path, None
+
+
+
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         for chunk in iter(lambda: f.read(65536), b''):
@@ -718,6 +835,124 @@ def rollback(previous_version):
 
 # ---------------------------------------------------------------- top-level
 
+def _rust_layout_installed():
+    """True when APP_DIR holds the Rust distribution, which this updater must
+    never overwrite with a source tarball.
+
+    ``perform_update`` downloads
+    ``github.com/Krateian/Sutura/archive/refs/tags/<tag>.tar.gz`` and lays that
+    source tree over APP_DIR. Once the Rust build is the distribution, that
+    tarball is not an upgrade: it replaces a working binary install with a
+    Python tree that no longer has a working pipeline, and leaves the user with
+    no way back.
+
+    The test is the filesystem, not a config key. ``bin/sutura`` is what
+    ``install-rust.sh`` puts there (macOS: ``Contents/MacOS/sutura`` inside the
+    bundle), and a config flag would be wrong exactly when it matters -- the
+    other runtime rewrites ``config.json``.
+
+    ``APP_DIR`` is read at call time so tests can point it at a temp tree.
+    """
+    app = APP_DIR
+    # Exact names only: APFS is case-insensitive, so ``Contents/MacOS/sutura``
+    # resolves to the Python bundle's ``Contents/MacOS/Sutura`` GUI launcher.
+    # A false positive here would make the Python updater refuse to update a
+    # perfectly ordinary Python install. ``listdir`` gives the stored spelling.
+    return _exact_file(os.path.join(app, 'bin', 'sutura')) or _exact_file(
+        os.path.join(app, 'Contents', 'MacOS', 'sutura'))
+
+
+def _exact_file(path):
+    """``os.path.isfile`` plus an exact-name check, for case-insensitive APFS.
+
+    ``os.path.isfile('Contents/MacOS/sutura')`` is true when only the Python
+    bundle's ``Sutura`` launcher exists. Compare the directory listing's own
+    spelling instead. Matches ``install::is_exact_file`` on the Rust side.
+    """
+    if not os.path.isfile(path):
+        return False
+    directory, name = os.path.split(path)
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        # Unreadable directory: keep the plain answer rather than reporting
+        # "missing", so a permission problem is not read as an absent file.
+        return True
+    return name in entries
+
+
+def perform_rust_handoff(tag, progress=None, released=None):
+    """Bridge release: install the Rust build and let IT migrate this install.
+
+    A plain source-tarball update cannot work once the Rust build is the
+    distribution -- the tarball is not an upgrade, and after the Python pipeline
+    is retired it has no working pipeline. So this path downloads the verified
+    platform artifact and runs the binary with ``--migrate-from-python``, which
+    owns the actual migration (backup, data move, swap, health gate, venv
+    removal). One implementation of the migration, in Rust.
+
+    Returns (ok, message, previous_version), the same contract as
+    ``perform_update``.
+    """
+    released = released if released is not None else fetch_release_json()
+    if released is None:
+        return (False,
+                'could not read the release; check your connection and try '
+                'again', VERSION)
+    tmp = tempfile.mkdtemp(prefix='sutura-bridge-')
+    try:
+        if progress:
+            progress('downloading')
+        artifact, why = download_rust_asset(released, tag, tmp)
+        if artifact is None:
+            return (False, why or 'could not download the update', VERSION)
+
+        # Unpack to a scratch tree; the binary inside does the migration. The
+        # Rust installer expects these layouts (package_rust.sh).
+        unpack = os.path.join(tmp, 'unpack')
+        os.makedirs(unpack, exist_ok=True)
+        if artifact.endswith('.dmg'):
+            mount = os.path.join(tmp, 'mnt')
+            os.makedirs(mount, exist_ok=True)
+            subprocess.run(['hdiutil', 'attach', artifact, '-nobrowse',
+                            '-mountpoint', mount], check=True)
+            try:
+                apps = [n for n in os.listdir(mount) if n.endswith('.app')]
+                if not apps:
+                    return (False, '%s: no .app in the disk image' % tag,
+                            VERSION)
+                shutil.copytree(os.path.join(mount, apps[0]),
+                                os.path.join(unpack, 'Sutura.app'),
+                                symlinks=True)
+            finally:
+                subprocess.run(['hdiutil', 'detach', mount, '-force'])
+            binary = os.path.join(unpack, 'Sutura.app', 'Contents', 'MacOS',
+                                  'sutura')
+        else:
+            subprocess.run(['tar', '-xzf', artifact, '-C', unpack], check=True)
+            binary = os.path.join(unpack, 'Sutura', 'bin', 'sutura')
+
+        if not os.path.exists(binary):
+            return (False, '%s: unexpected artifact layout' % tag, VERSION)
+        os.chmod(binary, 0o755)
+
+        if progress:
+            progress('migrating')
+        proc = subprocess.run([binary, MIGRATE_FLAG, '--yes'],
+                              capture_output=True, text=True, timeout=1800)
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or '').strip().splitlines()
+            return (False,
+                    'migration failed: %s' % (tail[-1] if tail else
+                                              'exit %d' % proc.returncode),
+                    VERSION)
+        return (True, 'updated to %s' % tag, VERSION)
+    except Exception as exc:
+        return (False, 'update failed: %s' % exc, VERSION)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def perform_update(tag, progress=None, should_stop=None):
     """Backup, download, install, health-check; roll back on failure.
 
@@ -748,7 +983,24 @@ def perform_update(tag, progress=None, should_stop=None):
                 'the new terms.' % (tag, APPIMAGE_RELEASE_URL), VERSION)
     if _stop_requested():
         return _cancelled()
+    # This install is managed by the Rust updater. Downloading a source tarball
+    # now would replace the binary with a Python tree, so refuse before touching
+    # anything -- before the backup, and before a single byte is fetched.
+    if _rust_layout_installed():
+        return (False,
+                'This install is managed by the Rust updater; run '
+                "'sutura --check-update' instead. Nothing was changed.",
+                VERSION)
     previous = VERSION
+    # Bridge release. If this tag publishes a Rust artifact, the source tarball
+    # for it is not the thing to install: run the Rust binary's own migration
+    # instead, which keeps this install's data and backs up its files. Checked
+    # before the backup so a handoff that never starts leaves nothing behind.
+    released = fetch_release_json()
+    if released and find_rust_asset(released, tag):
+        if progress:
+            progress('migrating to the Rust build')
+        return perform_rust_handoff(tag, progress=progress, released=released)
     if progress:
         progress('backing up')
     backup_install()

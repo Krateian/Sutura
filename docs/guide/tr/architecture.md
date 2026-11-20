@@ -45,12 +45,29 @@ Kurulu veya AppImage düzeninde `sutura_engine` üst düzey bir pakettir; kaynak
 * **Triage kademelendirme politikası (`sutura_engine.triage`).** Nesne başına geometrik özellik tanısını (bileşen yapısı, açık sınır oranları, simetri puanları) sıralı yöntem önerileri ve süre bütçeli geri dönüş mekanizmasıyla (`min(max(30 s, 2 × taban), 120 s)`) birleştirir. Kullanım geçmişi etkin olduğunda, sınırlı bir Bayes güncellemesi (Beta(2, 2) soncul ortalaması) yöntem seçim olasılıklarını ağ bağlantısı kullanmaksızın yerel olarak optimize eder.
 * **Chart içerik adresli önbellek (`sutura_engine.chart`).** Ara ve nihai onarım verilerini SHA-256 geometri özetiyle `~/.cache/sutura/` altında 500 MB LRU tasfiye ilkesiyle önbelleğe alır. Tekrarlanan işlem adımlarını ve çok nesneli 3MF dosyalarının işlenmesini hızlandırır; sürüm değişimlerinde veya parametre güncellemelerinde girdileri otomatik olarak geçersiz kılar.
 
-### Yol haritası: kritik yolları Rust çekirdeğine taşıma
+### Kritik yolları Rust çekirdeğine taşıma — tamamlandı
 
-Gelecekteki geliştirme süreci, performans açısından kritik yolları `rust/sutura-geom` bileşenine taşıyarak Python çalışma zamanı yükünü azaltmayı hedeflemektedir:
-- **Aşama 0 (Python İçi İyileştirmeler):** Dış kabuk kontrolündeki gereksiz `trimesh` içe aktarımının kaldırılması v0.7.0 ile sunulmuştur; dönel simetri tespitindeki aday dönüşümlerin vektörize edilmesi ise v0.7.2 ile sunulmuştur (toplu, iş parçacıklı en-yakın-komşu sorguları, birebir aynı sonuçlar, örnek/korpus detektöründe ~2-3,7 kat daha hızlı).
-- **Aşama 1 (Rust Topoloji Katmanı):** Belirleyici dizi işlemlerinin (X-Ray yeniden yükleme kaynaştırması, kesin delik/manifold-olmayan kenar tespiti ve sınır döngüsü taraması) yerel Rust'a aktarılması ve en yakın komşu sorguları için yerel BVH yapılarının kullanılması.
-- **Aşama 1c (Rust Delik Üçgenleme — tamamlandı):** yerel Rust `sutura_geom.close_holes` ear-clipping kapatıcısı (VCGLib `meshing_close_holes` semantiğiyle uyumlu) artık Aşama 1 delik kapatma adımını doğrudan NumPy dizileri üzerinde yürütür. Liepa tarzı minimum ağırlıklı üçgenleme ise gelecek çalışması olarak durur.
-- **Aşama 2 (PyMeshLab Bağımsızlığı — tamamlandı):** yinelenen/dejenere yüz temizliği, non-manifold onarımı, tutarlı yönlendirme, yinelenen/kullanılmayan köşe temizliği ve köşe kaynaştırma, saf-numpy geri dönüşüyle yerel Rust (`sutura_geom`) içinde uygulanmıştır; PyMeshLab artık harici bir C++ çalışma zamanı bağımlılığı değildir.
-- **Aşama 3 (Yerel Manifold — tamamlandı):** Manifold, `manifold-csg` aracılığıyla doğrudan Rust eklentisine bağlanmıştır; Aşama 2, dış kabuk birleşimi, yinelenen öge CSG ve Graft yerel dikişi `sutura_geom` içinde çalışır, Python `manifold3d` köprüleri kaldırılmıştır ve 3.11 sanal ortamı artık yalnızca ana yorumlayıcı aralık dışındayken fTetWild yedeği olarak kalır.
-- **Aşama 4 (Bağımsız Rust CLI):** bağımsız bir Rust CLI çalıştırılabilir dosyasına doğru gelecekteki çalışma olarak kalır.
+Bu yol haritasının anlattığı geçiş bitti. Rust çekirdeği artık bir Python
+programının eklentisi değil, programın kendisidir:
+
+- **Aşama 0 (Python İçi İyileştirmeler):** dış kabuk kontrolündeki gereksiz
+  `trimesh` içe aktarımının kaldırılması ve dönel simetri tespitinde aday
+  dönüşümlerin vektörize edilmesi.
+- **Aşama 1 / 1c (Rust Topoloji Katmanı):** belirleyici dizi işlemleri yerel
+  Rust'ta — X-Ray yeniden yükleme kaynaştırması, kesin delik/manifold-olmayan
+  kenar tespiti, sınır döngüsü taraması ve Aşama 1 delik kapatmayı doğrudan
+  diziler üzerinde yürüten ear-clipping kapatıcısı.
+- **Aşama 2 (PyMeshLab Bağımsızlığı):** yinelenen/dejenere yüz temizliği,
+  non-manifold onarımı, tutarlı yönlendirme, yinelenen/kullanılmayan köşe
+  temizliği ve köşe kaynaştırma yereldir.
+- **Aşama 3 (Yerel Manifold):** Manifold doğrudan Rust çekirdeğine bağlıdır;
+  Aşama 2, dış kabuk birleşimi, yinelenen öge CSG ve Graft yerel dikişi orada
+  çalışır.
+- **Aşama 4 (Bağımsız Rust CLI) — bitti.** CLI ve GUI Rust ikilileridir. Çalışma
+  zamanında Python süreci, sanal ortam veya yorumlayıcı yoktur; Python paketleri
+  yalnızca önceki sürüm hâlâ desteklendiği sürece tutulur ve mevcut bir kurulum
+  yeniden kurulmak yerine taşınır (bkz. [MIGRATE.md](../../../MIGRATE.tr.md)).
+
+Yukarıdaki tabloda sayılan Aşama 1 filtre zinciri, Manifold, kesin predikatlar,
+morfoloji, Flap, Dressing, Tamponad ve SDF/dual contouring çalışması bugün
+`rust/sutura-geom` ve `rust/sutura-core` içindedir.

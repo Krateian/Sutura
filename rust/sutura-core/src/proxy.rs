@@ -545,7 +545,7 @@ pub(crate) fn surface_samples(
     out
 }
 
-fn one_sided_hausdorff_rel(
+pub(crate) fn one_sided_hausdorff_rel(
     in_v: &[[f64; 3]],
     in_t: &[[i64; 3]],
     out_v: &[[f64; 3]],

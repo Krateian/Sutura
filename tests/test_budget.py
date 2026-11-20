@@ -30,6 +30,23 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA = os.path.join(REPO, 'sutura')
 sys.path.insert(0, SUTURA)
 
+# Isolate every user path BEFORE importing repair. `repair.py` enables crash
+# logging on startup (`enable_crash_logging`), which creates `<data>/crash.log`;
+# with the real HOME that file landed in the tester's
+# `~/.local/share/sutura`. The child processes get the same env.
+_TMP = tempfile.mkdtemp(prefix='sutura-budget-')
+ISOLATED_ENV = dict(
+    os.environ,
+    HOME=_TMP,
+    XDG_CONFIG_HOME=os.path.join(_TMP, 'config'),
+    XDG_CACHE_HOME=os.path.join(_TMP, 'cache'),
+    SUTURA_DATA_DIR=os.path.join(_TMP, 'data'),
+    SUTURA_NO_CACHE='1',
+)
+os.environ.update({k: ISOLATED_ENV[k] for k in
+                   ('HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME',
+                    'SUTURA_DATA_DIR', 'SUTURA_NO_CACHE')})
+
 import numpy as np  # noqa: E402
 import repair  # noqa: E402
 
@@ -41,7 +58,7 @@ def _run(args):
     # deterministically declines instead of blocking on a prompt.
     r = subprocess.run([sys.executable, REPAIR_PY] + args,
                        capture_output=True, text=True, timeout=600,
-                       stdin=subprocess.DEVNULL)
+                       stdin=subprocess.DEVNULL, env=ISOLATED_ENV)
     return r
 
 

@@ -33,14 +33,6 @@ def available(extra_features=False):
     """Whether the Rust backend can serve this request."""
     if selected() != 'rust':
         return False
-    if extra_features:
-        # The opt-in 11-feature head is not ported yet: a strict run must not
-        # silently return the 6-feature verdict.
-        if rust_bridge.require_rust():
-            raise RuntimeError(
-                'SUTURA_REQUIRE_RUST=1 but the Rust classifier does not '
-                'implement extra_features')
-        return False
     mod = _module()
     return mod is not None and hasattr(mod, 'classify_mesh')
 
@@ -53,8 +45,14 @@ def classify_mesh(verts, tris, engine='experimental', extra_features=False):
         return rust_bridge.unavailable('sutura_core_py is unavailable')
     v = np.ascontiguousarray(np.asarray(verts, dtype=np.float64))
     t = np.ascontiguousarray(np.asarray(tris, dtype=np.int64))
-    result = mod.classify_mesh(v, t, 'classic' if engine != 'experimental'
-                               else 'experimental')
+    try:
+        result = mod.classify_mesh(v, t, 'classic' if engine != 'experimental'
+                                   else 'experimental', extra_features)
+    except TypeError:
+        if extra_features:
+            raise
+        result = mod.classify_mesh(v, t, 'classic' if engine != 'experimental'
+                                   else 'experimental')
     if not isinstance(result, dict):
         raise ValueError('Rust classifier result is not a dict')
     if result.get('type') not in ('mechanical', 'organic', 'unknown'):

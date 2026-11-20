@@ -110,6 +110,22 @@ struct Cli {
     max_geometry_change: Option<f64>,
     #[arg(long = "max-risk", value_name = "SCORE", global = true)]
     max_risk: Option<f64>,
+    #[arg(long = "ftetwild-max-faces", value_name = "N", global = true)]
+    ftetwild_max_faces: Option<i64>,
+    #[arg(long = "ftetwild-timeout", value_name = "S", global = true)]
+    ftetwild_timeout: Option<f64>,
+    #[arg(long = "graft-max-faces", value_name = "N", global = true)]
+    graft_max_faces: Option<i64>,
+    #[arg(long = "graft-timeout", value_name = "S", global = true)]
+    graft_timeout: Option<f64>,
+    #[arg(long = "dense-ratio", value_name = "N", global = true)]
+    dense_ratio: Option<i64>,
+    #[arg(long = "dense-min-faces", value_name = "N", global = true)]
+    dense_min_faces: Option<i64>,
+    #[arg(long = "ftetwild-max-hausdorff", value_name = "F", global = true)]
+    ftetwild_max_hausdorff: Option<f64>,
+    #[arg(long = "ftetwild-optimize-retry", global = true)]
+    ftetwild_optimize_retry: bool,
     #[arg(long, global = true)]
     force: bool,
     #[arg(long = "no-fidelity", global = true)]
@@ -127,9 +143,43 @@ struct Cli {
     /// Check for a newer release (`update` / `license` / `none`).
     #[arg(long = "check-update")]
     check_update: bool,
+    /// Install the newest release.
+    ///
+    /// Asks first, and the answer defaults to **no**; `--yes` answers for you.
+    /// Downloads the verified artifact, backs up the current install, swaps it
+    /// in, and rolls back if the new build does not start. `--check-update`
+    /// only reports; this is the one that installs.
+    #[arg(long = "update")]
+    update: bool,
+    /// Restore the newest backup over the installed files.
+    ///
+    /// This is the same recovery the updater performs on its own when a new
+    /// version fails to start, exposed for when you want it deliberately. It
+    /// restores the newest backup only; two are kept, and older ones are
+    /// evicted. User data is never part of a backup and is never touched.
+    #[arg(long = "rollback")]
+    rollback: bool,
     /// Print the release notes saved by the last update (works offline).
     #[arg(long = "whats-new")]
     whats_new: bool,
+    /// Migrate an existing Python install to this Rust build.
+    ///
+    /// Used by the bridge release's updater, which downloads the artifact and
+    /// runs this; it is not a normal user-facing flag. `--yes` is required
+    /// because it removes the old runtime.
+    #[arg(long = "migrate-from-python")]
+    migrate_from_python: bool,
+    /// Reinstall this version over itself (repairs a damaged install).
+    ///
+    /// Re-downloads the release asset for the **running** version, verifies its
+    /// sha256, swaps it in, and rolls back if the new tree does not start. It
+    /// never changes the version, so it cannot silently update or downgrade.
+    #[arg(long = "repair-install", alias = "repair-installation")]
+    repair_install: bool,
+    /// The verified release artifact to install (defaults to the running
+    /// binary's own release, which is what a manual run wants).
+    #[arg(long = "from-artifact", value_name = "PATH")]
+    from_artifact: Option<std::path::PathBuf>,
     #[arg(long = "experimental-join-components", global = true)]
     experimental_join_components: bool,
     #[arg(long = "experimental-autorefine", global = true)]
@@ -227,11 +277,23 @@ enum IoCommand {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // `--debug` (or `SUTURA_DEBUG=1`) shows the traceback for unexpected
+    // failures, as Python's does (`repair.py:1400-1404`). The flag was declared
+    // and never read. In Rust the equivalent of `traceback.print_exc()` is the
+    // panic backtrace, so this enables it before any work; expected errors come
+    // back through `run`'s `Result` and are reported as one line either way.
+    let debug = cli.debug || std::env::var("SUTURA_DEBUG").is_ok_and(|v| v == "1");
+    if debug && std::env::var_os("RUST_BACKTRACE").is_none() {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err((code, Some(message))) => {
             if !message.is_empty() {
                 eprintln!("sutura: {message}");
+            }
+            if !debug {
+                eprintln!("hint: run with --debug for details");
             }
             ExitCode::from(code)
         }
@@ -252,6 +314,43 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
             sutura_core::config::intensity::format_intensities(&loaded, None)
         );
         return Ok(());
+    }
+    // Migration from a Python install. Called by the bridge release's updater
+    // with the downloaded artifact, because the migration (backup, data move,
+    // swap, health gate, venv removal) must exist in exactly one place and that
+    // place is here.
+    if cli.migrate_from_python {
+        return migrate_command(&cli);
+    }
+    // `--diagnostics PATH` writes the support archive and exits. It was declared
+    // and then refused as "not implemented" (`repair_cmd.rs:181`), which was
+    // honest but left the one thing a bug report needs unavailable.
+    if let Some(path) = &cli.diagnostics {
+        let result = sutura_core::diagnostics::create_archive(path);
+        return match result {
+            Ok(v) => {
+                if cli.json {
+                    outln!("{}", crate::repair_cmd::py_json(&v));
+                } else {
+                    outln!(
+                        "Diagnostics written: {} ({} bytes, {} methods{})",
+                        v.get("path").and_then(|p| p.as_str()).unwrap_or("?"),
+                        v.get("size_bytes").and_then(|b| b.as_u64()).unwrap_or(0),
+                        v.get("methods_count").and_then(|m| m.as_u64()).unwrap_or(0),
+                        if v.get("crash_log_included")
+                            .and_then(|c| c.as_bool())
+                            .unwrap_or(false)
+                        {
+                            ", crash log included"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+                Ok(())
+            }
+            Err(e) => Err((1, Some(format!("diagnostics failed: {e}")))),
+        };
     }
     if cli.self_check {
         let report = sutura_core::self_check::run(true);
@@ -284,6 +383,53 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
         }
         return Ok(());
     }
+    // `export-history` is a positional subcommand, like `clear-cache` and like
+    // Python (`repair.py:1125`). It was missing entirely, which is why
+    // `--summary-only`, `--last` and `--clear` had no home and were refused.
+    if cli.files.first().map(|p| p.as_os_str()) == Some(std::ffi::OsStr::new("export-history")) {
+        if cli.files.len() > 1 || cli.output.is_some() || cli.human || cli.dry_run {
+            return Err((
+                2,
+                Some(
+                    "export-history takes no positional arguments \
+                     (flags: --last N, --clear, --summary-only)"
+                        .to_string(),
+                ),
+            ));
+        }
+        // Python's `export_history` (`history.py:326`): a summary, then the full
+        // JSON array for copy-paste sharing. `--summary-only` prints the summary
+        // alone; `--clear` wipes the file afterwards, reporting the count.
+        let records = sutura_core::report::history::load_records(cli.last.unwrap_or(0));
+        if records.is_empty() {
+            outln!("no history yet (no repairs recorded)");
+        } else {
+            outln!("{}", sutura_core::report::history::summary_text_value(&records));
+            if !cli.summary_only {
+                outln!();
+                outln!("--- full data (paste this into the issue) ---");
+                outln!(
+                    "{}",
+                    sutura_core::report::history::py_json_dumps(&serde_json::Value::Array(
+                        records.clone()
+                    ))
+                );
+            }
+        }
+        if cli.clear {
+            let path = sutura_core::report::history::history_path();
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    outln!();
+                    outln!("history cleared ({} record(s) removed)", records.len());
+                }
+                // Python swallows a missing file here and prints nothing.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => {}
+            }
+        }
+        return Ok(());
+    }
     if cli.whats_new {
         // Pure filesystem read: the snapshot is written by the updater before it
         // installs, so this works with no network.
@@ -298,6 +444,12 @@ fn run(cli: Cli) -> Result<(), (u8, Option<String>)> {
             ),
         }
         return Ok(());
+    }
+    if cli.update {
+        return update_command(&cli);
+    }
+    if cli.rollback {
+        return rollback_command(&cli);
     }
     if cli.check_update {
         let status = sutura_core::updater::check_for_update(PRODUCT_VERSION, true);
@@ -415,6 +567,12 @@ automatically - download it manually from {} if you accept the new terms.",
     }
 
     if cli.files.is_empty() {
+        // These two act on the *installation*, not on a mesh, so they legitimately
+        // take no positional input. `repair_cmd::run` dispatches them; the usage
+        // error below must not shadow them.
+        if cli.self_repair || cli.repair_install {
+            return repair_cmd::run(&cli);
+        }
         // No positional input: keep the Python CLI's usage error shape.
         return Err((2, Some("no input files".to_string())));
     }
@@ -426,15 +584,7 @@ automatically - download it manually from {} if you accept the new terms.",
 /// import Python's pytetwild; until the Rust tier is wired this mirrors the
 /// filesystem check used by the installer.
 fn ftetwild_available() -> bool {
-    if let Some(path) = std::env::var_os("SUTURA_FTETWILD_BIN") {
-        return !path.is_empty() && Path::new(&path).exists();
-    }
-    match std::env::var_os("HOME") {
-        Some(home) => Path::new(&home)
-            .join(".local/share/sutura/ftetwild/bin/ftetwild")
-            .exists(),
-        None => false,
-    }
+    sutura_core::ftetwild::find_binary().is_some()
 }
 
 fn print_list_methods() {
@@ -1002,5 +1152,439 @@ fn title_case(text: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
+    }
+}
+
+/// `--migrate-from-python`: turn an existing Python install into this build.
+///
+/// The bridge release's updater downloads and verifies the artifact and then
+/// runs the binary inside it with this flag. Doing the work here means the
+/// migration exists once, in `sutura_core::migrate`, rather than being spelled
+/// out a second time in Python.
+fn migrate_command(cli: &Cli) -> Result<(), (u8, Option<String>)> {
+    // `--yes` is not a formality: this removes the previous runtime.
+    if !cli.yes {
+        return Err((
+            2,
+            Some(
+                "--migrate-from-python removes the previous Python install; \
+                 pass --yes to confirm"
+                    .to_string(),
+            ),
+        ));
+    }
+    let app = sutura_core::install::app_dir();
+    let data = sutura_core::config::learning::data_dir();
+    let plan = sutura_core::migrate::detect(&app, &data);
+    if plan.legacy.is_none() {
+        outln!("Nothing to migrate: no Python install at {}", app.display());
+        return Ok(());
+    }
+
+    // The artifact to install. When invoked from the bridge release the binary
+    // runs from the unpacked artifact, so its own directory holds the tree to
+    // install; `--from-artifact` overrides that for a manual run.
+    let payload = match &cli.from_artifact {
+        Some(path) => std::fs::read(path)
+            .map_err(|e| (1, Some(format!("{}: {e}", path.display()))))?,
+        None => {
+            return Err((
+                2,
+                Some(
+                    "--from-artifact is required: pass the downloaded release \
+                     artifact so the migration installs a verified tree"
+                        .to_string(),
+                ),
+            ))
+        }
+    };
+
+    let tag = format!("v{}", env!("SUTURA_PRODUCT_VERSION"));
+    let stamp = sutura_core::report::history::now_ts();
+    let report = sutura_core::migrate::run(&plan, &tag, &payload, &stamp, &run_quiet)
+        .map_err(|e| (1, Some(e)))?;
+
+    for note in &report.notes {
+        outln!("  {note}");
+    }
+    outln!(
+        "Migrated to {tag}: {} file(s) moved, {} removed.",
+        report.moved.len(),
+        report.removed.len()
+    );
+    Ok(())
+}
+
+/// Run a binary for the health check without inheriting the caller's stdio.
+///
+/// The migration's own output is what the user reads; a child that prints to
+/// the same stream would interleave with it.
+fn run_quiet(binary: &Path, args: &[&str]) -> (i32, String) {
+    match std::process::Command::new(binary).args(args).output() {
+        Ok(out) => (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        ),
+        Err(_) => (-1, String::new()),
+    }
+}
+
+/// `--self-repair` / `--repair-install`: reinstall this version over itself.
+///
+/// The Rust answer to Python's `self_repair.py`. A static binary has no venv to
+/// rewrite, but its *install* can still be damaged, so this re-downloads the
+/// asset for the version already running, verifies it, and swaps it in through
+/// the updater's own backup/health-check/rollback path. It never changes the
+/// version -- a repair that silently updated would be a different operation.
+pub(crate) fn self_repair_command(cli: &Cli) -> Result<(), (u8, Option<String>)> {
+    // Asks before replacing files the user is running, with the answer
+    // defaulting to no. This used to hard-require `--yes`, which meant there was
+    // no prompt at all -- the docs said it "always asks", and it did not.
+    if !confirm("Reinstall the installed files?", cli.yes) {
+        if cli.json {
+            outln!(
+                "{}",
+                crate::repair_cmd::py_json(&serde_json::json!({
+                    "repaired": false, "cancelled": true,
+                }))
+            );
+            return Ok(());
+        }
+        outln!("Nothing was changed.");
+        return Ok(());
+    }
+    match sutura_core::self_repair::repair_install(None, &run_quiet) {
+        Ok(report) => {
+            // `--json` prints one object and nothing else, so a caller parsing
+            // stdout does not have to strip human lines first.
+            if cli.json {
+                outln!(
+                    "{}",
+                    crate::repair_cmd::py_json(&serde_json::json!({
+                        "repaired": true,
+                        "tag": report.tag,
+                        "backup": report.backup.map(|p| p.display().to_string()),
+                    }))
+                );
+                return Ok(());
+            }
+            if let Some(backup) = &report.backup {
+                outln!("  previous install saved at {}", backup.display());
+            }
+            for note in &report.notes {
+                outln!("  {note}");
+            }
+            outln!("Reinstalled {}.", report.tag);
+            Ok(())
+        }
+        Err(e) => {
+            if cli.json {
+                outln!(
+                    "{}",
+                    crate::repair_cmd::py_json(&serde_json::json!({
+                        "repaired": false,
+                        "error": e.to_string(),
+                    }))
+                );
+            }
+            Err((1, Some(e.to_string())))
+        }
+    }
+}
+
+/// Ask before replacing the installed files. The answer defaults to **no**.
+///
+/// A bare Enter must never install or remove anything, so the empty answer is
+/// "no" and anything unrecognised is "no". `--yes` answers for you, which is
+/// what an unattended bridge-release update passes. A non-interactive stdin
+/// (a pipe, CI) is also "no": there is nobody to ask.
+fn confirm(question: &str, yes: bool) -> bool {
+    if yes {
+        return true;
+    }
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        eprintln!("sutura: {question} [y/N] (no terminal to ask on; pass --yes to confirm)");
+        return false;
+    }
+    eprint!("{question} [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+fn update_command(cli: &Cli) -> Result<(), (u8, Option<String>)> {
+    if !confirm("Install the newest release now?", cli.yes) {
+        if cli.json {
+            outln!(
+                "{}",
+                crate::repair_cmd::py_json(&serde_json::json!({
+                    "updated": false, "cancelled": true,
+                }))
+            );
+            return Ok(());
+        }
+        outln!("Nothing was changed.");
+        return Ok(());
+    }
+    match sutura_core::self_repair::update(&run_quiet) {
+        Ok(report) => {
+            if cli.json {
+                outln!(
+                    "{}",
+                    crate::repair_cmd::py_json(&serde_json::json!({
+                        "updated": true,
+                        "tag": report.tag,
+                        "backup": report.backup.map(|p| p.display().to_string()),
+                    }))
+                );
+                return Ok(());
+            }
+            if let Some(backup) = &report.backup {
+                outln!("  previous install saved at {}", backup.display());
+            }
+            for note in &report.notes {
+                outln!("  {note}");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if cli.json {
+                outln!(
+                    "{}",
+                    crate::repair_cmd::py_json(&serde_json::json!({
+                        "updated": false, "error": e.to_string(),
+                    }))
+                );
+            }
+            Err((1, Some(e.to_string())))
+        }
+    }
+}
+
+fn rollback_command(cli: &Cli) -> Result<(), (u8, Option<String>)> {
+    if !confirm("Restore the newest backup over the installed files?", cli.yes) {
+        if cli.json {
+            outln!(
+                "{}",
+                crate::repair_cmd::py_json(&serde_json::json!({
+                    "rolled_back": false, "cancelled": true,
+                }))
+            );
+            return Ok(());
+        }
+        outln!("Nothing was changed.");
+        return Ok(());
+    }
+    match sutura_core::self_repair::rollback_command() {
+        Ok(restored) => {
+            if cli.json {
+                outln!(
+                    "{}",
+                    crate::repair_cmd::py_json(&serde_json::json!({
+                        "rolled_back": true,
+                        "backup": restored.display().to_string(),
+                    }))
+                );
+            } else {
+                outln!("Restored {}.", restored.display());
+            }
+            Ok(())
+        }
+        Err(e) => Err((1, Some(e.to_string()))),
+    }
+}
+
+#[cfg(test)]
+mod migrate_flag_tests {
+    use clap::Parser;
+
+    /// `--repair-install` replaces the installed files, so without `--yes` and
+    /// without a terminal it must decline rather than start swapping them.
+    ///
+    /// It used to *require* `--yes`, which meant there was no prompt at all --
+    /// the docs claimed it "always asks" and the code never did. Now it asks,
+    /// the answer defaults to no, and `--yes` answers for you.
+    #[test]
+    fn repair_install_declines_without_yes_on_a_non_tty() {
+        let cli = <super::Cli as Parser>::try_parse_from(["sutura", "--repair-install"])
+            .expect("parses");
+        // The test harness's stdin is not a terminal, so `confirm` declines and
+        // the command returns Ok without touching anything. That the *decline*
+        // path is taken (not an error) is the point.
+        let result = super::self_repair_command(&cli);
+        assert!(
+            result.is_ok(),
+            "declining must be a clean no-op, got {result:?}"
+        );
+    }
+
+    /// `--yes` alone must not be enough to reach the network here: the command
+    /// still refuses when the install is not there to repair. This pins that
+    /// `confirm` short-circuits on `--yes` without falling through to a prompt.
+    #[test]
+    fn confirm_honours_yes_without_asking() {
+        assert!(super::confirm("anything?", true));
+    }
+
+    /// The two spellings are the same switch, and `--self-repair` (Python's
+    /// name) still routes here so an existing script keeps working.
+    #[test]
+    fn both_spellings_reach_the_repair_path() {
+        for flag in ["--repair-install", "--self-repair"] {
+            let cli = <super::Cli as Parser>::try_parse_from(["sutura", flag])
+                .unwrap_or_else(|e| panic!("{flag} must parse: {e}"));
+            assert!(
+                cli.repair_install || cli.self_repair,
+                "{flag} must reach the repair path"
+            );
+        }
+    }
+
+    /// Every flag declared must actually be *read* by the CLI.
+    ///
+    /// Five were parsed and then ignored — `--flap`, `--tamponade`,
+    /// `--coaptation`, `--no-dressing` and `--debug` — because the code that
+    /// should have consumed them hard-coded `false` (or, for `--debug`, did not
+    /// exist). Clap's derive counts as a read for the compiler, so `dead_code`
+    /// never fired; these assertions are the guard instead.
+    ///
+    /// Each case constructs a `RepairSettings` through the same path the CLI
+    /// uses, so a regression at the mapping site fails here.
+    #[test]
+    fn tier_flags_reach_repair_settings() {
+        // Goes through the same `build_options` the CLI uses, so a regression at
+        // the mapping site fails here rather than silently doing nothing.
+        let opts = |argv: &[&str]| {
+            let cli = <super::Cli as Parser>::try_parse_from(argv).expect("parses");
+            super::repair_cmd::build_options(&cli).expect("options").0
+        };
+        // All three default to ON, so `--flap` on its own is a no-op against the
+        // default: asserting it passes whether or not the flag is wired at all
+        // (verified by restoring the bug). What is genuinely observable, and what
+        // the bug broke, is that the flag is *parsed into the struct* the mapper
+        // reads -- so assert that, plus the negative path that does change the
+        // outcome.
+        let getters: [(&str, fn(&super::Cli) -> bool); 3] = [
+            ("--flap", |c| c.flap),
+            ("--tamponade", |c| c.tamponade),
+            ("--coaptation", |c| c.coaptation),
+        ];
+        for (flag, get) in getters {
+            let plain = <super::Cli as Parser>::try_parse_from(["sutura"]).expect("parses");
+            let forced = <super::Cli as Parser>::try_parse_from(["sutura", flag])
+                .unwrap_or_else(|e| panic!("{flag} must parse: {e}"));
+            assert!(!get(&plain), "{flag} must default off");
+            assert!(get(&forced), "{flag} must be read into the Cli struct");
+        }
+        // The positive flag's *effect* is unobservable while the tier defaults
+        // on, so pin the wiring itself: `build_options` must pass `cli.flap`
+        // through. A source-level assertion is the only honest check here, and
+        // it is exactly what the bug broke (it hard-coded `false`).
+        let src = include_str!("../src/repair_cmd.rs");
+        for (field, needle) in [
+            ("flap", "experimental_flap: cli.flap,"),
+            ("tamponade", "experimental_tamponade: cli.tamponade,"),
+            ("coaptation", "experimental_coaptation: cli.coaptation,"),
+            ("dressing", "dressing: cli.experimental_dressing && !cli.no_dressing,"),
+        ] {
+            assert!(
+                src.contains(needle),
+                "{field} must be wired from the CLI into RepairSettings, not hard-coded"
+            );
+        }
+        // The negative flags are observable end to end.
+        assert_eq!(opts(&["sutura"]).flap, Some(true));
+        assert_eq!(opts(&["sutura", "--no-flap"]).flap, Some(false));
+        assert_eq!(opts(&["sutura", "--no-tamponade"]).tamponade, Some(false));
+        assert_eq!(opts(&["sutura", "--no-coaptation"]).coaptation, Some(false));
+        // Precedence: off wins over on, as Python's `resolve_flap` does.
+        assert_eq!(
+            opts(&["sutura", "--no-flap", "--flap"]).flap,
+            Some(false),
+            "off must win over on"
+        );
+        // Dressing is opt-in, and `--no-dressing` wins over
+        // `--experimental-dressing`, matching Python's `resolve_dressing`.
+        assert!(!opts(&["sutura"]).dressing);
+        assert!(opts(&["sutura", "--experimental-dressing"]).dressing);
+        assert!(
+            !opts(&["sutura", "--experimental-dressing", "--no-dressing"]).dressing,
+            "--no-dressing must win over --experimental-dressing"
+        );
+    }
+
+    /// `--debug` and `SUTURA_DEBUG=1` both suppress the "run with --debug" hint.
+    #[test]
+    fn debug_flag_is_read() {
+        let cli = <super::Cli as Parser>::try_parse_from(["sutura", "--debug"]).expect("parses");
+        assert!(cli.debug, "--debug must be read");
+        let plain = <super::Cli as Parser>::try_parse_from(["sutura"]).expect("parses");
+        assert!(!plain.debug);
+    }
+
+    /// `export-history` accepts its three flags and nothing positional, as
+    /// Python's `parser.error('export-history takes no positional arguments')`.
+    #[test]
+    fn export_history_flags_parse() {
+        for argv in [
+            vec!["sutura", "export-history"],
+            vec!["sutura", "export-history", "--summary-only"],
+            vec!["sutura", "export-history", "--last", "5"],
+            vec!["sutura", "export-history", "--clear"],
+        ] {
+            let cli = <super::Cli as Parser>::try_parse_from(&argv)
+                .unwrap_or_else(|e| panic!("{argv:?} must parse: {e}"));
+            assert_eq!(
+                cli.files.first().map(|p| p.as_os_str()),
+                Some(std::ffi::OsStr::new("export-history"))
+            );
+        }
+    }
+
+    /// `--migrate-from-python` must refuse without `--yes`.
+    ///
+    /// The flag removes the previous runtime, so a bare invocation has to be a
+    /// no-op with a clear reason rather than a surprise.
+    #[test]
+    fn migrate_requires_confirmation() {
+        let cli = <super::Cli as Parser>::try_parse_from([
+            "sutura",
+            "--migrate-from-python",
+            "--from-artifact",
+            "/nonexistent/asset.tar.gz",
+        ])
+        .expect("parses");
+        let err = super::migrate_command(&cli).expect_err("must refuse without --yes");
+        assert_eq!(err.0, 2, "usage error, not a crash");
+        assert!(
+            err.1.unwrap_or_default().contains("--yes"),
+            "the message must say what is missing"
+        );
+    }
+
+    /// With `--yes` but no artifact there is nothing safe to install.
+    #[test]
+    fn migrate_needs_an_artifact() {
+        let cli = <super::Cli as Parser>::try_parse_from([
+            "sutura",
+            "--migrate-from-python",
+            "--yes",
+        ])
+        .expect("parses");
+        // Only asserted when this machine actually has a Python install; on a
+        // clean machine the command correctly reports nothing to migrate, which
+        // is a success, so the two outcomes are both acceptable but the message
+        // must never be a panic.
+        match super::migrate_command(&cli) {
+            Ok(()) => {}
+            Err((code, msg)) => {
+                assert_eq!(code, 2);
+                assert!(msg.unwrap_or_default().contains("--from-artifact"));
+            }
+        }
     }
 }

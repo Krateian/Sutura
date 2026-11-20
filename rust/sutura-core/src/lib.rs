@@ -8,13 +8,16 @@
 
 pub mod analysis;
 pub mod analyze;
+pub mod autorefine;
 pub mod cache;
 pub mod classify;
 pub mod config;
+pub mod diagnostics;
 pub mod error;
 pub mod fmt;
 pub mod http;
 pub mod install;
+pub mod migrate;
 pub mod whatsnew;
 pub mod ftetwild;
 pub mod mesh;
@@ -23,8 +26,10 @@ pub mod p_weld;
 pub mod ranking;
 pub mod reduce;
 pub mod self_check;
+pub mod self_repair;
 pub mod updater;
 pub mod validate;
+pub mod wall_tier;
 pub mod closing;
 pub mod dressing;
 pub mod engines;

@@ -14,12 +14,12 @@
   <a href="https://github.com/Krateian/Sutura/releases"><img src="https://img.shields.io/github/downloads/Krateian/Sutura/total?cacheSeconds=3600&color=2ea44f" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-informational" alt="Platforms">
   <img src="https://img.shields.io/badge/core-Rust-dea584?logo=rust&logoColor=white" alt="Rust core">
-  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <br>
   <a href="https://github.com/Krateian/Sutura/actions/workflows/ci.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Krateian/Sutura/actions/workflows/build-sutura-geom.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/build-sutura-geom.yml/badge.svg" alt="sutura_geom wheels"></a>
+  <a href="https://github.com/Krateian/Sutura/actions/workflows/linux-install.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/linux-install.yml/badge.svg" alt="Linux install E2E"></a>
+  <a href="https://github.com/Krateian/Sutura/actions/workflows/macos-install.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/macos-install.yml/badge.svg" alt="macOS install E2E"></a>
   <a href="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
-  <a href="https://github.com/Krateian/Sutura/actions/workflows/build-appimage.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/build-appimage.yml/badge.svg" alt="AppImage build"></a>
-  <a href="https://github.com/Krateian/Sutura/actions/workflows/build-macos.yml"><img src="https://github.com/Krateian/Sutura/actions/workflows/build-macos.yml/badge.svg" alt="macOS build"></a>
   <br>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue" alt="License"></a>
   <a href="https://docs.google.com/forms/d/e/1FAIpQLSdqFrO11fjIBACrFwovOKGPpKVdnPcwxW0VRaQfwCqGayfJig/viewform"><img src="https://img.shields.io/badge/commercial%20license-request%20form-blue" alt="Commercial license"></a>
@@ -44,6 +44,19 @@ available on Linux or macOS. Sutura fills that gap on both: pick a mesh, repair
 it, and get a repaired copy that slicers accept — from a GUI, the command line,
 a file-manager right-click or an OrcaSlicer plugin.
 
+> **What's new in 0.9.10**
+>
+> - **Rust all the way down.** The package needs no Python or PyMeshLab:
+>   native CLI, native egui GUI, Rust geometry core, one package per platform.
+> - **A fraction of the install.** 20–24 MB download and about 45–66 MB
+>   installed, versus about 195–203 MB download and 459.5 MB installed on macOS
+>   for the Python 0.9.9 package.
+> - **Same input, same bytes.** macOS arm64 and Linux x86_64 produce
+>   byte-identical output for the same mesh (matching MD5).
+> - **Everything in the box.** fTetWild ships in the package; Dolphin and
+>   Finder add right-click repair, and the OrcaSlicer 2.5.0+ plugin is
+>   available (experimental).
+
 <p align="center">
   <img src="assets/screenshot.png" alt="Sutura main window" width="820">
 </p>
@@ -66,37 +79,51 @@ a file-manager right-click or an OrcaSlicer plugin.
   risk, and fidelity scores behind **Details**.
 - **Many tools, one button.** Nineteen registered repair methods sit behind a
   single *Repair* button; the triage engine picks from the enabled ones.
-- **Native and offline.** A Rust core (`sutura_geom`) does the geometry; no
-  network access is needed after installation.
+- **Rust-native and offline.** The CLI, the GUI and the geometry core are
+  Rust; the package needs no Python or PyMeshLab and no network after
+  installation.
+- **Same bytes on the two primary targets.** macOS arm64 and Linux x86_64
+  produce byte-identical output for the same input (matching MD5).
 - **Fits the workflow.** Dolphin service menu on KDE, Finder Quick Action on
-  macOS, an experimental OrcaSlicer plugin (2.5.0+ / nightly, installed
+  macOS, an experimental OrcaSlicer plugin (2.5.0+, installed
   separately), batch repair and multi-object 3MF.
 
 ## Install
 
-**Linux** — one line (installs the latest `main`; re-running updates it):
+Sutura is a native Rust program: no Python, no virtualenv, no conda, no
+PyMeshLab. It runs on **Linux (x86_64, aarch64)** and **macOS (Apple Silicon,
+Intel)**.
+
+Download the package for your machine from the
+[releases page](https://github.com/Krateian/Sutura/releases/latest), put the
+installer beside it, and run it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Krateian/Sutura/main/install.sh | bash
+bash install-rust.sh --from Sutura-rust-v<version>-x86_64.tar.gz    # Linux
+bash install-macos-rust.sh --from Sutura-rust-v<version>-arm64.dmg  # macOS
 ```
 
-A self-contained **AppImage** is attached to every
-[release](https://github.com/Krateian/Sutura/releases/latest):
+Every package ships a `.sha256` beside it, and the installer verifies it. Both
+installers detect your architecture, so they refuse the wrong package instead of
+guessing; `--dry-run` prints what would be written.
 
-```sh
-chmod +x Sutura-x86_64.AppImage && ./Sutura-x86_64.AppImage
-```
+Requirements, the integrity check, updates and uninstalling are covered in
+[Install and requirements](docs/guide/install.md).
 
-**macOS** — download `Sutura-vX.Y.Z.dmg` from the
-[latest release](https://github.com/Krateian/Sutura/releases/latest) (unsigned:
-open it with right-click → *Open* the first time), or install from source:
+### Coming from the Python version
 
-```sh
-git clone https://github.com/Krateian/Sutura.git && cd Sutura && ./install-macos.sh
-```
+A Python install is migrated, not reinstalled: your history and learning data
+carry over, the previous install is saved where you can get back to it, and
+nothing is removed until the new build has passed its health check. See
+[Moving from the Python version](MIGRATE.md).
 
-Requirements, the fTetWild tier, updates and uninstalling are covered
-in [Install and requirements](docs/guide/install.md).
+### Python backend (deprecated)
+
+The package itself needs no Python. For one release, a legacy Python install
+can still be selected with `SUTURA_BACKEND=python` or the launcher flag
+`sutura --backend python`; the launcher (`~/.local/bin/sutura`) reads the flag,
+the Rust binary does not. It prints a one-line deprecation note and is removed
+in the next release.
 
 ## Use
 
@@ -105,8 +132,18 @@ sutura model.stl                 # writes model_fixed.stl
 sutura model.3mf -o fixed.3mf    # choose the output name
 sutura model.stl --human         # readable report of what was fixed
 sutura model.stl --no-fidelity   # skip the shape-fidelity score (report only)
+sutura model.stl --wall-min-thickness 1.5   # thicken walls below 1.5 mm (opt-in)
 sutura validate model.stl        # analyse only, change nothing
 sutura a.stl b.stl c.3mf         # batch
+```
+
+Managing the install:
+
+```sh
+sutura --check-update   # is there a newer release? (reports only)
+sutura --update         # install it — asks first, default answer is no
+sutura --rollback       # restore the newest backup
+sutura --whats-new      # release notes from the last install, offline
 ```
 
 - **GUI:** launch *Sutura* from the application menu or Spotlight, add files
@@ -173,6 +210,7 @@ The full walk-through is in [How Sutura works](docs/guide/how-it-works.md).
 | Repair methods, intensity presets and external engines | [Methods](docs/guide/methods.md) | [Yöntemler](docs/guide/tr/methods.md) |
 | Policy file: tunable sections and locked safety gates | [Policy](docs/guide/policy.md) | [Politika](docs/guide/tr/policy.md) |
 | Install, requirements, updates and removal | [Install](docs/guide/install.md) | [Kurulum](docs/guide/tr/install.md) |
+| Moving from the Python version | [MIGRATE.md](MIGRATE.md) | [MIGRATE.tr.md](MIGRATE.tr.md) |
 | CLI, GUI, reports, Dolphin, Quick Action, OrcaSlicer | [Usage](docs/guide/usage.md) | [Kullanım](docs/guide/tr/usage.md) |
 | Common problems and fixes | [Troubleshooting](docs/guide/troubleshooting.md) | [Sorun giderme](docs/guide/tr/troubleshooting.md) |
 | Maturity of each area | [Feature status](docs/guide/feature-status.md) | [Özellik durumu](docs/guide/tr/feature-status.md) |
@@ -190,7 +228,7 @@ Sutura is developed by a single maintainer alongside a full-time role in
 aircraft maintenance. Releases do not follow a fixed schedule: work is merged
 into `main` continuously and a release is cut when a batch of it is ready, so a
 regular release cadence should not be expected. The project is actively
-developed; the Linux one-line installer always tracks `main`.
+developed; release packages are built from the Rust tree.
 
 ## Contributing
 

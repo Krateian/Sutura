@@ -100,6 +100,17 @@ impl Updater {
         std::thread::spawn(move || run_install(tx, tag, current));
     }
 
+    /// "Repair installation": re-install the version already running.
+    ///
+    /// Same worker and the same download/verify/swap/rollback path as an update
+    /// -- only the tag differs, and it is the *current* one. Python's
+    /// `self_repair.py` did this by rewriting its install tree; a static binary
+    /// has no tree to rewrite, so the honest equivalent is a verified reinstall.
+    pub fn start_repair_install(&mut self) {
+        let tag = format!("v{}", self.current_version);
+        self.start_install(tag);
+    }
+
     /// Drain worker events. Returns true when the UI should repaint.
     pub fn poll(&mut self) -> bool {
         let mut events = Vec::new();
@@ -134,14 +145,19 @@ impl Default for Updater {
     }
 }
 
-/// The worker body: snapshot notes, download and verify, install, health check,
-/// roll back on failure.
+/// The worker body: preflight, fetch, find the asset for this platform,
+/// snapshot the notes, download and verify, install, health check, and roll
+/// back if the new build does not run.
 fn run_install(tx: Sender<UpdateEvent>, tag: String, current: String) {
     if let Err(e) = install::preflight(&current, &tag) {
         let _ = tx.send(UpdateEvent::Failed(e));
         return;
     }
-    let Some(release) = updater::fetch_latest_release_full() else {
+    // The release for the tag we were asked to install -- not `/releases/latest`.
+    // For an update those are the same; for "repair installation" the tag is the
+    // running version, and fetching latest would find no asset for it (or
+    // silently upgrade, which is not what a repair promises).
+    let Some(release) = updater::fetch_release_by_tag(&tag) else {
         let _ = tx.send(UpdateEvent::Failed("could not read the release".into()));
         return;
     };
@@ -152,15 +168,14 @@ fn run_install(tx: Sender<UpdateEvent>, tag: String, current: String) {
         return;
     };
 
-    // Notes first: they must survive a failed install, and they are what the
-    // user sees next launch.
-    if let Some(body) = release.get("body").and_then(|b| b.as_str()) {
-        if let Err(e) = whatsnew::write_snapshot(&tag, body, &sutura_core::http::get_bytes) {
-            // Not fatal: the update still proceeds, without notes.
-            eprintln!("whats-new snapshot failed: {e}");
-        }
-    }
-    let has_notes = whatsnew::current_tag().is_some();
+    // Notes are fetched first, so the "what's new" view never waits on a
+    // download — but they are written only after the health check below. A
+    // failed or rolled-back install must leave the previous notes in place
+    // rather than describing a version that is not installed.
+    let notes = release
+        .get("body")
+        .and_then(|b| b.as_str())
+        .map(|body| whatsnew::prepare(&tag, body, &sutura_core::http::get_bytes));
 
     // Verified bytes, or nothing happens at all.
     let bytes = match install::download_verified(&url, &sha_url) {
@@ -180,7 +195,62 @@ fn run_install(tx: Sender<UpdateEvent>, tag: String, current: String) {
         let _ = tx.send(UpdateEvent::Failed(format!("install failed: {e}")));
         return;
     }
+
+    // Health check, then roll back if the new build does not run. Without this
+    // the module's promise ("roll back if the new version does not work") was
+    // only true of the tests: a bad release was installed and kept, and the
+    // only way out was a manual reinstall. Both `health_check` and `rollback`
+    // already existed; nothing called them.
+    let binary = install::installed_binary();
+    if let Err(why) = install::health_check(&tag, &run_binary, &binary) {
+        match install::rollback() {
+            Ok(restored) => {
+                let _ = tx.send(UpdateEvent::Failed(format!(
+                    "{tag} did not start ({why}); restored {}",
+                    restored.display()
+                )));
+            }
+            Err(e) => {
+                // Both the new build and the restore failed. Say exactly where
+                // the backup is rather than leaving the user with a dead
+                // install and no pointer.
+                let where_ = install::newest_backup()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| install::backup_root().display().to_string());
+                let _ = tx.send(UpdateEvent::Failed(format!(
+                    "{tag} did not start ({why}) and the rollback failed ({e}); \
+                     your previous version is at {where_}"
+                )));
+            }
+        }
+        return;
+    }
+
+    // Installed and running: now the notes may replace the stored copy. Not
+    // fatal — the update itself already succeeded.
+    if let Some(pending) = &notes {
+        if let Err(e) = whatsnew::commit(pending) {
+            eprintln!("what's-new snapshot failed: {e}");
+        }
+    }
+    let has_notes = whatsnew::current_tag().is_some();
+
     let _ = tx.send(UpdateEvent::Ready { tag, has_notes });
+}
+
+/// Run the freshly installed binary for [`install::health_check`].
+///
+/// Kept as a named function rather than a closure so the argument shape matches
+/// the injected runner the unit tests use.
+fn run_binary(binary: &std::path::Path, args: &[&str]) -> (i32, String) {
+    match std::process::Command::new(binary).args(args).output() {
+        Ok(out) => (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        ),
+        // A missing or non-executable binary is a failed check, not a panic.
+        Err(_) => (-1, String::new()),
+    }
 }
 
 /// The panel's phase for a worker event, kept separate so the download →

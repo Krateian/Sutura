@@ -1,2 +1,104 @@
 #!/usr/bin/env bash
-exec "$HOME/.local/share/sutura/venv/bin/python" "$HOME/.local/share/sutura/repair.py" "$@"
+# Sutura CLI launcher (P10 transition).
+#
+# Default: the Rust CLI.  If no Rust CLI is installed, the Python service runs
+# with the Rust core (SUTURA_BACKEND=rust).  SUTURA_BACKEND=python (or
+# --backend python) selects the legacy Python pipeline for one release; both are
+# read by THIS launcher, not by the Rust binary, which has no --backend flag.
+set -u
+
+APP_DIR="${SUTURA_APP_DIR:-$HOME/.local/share/sutura}"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+SELF="$SELF_DIR/$(basename "${BASH_SOURCE[0]:-$0}")"
+SOURCE_ROOT="$(cd "$SELF_DIR/.." 2>/dev/null && pwd || true)"
+
+backend="${SUTURA_BACKEND:-rust}"
+args=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --backend)
+            if [ "$#" -lt 2 ]; then
+                echo "sutura: --backend needs rust or python" >&2
+                exit 2
+            fi
+            backend="$2"; shift 2 ;;
+        --backend=*)
+            backend="${1#*=}"; shift ;;
+        *)
+            args+=("$1"); shift ;;
+    esac
+done
+case "$backend" in
+    rust|python) ;;
+    *) echo "sutura: invalid backend '$backend' (expected rust or python)" >&2; exit 2 ;;
+esac
+
+# An auto-discovered Rust entry point must be a real binary, not the legacy
+# Python .app launcher (a shell script named Contents/MacOS/sutura).
+is_rust_binary() {
+    [ -x "$1" ] || return 1
+    [ "$(head -c 2 "$1" 2>/dev/null || true)" != '#!' ]
+}
+
+# Fills the global PY_CMD array with the legacy Python command.
+PY_CMD=()
+collect_python_entry() {
+    if [ -x "$APP_DIR/sutura-py" ]; then
+        PY_CMD=("$APP_DIR/sutura-py")
+        return 0
+    fi
+    if [ -n "${SUTURA_PYTHON:-}" ] && [ -x "$SUTURA_PYTHON" ] && [ -f "$APP_DIR/repair.py" ]; then
+        PY_CMD=("$SUTURA_PYTHON" "$APP_DIR/repair.py")
+        return 0
+    fi
+    for py in "$APP_DIR/venv/bin/python" \
+              "$HOME/miniforge3/envs/sutura-env/bin/python" \
+              "$HOME/miniconda3/envs/sutura-env/bin/python" \
+              "$HOME/anaconda3/envs/sutura-env/bin/python"; do
+        if [ -x "$py" ] && [ -f "$APP_DIR/repair.py" ]; then
+            PY_CMD=("$py" "$APP_DIR/repair.py")
+            return 0
+        fi
+    done
+    if [ -n "$SOURCE_ROOT" ] && [ -f "$SOURCE_ROOT/sutura/repair.py" ]; then
+        py="${SUTURA_PYTHON:-python3}"
+        if command -v "$py" >/dev/null 2>&1; then
+            PY_CMD=("$py" "$SOURCE_ROOT/sutura/repair.py")
+            return 0
+        fi
+    fi
+    return 1
+}
+
+if [ "$backend" = "python" ]; then
+    if ! collect_python_entry; then
+        echo "sutura: Python backend requested but no legacy Python install was found" >&2
+        exit 1
+    fi
+    exec env SUTURA_BACKEND=python "${PY_CMD[@]}" ${args[@]+"${args[@]}"}
+fi
+
+# Rust CLI candidates.  SUTURA_RUST_CLI wins; the installed payload and app
+# bundles follow; the source-checkout build is last.
+candidates=()
+if [ -n "${SUTURA_RUST_CLI:-}" ] && [ -x "$SUTURA_RUST_CLI" ] && [ "$SUTURA_RUST_CLI" != "$SELF" ]; then
+    exec "$SUTURA_RUST_CLI" ${args[@]+"${args[@]}"}
+fi
+candidates+=("$APP_DIR/bin/sutura")
+candidates+=("$HOME/Applications/Sutura.app/Contents/MacOS/sutura")
+candidates+=("/Applications/Sutura.app/Contents/MacOS/sutura")
+[ -n "$SOURCE_ROOT" ] && candidates+=("$SOURCE_ROOT/rust/target/release/sutura")
+for cand in "${candidates[@]}"; do
+    if [ -n "$cand" ] && [ "$cand" != "$SELF" ] && is_rust_binary "$cand"; then
+        exec "$cand" ${args[@]+"${args[@]}"}
+    fi
+done
+
+# No standalone Rust CLI: the Python service with the Rust core is the
+# transitional default.  A missing bridge falls back to Python with a warning.
+if collect_python_entry; then
+    exec env SUTURA_BACKEND=rust "${PY_CMD[@]}" ${args[@]+"${args[@]}"}
+fi
+
+echo "sutura: no Rust CLI or Python fallback was found" >&2
+exit 1

@@ -47,12 +47,20 @@ if [ "$(uname -s)" != "Linux" ]; then
     exit 1
 fi
 
-# Locate the package: explicit --from, else the newest tarball beside this file.
+# The package name carries the architecture, and the Python distribution shipped
+# both x86_64 and aarch64, so detect it rather than assuming.
+case "$(uname -m)" in
+    x86_64|amd64) RU_ARCH="x86_64" ;;
+    aarch64|arm64) RU_ARCH="aarch64" ;;
+    *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+# Locate the package: explicit --from, else the newest tarball for this arch.
 if [ -z "$PKG" ]; then
-    PKG="$(ls -1t "$HERE"/Sutura-rust-v*-x86_64.tar.gz 2>/dev/null | head -1 || true)"
+    PKG="$(ls -1t "$HERE"/Sutura-rust-v*-"$RU_ARCH".tar.gz 2>/dev/null | head -1 || true)"
 fi
 if [ -z "$PKG" ] || [ ! -f "$PKG" ]; then
-    echo "no package found: pass --from <Sutura-rust-*.tar.gz>" >&2
+    echo "no package found: pass --from <Sutura-rust-v*-${RU_ARCH}.tar.gz>" >&2
     exit 1
 fi
 say "package: $PKG"
@@ -99,12 +107,22 @@ if [ -d "$STAGE/keep-data/data" ]; then
     run cp -a "$STAGE/keep-data/data" "$APP_DIR/data"
 fi
 
-# Symlinks, not copies: the updater replaces $APP_DIR, so the PATH entry follows.
+# PATH entry points: the P10 launchers select the Rust binary by default and
+# honour SUTURA_BACKEND=python when a legacy Python install exists.  The
+# launchers survive an updater swap because they live under $APP_DIR/share.
 for bin in sutura sutura-gui; do
-    if [ -f "$APP_DIR/bin/$bin" ]; then
+    if [ -f "$APP_DIR/share/launchers/$bin" ]; then
+        run install -m 0755 "$APP_DIR/share/launchers/$bin" "$BIN_DIR/$bin"
+    elif [ -f "$APP_DIR/bin/$bin" ]; then
         run ln -sf "$APP_DIR/bin/$bin" "$BIN_DIR/$bin"
     fi
 done
+# `ftetwild` is the fTetWild fallback CLI the package bundles; linking it keeps
+# the tier findable through PATH as well as through the bundled path
+# `sutura_core::ftetwild::find_binary` checks (`$APP_DIR/bin/ftetwild`).
+if [ -f "$APP_DIR/bin/ftetwild" ]; then
+    run ln -sf "$APP_DIR/bin/ftetwild" "$BIN_DIR/ftetwild"
+fi
 
 # Dolphin ServiceMenu. The packaged tarball ships it under share/applications,
 # but Dolphin only reads kio/servicemenus, so it is installed there explicitly
@@ -115,6 +133,19 @@ if [ -f "$APP_DIR/share/applications/$SERVICE_NAME" ]; then
 fi
 if [ -f "$APP_DIR/share/applications/$APP_NAME" ]; then
     run install -m 0644 "$APP_DIR/share/applications/$APP_NAME" "$APPLICATIONS_DIR/$APP_NAME"
+fi
+# The desktop session does not have ~/.local/bin on PATH on every system (the
+# SteamOS/KDE session PATH does not), so a bare `Exec=sutura` in the right-click
+# menu or the app launcher fails silently there. Point both entries at the
+# absolute paths of the links installed above.
+if [ "$DRY_RUN" != "1" ]; then
+    for entry in "$SERVICE_DIR/$SERVICE_NAME" "$APPLICATIONS_DIR/$APP_NAME"; do
+        [ -f "$entry" ] || continue
+        sed -i -e "s|^Exec=sutura-gui\b|Exec=$BIN_DIR/sutura-gui|" \
+               -e "s|^Exec=sutura\b|Exec=$BIN_DIR/sutura|" \
+               -e "s|^TryExec=sutura-gui\b|TryExec=$BIN_DIR/sutura-gui|" \
+               -e "s|^TryExec=sutura\b|TryExec=$BIN_DIR/sutura|" "$entry"
+    done
 fi
 
 # Icons: install every size the package carries and refresh the caches.

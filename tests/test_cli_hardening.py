@@ -17,17 +17,31 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA = os.path.join(REPO, 'sutura')
 REPAIR_PY = os.path.join(SUTURA, 'repair.py')
 
+# Every child gets a throwaway HOME and data dir. `repair.py` enables crash
+# logging on startup (`enable_crash_logging` at repair.py:1406), which creates
+# `<data>/crash.log`; without this the suite wrote that file into the tester's
+# real `~/.local/share/sutura`.
+_TMP = tempfile.mkdtemp(prefix='sutura-cli-hardening-')
+_ISOLATED_ENV = dict(
+    os.environ,
+    HOME=_TMP,
+    XDG_CONFIG_HOME=os.path.join(_TMP, 'config'),
+    XDG_CACHE_HOME=os.path.join(_TMP, 'cache'),
+    SUTURA_DATA_DIR=os.path.join(_TMP, 'data'),
+    SUTURA_NO_CACHE='1',
+)
+
 
 def _run(args):
     return subprocess.run([sys.executable, REPAIR_PY] + args,
                           capture_output=True, text=True, timeout=600,
-                          stdin=subprocess.DEVNULL)
+                          stdin=subprocess.DEVNULL, env=_ISOLATED_ENV)
 
 
 def _run_py(code):
     return subprocess.run([sys.executable, '-c', code],
                           capture_output=True, text=True, timeout=120,
-                          stdin=subprocess.DEVNULL)
+                          stdin=subprocess.DEVNULL, env=_ISOLATED_ENV)
 
 
 GUARD = r'''

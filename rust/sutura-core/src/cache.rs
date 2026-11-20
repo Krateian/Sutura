@@ -76,10 +76,10 @@ pub fn analysis_path(mesh_id: &str) -> PathBuf {
 /// The application version that goes into the key.
 ///
 /// The Rust binaries take it from `sutura/repair.py` at build time, so this is
-/// the same `0.9.9` Python writes — a differing value would invalidate every
+/// the same value Python writes — a differing value would invalidate every
 /// shared entry on each Rust release.
 pub fn app_version() -> &'static str {
-    option_env!("SUTURA_PRODUCT_VERSION").unwrap_or("0.9.9")
+    option_env!("SUTURA_PRODUCT_VERSION").unwrap_or("0.9.10")
 }
 
 /// Whether caching is enabled (`chart.is_cache_enabled`).

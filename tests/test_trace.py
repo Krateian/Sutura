@@ -17,6 +17,7 @@ for _p in (os.path.join(REPO, 'sutura'), REPO):
 
 from sutura_engine import trace  # noqa: E402
 from scripts.trace_diff import diff_traces, _load_trace  # noqa: E402
+from _cli import cli_env  # noqa: E402
 
 
 def test_trace_inactive_zero_overhead():
@@ -56,7 +57,7 @@ def test_trace_schema_and_content(tmp_path):
         "--trace",
         trace_path,
     ]
-    env = os.environ.copy()
+    env = cli_env()
     env["PYTHONPATH"] = "sutura:sutura/sutura_engine:" + env.get("PYTHONPATH", "")
     res = subprocess.run(cmd, env=env, capture_output=True, text=True)
     assert res.returncode == 0, f"Repair failed: {res.stderr}"
@@ -130,7 +131,7 @@ def test_trace_on_vs_off_byte_identical(tmp_path):
         "tests/real-world-samples/thingi10k_224108.stl",
     ]
 
-    env = os.environ.copy()
+    env = cli_env()
     env["PYTHONPATH"] = "sutura:sutura/sutura_engine:" + env.get("PYTHONPATH", "")
 
     for model in models:
@@ -219,7 +220,7 @@ def test_trace_outer_shell_follows_tamponade(tmp_path):
     the same mesh; only the opt-out path changes.
     """
     sample = "tests/real-world-samples/thingi10k_55772.stl"
-    env = os.environ.copy()
+    env = cli_env()
     env["PYTHONPATH"] = "sutura:sutura/sutura_engine:" + env.get("PYTHONPATH", "")
 
     def _run(extra, name):
@@ -255,7 +256,7 @@ def test_trace_diff_tool_identical(tmp_path):
     out_stl = str(tmp_path / "self_diff.stl")
     model = "rust/sutura-geom/tests/fixtures/case1_open_cup.stl"
 
-    env = os.environ.copy()
+    env = cli_env()
     env["PYTHONPATH"] = "sutura:sutura/sutura_engine:" + env.get("PYTHONPATH", "")
     cmd = [sys.executable, "sutura/repair.py", model, "-o", out_stl, "--trace", trace_path]
     subprocess.run(cmd, env=env, check=True)

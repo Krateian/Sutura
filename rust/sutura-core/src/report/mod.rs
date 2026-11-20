@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Measurement and reporting primitives (Python-free).
 
+pub mod brief;
 pub mod classify;
 pub mod debris;
 pub mod defects;

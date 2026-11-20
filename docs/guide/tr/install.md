@@ -4,199 +4,270 @@
 
 ## Gereksinimler
 
-Linux:
+Sutura yerel bir programdır. Desteklenen hiçbir platformda **Python, sanal
+ortam, conda, Homebrew, Rust veya C++ derleyicisi gerekmez**.
 
-* `python3` (>= 3.11), venv desteğiyle, onarım venv'i için. Sistem Python'u
-  venv oluşturamıyorsa kurulum otomatik olarak taşınabilir bir Python 3.11
-  indirir.
-* `sutura_geom` doğrulanmış hazır bir wheel'den kurulur; desteklenen
-  platformlarda Rust, cmake veya C++ derleyicisi gerekmez. Platform için wheel
-  yoksa kurulum, kaynak derlemenin ihtiyaçlarını kendisi, yalnızca kullanıcı
-  alanında indirir: rustup + minimal Rust araç zinciri ve cmake
-  (~11 MB + ~90 MB indirme, ~460 MB + ~137 MB diskte;
-  `SUTURA_NO_TOOLCHAIN_FETCH=1` ile vazgeçilir). Kuramadığı tek önkoşul bir
-  C++20 derleyicisidir; macOS'ta `xcode-select --install` sistem penceresini
-  açar.
-* Dolphin servis menüsü için KDE Plasma (isteğe bağlı; CLI ve GUI her yerde
-  çalışır)
+Desteklenen platformlar, Python sürümünün kapsadığı platformların tam olarak
+aynısıdır; yani geçişte hiçbir şey kaybedilmez:
 
-macOS (Apple Silicon / Intel):
+* **Linux x86_64**
+* **Linux aarch64**
+* **Apple Silicon üzerinde macOS** (arm64)
+* **Intel üzerinde macOS** (x86_64)
 
-* Miniforge/conda. conda yoksa `install-macos.sh` aynı çalışmada Miniforge'u
-  (~80 MB) indirip kurar; mevcut bir conda kurulumu yeniden kullanılır.
-  Homebrew gerekmez.
-* Python 3.11, `sutura-env` conda ortamında otomatik oluşturulur.
+Bunların dışındaki makineler için yayımlanmış paket yoktur. Böyle bir makinede
+`--check-update` ve `--repair-install` hiçbir şey indiremez ve GUI bunu sessizce
+başarısız olmak yerine söyler.
 
-Python 3.11, fTetWild katmanı için yalnızca ana yorumlayıcı 3.10–3.14
-aralığının dışındayken yedek çalışma zamanı olarak kullanılır; güncel bir
-`python3` ile normal kurulum buna ihtiyaç duymaz. Gerektiğinde `install.sh` bir
-tane tamamen kullanıcı alanında bulur — kullanılabilir bir `python3.11`,
-kendisinin indirdiği bağımsız bir derleme (~27 MB) veya `uv` varsa onun
-yönettiği bir Python 3.11 — ve asla `sudo apt`/`dnf` komutu yazmaz.
-`SUTURA_NO_PYTHON_DOWNLOAD=1` indirmeyi kapatır.
+* Linux, GUI için tipik bir masaüstü (X11 veya Wayland ve OpenGL) ve olağan
+  `tar` ister. KDE Plasma isteğe bağlıdır: kurulumcu mümkün olduğunda Dolphin
+  servis menüsünü ekler, CLI ve GUI onsuz da çalışır.
+* macOS 12 veya üstünü ister. Uygulama notarize edilmemiştir, bu yüzden ilk
+  açılışta *tanımlanamayan geliştirici* uyarısı görünür — aşağıya bakın.
 
 ## Kurulum
 
-### Linux
+### İndirilen paketten
 
-Tek satır (en güncel `main`'i indirir ve kurar):
+Makineniz için paketi [sürümler
+sayfasından](https://github.com/Krateian/Sutura/releases/latest) indirin ve
+kurulumcuyu paketin yanına koyun:
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/Krateian/Sutura/main/install.sh | bash
-```
+| Platform | Paket |
+|---|---|
+| Linux x86_64 | `Sutura-rust-v<version>-x86_64.tar.gz` |
+| Linux aarch64 | `Sutura-rust-v<version>-aarch64.tar.gz` |
+| macOS arm64 | `Sutura-rust-v<version>-arm64.dmg` |
+| macOS Intel | `Sutura-rust-v<version>-x86_64.dmg` |
 
-Veya bir klondan:
-
-```sh
-git clone https://github.com/Krateian/Sutura.git
-cd Sutura
-./install.sh
-```
-
-Bu, `~/.local/share/sutura` altında ana sanal ortamı oluşturur (ana
-yorumlayıcı 3.10–3.14 aralığının dışındayken ayrıca bir `venv311` yedeği),
-CLI sarmalayıcıyı `~/.local/bin/sutura`'ya kurar, hicolor uygulama ikonlarını
-kurar ve Dolphin servis menüsünü kaydeder. Yeniden çalıştırmak güvenlidir.
-Kurulumcu `~/.local/bin` yolunu kabuğunuzun okuduğu başlangıç dosyasına ekler
-(zsh için `.zshrc`, bash için `.bashrc`/`.bash_profile`) ve geçerli terminal
-için tam `~/.local/bin/sutura` yolunu yazdırır.
-
-`./uninstall.sh` kurulu dosyaları ve PATH satırını kaldırır; kullanıcı verisi
-(`~/.local/share/sutura/data`), yapılandırmalar (`~/.config/sutura`) ve
-`sutura-env` conda ortamı korunur. Sutura, `sutura-env`'i yalnızca kurulumcusu
-oluşturduysa kaldırır: etkileşimli çalışmada tam yolu ve boyutu gösterip sorar;
-etkileşimsiz çalışmada `--remove-env` (veya `--purge`) verilmedikçe korunur.
-`SUTURA_UNINSTALL_SKIP_CONDA=1` her zaman korur. `--purge` (etkileşimliyse
-onaylı) kullanıcı verilerini, yapılandırmaları ve Sutura'nın oluşturduğu ortamı
-da kaldırır. Eski kurulumlarda işaret yoksa ortam korunur ve elle kaldırma
-komutu yazdırılır.
-
-**AppImage (isteğe bağlı).** Aşama 1, Aşama 2 ve GUI için tek bir Python 3.14
-çalışma zamanının paketlendiği tek dosyalık AppImage — sanal ortam yok,
-sistemde `python3.11` gerekmez. Her etiketli sürüm,
-[GitHub sürümler sayfasında](https://github.com/Krateian/Sutura/releases)
-önceden derlenmiş `Sutura-x86_64.AppImage` ile birlikte gelir; dilerseniz
-`scripts/build_appimage.sh` ile kendiniz de derleyebilirsiniz
-(`dist/Sutura-x86_64.AppImage` üretir). Çalıştırılabilir yapıp çalıştırın:
+Linux:
 
 ```sh
-chmod +x Sutura-x86_64.AppImage
-./Sutura-x86_64.AppImage            # GUI
-./Sutura-x86_64.AppImage model.stl  # CLI (model_fixed.stl yazar)
+bash install-rust.sh --from Sutura-rust-v<version>-x86_64.tar.gz
 ```
 
-`install.sh` akışından farklı olarak AppImage sürümü kendini yerinde
-güncelleyemez; yeni AppImage'ı yukarıdaki sürümler sayfasından edinin. Dolphin
-sağ tık servis menüsü hâlâ `install.sh` ile kurulur.
-
-Kurulum izole sanal ortamların içinde pip kullanır — AUR yok, yay/paru gerekmez,
-sistem paket yöneticinize hiçbir şey dokunmaz. GUI, PySide6 (~79 MB indirme,
-`venv`'in parçası) gerektirir; ana sanal ortamın toplam kurulu boyutu yaklaşık
-800 MB'dır (fTetWild katmanı yaklaşık 6 MB ekler, aşağıya bakın).
-
-**Rust eklentisi (`sutura_geom`).** `sutura_geom` Rust eklentisi (~1 MB),
-`install.sh` ve `install-macos.sh` tarafından doğrulanmış hazır bir abi3
-wheel'den otomatik kurulur. Kurulumcu sürüm varlığını kısa süre yeniden dener,
-sonra en güncel uyumlu abi3 wheel'i kullanır; desteklenen platformlarda Rust
-veya cmake gerekmez. Wheel yoksa (yeni bir mimari, başarısız/çevrimdışı sürüm
-varlığı veya bir dal kopyası) kurulum `rust/sutura-geom`'dan derler ve
-ihtiyaçları kendisi, yalnızca kullanıcı alanında, boyutları önce yazdırarak
-indirir: rustup + minimal Rust araç zinciri (~11 MB + ~90 MB indirme, ~460 MB
-diskte) ve PyPI wheel'inden cmake (~54 MB indirme, ~137 MB diskte). Bunlar
-`~/.local/share/sutura/tools` altında yaşar — asla `~/.cargo` — ve
-`uninstall.sh` bunları kaldırır; `SUTURA_NO_TOOLCHAIN_FETCH=1` indirmeyi
-reddeder. cmake geçici bir araç dizinine kurulur ve çalışma zamanı ortamında
-bırakılmaz. Kurulumcunun sağlayamadığı tek önkoşul bir C++20 derleyicisidir;
-yoksa tek satır yazdırır (macOS'ta `xcode-select --install`, sistem penceresini
-açar) ve durur. AppImage ve macOS .app/.dmg paketlerine dahildir. Yöntem #13 Graft (morfoloji kabuk sarma), Flap yüzey-delik
-doldurma (`flap_fill`), Dressing kaplamasını (`dressing_coat`) ve Tamponad iç
-tıkacını (`tamponade`) hızlandırır ve kesin dolaylı predikatları taşır.
-**Eklenti zorunludur.** Yerel wheel için `SUTURA_GEOM_WHEEL=<yol>`, kaynaktan
-derlemeye zorlamak için `SUTURA_GEOM_FROM_SOURCE=1` kullanılır.
-Kaynaktan derleme Rust >= 1.89 (`kiddo` 6.3 MSRV) gerektirir. Eski
-`SUTURA_NO_GEOM=1` çıkış seçeneği kaldırılmıştır.
-
-**fTetWild yedek katmanı (varsayılan olarak kurulur).** fTetWild yedek
-katmanı yalnızca `pytetwild` ister — PyVista veya VTK yok — bu yüzden kurulu
-halde yaklaşık **6 MB**'dır. `install.sh` bunu varsayılan olarak ana sanal
-ortama kurar (AppImage ve macOS `.dmg` içinde de gelir). Kurulduğunda katman,
-stage 1'in kapatamadığı mesh'ler için varsayılan olarak açıktır (yukarıdaki
-*İsteğe bağlı katmanlar* bölümüne bakın). Atlamak için:
+macOS:
 
 ```sh
-SUTURA_WITH_FTETWILD=0 ./install.sh
+bash install-macos-rust.sh --from Sutura-rust-v<version>-arm64.dmg
 ```
 
-Kurulmadığında varsayılan hiçbir şeyi değiştirmez (GUI kutusunun da etkisi
-olmaz); yalnızca `--experimental-fallback-ftetwild` açık bir "atlandı"
-raporu verir.
+İki kurulumcu da `uname -m` okur, yani *sizin* mimarinize ait paketi bekler ve
+tahmin etmek yerine reddeder. `--from` vermezseniz kurulumcu yanında duran en
+yeni paketi kullanır ve doğru mimariyi kendisi seçer. `--dry-run` (veya
+`SUTURA_DRY_RUN=1`) neyin yazılacağını yazdırır ve hiçbir şeyi değiştirmez.
 
-Katman, kurulumdan sonra installer yeniden çalıştırılmadan da yönetilebilir:
-`sutura ftetwild install` / `sutura ftetwild uninstall` (`--dry-run`,
-`--yes` ile) veya GUI'nin Seçenekler → **Motorlar** sekmesi, katmanı yalnızca
-Sutura ortamına kurar/kaldırır ve önce indirme ve disk boyutlarını gösterir.
-Her ikisi de paketlenmiş veya sistem düzenlerini (AppImage, `.dmg`, sistem
-Python'u) değiştirmeyi reddeder ve gerekçesini bildirir.
+> **Sürümler sayfasından indirme henüz etkin değil.** Rust paketleri *Build Rust
+> distribution artifacts* iş akışı tarafından derlenir; bu iş akışı onları iş
+> akışı çıktısı olarak yükler ve bilerek hiçbir sürüm oluşturmaz. İlk Rust
+> sürümü yayımlanana kadar kurulumcular yalnızca sizin sağladığınız bir paketle
+> çalışır. Bu bölüm kurulacak akış için yazılmıştır ve buradaki hiçbir adım
+> henüz var olmayan bir bağlantıya dayanmaz.
 
-fTetWild yedek katmanı bir Python 3.11'e ihtiyaç duyup hiçbiri yoksa `install.sh` bunu kullanıcı alanında bulur (kullanılabilir bir `python3.11`, kendisinin indirdiği bağımsız bir derleme ~27 MB veya `uv` zaten kuruluysa onun yönettiği bir 3.11) — asla `sudo apt`/`dnf` komutu yazmaz. `SUTURA_NO_PYTHON_DOWNLOAD=1` indirmeyi kapatır.
+### Bütünlük kontrolü
 
-### macOS
+Her paket yanında bir `<package>.sha256` taşır ve güncelleyici bunu **zorunlu**
+tutar: özeti eşleşmeyen bir güncelleme, diskte hiçbir şeye dokunulmadan
+reddedilir (`sha256 mismatch (expected …, got …); not installed`).
+
+Kabuk kurulumcuları daha esnektir; bunu bilmekte fayda var:
+
+| | `.sha256` varsa | Yoksa |
+|---|---|---|
+| `install-rust.sh`, `install-macos-rust.sh` | doğrulanır, uyuşmazlık kurulumu **durdurur** | `note: no …sha256 beside the package; skipping integrity check` yazar ve **devam eder** |
+| Güncelleyici ve `--repair-install` | doğrulanır, uyuşmazlık ölümcüldür | hiç ilerleyemez |
+
+Yani bir paketi elle indirdiyseniz `.sha256` dosyasını yanında tutun. İsterseniz
+önce kendiniz doğrulayın:
 
 ```sh
-git clone https://github.com/Krateian/Sutura.git
-cd Sutura
-./install-macos.sh
+sha256sum -c Sutura-rust-v<version>-x86_64.tar.gz.sha256   # Linux
+shasum -a 256 -c Sutura-rust-v<version>-arm64.dmg.sha256   # macOS
 ```
 
-`install-macos.sh` mevcut conda kurulumunu kullanır; conda yoksa Miniforge'u
-(~80 MB) otomatik indirip kurar, `sutura-env` conda ortamını oluşturur
-(Python 3.11),
-PySide6/sutura_geom'ı pip'ten kurar
-(Python 3.11 ortamında PySide6 6.11.2; Linux/Python 3.12+ kurulumları 6.12.0 kullanır ve bu sabitleme macOS 13 desteğini korur),
-import'ları doğrular, uygulama dosyalarını `~/.local/share/sutura/`'ya kopyalar
-ve `~/.local/bin/sutura` (CLI) ile `~/.local/bin/sutura-gui` başlatıcılarını
-oluşturur. Ayrıca yerel bir **`~/Applications/Sutura.app`** oluşturur — GUI'yi
-doğrudan **Spotlight**'tan açabilirsiniz (`Cmd+Space`, *Sutura* yazın, Enter)
-— terminal gerekmez. Yalnızca macOS içindir ve yeniden çalıştırılabilir.
-fTetWild yedek katmanı (kurulu halde ~6 MB, Linux bölümüne bakın) varsayılan
-olarak kurulur; `SUTURA_WITH_FTETWILD=0 ./install-macos.sh` onu atlar.
+### Neler kurulur
 
-Kurulumcu ayrıca Finder'a bir **Quick Action** ("Sutura — Repair") ekler. Her
-seçili dosya için görünür; Finder'da bir veya daha fazla STL/3MF dosyası seçin,
-sağ tık → *Quick Actions* → *Sutura — Repair*. Her dosya kurulu CLI ile onarılır (`.dmg` uygulaması paketli CLI'yi kullanabilir) ve sonuç
-yerel bir macOS bildirimiyle raporlanır — tek dosyada `Health: X/100  Risk: Y/100
-Status: <label>`, çoklu dosyada tek özet (`N/M onarıldı, K başarısız — log: ...`).
-Her çalıştırmanın log'u `~/Library/Logs/Sutura/sutura-<timestamp>.log`'a
-yazılır. STL/3MF olmayan dosyalar atlanır ve bildirilir. `.dmg` uygulamasında
-Quick Action paketli `sutura-cli`'yi, conda kurulumunda ise doğrudan kurulu
-`~/.local/bin/sutura` yolunu (veya conda ortamını) kullanır. Uygulama indirilmiş
-(karantinalı) bir kopyaysa bildirim, önce `Sutura.app`'e sağ tık → Aç
-demenizi söyler.
+Linux — her şey ev dizininizin altında, sistem genelinde hiçbir şey:
 
-**macOS kurulumunu kaldırma:** `./uninstall.sh` artık macOS'u da kapsar.
-Uygulamayı, başlatıcıları, Quick Action'ı, logları ve ikonları kaldırır.
-`sutura-env` yalnızca kurulumcu oluşturduysa ve etkileşimli olarak onay
-verirseniz (veya `--remove-env`/`--purge` verirseniz) kaldırılır; önce tam yol
-ve boyut yazdırılır, etkileşimsiz çalışmada varsayılan olarak korunur.
-Kullanıcı verisi (`~/.local/share/sutura/data`) ve yapılandırmalar
-(`~/.config/sutura`) varsayılan olarak korunur; `--purge` (etkileşimliyse
-onaylı) bunları ve sahip olunan ortamı da kaldırır. Eski kurulumlarda işaret
-yoksa ortam korunur ve elle kaldırma komutu yazdırılır. Aynı betik
-`.zshrc`/`.zprofile`/`.bashrc`/`.bash_profile` içine eklediği PATH satırını da
-kaldırır.
+| Yol | Ne |
+|---|---|
+| `~/.local/share/sutura/bin/sutura` | CLI |
+| `~/.local/share/sutura/bin/sutura-gui` | GUI |
+| `~/.local/share/sutura/bin/ftetwild` | paketlendiğinde fTetWild ikilisi |
+| `~/.local/bin/sutura`, `~/.local/bin/sutura-gui` | `PATH` üzerindeki sembolik bağlar |
+| `~/.local/share/applications/sutura-app.desktop` | masaüstü girdisi |
+| `~/.local/share/kio/servicemenus/sutura.desktop` | Dolphin sağ tık girdisi |
+| `~/.local/share/icons/hicolor/*/apps/sutura.png` | simgeler |
 
-Kurulumcu ayrıca kabuğunuzun okuduğu başlangıç dosyasına `~/.local/bin`
-yolunu ekler (zsh için `.zshrc`, bash için `.bashrc`/`.bash_profile`) ve
-geçerli terminal için tam `~/.local/bin/sutura` yolunu yazdırır.
+macOS:
 
-Her etiketli sürümde ayrıca bir **macOS .dmg** de yayınlanır
-(`Sutura-vX.Y.Z.dmg`, `Build macOS .app/.dmg` workflow'uyla derlenir) —
-kendi kendine yeten bir `Sutura.app` içerir. `/Applications`'a sürükleyin
-(veya çift tıklayın) ve aynı şekilde Spotlight'tan açın. .dmg **imzasızdır**
-(henüz Apple Developer Program / notarization uygulanmadı), bu yüzden ilk
-açılışta macOS *"unidentified developer"* uyarısı gösterir. **Sağ tık → Aç**
-ile açın veya karantina özniteliğini önceden temizleyin:
+| Yol | Ne |
+|---|---|
+| `~/Applications/Sutura.app` | uygulama paketinin tamamı |
+| `~/.local/bin/sutura`, `~/.local/bin/sutura-gui` | pakete sembolik bağlar |
+| `~/Library/Services/Sutura Quick Action.workflow` | Finder Hızlı Eylemi |
+| `~/.local/share/sutura/macos-quick-action.sh` | Hızlı Eylem'in yardımcı betiği |
+
+Kurulumcu `~/.local/bin` dizinini kabuğunuzun okuduğu başlangıç dosyasına
+(zsh için `.zshrc`/`.zprofile`, bash için `.bashrc`/`.bash_profile`, yoksa
+`.profile`) `# added by Sutura installer` işaretiyle ekler, böylece kaldırma
+tam olarak o satırı silebilir.
+
+**Var olan bir `data/` dizini yeniden kurulumda korunur**: bir kenara alınır,
+program dosyaları değiştirilir ve veri geri konur.
+
+**Lisans kabul istemi yoktur.** `LICENSE` ve `ATTRIBUTION.md` paketin içinde
+gelir ve PolyForm Noncommercial koşulları eskisi gibi geçerlidir; ticari lisans
+için yine ayrı bir anlaşma gerekir.
+
+macOS uygulaması ad-hoc imzalıdır, notarize edilmemiştir, bu yüzden ilk açılışta
+*tanımlanamayan geliştirici* uyarısı görünür. Bir kez **sağ tık → Aç** ile
+açın, veya:
 
 ```sh
-xattr -dr com.apple.quarantine Sutura.app
+xattr -dr com.apple.quarantine ~/Applications/Sutura.app
 ```
+
+### Boyut
+
+Son dört hedefli yeşil derleme olan
+[44181354813](https://github.com/Krateian/Sutura/actions/runs/44181354813)
+(`6ddf165`) koşusunun paketlerine karşı ölçüldü. İndirme boyutu artifact'ın
+kendisi; kurulu boyut açılmış paketin `du -sk` değeri (1 MiB = 1024 KiB).
+Python sütunu karşılaştırma için v0.9.9'un yayımlanmış sürümüdür.
+
+| | Linux x86_64 | Linux aarch64 | macOS arm64 | macOS Intel |
+|---|---|---|---|---|
+| **Rust** indirme | 21.8 MiB | 18.9 MiB | 18.4 MiB | 22.3 MiB |
+| **Rust** kurulu | 63.5 MiB | 49.8 MiB | 43.2 MiB | 51.0 MiB |
+| **Python 0.9.9** indirme | 195.3 MiB (AppImage) | yayımlanmadı | 203.0 MiB | 203.0 MiB (aynı universal paket) |
+| **Python 0.9.9** kurulu | — | — | 459.5 MiB | 459.5 MiB (aynı universal paket) |
+
+Bu tablonun dürüstçe söylediği iki şey:
+
+- **Python sürümünde hiçbir zaman Linux aarch64 paketi yoktu**, yani orada
+  ölçülecek bir şey yok. Rust derlemesi bu platforma paket veriyor, dolayısıyla
+  o platform bir paket kazandı, kaybetmedi.
+- **Python'un kurulu boyutu yalnız macOS'ta ölçüldü.** Linux AppImage'i yalnız
+  Linux'ta çalışan bir squashfs; büyük/küçük harf duyarsız bir dosya sisteminde
+  açmak `terminfo` ağacının ortasında başarısız oluyor, yani oradaki bir `du`
+  savunamayacağım bir sayı olurdu. Tahmin etmek yerine `—` bırakıldı.
+
+Tipik mesh onarım süresi bilerek boştur. En çok önem taşıyan sayı odur ve henüz
+kesinleşmemiştir: hâlâ verilen sadakat kararına bağlı, dolayısıyla şimdi
+doldurmak sonradan değiştirmek demek olurdu.
+
+## Arka uç seçimi (geçiş dönemi)
+
+Bu paketteki komut satırı aracı, GUI ve tüm giriş noktaları varsayılan olarak
+**Rust** ardışık düzenini ve çekirdeklerini çalıştırır. Önceki Python arka ucu bir
+sürüm boyunca korunur, böylece sahada bulunan bir sorun çıkmaz sokak olmaz:
+
+```sh
+SUTURA_BACKEND=python sutura model.stl    # ortam değişkeni
+sutura --backend python model.stl        # başlatıcı bayrağı, değişkenden önce gelir
+```
+
+`--backend` bir **başlatıcı** bayrağıdır: `~/.local/bin/sutura` onu okur ve eski
+Python giriş noktasını başlatır; Rust ikili dosyası bu bayrağı kabul etmez. Python
+arka ucu tek satırlık bir kullanımdan kaldırma notu basar ve bir sonraki sürümde
+kaldırılacaktır. Başka bir şey değişmez: aynı bayraklar, aynı rapor, aynı çıktı
+dosyaları.
+
+`SUTURA_PIPELINE_ENGINE` gibi motor başına bir anahtar ayarladıysanız, Python arka
+ucu altında hâlâ geçerlidir. Rust arka ucu altında ürün arka ucu kazanır ve bu
+anahtarlar Rust'a sabitlenir; böylece kabuk profilinizde kalmış eski bir anahtar
+ardışık düzenin yarısını sessizce Python'a döndüremez.
+
+## Güncelleme
+
+Güncellemeler **`sutura --update`** ile veya GUI'nin güncelleme panelinden
+kurulur.
+
+```sh
+sutura --check-update   # sadece bildir: daha yeni bir sürüm var mı?
+sutura --update         # sorduktan sonra kur
+```
+
+`--check-update` hiçbir şey kurmaz. `update available: <tag>`, `no update
+available` veya sürüm bir lisans sınırını geçtiğinde bir lisans bildirimi
+yazdırır — bu son durumda bilerek reddeder ve sizi sürümler sayfasına
+yönlendirir.
+
+`--update` **hiçbir şey yapmadan önce sorar** ve yanıt varsayılan olarak
+**hayırdır**: boş Enter, `n` veya tanınmayan herhangi bir cevap kurulumunuzu
+olduğu gibi bırakır. `--yes` sizin adınıza cevap verir. Etkileşimsiz bir
+çalıştırma (bir betik, CI) da reddeder ve bunu söyler, çünkü soracak kimse
+yoktur.
+
+Bir güncelleme şunları yapar:
+
+1. Paketi indirir ve `sha256` değerini doğrular. Özet eşleşene kadar hiçbir şey
+   yazılmaz.
+2. Mevcut kurulumu bir yedeğe kopyalar.
+3. Yeni sürümü açıp yerine koyar, `data/` dizinine dokunmaz.
+4. Yeni ikiliyi `--version` ile çalıştırır ve beklenen sürümle cevap verdiğini
+   kontrol eder.
+5. Bu kontrol başarısız olursa **önceki sürümü geri koyar** ve nereden geri
+   yüklendiğini söyler.
+
+### Yedekler ve geri alma
+
+İki yedek saklanır: `~/.local/share/sutura.backup/<version>/`. `data/` hiçbir
+zaman bir yedeğe kopyalanmaz, böylece hiçbir yedek geçmişinizin üzerine geri
+yüklenemez.
+
+```sh
+sutura --rollback   # sorduktan sonra en yeni yedeği geri yükle
+```
+
+`--rollback` yalnızca **en yeni** yedeği geri yükler. Daha eskisini seçecek bir
+komut yoktur: üçüncü güncelleme olduğunda üçüncü en yeni yedek silinir. Python
+dönemine ait bir yedeğin başka yerde tutulmasının nedeni de budur — bkz.
+[MIGRATE.md](../../../MIGRATE.tr.md).
+
+## Hasarlı bir kurulumu onarma
+
+```sh
+sutura --repair-install   # bu sürümü kendi üzerine yeniden kur
+```
+
+**Çalıştırdığınız** sürümün paketini yeniden indirir — asla en yenisini, yani
+sessizce güncelleyemez veya sürüm düşüremez — doğrular, bir güncellemeyle aynı
+yedekleme ve geri alma yoluyla yerine koyar ve önce sorar (varsayılan: hayır).
+GUI'de aynı şey **Kurulumu onar** olarak bulunur.
+
+## Sürüm notları
+
+```sh
+sutura --whats-new   # son kurulumun kaydettiği notlar, çevrimdışı
+```
+
+Notlar yalnızca yeni bir sürüm başarıyla kurulduktan sonra yazılır, böylece
+başarısız bir güncelleme sizi sahip olmadığınız bir sürümün notlarını okurken
+bırakamaz. Yeni bir kurulumda henüz kayıtlı bir şey olmayabilir; bu durumda
+komut sürümler sayfasını işaret eder.
+
+## Kaldırma
+
+```sh
+bash uninstall-rust.sh           # programı kaldır, verini koru
+bash uninstall-rust.sh --purge   # veri, ayar ve yedekleri de kaldır
+SUTURA_DRY_RUN=1 bash uninstall-rust.sh   # neyin kaldırılacağını göster
+```
+
+`--purge` olmadan programı, başlatıcıları, masaüstü girdilerini, simgeleri,
+macOS paketini ve Hızlı Eylemi ve kurulumcunun eklediği `PATH` satırını
+kaldırır. `~/.local/share/sutura/data` dizinini ve güncelleme yedeklerini
+**korur** ve nerede olduklarını söyler.
+
+`--purge` ek olarak `~/.local/share/sutura` (veri dahil), `~/.config/sutura` ve
+`~/.local/share/sutura.backup*` dizinlerini kaldırır — hem güncelleme yedeklerini
+hem de varsa karantinaya alınmış Python dönemi yedeğini.
+
+## Python sürümünden geçiş
+
+Bir Python kurulumu yeniden kurulmaz, taşınır: geçmiş ve öğrenme verileri
+aktarılır, önceki kurulum geri dönebileceğiniz bir yerde saklanır ve yeni sürüm
+sağlık kontrolünü geçmeden hiçbir şey silinmez. Bkz.
+[Python sürümünden geçiş](../../../MIGRATE.tr.md).

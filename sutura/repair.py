@@ -40,6 +40,7 @@ from sutura_engine.progress import (
 )
 import local_exact
 from sutura_engine import policy as policy_mod
+from sutura_engine import backend as _backend
 import topology
 import triage
 import methods as method_registry
@@ -167,7 +168,7 @@ from sutura_engine.pipeline.cli import (
 )
 
 
-VERSION = "0.9.9"
+VERSION = "0.9.10"
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -288,7 +289,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  triage_spec=None,
                  engines=None, engine_chain=None, engine_warnings=None,
                  methods=None, engine_filter=None, repeat_source=None,
-                 repeat_target=None, wall_min_thickness=None, graft=False,
+                 repeat_target=None, wall_thicken=False,
+                 wall_min_thickness=None, graft=False,
                  flap=False,
                  dressing=False, dressing_drain=None, dressing_defects=None,
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
@@ -369,7 +371,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             auto_reorder=auto_reorder,
             triage_spec=triage_spec, engines=engines,
             engine_chain=engine_chain, repeat_source=repeat_source,
-            repeat_target=repeat_target, wall_min_thickness=wall_min_thickness,
+            repeat_target=repeat_target, wall_thicken=wall_thicken,
+            wall_min_thickness=wall_min_thickness,
             graft=graft, flap=flap, progress=progress, cancel=cancel,
             dressing=dressing, dressing_drain=dressing_drain,
             dressing_defects=dressing_defects,
@@ -600,6 +603,11 @@ def _main(argv=None):
                         help='output file (only valid with a single input)')
     parser.add_argument('--lang', choices=('en', 'tr'), default='en',
                         help='human report language (default: en)')
+    parser.add_argument('--backend', choices=('rust', 'python'), default=None,
+                        help='repair backend: rust (default) runs the Rust '
+                             'pipeline/cores; python selects the deprecated '
+                             'legacy pipeline for one release. Also from '
+                             'SUTURA_BACKEND; the flag wins.')
     parser.add_argument('--human', action='store_true',
                         help='print a human-readable report; a progress line is '
                              'shown on stderr when stderr is a TTY')
@@ -948,6 +956,9 @@ def _main(argv=None):
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args(argv)
     os.environ['SUTURA_LANG'] = args.lang
+    _backend_value = _backend.resolve(args.backend)
+    _backend.apply_engine_defaults(_backend_value)
+    _backend.note_deprecated(_backend_value)
 
     # --list-intensities: print the presets and user profiles, then exit.
     if args.list_intensities:
@@ -1333,6 +1344,10 @@ def _main(argv=None):
                 engine_filter=engines_sel,
                 repeat_source=repeat_source,
                 repeat_target=repeat_target,
+                # `--wall-min-thickness` was a no-op: it set the target but never
+                # turned the tier on, and `pipeline.py` gates the tier on
+                # `wall_thicken`. The target is the switch, matching the Rust CLI.
+                wall_thicken=args.wall_min_thickness is not None,
                 wall_min_thickness=args.wall_min_thickness,
                 fidelity_enabled=not args.no_fidelity,
                 trace_path=args.trace,

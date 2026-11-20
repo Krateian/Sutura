@@ -3,16 +3,108 @@ app:
   add_files: Dosya ekle
   repair: Onar
   files: Dosyalar
+  clear_list: Listeyi temizle
+  remove_file_tip: Bu dosyayı listeden kaldır
+  clear_while_running: Onarım sürerken liste temizlenemez
   settings: Ayarlar
-  settings_coming: Ayarlar paneli yer tutucusu (yakında)
   log: Günlük
   language: Dil
-  drop_hint: STL / OBJ / PLY / 3MF dosyasını buraya bırakın
+  mode: Mod
+  mode_desc_low: "Düşük - en tutucu: yalnızca küçük delikleri kapatır, en az moloz temizler."
+  mode_desc_medium: Orta - tarihsel varsayılan eşikler.
+  mode_desc_auto: Otomatik - ağ sınıflandırıcısı ve güven eşiği türe göre eşik seçer (varsayılan).
+  mode_desc_aggressive: Agresif - daha çok moloz temizlenir, daha büyük delikler kapanır.
+  mode_desc_extreme: Ekstrem - en agresif; bağlı parçası 20 yüzden az olan bir nesnenin tamamını silebilir.
+  profile: Profil
+  profile_auto: Otomatik
+  profile_tip: Stage 1 eşik ön ayarı. Otomatik, sınıflandırıcının varsayılanını kullanır.
+  dressing_drain: Drain
+  dressing_drain_hint: boş = varsayılan
+  dressing_defects: Kusurlar
+  dressing_defects_hint: boş = varsayılan
+  dressing_rmax_scale: Köprü yarıçapı
+  dressing_sigma_scale: Etki genişliği
+  advanced: Gelişmiş
+  experimental_graft: Graft (deneysel)
+  no_graft: Graft yok
+  experimental_fallback_ftetwild: fTetWild yedeği (deneysel)
+  no_fallback_ftetwild: fTetWild yedeği yok
+  classifier_engine: Sınıflandırıcı
+  default: Varsayılan
+  engines: Motorlar
+  engines_hint: Bir motorun işaretini kaldırmak yalnızca diğerlerini çalıştırır. Hepsi işaretli = varsayılan.
+  analysis: Analiz
+  an_type: Algılanan tür
+  an_faces: Yüzler
+  an_vertices: Köşeler
+  an_components: Bileşenler
+  an_boundary_loops: Sınır ilmekleri
+  an_non_manifold: Manifold olmayan kenarlar
+  an_self_intersections: Kendisiyle kesişim
+  an_open_area: Açık alan
+  objects: Nesneler (%{count})
+  ob_model: Model
+  ob_faces: Yüzler
+  ob_vertices: Köşeler
+  recommended: Önerilen yöntemler
+  rec_object: Nesne %{index}
+  method_health: "%{count} yöntem kullanılamıyor:"
+  diagnostics: "Teşhis"
+  diagnostics_tip: "Hata raporuna eklemek için bir arşiv yaz"
+  diagnostics_written: "Teşhis yazıldı: %{path} (%{bytes} bayt)"
+  diagnostics_failed: "Teşhis başarısız: %{error}"
+  crash_title: "Sutura çöktü"
+  crash_body: "Bir şeyler ters gitti ve çökme günlüğü yazıldı. Raporunuzla bir teşhis arşivi göndermek sorunu düzeltmeyi çok kolaylaştırır."
+  close: "Kapat"
+  defects: "Kusurlar (%{count})"
+  defects_more: "… ve %{rest} tane daha"
+  engines_section: "Motorlar"
+  engines_ftetwild: "fTetWild"
+  engines_installed: "kurulu"
+  engines_missing: "bulunamadı"
+  engines_missing_tip: "FTETWILD_BIN ayarlayın veya yeniden kurun; katı motor yedeği kullanılacak."
+  engines_none: "Yapılandırılmış dış motor yok."
+  engines_enabled: "etkin"
+  engines_disabled: "devre dışı"
+  changelog: "Değişiklikler"
+  changelog_tip: "Sürüm geçmişini GitHub'dan getir (salt okunur, kaydedilmez)"
+  changelog_loading: "Sürüm notları yükleniyor…"
+  changelog_offline: "Sürüm notları yüklenemedi (çevrimdışı mı?)."
+  changelog_empty: "Sürüm bulunamadı."
+  retry: "Yeniden dene"
+  compare: "Önce / Sonra"
+  compare_tip: "Orijinal ve onarılmış mesh'in statik yan yana görüntüsü"
+  compare_none: "(çizilemedi)"
+  compare_no_after: "Henüz onarım yok: sağ panel orijinali gösteriyor."
+  file_methods: "Bu dosyanın yöntemleri"
+  file_methods_inherit: "Genel yöntem ayarlarını kullan"
+  file_methods_count: "%{count} yöntem uygulanıyor"
+  defect_colors: "Kusur renkleri"
+  defect_colors_tip: "Her yüzü kusur türüne göre boya (manifold olmayan, kopya, dejenere…). İlk kullanımda tam teşhis gerekir."
+  drop_title: "STL veya 3MF dosyalarını buraya bırak"
+  drop_hint: STL veya 3MF dosyalarını buraya bırak, ya da Dosya ekle kullan
   repair_running: Onarılıyor…
   triangles: "%{count} üçgen"
   lang_system: Sistem
   lang_english: İngilizce
   lang_turkish: Türkçe
+  preview: "Önizleme"
+  heatmap_flat: "Neredeyse hiçbir şey değişmedi: orijinalden ölçülebilir fark yok"
+  heatmap_legend: "Isı haritası: mavi değişmedi, kırmızı en çok değişti"
+  force_save: "Risk veya değişim sınırı aşılsa da kaydet"
+  force_save_tip: "--force ile aynı. Kapalıyken sınırı aşan onarım kaydedilmez; rapor yine de kaydetmeyi önerir."
+  self_check_run: "Öz denetimi çalıştır"
+  self_check_tip: "Her onarım yöntemini ve motoru yerleşik örneklerle dener (--self-check ile aynı)."
+  self_check_running: "Öz denetim çalışıyor..."
+  output_folder: "Çıktı klasörü"
+  output_folder_beside: "Her dosyanın yanına"
+  output_folder_choose: "Seç..."
+  output_folder_reset: "Sıfırla"
+  open_policy: "Politika dosyasını aç"
+  open_policy_tip: "Onarım politikası dosyasını (JSON) düzenlemek için açar"
+  stop: "Durdur"
+  heatmap_short: "Isı haritası"
+  side_by_side: "Yan yana"
   before: Önce
   after: Sonra
   open_result: Sonucu aç
@@ -62,6 +154,21 @@ app:
   tier_dressing: "Dressing"
   dressing_force_adopt: "Dressing: zorla kabul"
   si_mode: "SI modu"
+  bounds: "Çalıştırma başına sınırlar"
+  bounds_hint: "Boş bırakmak yoğunluk değerini korur. Bunlar CLI'daki --graft-timeout ve benzerlerinin aynı alanlarıdır."
+  max_risk: "Azami risk"
+  max_geometry_change: "Azami geometri değişimi"
+  graft_max_faces: "Graft yüz sınırı"
+  graft_timeout: "Graft zaman aşımı (sn)"
+  dense_ratio: "Yoğun oran"
+  dense_min_faces: "Yoğun asgari yüz"
+  ftetwild_max_faces: "fTetWild yüz sınırı"
+  ftetwild_timeout: "fTetWild zaman aşımı (sn)"
+  ftetwild_max_hausdorff: "fTetWild azami Hausdorff"
+  wall_min_thickness: "Duvar asgari kalınlığı (mm)"
+  ftetwild_optimize_retry: "fTetWild: optimize ile yeniden dene"
+  join_components: "Bileşenleri birleştir (Stage 1)"
+  auto_escalation: "SI otomatik yükseltme"
   solid_engine: "Katı motoru"
   methods: "Yöntemler"
   intensity: Yoğunluk
@@ -82,7 +189,7 @@ app:
   defect_faces: "%{count} kusurlu yüz (%{pct}%)"
   about: Hakkında
   updates: Güncellemeler
-  about_body: Sutura, 3D baskı için bozuk mesh'leri onarır. Bu, Rust/egui GUI'sidir; bu fazda onarım çekirdeği hâlâ Python CLI üzerinden çalışır.
+  about_body: Sutura, 3D baskı için bozuk mesh'leri onarır. Onarım bu uygulamanın içinde, yerel olarak çalışır; Python devrede değildir.
   updater_title: Güncellemeler
   updater_current: "Geçerli sürüm: %{version}"
   updater_checking: Güncellemeler kontrol ediliyor...
@@ -96,6 +203,8 @@ app:
   updater_whats_new: Neler yeni
   updater_no_notes: Yerel olarak kayıtlı sürüm notu yok.
   updater_check: Güncellemeleri kontrol et
+  updater_repair: Kurulumu onar
+  updater_repair_tip: Bu sürümü yeniden indirip doğrular ve yeniden kurar. Kurulum bozulduysa kullanın. Sürümü asla değiştirmez.
   updater_body: Yeni bir sürüm olup olmadığını denetleyin. Onaylamadan hiçbir şey indirilmez veya kurulmaz.
   repeat_pick: Tekrar noktalarını seç
   repeat_pick_title: Tekrar Noktası Seçimi
@@ -103,3 +212,165 @@ app:
   repeat_pick_state: "kaynak: %{source}    hedef: %{target}"
   repeat_pick_apply: Bu noktaları kullan
   repeat_pick_cancel: İptal
+  col_file: Dosya
+  col_method: Yöntem
+  col_result: Sonuç
+  add_folder: Klasör ekle...
+  remove: Seçileni kaldır
+  no_files: Henüz dosya yok.
+  method_auto: Otomatik
+  status_working: Çalışıyor...
+  ready: Hazır
+  show_heatmap: Isı haritasını göster
+  show_before_after: Önce/sonra göster
+  methods_btn: Yöntemler
+  options_btn: Seçenekler
+  analyze: Analiz et
+  mode_btn: "Kip: %{mode}"
+  tab_general: Genel
+  tab_repair: Onarım
+  tab_methods: Yöntemler
+  tab_experimental: Deneysel
+  tab_updates: Güncellemeler
+  tab_changelog: Değişiklikler
+  tab_engines: Motorlar
+  opt_graft: Graft geçişi etkin
+  opt_graft_tip: Son çare katı yeniden inşa. Kapalıysa hiç Graft katı yok.
+  opt_fidelity: Fidelity şekil puanını göster (yalnız rapor)
+  opt_fidelity_tip: Yalnız rapor amaçlı bir ölçüm. Onarılmış ağı asla değiştirmez.
+  opt_clear_cache: Önbelleği temizle
+  opt_reset_learning: Öğrenmeyi sıfırla
+  opt_learning_body: Yerelde kaydedilen anonim (nesne türü, yöntem) başarı ve süresinden küçük, sınırlı bir bonus. Ağ yok.
+  section_language: Dil
+  repeat_pick_unset: ayarlanmadı
+  repeat_pick_clear: Temizle
+  experimental_hint: Bu geçişler deneyseldir ve varsayılan olarak kapalıdır. Her biri yalnız sonucu varsayılan zincirden kötü olmadığında benimsenir, ama onarımı çok yavaşlatabilir.
+  method_control: Yöntem denetimi
+  method_automatic: Otomatik (politika sırası)
+  method_manual: Elle (tam sıra)
+  opt_usage_history: Anonim kullanım geçmişi (dosya adı veya yol yok)
+  opt_already_recorded: Her zaman açık; öğrenme sıralaması bu ortak geçmiş dosyasını okur.
+  opt_chart_cache: Sutura çizim önbelleği (~/.cache/sutura/)
+  diagnostics_title: Tanılama
+  graft: Graft
+  fallback_ftetwild: fTetWild yedeği
+  tier_on: Açık
+  tier_experimental: Deneysel
+  tier_off: Kapalı
+  input_defects: Girdi kusurları (seçili dosya)
+  automatic_ladder: Otomatik sıra
+  automatic_ladder_body: Otomatik sıra sabittir. Özel bir sıra için Elle'yi seç.
+  manual_sequence: Elle sıra
+  manual_sequence_body: İşaretli yöntemler dosya etiketi olur; CLI bunları --methods olarak alır.
+  manual_sequence_hint: Bu listeyi düzenlemek için Elle (tam sıra) moduna geç.
+  no_selection: Yöntemlerini düzenlemek için bir dosya seç.
+  opt_learning: "Öğrenme sıralaması: yöntemleri yerel onarım geçmişinden sırala"
+  tiers_section: Onarım katları
+  advanced_section: Gelişmiş
+  opt_version: "Kurulu sürüm: %{version}"
+  opt_never: hiç
+  opt_auto_updates: Otomatik güncelleme
+  opt_check_on_start: Her açılışta kontrol et
+  opt_auto_note: Otomatik güncelleme 7 günde bir kontrol eder. "Her açılışta kontrol et" ile Sutura her açıldığında kontrol edilir. Yeni sürüm yalnız sen onayladıktan sonra kurulur.
+  engines_reload: Yeniden yükle
+  engines_open_folder: Motor klasörünü aç
+  engines_docs: Motor belgeleri
+  autorefine_label: Kendi kendine iyileştir (self-intersection)
+  indirect_autorefine_label: Dolaylı otomatik iyileştirme (tam)
+  dressing_preset: Ön ayar varsayılanı
+  dressing_drain_off: Kapalı
+  dressing_drain_half: Yarım
+  dressing_drain_full: Tam
+  dressing_drain_deep: Derin
+  dressing_defects_all: Tüm kusurlar
+  dressing_defects_holes_nm: Delikler ve non-manifold
+  profile_new: Yeni
+  profile_duplicate: Çoğalt
+  profile_rename: Yeniden adlandır
+  profile_delete: Sil
+  profile_settings: Profil ayarları
+  profile_settings_body: Aşağıdaki çalıştırma başına sınırlar bu profilin adıyla kaydedilir.
+  profile_save_as_new: Yeni profil olarak kaydet
+  profile_name: Profil adı
+  profile_name_hint: ör. tara-1
+  profile_save: Kaydet
+  opt_last_check: "Son kontrol: %{when}"
+  engines_install: Kur...
+  engines_install_tip: "Bir fTetWild ikilisi seç ve yönetilen klasöre kopyala. İndirme yok: sürüm onu uygulamanın yanında getirir."
+  engines_remove: Kaldır...
+  engines_remove_tip: Yönetilen fTetWild ikilisini sil.
+  manual_sequence_empty: Henüz yöntem seçilmedi. Yukarıdaki listeden işaretle.
+  manual_move_up: Yukarı taşı
+  manual_move_down: Aşağı taşı
+  repairing_stage: "%{name} onarılıyor — aşama %{step}/%{total}"
+  drop_hint_alt: ya da Dosya ekle kullan
+  not_repaired: Henüz onarılmadı
+  suggestions: Öneriler
+  apply: Uygula
+  apply_mode_tip: "Sonraki onarımda %{mode} kullan"
+  sug_si_many: "Extreme modun ekstra temizleme adımları bu self-intersection'lara yardımcı olabilir."
+  sug_si_few: "Birkaç self-intersection bulundu; Thorough güvenli bir üst adım."
+  sug_holes_many: "Muhtemelen tarama kaynaklı; Aggressive veya Extreme büyük delikleri daha kolay kapatır."
+  sug_holes_few: "Birkaç delik bulundu; Medium modu bunları daha rahat kapatır."
+  sug_nm: "Karmaşık geometri birkaç mikro çatlak bırakabilir."
+  sug_cc: "Bu bir montajsa, mevcut modun moloz eşiği küçük parçaları kaldırabilir."
+  sug_unknown: "Tür belirlenemedi; varsayılan eşikler kullanılacak."
+  sug_watertight: "Girdi zaten su geçirmez - Quick modu muhtemelen yeterli."
+  sug_low_conf: "Bir üst modu deneyip sonucu karşılaştırmak faydalı olabilir."
+  sug_extreme_caveat: "Extreme, 20'den az yüzlü parçaları tamamen silebilir - montajlarda dikkatli olun."
+  menu_analyze: Analiz et
+  menu_use_method: Bu dosyanın yöntemleri...
+  menu_clear_tags: Etiketleri temizle (genel listeyi kullan)
+  menu_recommended: Önerilen yöntemler
+  menu_analyze_first: Önce bu dosyayı analiz et
+  sug_try_dressing: "Dressing bu şekli kapatabilir ama biçimini bozabilir. Açıkken yeniden çalıştırılsın mı?"
+  sug_budget_rerun: "Bu dosya zaman/geometri bütçesiyle reddedildi, hiçbir şey yazılmadı. Yine de çalıştırılsın mı?"
+  open_in_slicer: Şurada aç...
+  small_parts: "Küçük parçalar (%{count})"
+  small_removed: Kaldırıldı
+  small_debris: Moloz
+  sum_watertight: su geçirmez
+  sum_warning: uyarı
+  sum_error: hata
+  ftetwild_optimize: fTetWild sonucunu optimize et
+  auto_reorder: Pipeline yöntemleri yeniden sıralayabilsin
+  classifier_experimental: Experimental (varsayılan)
+  classifier_classic: Klasik
+  edge_tiebreak: Sınıflandırıcı kenar eşitlik özellikleri
+  sum_show_issues: "%{n} sorun >"
+  sum_issues_detail: Sorun dökümünü göster
+  brief_note_stage2_skipped: Son katı kontrolü atlandı; kapalı model korundu.
+  brief_note_stage2_error: Son katı kontrolü modeli doğrulayamadı.
+  brief_note_shape_changed: Şekil değişti; dilimleyicide kontrol edin.
+  brief_note_volume: Hacim değişti; dilimleyicide kontrol edin.
+  brief_note_graft: Yüzey yumuşatıldığı için ince ayrıntılar azalmış olabilir.
+  brief_note_dressing: Yüzey kaplandığı için özgün yüzeyin biraz dışında kalabilir.
+  brief_note_reload_nm: Kaydedilen dosyada yeniden açılışta bir yapı sorunu var.
+  brief_note_unit: Model milimetre cinsinde olmayabilir.
+  brief_note_material: OBJ malzeme referansları korunmadı.
+  brief_note_attr_loss: "%{dropped} üçgende boya/dikiş/destek özniteliği kayboldu; %{kept} korundu, %{new_without} yeni üçgen özniteliksiz."
+  brief_note_budget: Onarım boyut veya risk sınırını aştığı için sonuç kaydedilmedi.
+  brief_note_thin_wall: "Yüzeyin ~%{ratio}% kadarı model boyutunun %{threshold}% değerinden ince"
+  brief_note_thin_wall_mm: " (en ince ~%{mm} mm)"
+  brief_note_estimated: " [tahmini]"
+  brief_note_si_adopted: Kendi içine geçen yüzeyler daha güçlü bir onarım yöntemiyle düzeltildi.
+  brief_note_si_unfixed: Kendi içine geçen yüzeyler kaldı; daha güvenli onarım korundu.
+  brief_note_holes_remaining: "%{count} delik kaldı."
+  brief_note_not_closed: Model hâlâ kapalı değil.
+  ladder_save: Sırayı kaydet
+  ladder_save_tip: Bu sırayı ilke dosyanıza yaz
+  ladder_save_body: Sıra ilke sırasıdır. Değiştirmek gerçek bir düzenlemedir, kaydedilmelidir.
+  ladder_saved: "Sıra şuraya kaydedildi: %{path}"
+  ladder_save_failed: "Kaydedilemedi: %{error}"
+  ladder_save_empty: Kaydetmeden önce en az bir yöntem seçin.
+  first_run_msg: "İlk açılış: aşağıdaki iki soru (otomatik güncelleme, anonim kullanım geçmişi) sorduğumuz tek şey. Hiçbir veri bu makineden çıkmaz."
+  methods_ranked: "Bu dosya için %{n} yöntem sıralandı"
+  write_error_title: Sonuç kaydedilemedi
+  write_error_body: "Sutura %{what} dosyasını şuraya yazamadı: %{path}"
+  write_error_choose: Başka klasör seç...
+  ok: Tamam
+  notice_ftetwild_missing: "fTetWild kurulu değil, bu yüzden katı yedek yol kapalı."
+  notice_part_missing: "%{count} isteğe bağlı bileşen eksik, bazı onarımlar zayıf yolu kullanacak."
+  install_dots: Kur…
+  install_dots_tip: Seçenekler > Motorlar
+  input_analysis: Girdi analizi

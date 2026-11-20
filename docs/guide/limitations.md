@@ -20,29 +20,36 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 
 ## Known limitations
 
+* **Four platforms only.** Packages exist for Linux x86_64, Linux aarch64, macOS
+  arm64 and macOS Intel — the same set the Python version covered. There is no
+  Windows build, and on any other target `--check-update` and `--repair-install`
+  have nothing to fetch and say so.
+* **`--rollback` restores the newest backup only.** Two are kept
+  (`~/.local/share/sutura.backup/<version>/`), and the third-newest is deleted
+  on each update. There is no command to pick an older one. A Python-era backup
+  is deliberately kept outside that rotation, in
+  `~/.local/share/sutura.backup.python-<stamp>/`, so it cannot be evicted — see
+  [MIGRATE.md](../../MIGRATE.md).
+* **`--whats-new` needs a successful install first.** The notes are a snapshot
+  written when an update or `--repair-install` succeeds, so a fresh install has
+  none to show and the command points at the releases page instead.
 * **macOS right-click needs a Quick Action, not a Dolphin-style menu.**
   macOS has no ServiceMenu equivalent; instead the installer adds a Finder
   **Quick Action** ("Sutura — Repair") in `~/Library/Services/`, available
   under right-click → Quick Actions for any selected file; only STL/3MF files
-  are repaired, and other selections are skipped with a notification. It calls the
-  bundled `sutura-cli` inside a PyInstaller `Sutura.app`, so it only repairs
-  when such an app is present (in `/Applications` or `~/Applications`) — the
-  dev-install wrapper app alone has no bundled CLI. A downloaded
-  (quarantined) `Sutura.app` must be opened once via right-click → Open
-  before the Quick Action can run it (Gatekeeper; the notification tells you
-  to do this).
-* **No macOS uninstall script.** There is no macOS equivalent of the Linux
-  `uninstall.sh`; removing a macOS install is manual (see "Removing a macOS
-  install" under the macOS install section).
-* **Native KDE file dialog.** The GUI sets `QT_QPA_PLATFORMTHEME=kde` and
-  points `QT_PLUGIN_PATH` at `/usr/lib/qt6/plugins` so QFileDialog uses the
-  native KDE dialog (rubber-band rectangle selection included). This works
-  only when the system Qt version matches the bundled PySide6 Qt — the GUI
-  checks the versions (via `qmake`) and only mixes in the system plugins on a
-  match. When they differ (e.g. system Qt 6.11.2 vs bundled 6.11.1), the
-  system platform plugins cannot load into the bundled Qt, so the GUI keeps
-  Qt on its own bundled plugins and falls back to the embedded dialog —
-  rectangle selection may be unavailable, but Ctrl/Shift+click always works.
+  are repaired, and other selections are skipped with a notification. It uses
+  the CLI inside `Sutura.app`, so it only repairs when such an app is present
+  (in `~/Applications`). A downloaded (quarantined) `Sutura.app` must be opened
+  once via right-click → Open before the Quick Action can run it (Gatekeeper;
+  the notification tells you to do this).
+* **The macOS app is not notarized.** It is ad-hoc signed, so the first launch
+  shows the *unidentified developer* warning; open it once with
+  right-click → Open. Removing a macOS install is `bash uninstall-rust.sh`,
+  which handles both platforms.
+* **KDE file dialog in the GUI.** The native KDE file dialog needs
+  `plasma-integration` in your desktop; without it the GUI uses its own dialog,
+  where rectangle selection may be unavailable but Ctrl/Shift+click always
+  works.
 * **Self-intersections within one connected shell.** Manifold rebuilds the
   mesh as a solid, which resolves interior/overlapping geometry, but the
   rebuild can slightly reshape features in pathological cases. Always check

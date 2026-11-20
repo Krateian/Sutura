@@ -64,20 +64,17 @@ const AVAILABILITY_ONLY: [&str; 5] = [
 /// the external fTetWild binary is compiled in.
 fn availability(m: &MethodInfo) -> Option<(&'static str, String)> {
     if m.id == "ftetwild" {
-        let ok = std::env::var_os("SUTURA_FTETWILD_BIN")
-            .map(|p| !p.is_empty() && std::path::Path::new(&p).exists())
-            .unwrap_or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| {
-                        std::path::Path::new(&h)
-                            .join(".local/share/sutura/ftetwild/bin/ftetwild")
-                            .exists()
-                    })
-                    .unwrap_or(false)
-            });
-        if !ok {
-            return Some(("skip", "fTetWild (pytetwild) is not installed".into()));
+        // `MethodInfo::available` is a **static** table value and is `false` for
+        // fTetWild (`ranking.rs:37`), because the binary is not compiled in.
+        // Trusting it here made `--self-check` report "optional addon not
+        // installed" on a packaged install whose sidecar was sitting right
+        // there, while `--list-methods` -- which asks the resolver -- said the
+        // method was available. Ask the resolver here too, so one question has
+        // one answer.
+        if crate::ftetwild::find_binary().is_none() {
+            return Some(("skip", "fTetWild binary not found".into()));
         }
+        return None;
     }
     if !m.available {
         return Some(("skip", "optional addon not installed".into()));
@@ -308,6 +305,57 @@ mod tests {
             "ok" => {}
             other => panic!("fTetWild must be ok or skip, got {other}"),
         }
+    }
+
+    /// `--self-check` must ask the same resolver `--list-methods` asks.
+    ///
+    /// They disagreed: `availability()` used its own copy of the lookup, which
+    /// only knew `~/.local/share/sutura/ftetwild/bin/ftetwild` (the old
+    /// *pytetwild* path), and then fell through to `MethodInfo::available` —
+    /// a static `false`. On a packaged install the sidecar sits at
+    /// `Sutura.app/Contents/MacOS/ftetwild`, so `--list-methods` said available
+    /// while `--self-check` said "not installed".
+    ///
+    /// Pins the binary through the resolver's documented override so the case
+    /// that broke is actually exercised: without that, both the old and the new
+    /// code answer "skip" on a machine with no binary and the test cannot tell
+    /// them apart (it passed against the bug when first written).
+    #[test]
+    fn self_check_honours_the_resolver_override() {
+        let dir = std::env::temp_dir().join(format!("sutura-sc-ftw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("ftetwild");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(&bin).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&bin, p).unwrap();
+        }
+
+        let prev = std::env::var_os("SUTURA_FTETWILD_BIN");
+        std::env::set_var("SUTURA_FTETWILD_BIN", &bin);
+        assert!(
+            crate::ftetwild::find_binary().is_some(),
+            "the override must resolve"
+        );
+        let r = run(false);
+        let status = r["methods"]["ftetwild"]["status"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        match prev {
+            Some(v) => std::env::set_var("SUTURA_FTETWILD_BIN", v),
+            None => std::env::remove_var("SUTURA_FTETWILD_BIN"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            status, "ok",
+            "the resolver found a binary but --self-check skipped it"
+        );
     }
 
     #[test]

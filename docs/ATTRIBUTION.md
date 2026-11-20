@@ -115,6 +115,20 @@ their terms):
   an unmodified dependency: no Sutura source is converted to MPL (MPL-2.0 is
   file-level copyleft), and the MPL-2.0 license text + upstream URLs are the
   full notice required when distributing the dependency or a bundled wheel.
+
+  **The Rust release packages the fTetWild CLI itself** (`ftetwild`, or
+  `ftetwild.exe`-style sidecar naming per platform) rather than depending on
+  `pytetwild`: macOS `Sutura.app/Contents/MacOS/ftetwild`, Linux
+  `<root>/bin/ftetwild`. It is a **modified** build, and MPL-2.0 §3.2 requires
+  the source of the modifications to be available, so this distribution ships
+  the exact inputs: `third_party/ftetwild/build.sh` (pinned upstream commit
+  `8118f810478e0e65a7bf2d8cecdc5e203a876e97`), `third_party/ftetwild/ftetwild.patch`
+  and `third_party/ftetwild/geogram.patch`, plus the notice
+  `third_party/ftetwild/NOTICE` inside every package. The patch makes the build
+  deterministic — fixed RNG seeding with a resettable static `Random`, sorted
+  BFS queues, a single-threaded Geogram configuration, and a serial execution
+  shim that removes the Intel TBB dependency — so the bundled binary is
+  reproducible. The full notice and the licence text ship alongside this file.
 - **pyrobust-predicates** — Unlicense / public domain. Shewchuk-style exact
   3D orientation predicates used by `sutura/autorefine.py` (FAZ16).
 - **meshopt / meshoptimizer** — MIT OR Apache-2.0 (vendored meshoptimizer 1.3,

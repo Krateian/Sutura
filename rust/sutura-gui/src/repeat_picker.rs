@@ -173,6 +173,7 @@ mod tests {
             center: [0.5, 0.5, 0.5],
             radius: 0.87,
             positions,
+            defect_colors: Vec::new(),
         }
     }
 

@@ -38,6 +38,11 @@ from sutura_engine.pipeline.report import (
 from sutura_engine.pipeline.stage1 import (
     _local_exact_budget, _should_run_local_exact,
 )
+from sutura_engine import backend as _backend
+
+# Product default: the Rust pipeline.  SUTURA_BACKEND=python selects the
+# legacy Python engines for one release; see sutura_engine/backend.py.
+_backend.apply_engine_defaults()
 from sutura_engine.pipeline.stage2 import maybe_run_stage2
 from sutura_engine.pipeline.tiers.engines import run_after_stage2_engines
 from sutura_engine.pipeline.tiers.flap import (
@@ -70,7 +75,9 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  si_mode=None, dressing_force_adopt=False,
                  splint=False, splint_adaptive=None,
                  solid_engine='ftetwild', coaptation=False,
-                 progress=None, cancel=None, forced_methods=None):
+                 progress=None, cancel=None, forced_methods=None,
+                 auto_escalation=True, auto_reorder=False,
+                 ftetwild_optimize=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     bad_coords = scan_bad_coordinates(src)
     if bad_coords:
@@ -112,13 +119,28 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                     return value
                 return str(value).strip().lower() in (
                     '1', 'true', 'yes', 'on', 'auto', 'force')
+
+            def _tri(value):
+                if isinstance(value, bool):
+                    return value
+                if value is None:
+                    return None
+                text = str(value).strip().lower()
+                if text == 'auto':
+                    return None
+                return text in ('1', 'true', 'yes', 'on', 'force')
             opts = {
                 'mode': mode,
                 'intensity': getattr(triage_spec, 'intensity', 'balanced'),
                 'profile': profile, 'deep_repair': deep_repair,
                 'closing': closing, 'proxy_template': _fb(proxy_template),
-                'graft': (_fb(graft) if _fb(graft) else None), 'tamponade': _fb(tamponade),
-                'ftetwild': ('always' if _fb(ftetwild) else None),
+                'graft': _tri(graft), 'tamponade': _fb(tamponade),
+                # With --engines Python keeps the non-escalated baseline; only
+                # the no-engine auto escalation forces fTetWild to 'always'.
+                'ftetwild': ('always'
+                             if ftetwild is True
+                             or (_fb(ftetwild) and auto_escalation)
+                             else None),
                 'flap': (_fb(flap) if _fb(flap) else None), 'coaptation': (_fb(coaptation) if _fb(coaptation) else None),
                 'splint': _fb(splint), 'dressing': _fb(dressing),
                 'dressing_drain': dressing_drain,
@@ -127,11 +149,21 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 'dressing_sigma_scale': dressing_sigma_scale,
                 'dressing_force_adopt': bool(dressing_force_adopt),
                 'wall_thicken': _fb(wall_thicken), 'repeat': repeat,
-                'solid_engine': solid_engine, 'si_mode': si_mode,
+                'solid_engine': solid_engine,
+                # Rust RepairOptions.si_mode is a strict enum (not Option);
+                # Python passes None for the policy default.
+                'si_mode': (si_mode or 'report'),
                 'time_budget_s': None, 'seed': 0,
                 'forced_methods': list(forced_methods or []),
                 'engines': (sorted(engines.keys())
                             if engines is not None else None),
+                'auto_escalation': bool(auto_escalation),
+                'join_components': bool(join_components),
+                'extra_features': bool(extra_features),
+                'autorefine': bool(autorefine),
+                'indirect_autorefine': bool(indirect_autorefine),
+                'auto_reorder': bool(auto_reorder),
+                'ftetwild_optimize': bool(ftetwild_optimize),
             }
             def _rust_call(flap_value, tamponade_value):
                 call_opts = dict(opts)
@@ -278,6 +310,12 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                     'wall_thicken': _pb(wall_thicken), 'repeat': repeat,
                     'solid_engine': solid_engine, 'si_mode': si_mode,
                     'time_budget_s': None, 'seed': 0,
+                    'join_components': bool(join_components),
+                    'extra_features': bool(extra_features),
+                    'autorefine': bool(autorefine),
+                    'indirect_autorefine': bool(indirect_autorefine),
+                    'auto_reorder': bool(auto_reorder),
+                    'ftetwild_optimize': bool(ftetwild_optimize),
                 }
                 rv, rt, rj = core.pipeline_repair(
                     np.ascontiguousarray(verts, dtype=np.float64),
@@ -531,7 +569,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                tamponade=False, tamponade_force=False,
                si_mode=None, dressing_force_adopt=False,
                splint=False, splint_adaptive=None, coaptation=False,
-                 solid_engine='ftetwild', progress=None, cancel=None):
+                 solid_engine='ftetwild', progress=None, cancel=None,
+                 auto_escalation=True):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -544,6 +583,11 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
     blocks = parse_3mf_mesh_blocks(src)
     if not blocks:
         return {'error': 'no mesh objects found in 3MF'}
+    # Multi-object escalation is orchestrated HERE (Python `triage._auto_multi`):
+    # `repair_mesh_from_arrays` below is the Python pipeline and
+    # SUTURA_PIPELINE_ENGINE=rust only routes single-mesh array repairs.  The
+    # opt-in `--auto-reorder` likewise stays in `triage._auto` and is not
+    # forwarded to sutura-core.
 
     _owns_trace = False
     if not trace.is_active() and os.environ.get('SUTURA_TRACE'):

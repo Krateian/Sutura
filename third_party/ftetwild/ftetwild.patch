@@ -55,6 +55,27 @@ index c121794..9dc2ef5 100644
          int res = (gen()-std::mt19937::min())/double(std::mt19937::max()-std::mt19937::min())*(max-min)+min;
  
          return res;
+diff --git a/src/Mesh.hpp b/src/Mesh.hpp
+--- a/src/Mesh.hpp
++++ b/src/Mesh.hpp
+@@ -109,7 +109,7 @@
+ 
+         inline void reset() {
+             is_surface_fs = {{NOT_SURFACE, NOT_SURFACE, NOT_SURFACE, NOT_SURFACE}};
+-            is_bbox_fs = {{NOT_BBOX, NOT_BBOX, NOT_BBOX, NOT_BBOX}};
++            is_bbox_fs = {{static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX)}};
+             opp_t_ids = {{OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN}};
+             surface_tags = {{0, 0, 0, 0}};
+ 
+@@ -150,7 +150,7 @@
+         }
+ 
+         std::array<char, 4> is_surface_fs = {{NOT_SURFACE, NOT_SURFACE, NOT_SURFACE, NOT_SURFACE}};
+-        std::array<char, 4> is_bbox_fs = {{NOT_BBOX, NOT_BBOX, NOT_BBOX, NOT_BBOX}};
++        std::array<char, 4> is_bbox_fs = {{static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX), static_cast<char>(NOT_BBOX)}};
+         std::array<int, 4> opp_t_ids = {{OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN, OPP_T_ID_UNKNOWN}};
+         std::array<char, 4> surface_tags = {{0, 0, 0, 0}};
+ 
 diff --git a/src/TriangleInsertion.cpp b/src/TriangleInsertion.cpp
 index bc4b168..0629915 100644
 --- a/src/TriangleInsertion.cpp
@@ -371,3 +392,54 @@ index 0000000..e5cf5cc
 +        using namespace ::tbb;
 +    }
 +}
+
+
+--- a/cmake/FloatTetwildDependencies.cmake
++++ b/cmake/FloatTetwildDependencies.cmake
+@@ -92,11 +92,26 @@
+     elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+         set(GEO_PLATFORM "Darwin-clang")
+     else()
+-        set(GEO_PLATFORM "Linux64-gcc")
++        # Arch-aware: the x86_64 Geogram configs inject -m64, which GCC rejects
++        # on arm64 ("unrecognized command-line option"), so a hard-coded
++        # Linux64-gcc breaks every non-x86 Linux build.
++        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
++            set(GEO_PLATFORM "Linux64-gcc")
++        elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
++            set(GEO_PLATFORM "Linux64-nonx86-clang-dynamic")
++        else()
++            set(GEO_PLATFORM "Linux64-nonx86-gcc-dynamic")
++        endif()
+     endif()
+ 
+     set(VORPALINE_PLATFORM ${GEO_PLATFORM})
+ 
++    # The non-x86 platform configs set VORPALINE_BUILD_DYNAMIC, which makes
++    # geogram.cmake force BUILD_SHARED_LIBS=TRUE. This project builds a static,
++    # self-contained fTetWild binary -- `GEOGRAM_BUILD_STATIC` above is inert,
++    # nothing reads it -- so pin the flag the library actually uses.
++    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
++
+     set(GEOGRAM_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+     set(GEOGRAM_BUILD_STATIC ON CACHE BOOL "" FORCE)
+ 
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -139,6 +139,14 @@
+     target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/tbb_shim)
+ endif()
+ 
++# Upstream code predates GCC 13, which diagnoses narrowing conversions in
++# brace-initialisation as hard errors (the standard requires the diagnostic).
++# Scoped to THIS third-party target and only under GCC: PRIVATE, not exported,
++# so it cannot leak into Sutura's own translation units.
++if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
++    target_compile_options(${PROJECT_NAME} PRIVATE -Wno-narrowing)
++endif()
++
+ if(FLOAT_TETWILD_WITH_EXACT_ENVELOPE)
+     target_link_libraries(${PROJECT_NAME} PUBLIC FastEnvelope)
+     target_compile_definitions(${PROJECT_NAME} PUBLIC NEW_ENVELOPE)

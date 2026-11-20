@@ -59,8 +59,51 @@ onarım/doğrulama/analiz hatası, bozuk girdi, reddedilen bütçe kaydı veya e
 `130` kesinti (Ctrl-C). Beklenmeyen hatalar kısa bir `error:` mesajı ve
 `--debug` ipucu yazdırır — izi görmek için `--debug` (veya `SUTURA_DEBUG=1`)
 ekleyin. `--human` ile hatalar stderr'e gider; varsayılan JSON modu stdout'ta
-`{"error": ...}` biçimini korur. `--self-check` ve `--self-repair` mevcut 0/1
-sözleşmesini korur.
+`{"error": ...}` biçimini korur. `--self-check` 0/1 sözleşmesini korur (tüm
+yöntemler yüklenirse 0, herhangi biri başarısızsa 1). `--update`, `--rollback`
+ve `--repair-install` istemde reddettiğinizde 0 ile çıkar, çünkü yanlış giden
+bir şey olmadı.
+
+**Kurulum ve güncelleme komutları.** Bunlar hiçbir şeyi onarmaz; kurulu programı
+yönetir. `--update`, `--rollback` ve `--repair-install` dosyaları değiştirmeden
+önce sorar ve yanıt **varsayılan olarak hayırdır** — boş Enter reddeder. `--yes`
+sizin adınıza cevap verir; terminali olmayan bir çalıştırma (betik, CI) da
+reddeder ve bunu söyler.
+
+| Komut | Ne yapar |
+|---|---|
+| `sutura --version` | sürümü yazdırır (`sutura <version>`) ve çıkar |
+| `sutura --check-update` | daha yeni bir sürüm olup olmadığını bildirir. **Hiçbir şey kurmaz.** `update available: <tag>`, `no update available` veya sürüm lisans sınırını geçtiğinde lisans bildirimi yazdırır; bu durumda reddeder ve sürümler sayfasına yönlendirir |
+| `sutura --update` | en yeni sürümü indirir, doğrular, kurar, sağlık kontrolünden geçirir ve başlamazsa geri alır |
+| `sutura --rollback` | **en yeni** yedeği kurulu dosyaların üzerine geri yükler. İki yedek saklanır; daha eskisini seçecek komut yoktur |
+| `sutura --repair-install` | **çalıştırdığınız** sürümü kendi üzerine yeniden kurar; asla güncellemez veya sürüm düşürmez |
+| `sutura --whats-new` | son başarılı kurulumun kaydettiği sürüm notlarını çevrimdışı yazdırır |
+| `sutura --migrate-from-python --from-artifact PATH --yes` | mevcut bir Python kurulumunu bu sürüme taşır; bkz. [MIGRATE.md](../../../MIGRATE.tr.md) |
+
+`--repair-install` ayrıca `--self-repair` ve `--repair-installation` adlarına da
+yanıt verir. `--check-update` kontrol zamanını
+`~/.config/sutura/config.json` dosyasına yazar; bunlardan yapılandırmanıza
+dokunan tek komut odur.
+
+`--whats-new`, bir kurulum başarılı olduğunda yazılan bir anlık görüntüyü okur.
+Yeni bir kurulumda henüz bir tane olmayabilir; komut bunu söyler ve sürümler
+sayfasını işaret eder.
+
+**İnce duvar kalınlaştırma (`--wall-min-thickness`).** Duvar Kalınlaştır (yöntem
+#15) isteğe bağlıdır ve asla otomatik çalışmaz. Milimetre cinsinden değer hem
+hedef hem de anahtardır: verilmesi katmanı açar; katman her köşenin duvar
+kalınlığını bir SDF ızgarasından ölçer ve hedefin altındaki her yeri
+kalınlaştırır.
+
+```sh
+sutura model.stl --wall-min-thickness 1.5
+```
+
+Bayrak olmadan katman hiç çalışmaz. Onunla birlikte rapora bir `wall_thicken`
+bloğu eklenir (`min_before`, `thin_before`, `faces`, `delta` ve sonucun kabul
+edilip edilmediği). Katman geometri üretebildiği için diğerleri gibi kapıdan
+geçer: aday yalnızca topolojiyi kötüleştirmiyorsa kabul edilir; bu da birçok
+mesh'te ölçtüğünü bildirip mesh'i olduğu gibi bırakması anlamına gelir.
 
 OBJ notu: malzemeler/dokular (`mtllib`/`usemtl`) onarılmış çıktıda **korunmaz** —
 mesh yeniden kurulur (yalnızca köşeler + üçgenler), bu yüzden doku koordinatları
@@ -490,137 +533,120 @@ boya/dikiş/destek özniteliği yoksa hiçbir şey gösterilmez.
 GUI:
 
 ```sh
-~/.local/share/sutura/gui.py
+sutura-gui            # veya: Sutura uygulamasını açın
 ```
 
-GUI, batch onarımı destekler: istediğiniz kadar dosya ekleyin, **Onar**'a basın
-ve her biri sırayla işlenir, sonuç dosya başına listelenir. Batch bittiğinde
-log'un üstünde bir özet şeridi belirir (`X su geçirmez, Y uyarılı, Z
-başarısız`); bu şerit, uyarı/hata türlerini ve her birinin kaç dosyayı
-etkilediğini listeleyen tıklanabilir bir **sorunları göster** bağlantısı içerir.
-Bir dosya seçtiğinizde girdi kusurları (çapıyla delikler ve non-manifold
-bölgeler) log'un altındaki bir panelde, batch özet şeridinden ayrı gösterilir.
-Dosyalar **Dosya ekle…** (yerel çoklu seçim, lastik bant dahil), **Klasör
-ekle…** (klasördeki her `.stl`/`.3mf`, tek seviye) veya dosya/klasörleri
-pencereye sürükleyerek eklenebilir. **Durdur** çalışan onarımı sonlandırır ve
-kalan dosyaları iptal edilmiş olarak işaretler. Sürükle & bırak, yerel Wayland
-oturumlarında çalışır (GUI bir Qt uygulamasıdır, XWayland değildir). GUI,
-kendi koyu Fusion temasıyla gelir (teal vurgu rengi), böylece sistem masaüstü
-temasından bağımsız olarak her platformda ve Qt sürümünde aynı görünür. Batch
-geneli onarım seçenekleri — fTetWild yedek katmanı, son çare **Katı motoru**
-ayarı (*fTetWild*, varsayılan, veya *CDT (kesin)*, deneysel; `--solid-engine` ile de seçilir, Sutura
-ayar dosyasına kaydedilir ve CLI ile dosya yöneticisi entegrasyonlarınca
-devralınır) ve isteğe bağlı deneysel adımlar — ayrı bir **Seçenekler**
-penceresindedir (**Mod** düğmesinin
-yanındaki düğme ya da Ctrl+, / Cmd+,); onarım sürerken açık kalabilir, düğme
-etiketi varsayılandan farklı seçenek sayısını gösterir, örneğin *Seçenekler
-(2)*. Sekmeleri: *Genel* (anonim kullanım geçmişi), *Onarım* (fTetWild yedek
-katmanı ve Triage yoğunluk preset/profil seçicisi ile profil düzenleyicisi),
-*Yöntemler* (otomatik derin katman sırası ve elle dosya-başına sıra),
-*Deneysel* (isteğe bağlı adımlar), *Güncellemeler* (elle kontrol, otomatik
-güncelleme, isteğe bağlı her açılışta kontrol), *Değişiklikler* (GitHub'dan
-sürüm notları, çevrimdışı yedekli) ve *Motorlar* (fTetWild kur/kaldır ve
-yapılandırılmış harici motor listesi).
+GUI yerel bir derlemedir (Rust + egui) ve onarım aynı süreçte çalışır — Python
+yorumlayıcısı da, alt süreç de yoktur. Pencere, içinde iki kart olan tek bir
+ortalanmış panelden oluşur ve *ayar* olan her şey ilk ekranda değil, dişli
+çarkın arkasındaki **Seçenekler** penceresindedir.
+
+**İlk ekran.** Üç şey: bir **Dosyalar** kartı, tek bir eylem satırı, bir
+**Rapor** kartı.
+
+* **Dosyalar** — **Dosya ekle**, **Klasör ekle...**, **Seçileni kaldır**,
+  **Listeyi temizle**, ardından üç sütunlu tablo (dosya · yöntem · sonuç).
+  Dosyaları pencereye sürükleyin veya liste boşken kesikli alana bırakın. Bir
+  satırı seçince önizlemede görünür; seçili satır renklendirilir, doldurulmaz.
+  Sağ tık satırın menüsünü açar (aşağıda).
+* **Eylem satırı** — solda **Analiz et**; sağda **Tümünü onar** (kontur, yalnız
+  iki ve daha fazla dosyada) ve **Onar** (tek dolu düğme). Onarım sürerken
+  yerlerini **Durdur** alır.
+* **Rapor** — Sağlık, Risk, Güvenilirlik ve Güven çubukları ve her birinin
+  yanında sayı; ardından hüküm, ardından düz notlar ("model hâlâ kapalı
+  değil", "sonuç kaydedilmedi çünkü…"), ardından bıraktığınız dosyanın **Girdi
+  analizi**, ardından **Öneriler**, ardından çıktı yolu ile **Sonucu aç** ve
+  **Klasörde göster**.
+
+Hükmün rengi metne değil *sonuca* uyar: yeşil yazılan dosya su geçirmez
+demektir, amber bir bakılması gerektiğini, kırmızı onarılmadığını söyler. Eksik
+bir bileşen panelde tek bir cümle olarak görünür — "fTetWild kurulu değil, bu
+yüzden katı yedek yol kapalı." — ve Seçenekler → Motorlar'ı açan bir **Kur...**
+düğmesiyle.
+
+**Analiz sonrası öneriler.** Rapor yöntemleri zaten sıralar; **Öneriler**
+bloğu bunu en fazla üç satır düz tavsiyeye çevirir ve her birinde **Uygula**
+vardır. Uygula yalnızca sonraki onarımın modunu belirler — mod bir seçimdir,
+eylem değil. Bir sonuç Dressing öneriyorsa veya bir kayıt bütçeyle reddedildiyse
+bunlar da burada tek satır olarak çıkar, bitmiş bir grubun üstünde diyalog
+olarak değil.
+
+**Bir dosyaya sağ tık.** Analiz et, Sonucu aç / Klasörde göster (sonucu varsa),
+makinede gerçekten bulunan her dilimleyici için **Şurada aç...**, **Önerilen
+yöntemler** (sıralama, eklemek için tek tık), **Bu dosyanın yöntemleri...** ve
+genel listeyi izlemesi için **Etiketleri temizle**.
+
+**Seçenekler** (dişli veya `Ctrl+,` / `Cmd+,`) yedi sekmelidir ve bir ayarın
+yaşadığı tek yer burasıdır:
+
+| Sekme | İçindekiler |
+|---|---|
+| **Genel** | Dil, anonim kullanım geçmişi, grafik önbelleği, güvenilirlik puanı, öğrenme triyajı, Teşhis, İlkeyi aç |
+| **Onarım** | Yoğunluk, mod, profil, derin onarım, SI modu, katı motor, mesh türü sınıflandırıcı, katman anahtarları, yöntem merdiveni ve **Sırayı kaydet**, profil ayarları (risk ve geometri sınırları, Graft ve fTetWild sınırları) |
+| **Yöntemler** | Otomatik (ilke sırası) veya Elle (tam sıra), merdiven, dosya başına düzenleyici |
+| **Deneysel** | Autorefine, bileşenleri birleştir, Splint, Dressing ve dört ayarı, fTetWild optimizesi, kenar eşitliği |
+| **Güncellemeler** | Sürüm, son kontrol, **Şimdi kontrol et**, Otomatik güncelleme, Her açılışta kontrol et |
+| **Değişiklikler** | Sürüm notları |
+| **Motorlar** | Bulunanlar, **Kur...**, **Kaldır**, **Yenile**, motorlar klasörü |
+
+Her şey CLI'nin `config.json`'ının yanındaki `gui.json`'a kaydedilir ve bir
+sonraki açılışta geri yüklenir; açıkça verilen `--intensity` veya `--lang` yine
+de kazanır.
 
 #### Onarım öncesi analiz
 
 ![Onarım öncesi analiz](../../../assets/analyze-panel.png)
 
-Onarımdan önce **Analiz Et**, CLI'daki `validate` ve `--dry-run` ile aynı
-salt-okunur kontrolleri her dosya için hiçbir şey yazmadan çalıştırır:
-tespit edilen türü ve onarım modunu, eşik ayarını, girdinin delik /
-self-intersection / non-manifold / döküntü sayılarını, watertight ön-kararını
-ve bir **tahmini güven** değerini bildirir
-(`Estimated confidence: X/100 (Label) — actual result may differ after
-repair`, çünkü onarım sonrası sinyaller henüz bilinmiyor). Altında birkaç
-**mod önerisi** listeler (ör. tarama kaynaklı delikler için agresif/extreme
-adımı, girdide en az bir delik olduğunda "mevcut mod yeterli olabilir ama
-tatmin etmezse bir üst mod denenebilir" yönünde yumuşak bir ipucu, mod hâlâ
-düşük seviyedeyken bir üst mod denenebileceğine dair
-düşük-güven ipucu veya extreme'un küçük parçaları silebileceğine dair bir
-çekince). Öneriler **yalnızca bilgilendirme amaçlıdır ve modu asla otomatik
-değiştirmez — karar kullanıcıda kalır.** Sezgisel kural tetiklenirse engelleyici
-olmayan bir birim uyarısı (model inç/cm cinsinden olabilir) da gösterilir.
+Bir dosya seçmek sağ sütundaki **Analiz** bölümünü doldurur, hiçbir şey
+onarmadan: algılanan tür ve güven, yüzler, köşeler, bileşenler, sınır
+ilmekleri, manifold olmayan kenarlar, kendisiyle kesişimler ve açık alan.
+Altında **Kusurlar (n)** her deliği ve her manifold olmayan bölgeyi bulmanız
+için merkeziyle listeler; bir 3MF için **Nesneler (n)** her model parçasını yüz
+ve köşe sayılarıyla listeler. İkisi de kendi kaydırması olan katlanır
+bölümlerdir, böylece paramparça bir mesh panelin kalanını ekran dışına itemez.
 
-#### Kusur detay paneli
+#### Kusur ısı haritası
 
-![Kusur detay paneli](../../../assets/defect-panel.png)
+![Kusur ısı haritası](../../../assets/heatmap.png)
 
-Bir dosya seçildiğinde log'un altındaki panel, girdi meshinde bulunan
-kusurları listeler: her deliğin merkezi ve çapı (mm) ve her non-manifold
-bölge. Bu, log'un üstündeki batch özet şeridini tamamlar — şerit batch başına
-bir sayımdır, bu panel dosya başına detaydır. Onarımdan sonra panel başlığı
-ayrıca sonucun güvenini `Confidence: X/100 — Yüksek/Orta/Düşük` segmenti
-olarak gösterir. Model milimetre cinsinden olmayabilirse, log'da ve bu panelin
-başında engelleyici olmayan bir birim uyarısı görünür (yukarıdaki Birim
-uyarısı bölümüne bakın).
+**Isı haritası** anahtarı önizlemeyi renklendirir: bir sınıra veya manifold
+olmayan bir kenara değen yüzler nötr yüzeye karşı sıcak renkte boyanır ve
+önizleme kaç yüzün ve meshin hangi oranının böyle olduğunu bildirir. Bu canlı
+bir 3B görünümdür — döndürmek için sürükleyin, yakınlaştırmak için tekerlek —
+küçük bir resim değil.
 
-**Kusur ısı haritası.** Kusur listesinin altında **Isı haritası göster**,
-seçili meshi kusur bölgeleri (delik kenarları ve non-manifold alanlar) gri
-mesh üzerinde kırmızı vurgulanmış olarak çizer ve küçük bir önizleme olarak
-gösterir. Önizlemeye tıklamak daha büyük bir yakınlaştırma diyaloğu açar.
-Çizim isteğe bağlıdır (asla otomatik değildir; böylece büyük bir batch
-takılıp kalmaz) ve dosya başına önbelleklenir. Çok nesneli bir 3MF'de, kusur
-panelinin mevcut ilk-nesneyi-göster davranışıyla tutarlı olarak ilk nesne
-çizilir. Çizim, bir CPU rasterizer'ıyla yapılır (headless, AppImage ve macOS
-CI'de çalışır) ve GUI'nin duyarlı ve çökmesiz kalması için bir alt süreçte
-çalışır; bir mesh çizilemezse sessizce salt metin panele geri dönülür.
+**Kusur renkleri** diğer renklendirme modudur: her yüz kusur *türüne* göre
+boyanır ve Python görüntüleyicisiyle aynı sekiz renkli paleti kullanır
+(manifold olmayan kırmızı, kendisiyle kesişim magenta, kopya camgöbeği, gürültü
+gri, iç bölge çivit, ince duvar pembe, dejenere sarı, ters yön turuncu). Birden
+çok türü olan bir yüz en ciddisini korur. İki mod birbirini dışlar ve teşhis
+yüklemede değil ilk geçişte hesaplanır.
 
-**Öncesi/sonrası karşılaştırma.** Bir dosya onarıldıktan sonra
-**Öncesi/sonrası göster**, orijinal ve onarılmış meshleri *aynı* kamera
-çerçevesiyle çizer ve ana görüntü, **Orijinal**/**Onarılmış** arasında geçiş
-yapan bir düğme ve ana görüntünün altında *en yoğun orijinal bozukluk
-bölgesinin* (en büyük fiziksel köşegen uzunluğuna sahip kusurun) daha küçük
-bir **detay** yakın çekimi içeren bir diyalog açar. Kamera otomatik olarak o
-en yoğun kusura yönlendirilir, böylece kusur asla mesh'in arkasında kalmaz;
-yalnızca kusursuz bir mesh (veya bbox merkezine oturan bir kusur) sabit
-izometrik görünüme düşer. Orijinal görünüm
-kusurlarını kırmızıyla `(235,60,70)` işaretler. Onarılmış görünüm üç durumlu bir renk
-haritası kullanır: hiç bozulmamış bölgeler **gri**, eski bir kusurun olduğu
-yer artık sağlıklıysa parlak **yeşil** `(46,204,113)`, hâlâ kusur kalıyorsa
-**turuncu** `(255,140,60)`. Onarım topolojiyi değiştirdiği için (önceki/
-sonraki vertex indeksleri eşleşmez) yeşil sınıflandırma *uzaysaldır*: her
-onarılmış yüz, orijinal kusur merkezlerine göre ölçülür (`defects.detect`'in
-gerçek yarıçapı) ve yalnızca en büyük kusurlar (en fazla 256) vurguyu
-üretir — binlerce mikro çatlaklı tarama mesh'lerinde hızlı kalır. Yakın
-çekim, her iki taraf için aynı yakınlaştırılmış
-kameralı çerçeveyi kullanır, böylece orijinal/onarılmış karşılaştırması
-birebir tutarlıdır. Isı haritasıyla aynı CPU-çizici kısıtı yüzünden bilinçli
-olarak etkileşimli bir 3D kaydırıcı değil, statik bir tıkla-geçiştir; alt
-süreçte çalışır ve isteğe bağlıdır, bu yüzden bir batch'i asla yavaşlatmaz.
+#### Önce/sonra karşılaştırması
 
-![Öncesi/sonrası karşılaştırma diyaloğu](../../../assets/before-after-panel.png)
+![Önce/sonra karşılaştırma](../../../assets/before-after-panel.png)
 
-Diyalogun üstündeki **Statik / İnteraktif** anahtarı, etkileşimli 3D
-görünümü ekler (ilk kez seçildiğinde tembel üretilir, sonra diyaloğun ömrü
-boyunca önbellekte tutulur): **sürükleyerek** mesh döndürülür, **fare
-tekerleğiyle** yakınlaştırılır. Sürükleme sırasında düşük-poligonlu bir LOD
-arka plan iş parçacığında her karede çizilir (en yeni kare kazanır, GUI
-sürecinde mesh yükleme yoktur); durduktan ~300 ms sonra tam çözünürlüklü bir
-kare çizilir. İnteraktif görünüm, statik karşılaştırmayla aynı kusura dönük
-kamerayla açılır. İkinci bir anahtar onarılmış görünümü **Onarım durumu**
-renk haritası ile **Yüzey sapması** haritası arasında değiştirir: her yüz,
-onarılmış yüzeyin orijinal yüzeye uzaklığına göre renklendirilir (nicemle
-ölçekli rampa, lacivert → camgöbeği → sarı → kırmızı); hâlâ bozuk kusurlar
-üstte turuncu çizilir ve global maksimum sapma (Hausdorff mesafesi)
-diyalogda gösterilir.
+**Önce / Sonra**, seçili meshin iki durağan görüntüsünü açar — orijinal ve
+onarılmış sonuç — aynı kameradan çizilmiş, böylece karşılaştırma elmayla elmadır.
+İki yarı da canlı önizlemenin kullandığı aynı çiziciden gelir. Bir onarım sonuç
+üretmeden sağ yarı boştur ve boş bir panel göstermek yerine bunu söyler.
 
-**Onarım modu.** Isı haritası/öncesi-sonrası düğmelerinin yanındaki
-**Mod: Otomatik** düğmesi, beş kademeli bir kaydırıcı içeren küçük bir diyalog
-açar — **Düşük / Orta / Otomatik / Agresif / Aşırı** — kaydırıcı hareket
-ettikçe canlı güncellenen tek cümlelik bir açıklamayla (Aşırı kademesi,
-20'den az yüzlü nesneleri silebileceği konusunda dürüstçe uyarır). Mod,
-**batch geneli** bir ayardır: sonraki Onar çalışmasında tüm dosyalara uygulanır
-(dosya başına değil) ve CLI'ya `--mode <mod>` olarak iletilir (CLI bayrağıyla
-aynı beş değer, varsayılan `auto`). Aynı diyalog ayrıca iki **onarım bütçesini**
-(maks. geometri değişimi %, maks. onarım riski 0–100; 0 = sınır yok) taşır.
-Güncel mod her zaman düğmede görünür.
+Canlı önizlemenin kendi **Önce** / **Sonra** anahtarı etkileşimli alternatiftir:
+onarılmış mesh'i döndürüp yakınlaştırın; Sonra görünümünde orijinale karşı bir
+yüzey sapması rampası vardır.
 
-Bir onarım bir bütçeyi aştığında CLI kaydetmeyi reddeder (çıktı dosyası
-yazılmaz) ve `"status": "budget_declined"` bildirir; batch'ten sonra GUI,
-etkilenen dosyaları ve gerçek sayılarını listeleyen bir onay diyaloğu gösterir;
-**Yine de kaydedilsin mi?** tam olarak bu dosyaları `--force` ile yeniden
-çalıştırır (reddedilen satırlar zorlanmış sonuçlarla güncellenir).
+#### Onarım modu ve bütçeler
+
+Ayarlar panelindeki **Mod** seçici `--mode` ile aynı beş adımlı merdivendir ve
+siz seçtikçe güncellenen tek satır açıklaması vardır (Ekstrem, 20 yüzden küçük
+nesneleri silebileceği konusunda uyarır). Batch genelidir: her dosya için bir
+sonraki onarıma uygulanır. **Maks. risk** ve **Maks. geometri değişimi** onarım
+bütçeleridir; boş bırakmak yoğunluğun değerini korur.
+
+Bir onarım bütçeyi aşarsa CLI kaydı reddeder (çıktı dosyası yok) ve
+`"status": "budget_declined"` bildirir; GUI etkilenen dosyayı ve gerçek
+sayılarını gösterir ve **Üzerine yaz** ile yalnızca o dosyayı zorlayarak yeniden
+çalıştırmayı önerir.
 
 Dolphin: bir STL/OBJ/3MF dosyasına sağ tık -> **Sutura ile Onar**. Tek seçimde GUI
 dosya yüklü olarak açılır; çoklu seçimde her dosya arka planda onarılır ve bir
@@ -633,7 +659,7 @@ Servis menüsünü kurduktan veya kaldırdıktan sonra `kbuildsycoca6` çalışt
 
 Ayrıca `orcaslicer-plugin/` altında, **yeni OrcaSlicer betik-eklentisi
 API'si** için **deneysel** bir [OrcaSlicer betik eklentisi](../../../orcaslicer-plugin/)
-vardır. OrcaSlicer **2.5.0+ / nightly sürümlerini** hedefler — 2.4.x sürümlerinde
+vardır. OrcaSlicer **2.5.0 veya daha yenisini** hedefler — 2.4.x sürümlerinde
 "Plugins" menüsü yoktur, bu yüzden eklenti orada çalışmaz.
 
 Eklentiyi çalıştırmak, 3D görünümün yanında (ve devre dışı bırakılmadıkça
@@ -661,7 +687,7 @@ OrcaSlicer okuyabilsin diye yedi gün saklanır. `numpy` beyan edilmiş bir ekle
 bağımlılığıdır (OrcaSlicer'ın paketli uv'si kurar); numpy'siz bir geri dönüş
 yolu da vardır.
 
-Kurulum (OrcaSlicer 2.5.0+ / nightly):
+Kurulum (OrcaSlicer 2.5.0+):
 
 1. Önce Sutura'yı kurun (Linux'ta `./install.sh`, macOS'ta `install-macos.sh`)
    böylece `~/.local/bin/sutura` var olur.
@@ -681,11 +707,13 @@ Kurulum (OrcaSlicer 2.5.0+ / nightly):
 İzinler: `register_capabilities()` var olan Sutura CLI yolunu
 `request_permissions(fs_read=...)` ile, ayrıca `threading` ile ve önceden
 adlandırabildiği iki kararlı süreç hedefiyle (OrcaSlicer süreç sayımı yoklaması
-ve sabit klasör gösterme komutu) önceden beyan eder. 2.5.0 RC ve sonrasında
+ve sabit klasör gösterme komutu) önceden beyan eder. İzinler eklenti
+diyaloğunun **İzinler (Permissions) sekmesinden** gözden geçirilir ve yönetilir.
+2.5.0 veya sonrasında
 `request_permissions()` bu beyanları kabul eder; bu yüzden eklenti **yüklemede
 yalnızca bir kez** (dosya okumalarını, iş parçacığı oluşturmayı ve iki süreç
 hedefini kapsayan tek bir birleşik diyalog) istem gösterir ve bir daha
-göstermez. Yalnızca `fs_read` kabul eden daha eski bir nightly'de eklenti
+göstermez. Yalnızca `fs_read` kabul eden 2.5.0'dan eski bir derlemede eklenti
 fs_read-yalnız beyana geri düşer (okuma izni korunur) ve kullanıcı **yüklemede
 bir dosya okuma istemi** ile **ilk kullanımda bir kez, tetiklendiğinde "bir iş
 parçacığı oluştur" istemi** ile karşılaşır; onaylandığında izin kalıcı olur ve
@@ -694,9 +722,10 @@ Analyze başlatmaları eklentinin oluşturduğu çalışan iş parçacıklarınd
 gerçekleşir ve bu iş parçacıklarının denetim bağlamı boştur, dolayısıyla 2.5'te
 denetlenmezler. Bir ret, panelde başarısız olan işlemi adlandırarak bildirilir —
 kırmızı banner yalnızca repair veya Analyze işi başlatılamadığında, arka plan
-yenilemesi veya taraması reddedildiğinde ise sakin bir uyarı gösterilir. Gerçek
-bir OrcaSlicer **2.5.0-dev** nightly (macOS) üzerinde uçtan uca doğrulandı;
-eklenti API'sini içeren ilk stabil sürüm 2.5.0'dır; birincil hedef
-Linux'tur ve aynı dosya doğrulanmış bir bonus olarak macOS'ta da çalışır.
+yenilemesi veya taraması reddedildiğinde ise sakin bir uyarı gösterilir.
+OrcaSlicer 2.5.0 veya daha yenisini gerektirir; 2.5.x üzerinde henüz
+doğrulanmadı. Birincil hedef Linux'tur ve aynı dosya bonus olarak macOS'ta da
+çalışır.
+
 Tam ayrıntı ve sınırlamalar için [eklenti README'sine](../../../orcaslicer-plugin/README.md)
 bakın.

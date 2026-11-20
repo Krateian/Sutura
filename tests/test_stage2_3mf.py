@@ -27,6 +27,9 @@ import tempfile
 import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# `repair.main()` enables crash logging and creates `<data>/crash.log`
+# before doing any work, so every child must get a throwaway HOME.
+from _cli import cli_env  # noqa: E402
 SUTURA = os.path.join(REPO, 'sutura')
 sys.path.insert(0, SUTURA)
 
@@ -38,7 +41,7 @@ MAKE_3MF = os.path.join(REPO, 'tests', 'make_layered_multiobject_3mf.py')
 
 def _run(args):
     r = subprocess.run([sys.executable, REPAIR_PY] + args,
-                       capture_output=True, text=True, timeout=600)
+                       capture_output=True, text=True, timeout=600, env=cli_env())
     return r
 
 
@@ -49,7 +52,7 @@ def _json(r):
 def _make_layered(path):
     subprocess.run([sys.executable, MAKE_3MF, path],
                    check=True, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL)
+                   stderr=subprocess.DEVNULL, env=cli_env())
 
 
 # --- inline 2-object 3MF (two byte-identical closed cubes) ----------------

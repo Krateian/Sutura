@@ -27,7 +27,17 @@ cdt-check = []
 decimate = []
 python = ["decimate", "dep:pyo3", "dep:numpy"]
 extension-module = ["python", "pyo3/extension-module"]
-default = ["python"]
+# No default features. `default = ["python"]` used to sit here, and cargo unifies
+# features across a workspace: every `cargo test --workspace` therefore built the
+# CLI's test binary with pyo3 linked, and it aborted at load with
+# "Library not loaded: @libpython3.13.dylib". `-p sutura-cli` alone was clean, and
+# so is packaging (`build-rust.yml` builds `-p sutura-cli -p sutura-gui`), which is
+# why it went unnoticed.
+#
+# Nothing needs it: the Python extension is built by maturin, which passes
+# `features = ["extension-module"]` explicitly (pyproject.toml:14), and every Rust
+# consumer already asks for `default-features = false, features = ["decimate"]`.
+default = []
 
 [dependencies]
 robust = "=1.2.0"
