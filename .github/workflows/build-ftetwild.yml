@@ -60,7 +60,7 @@ jobs:
           ./third_party/ftetwild/bin/ftetwild --help
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ftetwild-${{ matrix.target }}
           path: third_party/ftetwild/bin/ftetwild
