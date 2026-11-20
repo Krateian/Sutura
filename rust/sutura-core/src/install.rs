@@ -58,7 +58,7 @@ pub fn backup_root() -> PathBuf {
 /// The Rust binaries take it from `sutura/repair.py` at build time; this reads
 /// the same value when the caller has not supplied one.
 pub fn current_version() -> String {
-    std::env::var("SUTURA_PRODUCT_VERSION").unwrap_or_else(|_| "0.9.9".to_string())
+    std::env::var("SUTURA_PRODUCT_VERSION").unwrap_or_else(|_| "0.9.10".to_string())
 }
 
 /// Names inside `app_dir()` the updater must never touch.
@@ -584,26 +584,26 @@ mod tests {
     #[test]
     fn every_shipped_platform_has_an_asset_name() {
         let cases = [
-            ("macos", "aarch64", "Sutura-rust-v0.9.9-arm64.dmg"),
-            ("macos", "x86_64", "Sutura-rust-v0.9.9-x86_64.dmg"),
-            ("linux", "x86_64", "Sutura-rust-v0.9.9-x86_64.tar.gz"),
-            ("linux", "aarch64", "Sutura-rust-v0.9.9-aarch64.tar.gz"),
+            ("macos", "aarch64", "Sutura-rust-v0.9.10-arm64.dmg"),
+            ("macos", "x86_64", "Sutura-rust-v0.9.10-x86_64.dmg"),
+            ("linux", "x86_64", "Sutura-rust-v0.9.10-x86_64.tar.gz"),
+            ("linux", "aarch64", "Sutura-rust-v0.9.10-aarch64.tar.gz"),
         ];
         for (os, arch, want) in cases {
             assert_eq!(
-                asset_name_for(os, arch, "v0.9.9").as_deref(),
+                asset_name_for(os, arch, "v0.9.10").as_deref(),
                 Some(want),
                 "{os}/{arch} must resolve to {want}"
             );
         }
         // The tag is accepted with or without the `v`.
         assert_eq!(
-            asset_name_for("linux", "x86_64", "0.9.9").as_deref(),
-            Some("Sutura-rust-v0.9.9-x86_64.tar.gz")
+            asset_name_for("linux", "x86_64", "0.9.10").as_deref(),
+            Some("Sutura-rust-v0.9.10-x86_64.tar.gz")
         );
         // Genuinely unsupported targets still answer None rather than guessing.
         for (os, arch) in [("windows", "x86_64"), ("linux", "riscv64")] {
-            assert_eq!(asset_name_for(os, arch, "v0.9.9"), None, "{os}/{arch}");
+            assert_eq!(asset_name_for(os, arch, "v0.9.10"), None, "{os}/{arch}");
         }
     }
 

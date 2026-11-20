@@ -36,7 +36,7 @@ sed 's#%HOME%/.local/share/sutura/venv/bin/python %HOME%/.local/share/sutura/gui
     "$REPO/share/sutura-app.desktop" > "$WORK/build/Sutura/share/applications/sutura-app.desktop"
 printf '\x89PNG\r\n\x1a\n' > "$WORK/build/Sutura/share/icons/hicolor/256x256/apps/sutura.png"
 echo LICENSE > "$WORK/build/Sutura/LICENSE"
-PKG="$WORK/pkg/Sutura-rust-v0.9.9-x86_64.tar.gz"
+PKG="$WORK/pkg/Sutura-rust-v0.9.10-x86_64.tar.gz"
 tar -C "$WORK/build" -czf "$PKG" Sutura
 ( cd "$WORK/pkg" && shasum -a 256 "$(basename "$PKG")" | awk '{print $1"  "$2}' > "$(basename "$PKG").sha256" )
 
@@ -133,10 +133,10 @@ cp -R "$REPO/share/Sutura Quick Action.workflow" \
 cat > "$WORK/macapp/Sutura.app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-<key>CFBundleShortVersionString</key><string>0.9.9</string>
+<key>CFBundleShortVersionString</key><string>0.9.10</string>
 </dict></plist>
 PLIST
-MAC_PKG="$WORK/pkg/Sutura-rust-v0.9.9-arm64.app.tar.gz"
+MAC_PKG="$WORK/pkg/Sutura-rust-v0.9.10-arm64.app.tar.gz"
 tar -C "$WORK/macapp" -czf "$MAC_PKG" Sutura.app
 ( cd "$WORK/pkg" && shasum -a 256 "$(basename "$MAC_PKG")" | awk '{print $1"  "$2}' > "$(basename "$MAC_PKG").sha256" )
 
