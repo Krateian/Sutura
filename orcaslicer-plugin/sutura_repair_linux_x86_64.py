@@ -1353,6 +1353,10 @@ def _orca_cstyle(arg):
     return '"%s"' % arg.replace('\\', '\\\\').replace('"', '\\"')
 
 
+# How long to wait for the reloaded object to appear on the plate.
+LOAD_BACK_WAIT_S = 15.0
+
+
 def _load_back_dbus(out_path):
     """Hand the repaired file to the running OrcaSlicer over D-Bus (Linux).
 
@@ -1913,7 +1917,7 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             # counts, so wait briefly for one before saying it was added.
             loaded = False
             if _load_back(out_path):
-                deadline = time.time() + 15.0
+                deadline = time.time() + LOAD_BACK_WAIT_S
                 while time.time() < deadline:
                     if len(self._iter_objects()) > before:
                         loaded = True
