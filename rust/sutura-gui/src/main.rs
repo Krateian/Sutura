@@ -212,6 +212,10 @@ fn main() -> eframe::Result<()> {
                     _ => i18n::Language::System,
                 }
             }
+            "--version" | "-V" => {
+                println!("sutura-gui {}", app::SUTURA_VERSION);
+                return Ok(());
+            }
             "--help" | "-h" => {
                 println!("sutura-gui [--lang en|tr|system] [--intensity quick|balanced|thorough|extreme] [--repair|--repair-all] [--heatmap] [--about] [--updates] [--screenshot PNG --exit-after] [FILES...]");
                 return Ok(());
