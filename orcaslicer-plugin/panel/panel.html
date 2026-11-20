@@ -354,7 +354,11 @@ button, input { font-family: inherit; font-size: inherit; }
       }
       h += `</div>`;
       if (job.phase === 'done') {
-        h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+        if (job.result?.loaded === false) {
+          h += `<div class="result-hint">Saved, but OrcaSlicer did not add it automatically. Import it with <b>File &gt; Import</b> (<b>Ctrl/Cmd+I</b>); <b>Show file</b> opens its folder.</div>`;
+        } else {
+          h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+        }
         if (job.result?.suggestion) {
           h += `<div class="result-hint result-suggestion">Tip: ${esc(job.result.suggestion)}</div>`;
         }

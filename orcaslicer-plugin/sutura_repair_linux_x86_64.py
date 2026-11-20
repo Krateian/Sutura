@@ -500,7 +500,11 @@ button, input { font-family: inherit; font-size: inherit; }
       }
       h += `</div>`;
       if (job.phase === 'done') {
-        h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+        if (job.result?.loaded === false) {
+          h += `<div class="result-hint">Saved, but OrcaSlicer did not add it automatically. Import it with <b>File &gt; Import</b> (<b>Ctrl/Cmd+I</b>); <b>Show file</b> opens its folder.</div>`;
+        } else {
+          h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+        }
         if (job.result?.suggestion) {
           h += `<div class="result-hint result-suggestion">Tip: ${esc(job.result.suggestion)}</div>`;
         }
@@ -1845,13 +1849,27 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
                 self._emit_job(oid, 'failed', time.time() - start, msg or 'repair failed')
                 return
             self._emit_job(oid, 'loading', time.time() - start, 'Loading result...')
+            before = len(self._iter_objects())
+            result = _job_result(report, out_path)
+            # The launch returning 0 does not mean OrcaSlicer added the object:
+            # on Linux (and inside a Flatpak) `--single-instance` can start or
+            # reach no instance and exit cleanly. Only a new object on the plate
+            # counts, so wait briefly for one before saying it was added.
+            loaded = False
             if _load_back(out_path):
-                self._emit_job(oid, 'done', time.time() - start, 'Repaired',
-                               _job_result(report, out_path))
+                deadline = time.time() + 15.0
+                while time.time() < deadline:
+                    if len(self._iter_objects()) > before:
+                        loaded = True
+                        break
+                    time.sleep(0.5)
+            result['loaded'] = loaded
+            if loaded:
+                self._emit_job(oid, 'done', time.time() - start, 'Repaired', result)
             else:
                 self._emit_job(oid, 'done', time.time() - start,
-                               'Repaired; automatic load-back failed, file kept at %s'
-                               % out_path, _job_result(report, out_path))
+                               'Repaired; import it with File > Import (Ctrl+I): %s'
+                               % out_path, result)
         except Exception as exc:  # noqa: BLE001 - never crash the worker
             self._emit_job(oid, 'failed', time.time() - start, str(exc))
         finally:
