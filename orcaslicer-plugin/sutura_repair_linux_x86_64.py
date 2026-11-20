@@ -6,7 +6,7 @@
 # name = "Sutura Repair"
 # description = "Sutura mesh repair in an OrcaSlicer dock panel: repairs the model parts on the plate with the Sutura CLI and loads the repaired copy back as a new object."
 # author = "Krateian"
-# version = "0.9.9"
+# version = "0.9.10"
 # ///
 """Sutura Repair - OrcaSlicer script plugin (v2, dock panel).
 
@@ -27,11 +27,11 @@ it. A numpy-free fallback path is kept (``vertex(i)``/``triangle(i)``) so the
 plugin still imports and reads geometry even where numpy is unavailable, but
 without numpy the host cannot hand out transform matrices, so volume/instance
 placements are then treated as identity. Repair itself always runs in the
-external Sutura CLI (``~/.local/bin/sutura``), which carries its own
-numpy/pymeshlab environment.
+external Sutura CLI (``~/.local/bin/sutura``), a native Rust binary with no
+Python runtime and no PyMeshLab.
 
-EXPERIMENTAL - the OrcaSlicer Python plugin system exists only in nightly
-builds / releases NEWER than 2.4.2; stable 2.4.2 has no "Plugins" menu.
+EXPERIMENTAL - requires OrcaSlicer 2.5.0 or newer. The script-plugin API shipped
+in the 2.5.0 stable release; 2.4.x has no "Plugins" menu.
 
 Scope: the export contains every ``is_model_part()`` volume of an object,
 with each volume's local-to-object matrix and the first instance's
@@ -51,16 +51,17 @@ coordinates and is added as a NEW object, so it lands on top of the original;
 press A (Arrange) to separate it, and Ctrl/Cmd+Z removes it (OrcaSlicer records
 a "Load File" undo snapshot). The original object is never modified.
 
-Permissions (OrcaSlicer 2.5): ``register_capabilities()`` declares the existing
+Permissions (OrcaSlicer 2.5.0+): ``register_capabilities()`` declares the existing
 ``fs_read`` paths plus ``threading`` and the two stable process targets it can
 name ahead of time (the OrcaSlicer process-count probe and the fixed-folder
-reveal command). A build whose ``request_permissions`` accepts those keywords
-prompts once at load. A build that accepts only ``fs_read`` -- the shipped
-2.5.0-alpha -- falls back to the ``fs_read``-only declaration (preserving the
-existing read grant), so it prompts for file reads at load and then raises ONE
-reactive "create a thread" prompt on the first thread start; approving it
-persists the grant, and no further prompt appears for Repair, Analyze or Show
-file. The CLI repair/analyze spawns happen inside plugin-created worker threads,
+reveal command). Grants are reviewed and managed from the Permissions tab of the
+plugin dialog. A build whose ``request_permissions`` accepts those keywords
+prompts once at load. A build older than 2.5.0 that accepts only ``fs_read``
+falls back to the ``fs_read``-only declaration (preserving the existing read
+grant), so it prompts for file reads at load and then raises ONE reactive
+"create a thread" prompt on the first thread start; approving it persists the
+grant, and no further prompt appears for Repair, Analyze or Show file. The CLI
+repair/analyze spawns happen inside plugin-created worker threads,
 whose audit context is empty, so on 2.5 they are not audited; a denial on a
 thread start or a spawn is reported as a panel message that names the operation
 that actually failed -- a red banner only when the repair or Analyze job itself
@@ -1348,7 +1349,7 @@ def _load_back(out_path):
 
     TODO(owner live test): the export is in WORLD coordinates, so OrcaSlicer
     may re-centre the imported object or, on some builds, drop it; the exact
-    placement after reload has not been verified on a real nightly and needs
+    placement after reload has not yet been verified on 2.5.x and needs
     the owner's live check."""
     try:
         if sys.platform == 'darwin':
@@ -1955,9 +1956,9 @@ class SuturaRepairPlugin(orca.base):
             orca.register_capability(SuturaRepair)
             return
         except (TypeError, ValueError):
-            # Older nightly without the threading=/process= keywords (or an
-            # implementation that rejects them): fall back to the fs_read-only
-            # declaration so it is never lost on the fallback.
+            # A build older than 2.5.0 without the threading=/process= keywords
+            # (or an implementation that rejects them): fall back to the
+            # fs_read-only declaration so it is never lost on the fallback.
             pass
         except Exception:  # noqa: BLE001
             orca.register_capability(SuturaRepair)

@@ -659,7 +659,7 @@ Servis menüsünü kurduktan veya kaldırdıktan sonra `kbuildsycoca6` çalışt
 
 Ayrıca `orcaslicer-plugin/` altında, **yeni OrcaSlicer betik-eklentisi
 API'si** için **deneysel** bir [OrcaSlicer betik eklentisi](../../../orcaslicer-plugin/)
-vardır. OrcaSlicer **2.5.0+ / nightly sürümlerini** hedefler — 2.4.x sürümlerinde
+vardır. OrcaSlicer **2.5.0 veya daha yenisini** hedefler — 2.4.x sürümlerinde
 "Plugins" menüsü yoktur, bu yüzden eklenti orada çalışmaz.
 
 Eklentiyi çalıştırmak, 3D görünümün yanında (ve devre dışı bırakılmadıkça
@@ -687,7 +687,7 @@ OrcaSlicer okuyabilsin diye yedi gün saklanır. `numpy` beyan edilmiş bir ekle
 bağımlılığıdır (OrcaSlicer'ın paketli uv'si kurar); numpy'siz bir geri dönüş
 yolu da vardır.
 
-Kurulum (OrcaSlicer 2.5.0+ / nightly):
+Kurulum (OrcaSlicer 2.5.0+):
 
 1. Önce Sutura'yı kurun (Linux'ta `./install.sh`, macOS'ta `install-macos.sh`)
    böylece `~/.local/bin/sutura` var olur.
@@ -707,11 +707,13 @@ Kurulum (OrcaSlicer 2.5.0+ / nightly):
 İzinler: `register_capabilities()` var olan Sutura CLI yolunu
 `request_permissions(fs_read=...)` ile, ayrıca `threading` ile ve önceden
 adlandırabildiği iki kararlı süreç hedefiyle (OrcaSlicer süreç sayımı yoklaması
-ve sabit klasör gösterme komutu) önceden beyan eder. 2.5.0 RC ve sonrasında
+ve sabit klasör gösterme komutu) önceden beyan eder. İzinler eklenti
+diyaloğunun **İzinler (Permissions) sekmesinden** gözden geçirilir ve yönetilir.
+2.5.0 veya sonrasında
 `request_permissions()` bu beyanları kabul eder; bu yüzden eklenti **yüklemede
 yalnızca bir kez** (dosya okumalarını, iş parçacığı oluşturmayı ve iki süreç
 hedefini kapsayan tek bir birleşik diyalog) istem gösterir ve bir daha
-göstermez. Yalnızca `fs_read` kabul eden daha eski bir nightly'de eklenti
+göstermez. Yalnızca `fs_read` kabul eden 2.5.0'dan eski bir derlemede eklenti
 fs_read-yalnız beyana geri düşer (okuma izni korunur) ve kullanıcı **yüklemede
 bir dosya okuma istemi** ile **ilk kullanımda bir kez, tetiklendiğinde "bir iş
 parçacığı oluştur" istemi** ile karşılaşır; onaylandığında izin kalıcı olur ve
@@ -720,9 +722,10 @@ Analyze başlatmaları eklentinin oluşturduğu çalışan iş parçacıklarınd
 gerçekleşir ve bu iş parçacıklarının denetim bağlamı boştur, dolayısıyla 2.5'te
 denetlenmezler. Bir ret, panelde başarısız olan işlemi adlandırarak bildirilir —
 kırmızı banner yalnızca repair veya Analyze işi başlatılamadığında, arka plan
-yenilemesi veya taraması reddedildiğinde ise sakin bir uyarı gösterilir. Gerçek
-bir OrcaSlicer **2.5.0-dev** nightly (macOS) üzerinde uçtan uca doğrulandı;
-eklenti API'sini içeren ilk stabil sürüm 2.5.0'dır; birincil hedef
-Linux'tur ve aynı dosya doğrulanmış bir bonus olarak macOS'ta da çalışır.
+yenilemesi veya taraması reddedildiğinde ise sakin bir uyarı gösterilir.
+OrcaSlicer 2.5.0 veya daha yenisini gerektirir; 2.5.x üzerinde henüz
+doğrulanmadı. Birincil hedef Linux'tur ve aynı dosya bonus olarak macOS'ta da
+çalışır.
+
 Tam ayrıntı ve sınırlamalar için [eklenti README'sine](../../../orcaslicer-plugin/README.md)
 bakın.

@@ -658,7 +658,7 @@ installer does this automatically) or restart Dolphin.
 
 There is also an **experimental** [OrcaSlicer script plugin](../../orcaslicer-plugin/)
 under `orcaslicer-plugin/` for the **new OrcaSlicer script-plugin API**. It
-targets OrcaSlicer **2.5.0+ / nightly builds** — the 2.4.x releases have no
+targets OrcaSlicer **2.5.0 or newer** — the 2.4.x releases have no
 "Plugins" menu, so the plugin will not work there.
 
 Running the plugin opens a dockable **"Sutura" panel** beside the 3D view (and
@@ -684,7 +684,7 @@ can read them while the asynchronous load-back completes. `numpy` is a declared
 plugin dependency (installed by OrcaSlicer's bundled uv), with a numpy-free
 fallback path.
 
-Install (OrcaSlicer 2.5.0+ / nightly):
+Install (OrcaSlicer 2.5.0+):
 
 1. Install Sutura first (`./install.sh` on Linux, `install-macos.sh` on macOS)
    so `~/.local/bin/sutura` exists.
@@ -704,21 +704,20 @@ Install (OrcaSlicer 2.5.0+ / nightly):
 Permissions: `register_capabilities()` pre-declares the existing Sutura CLI
 path with `request_permissions(fs_read=...)`, plus `threading` and the two
 stable process targets it can name up front (the OrcaSlicer process-count probe
-and the fixed-folder reveal command). On 2.5.0 RC and later,
+and the fixed-folder reveal command). Grants are reviewed and managed from the
+**Permissions tab** of the plugin dialog. On 2.5.0 or newer,
 `request_permissions()` accepts those declarations, so the plugin prompts
 **once at load** (one combined dialog covering the file reads, thread creation
-and the two process targets) and never again. On an older nightly that accepts
-only `fs_read`, the plugin falls back to the fs_read-only declaration (the read
-grant is preserved) and the user gets a **file-read prompt at load** plus **one
-reactive "create a thread" prompt on first use**; approving it persists the
-grant, and later Repair, Analyze and Show file runs raise no further prompts. Repair and Analyze
-spawns run on plugin-created worker threads, whose audit context is empty, so
-they are not audited on 2.5. A denial is surfaced in the panel naming the
-operation that failed — a red banner only when the repair or Analyze job itself
-could not start, and a quiet notice for a denied background refresh or scan. It
-has been verified end-to-end in a real
-OrcaSlicer **2.5.0-dev** nightly (macOS); the first stable release with the
-plugin API is 2.5.0; primary target is Linux, and the same file
-runs on macOS as a verified bonus. See the
+and the two process targets) and never again. On a build older than 2.5.0 that
+accepts only `fs_read`, the plugin falls back to the fs_read-only declaration
+(the read grant is preserved) and the user gets a **file-read prompt at load**
+plus **one reactive "create a thread" prompt on first use**; approving it
+persists the grant, and later Repair, Analyze and Show file runs raise no further
+prompts. Repair and Analyze spawns run on plugin-created worker threads, whose
+audit context is empty, so they are not audited on 2.5. A denial is surfaced in
+the panel naming the operation that failed — a red banner only when the repair or
+Analyze job itself could not start, and a quiet notice for a denied background
+refresh or scan. Requires OrcaSlicer 2.5.0 or newer; not yet verified on 2.5.x.
+Primary target is Linux, and the same file runs on macOS as a bonus. See the
 [plugin README](../../orcaslicer-plugin/README.md) for full detail and its
 limitations.

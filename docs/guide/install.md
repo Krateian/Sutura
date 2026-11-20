@@ -165,12 +165,13 @@ one release so a problem found in the field is never a dead end:
 
 ```sh
 SUTURA_BACKEND=python sutura model.stl    # environment variable
-sutura --backend python model.stl        # CLI flag, wins over the variable
+sutura --backend python model.stl        # launcher flag, wins over the variable
 ```
 
-The Python backend prints a one-line deprecation note and will be removed in the
-next release. Nothing else changes: the same flags, the same report, the same
-output files.
+`--backend` is a **launcher** flag: `~/.local/bin/sutura` reads it and starts the
+legacy Python entry point; the Rust binary does not accept it. The Python backend
+prints a one-line deprecation note and will be removed in the next release.
+Nothing else changes: the same flags, the same report, the same output files.
 
 If you set a per-engine switch such as `SUTURA_PIPELINE_ENGINE`, it still applies
 under the Python backend. Under the Rust backend the product backend wins and

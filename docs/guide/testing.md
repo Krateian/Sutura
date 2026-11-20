@@ -25,9 +25,10 @@ cargo test -p sutura-geom --lib wall::   # one module, while iterating
 ```
 
 The Python suites are still in `tests/` and still run in CI. They exercise the
-Python entry points, which spawn `sutura/repair.py`; run them with a Python that
-can import it, and pin `SUTURA_DATA_DIR` and `HOME` at a temporary directory so a
-test cannot write into your real install:
+legacy Python entry points, which spawn `sutura/repair.py`; that path is still
+shipped in 0.9.10 as the selectable Python backend, so run them with a Python
+that can import it, and pin `SUTURA_DATA_DIR` and `HOME` at a temporary
+directory so a test cannot write into your real install:
 
 ```sh
 SUTURA_DATA_DIR=/tmp/sutura-test HOME=/tmp/sutura-test-home \

@@ -69,7 +69,7 @@ a file-manager right-click or an OrcaSlicer plugin.
 - **Native and offline.** A Rust core (`sutura_geom`) does the geometry; no
   network access is needed after installation.
 - **Fits the workflow.** Dolphin service menu on KDE, Finder Quick Action on
-  macOS, an experimental OrcaSlicer plugin (2.5.0+ / nightly, installed
+  macOS, an experimental OrcaSlicer plugin (2.5.0+, installed
   separately), batch repair and multi-object 3MF.
 
 ## Install
@@ -112,11 +112,13 @@ previous Python backend stays available for one release:
 
 ```sh
 SUTURA_BACKEND=python sutura model.stl      # environment variable
-sutura --backend python model.stl          # CLI flag (wins over the env)
+sutura --backend python model.stl          # launcher flag (wins over the env)
 ```
 
-The Python backend prints a one-line deprecation note and will be removed in
-the next release.
+`--backend` is a **launcher** flag: the launcher (`~/.local/bin/sutura`) reads
+it and starts the legacy Python entry point. The Rust binary itself does not
+accept it. The Python backend prints a one-line deprecation note and will be
+removed in the next release.
 
 ## Use
 

@@ -3,7 +3,8 @@
 #
 # Default: the Rust CLI.  If no Rust CLI is installed, the Python service runs
 # with the Rust core (SUTURA_BACKEND=rust).  SUTURA_BACKEND=python (or
-# --backend python) selects the legacy Python pipeline for one release.
+# --backend python) selects the legacy Python pipeline for one release; both are
+# read by THIS launcher, not by the Rust binary, which has no --backend flag.
 set -u
 
 APP_DIR="${SUTURA_APP_DIR:-$HOME/.local/share/sutura}"

@@ -11,12 +11,10 @@ plugin itself declares `numpy`
 as a plugin dependency (installed by OrcaSlicer's bundled uv) and falls back
 to the numpy-free mesh accessors when numpy is unavailable.
 
-## ⚠️ Version requirement — OrcaSlicer 2.5.0+ / nightly REQUIRED
+## Version requirement — OrcaSlicer 2.5.0 or newer
 
-The OrcaSlicer Python plugin system ships in **OrcaSlicer 2.5.0 and newer /
-nightly builds**. The **2.4.x releases have no "Plugins" menu**, so the plugin
-will not work there. It was verified end-to-end on a 2.5.0-dev nightly (macOS);
-the first stable release with the plugin API is 2.5.0.
+The OrcaSlicer Python plugin system ships in **OrcaSlicer 2.5.0 and newer**. The
+**2.4.x releases have no "Plugins" menu**, so the plugin will not work there.
 
 ## ⚠️ EXPERIMENTAL — early stage
 
@@ -149,17 +147,18 @@ advance:
   `str(argv_list)`, so each target is built the same way here and at the call
   site.
 
-**What the user actually sees.** On 2.5.0 RC and later, `request_permissions()`
-accepts the `threading` and `process` declarations above, so the plugin asks
-**once at load** (one combined dialog covering the file reads, thread creation
-and the two process targets) and never again. On an older nightly that accepts
-only `fs_read`, the declaration above raises `TypeError` and the plugin falls
-back to an `fs_read`-only call that preserves the read grant; on that build the
-user sees a **file-read prompt at load** and then **one reactive "create a
-thread" prompt on the first thread start**. Approving the thread prompt
-persists the grant (`.install_state.json` then records the thread grant and no
-process grants); after that, **Repair, Analyze and Show file run with no further
-prompts**. (The same fallback keeps older nightlies working.)
+**What the user actually sees.** Grants are reviewed and managed from the
+**Permissions tab** of the plugin dialog. `register_capabilities()` declares them
+up front, so on OrcaSlicer 2.5.0 or newer the plugin asks **once at load** (one
+combined dialog covering the file reads, thread creation and the two process
+targets) and never again. On a build older than 2.5.0, which accepts only
+`fs_read`, the declaration above raises `TypeError` and the plugin falls back to
+an `fs_read`-only call that preserves the read grant; on that build the user sees
+a **file-read prompt at load** and then **one reactive "create a thread" prompt
+on the first thread start**. When that happens, OrcaSlicer records the grant in
+the plugin folder's `.install_state.json`; after that, **Repair, Analyze and Show
+file run with no further prompts**. (The same fallback keeps older builds
+working.)
 
 CLI repair/analyze spawns are **not** declared: they execute inside
 plugin-created worker threads, whose audit context is empty, so on OrcaSlicer
@@ -178,7 +177,7 @@ per-run CLI commands carry unique staging paths, so they can never be a stable
 declared target; they are covered by the unaudited-worker behaviour above
 rather than by a declaration.
 
-## Install (OrcaSlicer 2.5.0+ / nightly)
+## Install (OrcaSlicer 2.5.0+)
 
 1. Install Sutura first: `./install.sh` (Linux) or `install-macos.sh` (macOS),
    so `~/.local/bin/sutura` exists.
@@ -213,13 +212,13 @@ Plugins dialog without the manual copy.
   Ctrl/Cmd+Z to remove it (OrcaSlicer records a "Load File" undo snapshot).
 - Because the export is in world coordinates, OrcaSlicer may re-centre the
   imported object on reload (or drop it on some builds), which places it on
-  top of the original. The exact placement after reload has not been verified
-  on a real nightly (owner live test pending); the A (Arrange) shortcut is the
+  top of the original. The exact placement after reload has not yet been verified
+  on 2.5.x (owner live test pending); the A (Arrange) shortcut is the
   intended way to separate the copy.
 - The export is a per-object triangle soup of its model parts; Sutura repairs
   the union surface. Overlapping or intentionally separate parts are treated
   as one solid.
-- OrcaSlicer 2.5.0+ / nightly only (see the version requirement above).
+- OrcaSlicer 2.5.0+ only (see the version requirement above).
 
 ## Feedback
 

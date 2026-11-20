@@ -24,8 +24,9 @@ cargo test -p sutura-cli            # CLI sözleşme testleri
 cargo test -p sutura-geom --lib wall::   # tek modül, geliştirirken
 ```
 
-Python süitleri hâlâ `tests/` içindedir ve CI'da hâlâ çalışır. Python giriş
-noktalarını denerler ve `sutura/repair.py`'yi başlatırlar; içe aktarabilen bir
+Python süitleri hâlâ `tests/` içindedir ve CI'da hâlâ çalışır. Eski Python giriş
+noktalarını denerler ve `sutura/repair.py`'yi başlatırlar; bu yol 0.9.10'da
+seçilebilir Python arka ucu olarak hâlâ paketlenir, yani içe aktarabilen bir
 Python ile çalıştırın ve bir testin gerçek kurulumunuza yazamaması için
 `SUTURA_DATA_DIR` ile `HOME` değişkenlerini geçici bir dizine sabitleyin:
 

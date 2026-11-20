@@ -165,12 +165,14 @@ sürüm boyunca korunur, böylece sahada bulunan bir sorun çıkmaz sokak olmaz:
 
 ```sh
 SUTURA_BACKEND=python sutura model.stl    # ortam değişkeni
-sutura --backend python model.stl        # CLI bayrağı, değişkenden önce gelir
+sutura --backend python model.stl        # başlatıcı bayrağı, değişkenden önce gelir
 ```
 
-Python arka ucu tek satırlık bir kullanımdan kaldırma notu basar ve bir sonraki
-sürümde kaldırılacaktır. Başka bir şey değişmez: aynı bayraklar, aynı rapor, aynı
-çıktı dosyaları.
+`--backend` bir **başlatıcı** bayrağıdır: `~/.local/bin/sutura` onu okur ve eski
+Python giriş noktasını başlatır; Rust ikili dosyası bu bayrağı kabul etmez. Python
+arka ucu tek satırlık bir kullanımdan kaldırma notu basar ve bir sonraki sürümde
+kaldırılacaktır. Başka bir şey değişmez: aynı bayraklar, aynı rapor, aynı çıktı
+dosyaları.
 
 `SUTURA_PIPELINE_ENGINE` gibi motor başına bir anahtar ayarladıysanız, Python arka
 ucu altında hâlâ geçerlidir. Rust arka ucu altında ürün arka ucu kazanır ve bu

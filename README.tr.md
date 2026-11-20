@@ -70,7 +70,7 @@ tıkla ya da bir OrcaSlicer eklentisiyle.
 - **Yerel ve çevrimdışı.** Geometriyi Rust çekirdeği (`sutura_geom`) yapar;
   kurulumdan sonra internet bağlantısı gerekmez.
 - **İş akışına uyar.** KDE'de Dolphin servis menüsü, macOS'ta Finder Quick
-  Action, deneysel bir OrcaSlicer eklentisi (2.5.0+ / nightly, ayrıca kurulur),
+  Action, deneysel bir OrcaSlicer eklentisi (2.5.0+, ayrıca kurulur),
   toplu onarım ve çok nesneli 3MF.
 
 ## Kurulum
@@ -113,11 +113,13 @@ CLI, GUI ve tüm giriş noktaları varsayılan olarak Rust işlem hattını kull
 
 ```sh
 SUTURA_BACKEND=python sutura model.stl      # ortam değişkeni
-sutura --backend python model.stl          # CLI bayrağı (ortam değişkenini ezer)
+sutura --backend python model.stl          # başlatıcı bayrağı (ortam değişkenini ezer)
 ```
 
-Python arka ucu tek satırlık bir kullanımdan kaldırma notu basar ve sonraki
-sürümde kaldırılır.
+`--backend` bir **başlatıcı** bayrağıdır: `~/.local/bin/sutura` başlatıcısı onu
+okur ve eski Python giriş noktasını çalıştırır. Rust ikili dosyası bu bayrağı
+kabul etmez. Python arka ucu tek satırlık bir kullanımdan kaldırma notu basar ve
+sonraki sürümde kaldırılır.
 
 ## Kullanım
 
