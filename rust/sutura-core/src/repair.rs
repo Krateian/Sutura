@@ -1178,7 +1178,6 @@ fn flap_debris_params(policy: Option<&LoadedPolicy>) -> Value {
 fn ensure_tamponade_defaults(rec: &mut Value) {
     if let Some(obj) = rec.as_object_mut() {
         for key in [
-            "patch_vertices",
             "trimmed_vertices",
             "reference_used",
             "reference_fallback",
@@ -1437,10 +1436,6 @@ struct SiFacts {
     shape_p95_mm: f64,
 }
 
-fn round2(x: f64) -> f64 {
-    (x * 100.0).round() / 100.0
-}
-
 fn round4(x: f64) -> f64 {
     (x * 10_000.0).round() / 10_000.0
 }
@@ -1680,67 +1675,53 @@ fn input_damage_work(v: &[[f64; 3]], t: &[[i64; 3]]) -> i64 {
         * (1 + topo.non_two_manifold_edges as i64 + topo.non_two_manifold_vertices as i64 + holes)
 }
 
-fn volume_change_pct(
-    in_v: &[[f64; 3]],
-    in_t: &[[i64; 3]],
-    out_v: &[[f64; 3]],
-    out_t: &[[i64; 3]],
-) -> Option<f64> {
-    let before = common::signed_volume(in_v, in_t);
-    let after = common::signed_volume(out_v, out_t);
-    if before == 0.0 || after == 0.0 {
-        return None;
+fn geom_change_pct(report: &Value) -> Option<f64> {
+    let s1 = report.get("stage1")?;
+    let mut worst: Option<f64> = None;
+    for key in ["volume_change_percent", "surface_area_change_percent"] {
+        if let Some(v) = s1.get(key).and_then(Value::as_f64) {
+            let a = v.abs();
+            worst = Some(worst.map_or(a, |w| w.max(a)));
+        }
     }
-    Some(round2((after - before) / before.abs() * 100.0))
+    worst
 }
 
-fn geom_change_pct(
-    in_v: &[[f64; 3]],
-    in_t: &[[i64; 3]],
-    out_v: &[[f64; 3]],
-    out_t: &[[i64; 3]],
-) -> Option<f64> {
-    let before_area = common::surface_area(in_v, in_t);
-    let after_area = common::surface_area(out_v, out_t);
-    let mut values = Vec::new();
-    if let Some(vol) = volume_change_pct(in_v, in_t, out_v, out_t) {
-        values.push(vol.abs());
-    }
-    if before_area != 0.0 && after_area != 0.0 {
-        values.push(round2((after_area - before_area) / before_area.abs() * 100.0).abs());
-    }
-    if values.is_empty() {
-        None
-    } else {
-        Some(values.into_iter().fold(0.0f64, f64::max))
-    }
-}
-
-fn report_geometry_metrics(
+fn report_deviation(
     report: &Value,
     in_v: &[[f64; 3]],
     in_t: &[[i64; 3]],
     out_v: &[[f64; 3]],
     out_t: &[[i64; 3]],
-) -> (Option<f64>, Option<f64>) {
+) -> Option<f64> {
     let it = to_i32(in_t);
     let ot = to_i32(out_t);
-    let Some(pr) = crate::report::build_print_report_value(
+    crate::report::build_print_report_value(
         report,
         Some(in_v),
         Some(&it),
         Some(out_v),
         Some(&ot),
-    ) else {
-        return (None, None);
-    };
-    let geom = pr.get("geometry");
-    (
-        geom.and_then(|g| g.get("deviation_max_pct"))
-            .and_then(Value::as_f64),
-        geom.and_then(|g| g.get("volume_change_pct"))
-            .and_then(Value::as_f64),
     )
+    .and_then(|pr| {
+        pr.get("geometry")
+            .and_then(|g| g.get("deviation_max_pct"))
+            .and_then(Value::as_f64)
+    })
+}
+
+fn report_volume_pct(report: &Value) -> Option<f64> {
+    report
+        .get("print_report")
+        .and_then(|p| p.get("geometry"))
+        .and_then(|g| g.get("volume_change_pct"))
+        .and_then(Value::as_f64)
+        .or_else(|| {
+            report
+                .get("stage1")
+                .and_then(|s| s.get("volume_change_percent"))
+                .and_then(Value::as_f64)
+        })
 }
 
 fn si_metrics_from_report(report: &Value) -> SiMetrics {
@@ -1876,6 +1857,9 @@ fn apply_si_escalation(
     stage1_snapshot: Option<&(Vec<[f64; 3]>, Vec<[i64; 3]>)>,
     cancel: &CancelToken,
 ) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value)> {
+    let (snap_v, snap_t) = stage1_snapshot
+        .map(|(v, t)| (v.as_slice(), t.as_slice()))
+        .unwrap_or((input_v, input_t));
     let base_si = si_exact(base_v, base_t)?;
     if base_si <= 0 {
         return None;
@@ -1894,13 +1878,13 @@ fn apply_si_escalation(
         .unwrap_or(Value::Null);
 
     let base_report = Value::Object(out.clone());
-    let (base_dev, base_vol) =
-        report_geometry_metrics(&base_report, input_v, input_t, base_v, base_t);
+    let base_dev = report_deviation(&base_report, snap_v, snap_t, base_v, base_t);
+    let base_vol = report_volume_pct(&base_report);
     let mut base = si_metrics_from_report(&base_report);
+    base.si_stage1 = base.si;
     base.si = Some(base_si);
-    base.si_stage1 = stage1_snapshot.and_then(|(v, t)| si_exact(v, t));
     base.dev_pct = base_dev;
-    base.vol_pct = base_vol.or_else(|| volume_change_pct(input_v, input_t, base_v, base_t));
+    base.vol_pct = base_vol;
     base.apply_facts(&base_facts);
 
     let method_num = si_method_num(policy);
@@ -1994,13 +1978,13 @@ fn apply_si_escalation(
 
     let cand_facts = si_facts(input_v, input_t, &cand_v, &cand_t);
     let cand_si = si_exact(&cand_v, &cand_t);
-    let (cand_dev, cand_vol) =
-        report_geometry_metrics(&cand_report, input_v, input_t, &cand_v, &cand_t);
+    let cand_dev = report_deviation(&cand_report, snap_v, snap_t, &cand_v, &cand_t);
+    let cand_vol = report_volume_pct(&cand_report);
     let mut cand = si_metrics_from_report(&cand_report);
+    cand.si_stage1 = cand.si;
     cand.si = cand_si;
-    cand.si_stage1 = cand_si;
     cand.dev_pct = cand_dev;
-    cand.vol_pct = cand_vol.or_else(|| volume_change_pct(input_v, input_t, &cand_v, &cand_t));
+    cand.vol_pct = cand_vol;
     if let Some(facts) = cand_facts.as_ref() {
         cand.apply_facts(facts);
     }
@@ -2014,7 +1998,7 @@ fn apply_si_escalation(
     // is pre-reload and rejected an accepted scaffold on broken_40261.
     let (watertight, eval_holes, eval_nm, eval_reason) =
         ladder_eval(&cand_v, &cand_t, &cand_report);
-    let geom_change = geom_change_pct(input_v, input_t, &cand_v, &cand_t);
+    let geom_change = geom_change_pct(&cand_report);
     let tried_entry = json!({
         "num": method_num,
         "id": SI_METHOD_ID,
@@ -3132,7 +3116,7 @@ pub fn repair(
 /// Python-compatible total surface area: f32 per-face areas, NumPy pairwise
 /// summation (`validate::surface_area`).  The stage-1 report uses this shared
 /// kernel so its value matches `sutura_engine.pipeline.utils.surface_area`.
-fn py_surface_area(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> f64 {
+pub(crate) fn py_surface_area(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> f64 {
     let v32: Vec<[f32; 3]> = verts
         .iter()
         .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
@@ -3340,7 +3324,7 @@ fn repair_impl(
         }
     }
     let before = common::topology_summary(&cur_v, &cur_t);
-    let input_components = common::topology_summary(&input_v, &input_t).components;
+    let input_components = before.components;
     let holes_before = boundary_loop_stats(&cur_t).0;
     let nm_before = before.non_two_manifold_edges;
     let before_verts = cur_v.len();
@@ -3377,6 +3361,11 @@ fn repair_impl(
             Some(cancel as &dyn sutura_geom::cancel::Cancel),
         );
         ensure_tamponade_defaults(&mut rec);
+        if let Some(shell) = stats.get("tamponade_shell_prepass") {
+            if let Some(obj) = rec.as_object_mut() {
+                obj.insert("shell_prepass".into(), shell.clone());
+            }
+        }
         tamponade_prepass_adopted = adopted(&rec);
         tamponade_gate_skipped = rec
             .get("gate")
@@ -3458,7 +3447,7 @@ fn repair_impl(
     }
     let chain = Value::Array(stage1_chain(max_hole, min_component, opts.join_components));
     let mut stage1_errors: Vec<Value> = Vec::new();
-    let (v1, t1, mut applied, mut skipped, removed_small) =
+    let (v1, t1, mut applied, mut skipped, mut removed_small) =
         crate::stage1::chain::apply_chain_with_cancel_errors(
             &cur_v,
             &cur_t,
@@ -3583,7 +3572,7 @@ fn repair_impl(
             min_component,
             opts.join_components,
         ));
-        let (fv, ft, f_applied, f_skipped, _) = apply_chain_with_cancel(
+        let (fv, ft, f_applied, f_skipped, f_small) = apply_chain_with_cancel(
             &cur_v, &cur_t, &fallback, Some(cancel as &dyn sutura_geom::cancel::Cancel));
         if cancel.is_cancelled() {
             return cancelled();
@@ -3597,6 +3586,7 @@ fn repair_impl(
             after = f_after;
             applied = f_applied;
             skipped = f_skipped;
+            removed_small = f_small;
         }
     }
 
@@ -3743,6 +3733,11 @@ fn repair_impl(
             Some(cancel as &dyn sutura_geom::cancel::Cancel),
         );
         ensure_tamponade_defaults(&mut rec);
+        if let Some(shell) = stats.get("tamponade_shell_prepass") {
+            if let Some(obj) = rec.as_object_mut() {
+                obj.insert("shell_prepass".into(), shell.clone());
+            }
+        }
         if adopted(&rec) {
             cur_v = quantize(&out_v);
             cur_t = out_t;
@@ -3832,6 +3827,14 @@ fn repair_impl(
     // --- Deep-repair ladder ------------------------------------------------
     let ladder_holes_before = boundary_loop_stats(&cur_t).0;
     let ladder_nm_before = after.non_two_manifold_edges;
+    let tamponade_watertight = stats
+        .get("tamponade")
+        .map(|t| {
+            adopted(t)
+                && t.get("reload_watertight").and_then(Value::as_bool).unwrap_or(false)
+                && t.get("candidate_parts").and_then(Value::as_i64).unwrap_or(1) <= 1
+        })
+        .unwrap_or(false);
     let mut tiers_run: Vec<Value> = Vec::new();
     if opts.deep_repair != DeepRepair::Off && !skip_auto_ladder {
         emit_stage(sink, 4, "deep repair");
@@ -3841,6 +3844,7 @@ fn repair_impl(
 
             // Graft (#13): shell wrap, only when Stage 1 still leaves damage.
             let mut graft_ok = false;
+            let mut held_aside_graft = false;
             if !forced_graft_done
                 && opts.graft != Some(false)
                 && (holes > 0 || nm > 0)
@@ -3880,6 +3884,7 @@ fn repair_impl(
                     // The ladder holds a low-coverage/low-fidelity candidate
                     // aside and lets fTetWild/the next tier run, exactly like
                     // the Python deep-repair ladder.
+                    held_aside_graft = true;
                     if let Some(obj) = rec.as_object_mut() {
                         obj.insert("adopted".into(), json!(false));
                         obj.insert(
@@ -3997,7 +4002,12 @@ fn repair_impl(
 
             // Coaptation (#19): multi-body seam union, not gated on holes.
             let mut coaptation_ok = false;
-            if opts.coaptation == Some(true) && !dressing_ok && !graft_ok && !splint_ok {
+            if opts.coaptation == Some(true)
+                && !dressing_ok
+                && !graft_ok
+                && !splint_ok
+                && !tamponade_watertight
+            {
                 let c_in_v = cur_v.clone();
                 let c_in_t = cur_t.clone();
                 let (cv, ct, rec) = run_coaptation_tier(
@@ -4065,25 +4075,6 @@ fn repair_impl(
             // fTetWild (#7): standalone deterministic binary when installed.
             let ft_trigger =
                 crate::ftetwild::resolve_trigger(opts.ftetwild.as_ref(), spec.ftetwild_enabled);
-            if ft_trigger != crate::ftetwild::Trigger::Disabled && ftetwild_bin.is_some() {
-                let earlier = if graft_ok {
-                    "graft"
-                } else if splint_ok {
-                    "splint"
-                } else if coaptation_ok {
-                    "coaptation"
-                } else if cdt_ok {
-                    "cdt"
-                } else {
-                    ""
-                };
-                if !earlier.is_empty() {
-                    stats.insert(
-                        "ftetwild_reason".into(),
-                        json!(format!("skipped: earlier tier succeeded ({earlier})")),
-                    );
-                }
-            }
             if ft_trigger != crate::ftetwild::Trigger::Disabled
                 && !graft_ok
                 && !splint_ok
@@ -4162,6 +4153,9 @@ fn repair_impl(
                     );
                     stats.insert("experimental_ftetwild".into(), result.report.clone());
                     stats.insert("ftetwild".into(), result.report);
+                }
+                if held_aside_graft {
+                    tiers_run.push(Value::from("graft"));
                 }
             }
         }
@@ -4329,16 +4323,21 @@ fn repair_impl(
             produced
         );
     }
+    let solid_reason = if opts.solid_engine.as_str() == "cdt" {
+        stats
+            .get("cdt")
+            .and_then(|r| r.get("reason"))
+            .cloned()
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
     stats.insert(
         "solid_engine".into(),
         json!({
             "selected": opts.solid_engine.as_str(),
             "produced": produced,
-            "reason": stats
-                .get("ftetwild_reason")
-                .or_else(|| stats.get("cdt").and_then(|r| r.get("reason")))
-                .cloned()
-                .unwrap_or(Value::Null),
+            "reason": solid_reason,
         }),
     );
     let mut deep = Map::new();
@@ -4385,7 +4384,7 @@ fn repair_impl(
     deep.insert(
         "cad_likeness".into(),
         if opts.deep_repair == DeepRepair::Full {
-            cad_likeness(&input_v, &input_t)
+            cad_likeness(&py_v, &py_t)
         } else {
             Value::Null
         },
@@ -4591,7 +4590,7 @@ fn repair_impl(
     );
     stats.insert("stage1".into(), Value::Object(stage1));
     if allow_si_escalation && si_escalation_allowed(opts) {
-        stage1_snapshot = Some((cur_v.clone(), cur_t.clone()));
+        stage1_snapshot = Some((py_v.clone(), py_t.clone()));
     }
 
     // Python `_deep_repair_offer`: name the final tier and list the tiers a
