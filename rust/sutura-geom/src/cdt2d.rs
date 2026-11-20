@@ -1303,9 +1303,12 @@ impl Triangulation {
     }
 
     /// Enforce a constrained segment between two existing vertices.
-    pub fn add_constraint(&mut self, a: usize, b: usize) {
+    ///
+    /// `Err(())` means cancellation was requested.  The triangulation is then
+    /// partially modified and must be discarded by the caller.
+    pub fn add_constraint(&mut self, a: usize, b: usize) -> Result<(), ()> {
         if a == b {
-            return;
+            return Ok(());
         }
         // If the edge already exists, mark it constrained.
         if let Some((t, e)) = self.find_any_edge(a, b) {
@@ -1314,31 +1317,34 @@ impl Triangulation {
                 let ne = self.find_edge(n, a, b).unwrap();
                 self.tris[n].constrained[ne] = true;
             }
-            return;
+            return Ok(());
         }
 
         // Repeatedly flip edges that cross the segment until the segment
         // appears in the triangulation.
         loop {
+            if crate::cancel::is_cancelled() {
+                return Err(());
+            }
             // If the segment passes through an existing vertex (a degenerate
             // alignment), split it there: each sub-segment is shorter and
             // falls into the regular cases.
             let walk = self.walk_segment(a, b);
             if let Some(v) = self.find_vertex_on_open_segment(a, b, walk.as_ref()) {
-                self.add_constraint(a, v);
-                self.add_constraint(v, b);
-                return;
+                self.add_constraint(a, v)?;
+                self.add_constraint(v, b)?;
+                return Ok(());
             }
             if experimental::enabled(experimental::SLOAN_FLIPS) {
                 if let Some(w) = walk.as_ref() {
-                    if self.sloan_insert(a, b, w) {
+                    if self.sloan_insert(a, b, w)? {
                         if let Some((t, e)) = self.find_any_edge(a, b) {
                             self.tris[t].constrained[e] = true;
                             if let Some(n) = self.tris[t].adj[e] {
                                 let ne = self.find_edge(n, a, b).unwrap();
                                 self.tris[n].constrained[ne] = true;
                             }
-                            return;
+                            return Ok(());
                         }
                     }
                 }
@@ -1372,16 +1378,16 @@ impl Triangulation {
                             &self.verts[v].st,
                         );
                         let Some(vi) = self.insert_vertex_2d(q) else {
-                            return;
+                            return Ok(());
                         };
-                        self.add_constraint(a, vi);
-                        self.add_constraint(vi, b);
+                        self.add_constraint(a, vi)?;
+                        self.add_constraint(vi, b)?;
                         if self.tris[t].constrained[e] {
                             let (u, v) = self.tris[t].edge_opp(e);
-                            self.add_constraint(u, vi);
-                            self.add_constraint(vi, v);
+                            self.add_constraint(u, vi)?;
+                            self.add_constraint(vi, v)?;
                         }
-                        return;
+                        return Ok(());
                     }
                     self.flip(t, e, nbr, ne);
                 }
@@ -1391,7 +1397,7 @@ impl Triangulation {
                     // that triangle along the chord so the constraint becomes
                     // an edge.
                     self.split_triangle_by_chord(a, b);
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -1408,9 +1414,12 @@ impl Triangulation {
     /// interior of a segment are also used as split points.  After this
     /// pre-splitting, no two sub-segments cross in their interior, so
     /// enforcing them one by one is safe.
-    pub fn add_constraints_batch(&mut self, segments: &[ConstrainedSegment]) {
+    ///
+    /// `Err(())` means cancellation was requested; the triangulation is then
+    /// partially modified and must be discarded by the caller.
+    pub fn add_constraints_batch(&mut self, segments: &[ConstrainedSegment]) -> Result<(), ()> {
         if segments.is_empty() {
-            return;
+            return Ok(());
         }
 
         let n_initial = self.verts.len();
@@ -1441,6 +1450,9 @@ impl Triangulation {
             .map(|&(a, b)| iv_box(&self.viv[a], &self.viv[b]))
             .collect();
         for i in 0..n_raw {
+            if crate::cancel::is_cancelled() {
+                return Err(());
+            }
             for j in (i + 1)..n_raw {
                 if !iv_boxes_overlap(&bboxes[i], &bboxes[j]) {
                     continue;
@@ -1479,6 +1491,9 @@ impl Triangulation {
 
         // 2) Existing vertices that lie in the interior of a raw segment.
         for i in 0..n_raw {
+            if crate::cancel::is_cancelled() {
+                return Err(());
+            }
             let (a, b) = endpoints[i];
             let bb = &bboxes[i];
             for v in 0..n_initial {
@@ -1502,6 +1517,9 @@ impl Triangulation {
         // emit the short sub-segments.
         let mut sub_segments: Vec<(usize, usize)> = Vec::new();
         for i in 0..n_raw {
+            if crate::cancel::is_cancelled() {
+                return Err(());
+            }
             let (a, b) = endpoints[i];
             let pa = &self.verts[a].st;
             let pb = &self.verts[b].st;
@@ -1523,9 +1541,13 @@ impl Triangulation {
         // resolved in step 1, these cannot cross each other except at shared
         // vertices.
         for (a, b) in sub_segments {
-            self.add_constraint(a, b);
+            if crate::cancel::is_cancelled() {
+                return Err(());
+            }
+            self.add_constraint(a, b)?;
         }
         self.diag_end_batch();
+        Ok(())
     }
 
 
@@ -1640,7 +1662,7 @@ impl Triangulation {
     /// flip (the triangulation stays valid; the caller then continues with
     /// its split fallback).  Requires that no vertex lies on the open
     /// segment, which the caller has already ruled out.
-    fn sloan_insert(&mut self, a: usize, b: usize, walk: &SegmentWalk) -> bool {
+    fn sloan_insert(&mut self, a: usize, b: usize, walk: &SegmentWalk) -> Result<bool, ()> {
         let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
         for &t in &walk.corridor {
             for e in 0..3 {
@@ -1649,7 +1671,7 @@ impl Triangulation {
                     continue;
                 }
                 if self.tris[t].constrained[e] {
-                    return false;
+                    return Ok(false);
                 }
                 let key = (u.min(v), u.max(v));
                 if !queue.contains(&key) {
@@ -1658,25 +1680,30 @@ impl Triangulation {
             }
         }
         let mut stalled = 0usize;
+        let mut pops = 0usize;
         while let Some((u, v)) = queue.pop_front() {
+            pops += 1;
+            if pops & 255 == 0 && crate::cancel::is_cancelled() {
+                return Err(());
+            }
             let (t, e) = match self.find_any_edge(u, v) {
                 Some(te) => te,
-                None => return false,
+                None => return Ok(false),
             };
             let nbr = match self.tris[t].adj[e] {
                 Some(n) => n,
-                None => return false,
+                None => return Ok(false),
             };
             let (p, q) = self.tris[t].edge_opp(e);
             let ne = match self.find_edge(nbr, p, q) {
                 Some(ne) => ne,
-                None => return false,
+                None => return Ok(false),
             };
             if !self.is_convex_for_flip(t, e, nbr, ne) {
                 queue.push_back((u, v));
                 stalled += 1;
                 if stalled > queue.len() {
-                    return false;
+                    return Ok(false);
                 }
                 continue;
             }
@@ -1688,7 +1715,7 @@ impl Triangulation {
                 queue.push_back((x.min(d), x.max(d)));
             }
         }
-        true
+        Ok(true)
     }
 
     fn is_convex_for_flip(&self, t1: usize, e1: usize, t2: usize, e2: usize) -> bool {
@@ -2423,7 +2450,7 @@ mod tests {
         let q = Point3::Explicit([0.0, 0.5, 0.0]);
         let pi = t.insert_vertex(&p).unwrap();
         let qi = t.insert_vertex(&q).unwrap();
-        t.add_constraint(pi, qi);
+        t.add_constraint(pi, qi).unwrap();
 
         validate_triangulation(&t);
         assert!(has_edge(&t, pi, qi));
@@ -2490,7 +2517,7 @@ mod tests {
 
         // Segment between the edge-02 and edge-12 midpoints: a chord inside
         // one of the fan triangles.
-        t.add_constraint(p20, p12);
+        t.add_constraint(p20, p12).unwrap();
 
         validate_triangulation(&t);
         assert!(has_edge(&t, p20, p12));
@@ -2502,7 +2529,7 @@ mod tests {
         let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
 
         // Constrain the host edge (0,1).
-        t.add_constraint(0, 1);
+        t.add_constraint(0, 1).unwrap();
         validate_triangulation(&t);
         assert!(has_edge(&t, 0, 1));
     }
@@ -2519,8 +2546,8 @@ mod tests {
         let ii = t.insert_vertex(&interior).unwrap();
         let m01 = t.insert_vertex(&e01).unwrap();
         let m02 = t.insert_vertex(&e02).unwrap();
-        t.add_constraint(ii, m01);
-        t.add_constraint(ii, m02);
+        t.add_constraint(ii, m01).unwrap();
+        t.add_constraint(ii, m02).unwrap();
 
         validate_triangulation(&t);
         assert!(has_edge(&t, ii, m01));
@@ -2565,7 +2592,7 @@ mod tests {
             seg(id1l, id1r, &d1_left, &d1_right),
             seg(id2l, id2r, &d2_left, &d2_right),
             seg(id3b, id3l, &d3_bottom, &d3_left),
-        ]);
+        ]).unwrap();
 
         validate_triangulation(&t);
         // All four segments meet at the single interior point (0.25,0.25).
@@ -2606,7 +2633,7 @@ mod tests {
         let ri = t.insert_vertex(&r).unwrap();
         let si = t.insert_vertex(&s).unwrap();
 
-        t.add_constraints_batch(&[seg(pi, qi, &p, &q), seg(ri, si, &r, &s)]);
+        t.add_constraints_batch(&[seg(pi, qi, &p, &q), seg(ri, si, &r, &s)]).unwrap();
 
         validate_triangulation(&t);
         // The original segments are split at their intersection (0.25,0.25).
@@ -2701,7 +2728,7 @@ mod tests {
                     segs.push(seg(pi, qi, &p, &q));
                 }
             }
-            t.add_constraints_batch(&segs);
+            t.add_constraints_batch(&segs).unwrap();
             validate_triangulation(&t);
 
             let nv = t.verts.len();
@@ -2821,7 +2848,7 @@ mod tests {
                 .map(|(i, p)| seg(hi, *i, &hub, p))
                 .collect();
             let pairs = segs.iter().map(|s| s.endpoints).collect();
-            t.add_constraints_batch(&segs);
+            t.add_constraints_batch(&segs).unwrap();
             experimental::set_options(0);
             (before, t.verts.len(), t, pairs)
         };

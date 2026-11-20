@@ -723,6 +723,9 @@ fn run_outer_shell_prepass(
                     shell_phase = Some("P-c_penetrating".into());
                     shell_reason = Some("rejected_holes_or_parts_rose".into());
                 }
+            } else if res.reason == "cancelled" {
+                shell_phase = Some("cancelled".into());
+                shell_reason = Some("cancelled".into());
             } else {
                 shell_phase = Some(
                     if res.reason == "unresolved_coplanar_overlapping" {
@@ -775,6 +778,12 @@ fn run_outer_shell_prepass(
     stats.insert("shell_adopted".into(), Value::Bool(shell_adopted));
     stats.insert("shell_phase".into(), phase_value);
     stats.insert("shell_reason".into(), reason_value);
+
+    // A cancelled pass carries the unchanged input; stop here so the caller's
+    // cancellation check reports it instead of treating it as "not repaired".
+    if shell_reason.as_deref() == Some("cancelled") {
+        return;
+    }
 
     if shell_adopted {
         return;
