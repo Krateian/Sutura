@@ -71,7 +71,7 @@ pub fn read_3mf_units(path: impl AsRef<Path>) -> Vec<(String, String)> {
         let Ok(mut entry) = zip.by_index(i) else {
             return Vec::new();
         };
-        let name = entry.name().to_string();
+        let name = match entry.name() { Ok(n) => n.to_string(), Err(_) => continue };
         if !is_model_part(&name) {
             continue;
         }
@@ -147,7 +147,7 @@ pub fn parse_3mf_mesh_blocks(path: impl AsRef<Path>) -> MeshResult<Vec<MeshBlock
         let mut entry = zip
             .by_index(i)
             .map_err(|e| MeshError::Malformed3mf(e.to_string()))?;
-        let name = entry.name().to_string();
+        let name = entry.name().map_err(|e| MeshError::Malformed3mf(e.to_string()))?.to_string();
         if !is_model_part(&name) {
             continue;
         }
@@ -223,7 +223,7 @@ pub fn rewrite_3mf_meshes(
             let mut entry = zin
                 .by_index(i)
                 .map_err(|e| MeshError::Malformed3mf(e.to_string()))?;
-            let name = entry.name().to_string();
+            let name = entry.name().map_err(|e| MeshError::Malformed3mf(e.to_string()))?.to_string();
             let options = entry_options(&entry);
             let is_dir = entry.is_dir();
             let mut data = Vec::new();
