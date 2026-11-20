@@ -166,7 +166,7 @@ if [ -n "$WF_SRC" ]; then
     if [ "$DRY_RUN" != "1" ]; then
         /System/Library/CoreServices/pbs -update 2>/dev/null || true
     fi
-    say "Finder: right-click an STL/OBJ/3MF -> Quick Actions -> Sutura"
+    say "Finder: right-click an STL/OBJ/3MF -> Quick Actions (or Services) -> Sutura — Repair"
 fi
 
 # The bundle's CLI must run; a broken install should say so now, not later.
@@ -186,4 +186,10 @@ fi
 say "done"
 say "  app   : $APPS_DIR/Sutura.app"
 say "  CLI   : $BIN_DIR/sutura"
+# An older (Python) Sutura.app in /Applications is not used by this install,
+# but it is easy to open by mistake from Launchpad. Point it out; never delete it.
+if [ -d "/Applications/Sutura.app" ] && ! ls "/Applications/Sutura.app/Contents/MacOS" 2>/dev/null | grep -qxF sutura; then
+    say "note: an older Sutura.app is still in /Applications; this install does not use it."
+    say "      Remove it when you no longer need it (drag it to the Trash)."
+fi
 say "Remove everything with: bash uninstall-rust.sh"
