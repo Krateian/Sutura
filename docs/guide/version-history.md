@@ -6,6 +6,18 @@
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](../../CHANGELOG.md).
 
+- **v0.9.10 — 2026-11-20** — The Rust build is now the product: the package
+  runs without Python or PyMeshLab, ships the native egui GUI and fTetWild in
+  one 20–24 MB download, and produces byte-identical output on macOS arm64 and
+  Linux x86_64 for the same input. The window is rebuilt around result cards,
+  a preview/heatmap card and a header with About, settings and output actions;
+  `--update` and `--rollback` work from the CLI, Intel Mac and arm64 Linux
+  packages return, and `MIGRATE.md` ships in the package. Repairs now accept a
+  solid result only when the Stage-2 check confirms it, the JSON report matches
+  the Python report field for field, and cancelling stops during the heaviest
+  self-intersection work. The genus, method health and several GUI issues are
+  fixed; the Python backend remains selectable for this release with a
+  deprecation note and is removed next release.
 - **v0.9.9 — 2026-11-12** — A **Fidelity** score joins Repair Health and
   Repair Risk: it compares the repaired surface with the parts of the input
   that were already healthy and gives one plain verdict ("Repaired, shape

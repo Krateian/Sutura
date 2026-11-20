@@ -6,6 +6,18 @@
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../../CHANGELOG.md).
 
+- **v0.9.10 — 2026-11-20** — Rust derlemesi artık ürünün kendisi: paket Python
+  veya PyMeshLab olmadan çalışır, yerel egui GUI'yi ve fTetWild'ı tek bir
+  20–24 MB indirmede taşır ve aynı girdi için macOS arm64 ile Linux x86_64'te
+  bayt bayt aynı çıktıyı verir. Pencere sonuç kartları, önizleme/ısı haritası
+  kartı ve About, ayarlar ile çıktı eylemlerini taşıyan bir başlık etrafında
+  yenilendi; `--update` ve `--rollback` CLI'dan çalışır, Intel Mac ve arm64
+  Linux paketleri geri döner, `MIGRATE.md` paketle gelir. Onarımlar katı sonucu
+  ancak Stage-2 kontrolü onayladığında kabul eder, JSON raporu Python raporuyla
+  alan alan eşleşir ve iptal en ağır self-intersection işi sırasında da yanıt
+  verir. Genus, method health ve birkaç GUI sorunu düzeltildi; Python arka ucu
+  bu sürümde kullanımdan kaldırma notuyla seçilebilir kalır ve sonraki sürümde
+  kaldırılır.
 - **v0.9.9 — 2026-11-12** — Onarım Sağlığı ve Riski'nin yanına bir
   **Sadakat** puanı eklendi: onarılmış yüzeyi, girişin zaten sağlıklı olan
   parçalarıyla karşılaştırır ve tek bir sade hüküm verir ("Onarıldı, şekil
