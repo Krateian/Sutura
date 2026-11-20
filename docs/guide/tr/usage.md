@@ -607,7 +607,7 @@ bölümlerdir, böylece paramparça bir mesh panelin kalanını ekran dışına 
 
 #### Kusur ısı haritası
 
-![Kusur ısı haritası](../../../assets/screenshot.png)
+![Kusur ısı haritası](../../../assets/heatmap.png)
 
 **Isı haritası** anahtarı önizlemeyi renklendirir: bir sınıra veya manifold
 olmayan bir kenara değen yüzler nötr yüzeye karşı sıcak renkte boyanır ve

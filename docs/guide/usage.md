@@ -606,7 +606,7 @@ scroll, so a shattered mesh cannot push the rest of the panel off screen.
 
 #### Defect heatmap
 
-![Defect heatmap](../../assets/screenshot.png)
+![Defect heatmap](../../assets/heatmap.png)
 
 The **Heatmap** switch colours the preview: faces that touch a boundary or a
 non-manifold edge are painted hot against the neutral surface, and the preview
