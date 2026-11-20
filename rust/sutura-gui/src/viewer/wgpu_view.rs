@@ -448,7 +448,7 @@ fn fs(input: VsOut) -> @location(0) vec4<f32> {
     let ramp_lifted = ramp_rgb + (vec3<f32>(1.0) - ramp_rgb) * 0.35;
     let ramp_rgb_shaded = ramp_lifted * ramp_shade;
     let defect_c = mix(base, hot, clamp(input.defect, 0.0, 1.0) * u.heat.x);
-    let c = select(defect_c, ramp_rgb_shaded, input.ramp >= 0.0);
+    let c = select(defect_c, ramp_rgb_shaded, input.ramp >= 0.0 && u.heat.x > 0.5);
     // The defect-KIND colour wins over everything, matching the CPU path: Python's
     // "defects" view is a mode of its own, not an overlay on the deviation ramp.
     // `kind.x < 0` means the face has no kind (or the mode is off).

@@ -104,13 +104,16 @@ impl SuturaApp {
             // before (see `theme.rs`); the visibility policy only decides
             // whether a bar is allocated at all, and a full-height bar in a tab
             // that fits is noise -- Updates and Engines showed one.
+            // Use the room the window has: a fixed 500 px left a short box
+            // with a long scroll on a laptop screen.
+            let body_h = (screen.height() * 0.75 - 140.0).clamp(300.0, 700.0);
             let mut scroll = egui::ScrollArea::vertical()
                 .id_salt("options-scroll")
                 .scroll_bar_visibility(
                     egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
                 )
-                .max_height(500.0)
-                .min_scrolled_height(500.0)
+                .max_height(body_h)
+                .min_scrolled_height(body_h)
                 .auto_shrink([false, false]);
             // `--options-scroll`: the same one-shot seed as `--settings-scroll`.
             // `vertical_scroll_offset` writes the offset on every frame it is
@@ -178,6 +181,32 @@ impl SuturaApp {
     }
 
     fn tab_general(&mut self, ui: &mut egui::Ui) {
+        // `--output`: where repaired files go. Unset, each one is written beside
+        // its input as `<name>_fixed.<ext>`.
+        ui.horizontal(|ui| {
+            ui.label(rust_i18n::t!("app.output_folder").to_string());
+            let shown = self
+                .prefs
+                .output_dir
+                .as_ref()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| rust_i18n::t!("app.output_folder_beside").to_string());
+            ui.label(egui::RichText::new(shown).weak());
+            if ui
+                .button(rust_i18n::t!("app.output_folder_choose").to_string())
+                .clicked()
+            {
+                self.open_dialog(crate::app::DialogPurpose::OutputFolder);
+            }
+            if self.prefs.output_dir.is_some()
+                && ui
+                    .button(rust_i18n::t!("app.output_folder_reset").to_string())
+                    .clicked()
+            {
+                self.prefs.output_dir = None;
+            }
+        });
+        ui.separator();
         // Qt's four General switches, each a real checkbox: they are persisted
         // in `gui.json` and applied in `run_repair`, so they do something.
         let mut history = self.prefs.history_enabled.unwrap_or(true);

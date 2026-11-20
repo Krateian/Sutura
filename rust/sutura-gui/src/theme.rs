@@ -64,21 +64,21 @@ pub const RADIUS: u8 = RADIUS_CARD;
 pub const RADIUS_BUTTON: u8 = 12;
 pub const BORDER_W: f32 = 1.0;
 /// Inside a card.
-pub const PAD_CARD: f32 = 20.0;
+pub const PAD_CARD: f32 = 16.0;
 /// Inside the panel, around the cards.
-pub const PAD_PANEL: f32 = 20.0;
+pub const PAD_PANEL: f32 = 16.0;
 /// Between cards.
-pub const GAP_CARD: f32 = 16.0;
+pub const GAP_CARD: f32 = 12.0;
 pub const GAP_8: f32 = 8.0;
 pub const GAP_16: f32 = 16.0;
 pub const GAP_24: f32 = 24.0;
 /// A vertical rhythm helper for frames that must not add margin.
 pub const GAP_0: f32 = 0.0;
 /// Every button is this tall, so a row of them lines up.
-pub const BUTTON_H: f32 = 36.0;
+pub const BUTTON_H: f32 = 32.0;
 pub const BUTTON_PAD_X: f32 = 16.0;
 /// A table row: generous, so the rows breathe.
-pub const ROW_H: f32 = 40.0;
+pub const ROW_H: f32 = 34.0;
 /// The label column in Options, so every control starts at one x.
 pub const LABEL_W: f32 = 104.0;
 /// The progress bar: thin, and not the default rounded knob.
@@ -87,7 +87,7 @@ pub const PROGRESS_H: f32 = 4.0;
 /// same layout rather than a stretched one.
 pub const PANEL_MAX_W: f32 = 1400.0;
 /// Above this width the layout is two columns; at or below it, one stacked one.
-pub const TWO_COLUMN_MIN_W: f32 = 1100.0;
+pub const TWO_COLUMN_MIN_W: f32 = 960.0;
 /// The header row's height; on macOS the traffic lights sit inside it.
 pub const HEADER_H: f32 = 36.0;
 /// Content is centred and never wider than this on a very wide screen.
@@ -95,15 +95,15 @@ pub const CONTENT_MAX_W: f32 = 1480.0;
 /// The single centred column shown before any file is added.
 pub const EMPTY_MAX_W: f32 = 820.0;
 /// The 3D preview card never gets shorter than this.
-pub const PREVIEW_MIN_H: f32 = 300.0;
+pub const PREVIEW_MIN_H: f32 = 240.0;
 /// The preview's height in the stacked (narrow) layout.
-pub const PREVIEW_STACKED_H: f32 = 380.0;
+pub const PREVIEW_STACKED_H: f32 = 320.0;
 
-pub const FONT_BODY: f32 = 16.0;
-pub const FONT_TITLE: f32 = 20.0;
-pub const FONT_CARD_TITLE: f32 = 15.0;
-pub const FONT_TABLE_HEAD: f32 = 13.0;
-pub const FONT_SECTION: f32 = 13.0;
+pub const FONT_BODY: f32 = 15.0;
+pub const FONT_TITLE: f32 = 18.0;
+pub const FONT_CARD_TITLE: f32 = 14.0;
+pub const FONT_TABLE_HEAD: f32 = 12.0;
+pub const FONT_SECTION: f32 = 12.0;
 
 /// A card: the surface every region sits on.
 pub fn card() -> egui::Frame {

@@ -75,6 +75,9 @@ struct Entry {
     /// only the six verdict fields. The method ranking lives in here.
     raw_report: Option<Value>,
     output: Option<PathBuf>,
+    /// Folder chosen after a failed write; wins over the global output folder
+    /// for this file only.
+    retry_dir: Option<PathBuf>,
     view: ViewMode,
     /// Cached defect analysis, filled on demand. `Result` so a failure is shown
     /// once instead of re-loading the mesh every frame; `Err` is the message.
@@ -538,7 +541,35 @@ pub enum OpenOnStart {
     After,
 }
 
+/// What a native file dialog was opened for.
+///
+/// Dialogs run off the UI thread. A blocking picker opened from inside a frame
+/// runs its own modal loop that re-enters winit's event handler; on macOS that
+/// panics ("tried to handle event while another event is currently being
+/// handled") when the window was not frontmost at the click. The async picker
+/// is shown without a nested loop, and its answer arrives on a channel that the
+/// next frame reads.
+#[derive(Clone, Debug)]
+pub(crate) enum DialogPurpose {
+    AddFiles,
+    AddFolder,
+    /// Save target for the diagnostics archive; the path is the default used
+    /// when the picker is dismissed.
+    SaveDiagnostics(PathBuf),
+    /// Folder to retry a failed write into, for the file at this index.
+    RetryOutputFolder(usize),
+    /// fTetWild binary to install.
+    InstallEngine,
+    /// Folder every repaired file is written to (`--output`).
+    OutputFolder,
+}
+
 pub struct SuturaApp {
+    /// A native dialog that is open, and where its answer will arrive.
+    dialog: Option<(DialogPurpose, std::sync::mpsc::Receiver<Vec<PathBuf>>)>,
+    /// Last `--self-check` report from the Engines tab, as the CLI prints it.
+    self_check_text: Option<String>,
+    self_check_rx: Option<std::sync::mpsc::Receiver<String>>,
     files: Vec<Entry>,
     selected: Option<usize>,
     loaded: Option<(usize, ViewMode)>,
@@ -988,6 +1019,9 @@ impl SuturaApp {
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             options_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
+            dialog: None,
+            self_check_text: None,
+            self_check_rx: None,
             ctx: None,
             saved_window_size: None,
             last_window_size: None,
@@ -1121,6 +1155,9 @@ impl SuturaApp {
             file_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             options_scroll_probe: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_compare: false,
+            dialog: None,
+            self_check_text: None,
+            self_check_rx: None,
             ctx: None,
             saved_window_size: saved.window_size,
             last_window_size: None,
@@ -1147,7 +1184,9 @@ impl SuturaApp {
             first_run_seen: false,
             summary_issues_open: false,
             slicers: crate::slicers::detect(),
-            prefs: crate::state::GuiState::default(),
+            // The General tab's switches and the output folder: saved by
+            // `state_json`, so they must come back on the next launch too.
+            prefs: saved.clone(),
         };
         for path in files {
             app.add_path(path);
@@ -1247,6 +1286,7 @@ impl SuturaApp {
                     report: None,
                     raw_report: None,
                     output: None,
+                    retry_dir: None,
                     view: ViewMode::Before,
                     analysis: None,
                     objects: None,
@@ -1267,6 +1307,7 @@ impl SuturaApp {
                     report: None,
                     raw_report: None,
                     output: None,
+                    retry_dir: None,
                     view: ViewMode::Before,
                     analysis: None,
                     objects: None,
@@ -1347,14 +1388,14 @@ impl SuturaApp {
         // native file picker, and it panics when there is no window server. The
         // archive itself is exercised either way, so the dialog is what a test
         // replaces -- not the whole path.
-        let target = if cfg!(test) {
-            suggested
+        if cfg!(test) {
+            self.write_diagnostics(suggested);
         } else {
-            rfd::FileDialog::new()
-                .set_file_name(suggested.file_name().unwrap_or_default().to_string_lossy())
-                .save_file()
-                .unwrap_or(suggested)
-        };
+            self.open_dialog(DialogPurpose::SaveDiagnostics(suggested));
+        }
+    }
+
+    fn write_diagnostics(&mut self, target: PathBuf) {
         match sutura_core::diagnostics::create_archive(&target) {
             Ok(v) => {
                 let bytes = v.get("size_bytes").and_then(|b| b.as_u64()).unwrap_or(0);
@@ -1373,6 +1414,115 @@ impl SuturaApp {
                     rust_i18n::t!("app.diagnostics_failed", error = e).to_string(),
                 );
                 self.log(self.diagnostics_note.clone().unwrap_or_default());
+            }
+        }
+    }
+
+    /// Open a native dialog without blocking the frame. See [`DialogPurpose`].
+    /// One dialog at a time; a second request while one is open is ignored,
+    /// which is also what a modal picker would have enforced.
+    pub(crate) fn open_dialog(&mut self, purpose: DialogPurpose) {
+        if cfg!(test) || self.dialog.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        let job = purpose.clone();
+        let install_title = rust_i18n::t!("app.engines_install").to_string();
+        std::thread::spawn(move || {
+            let paths: Vec<PathBuf> = pollster::block_on(async move {
+                let d = rfd::AsyncFileDialog::new();
+                let one = |h: Option<rfd::FileHandle>| {
+                    h.map(|h| vec![h.path().to_path_buf()]).unwrap_or_default()
+                };
+                match job {
+                    DialogPurpose::AddFiles => d
+                        .add_filter("Meshes", &["stl", "obj", "ply", "3mf"])
+                        .pick_files()
+                        .await
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|h| h.path().to_path_buf())
+                        .collect(),
+                    DialogPurpose::AddFolder
+                    | DialogPurpose::RetryOutputFolder(_)
+                    | DialogPurpose::OutputFolder => one(d.pick_folder().await),
+                    DialogPurpose::SaveDiagnostics(suggested) => one(
+                        d.set_file_name(
+                            suggested.file_name().unwrap_or_default().to_string_lossy(),
+                        )
+                        .save_file()
+                        .await,
+                    ),
+                    DialogPurpose::InstallEngine => {
+                        one(d.set_title(install_title).pick_file().await)
+                    }
+                }
+            });
+            let _ = tx.send(paths);
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
+            }
+        });
+        self.dialog = Some((purpose, rx));
+    }
+
+    /// Apply a dialog's answer once it has arrived. Called at the top of every
+    /// frame; a dismissed dialog arrives as an empty list.
+    fn poll_dialog(&mut self) {
+        let answer = match &self.dialog {
+            Some((_, rx)) => match rx.try_recv() {
+                Ok(paths) => Some(paths),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            },
+            None => return,
+        };
+        let Some((purpose, _)) = self.dialog.take() else { return };
+        let paths = answer.unwrap_or_default();
+        self.finish_dialog(purpose, paths);
+    }
+
+    fn finish_dialog(&mut self, purpose: DialogPurpose, paths: Vec<PathBuf>) {
+        match purpose {
+            DialogPurpose::AddFiles | DialogPurpose::AddFolder => {
+                for path in paths {
+                    self.add_path(path);
+                }
+            }
+            DialogPurpose::SaveDiagnostics(suggested) => {
+                // Dismissing the picker still writes to the default location, so
+                // the button always produces an archive.
+                let target = paths.into_iter().next().unwrap_or(suggested);
+                self.write_diagnostics(target);
+            }
+            DialogPurpose::RetryOutputFolder(idx) => {
+                // Re-run the same repair with the output in the folder the user
+                // picked: the mesh that failed to save lives in the thread that
+                // wrote it, so the honest thing is to redo the write, not to
+                // invent a path into a dead thread's result.
+                let Some(dir) = paths.into_iter().next() else { return };
+                if idx >= self.files.len() {
+                    return;
+                }
+                self.files[idx].retry_dir = Some(dir);
+                self.write_error = None;
+                self.start_repair(idx, true);
+            }
+            DialogPurpose::InstallEngine => {
+                let Some(src) = paths.into_iter().next() else { return };
+                match sutura_core::ftetwild::install_binary(&src) {
+                    Ok(dest) => {
+                        self.log(format!("installed fTetWild at {}", dest.display()));
+                        self.ftetwild = sutura_core::ftetwild::find_binary();
+                    }
+                    Err(e) => self.log(format!("could not install fTetWild: {e}")),
+                }
+            }
+            DialogPurpose::OutputFolder => {
+                if let Some(dir) = paths.into_iter().next() {
+                    self.prefs.output_dir = Some(dir);
+                }
             }
         }
     }
@@ -1399,6 +1549,7 @@ impl SuturaApp {
             check_for_updates: self.prefs.check_for_updates,
             check_on_startup: self.prefs.check_on_startup,
             last_check: self.prefs.last_check,
+            output_dir: self.prefs.output_dir.clone(),
         };
         serde_json::to_string(&state).unwrap_or_default()
     }
@@ -1544,7 +1695,7 @@ impl SuturaApp {
             return;
         }
         let input = entry.path.clone();
-        let output = fixed_path(&input);
+        let output = output_path(&input, entry.retry_dir.as_deref().or(self.prefs.output_dir.as_deref()));
         if output.exists() && !force {
             if from_batch {
                 self.log(
@@ -1573,10 +1724,13 @@ impl SuturaApp {
         // The panel edits `settings`; intensity is one of its fields, so keep
         // them in step rather than carrying two sources.
         self.settings.intensity = Some(self.intensity.value().to_string());
-        if force {
-            self.settings.force = true;
-        }
+        // `force` here is the overwrite confirmation, or an Apply that must save
+        // past the budget. It holds for this run only; the persistent "save even
+        // over budget" choice is the Options checkbox (`settings.force`).
         let mut settings = self.settings.clone();
+        if force {
+            settings.force = true;
+        }
         // Per-file methods win over the panel's global selection, exactly as
         // Python lets the Methods tab edit the selected file's sequence
         // (`gui.py:5093`). `None` keeps the global one, so a file that was never
@@ -1861,6 +2015,18 @@ impl SuturaApp {
             );
         }
         self.ctx = Some(ctx.clone());
+        self.poll_dialog();
+        if let Some(rx) = &self.self_check_rx {
+            match rx.try_recv() {
+                Ok(text) => {
+                    self.self_check_text = Some(text);
+                    self.self_check_rx = None;
+                    self.log("self-check finished".to_string());
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.self_check_rx = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         // Deferred so the panel closure can set it while `self.files` is borrowed.
         let mut clear_list = false;
         // Deferred so a panel closure can set them while `self` is borrowed.
@@ -2174,19 +2340,10 @@ impl SuturaApp {
             self.pending_compare = true;
         }
         if add_files {
-            if let Some(paths) = rfd::FileDialog::new()
-                .add_filter("Meshes", &["stl", "obj", "ply", "3mf"])
-                .pick_files()
-            {
-                for path in paths {
-                    self.add_path(path);
-                }
-            }
+            self.open_dialog(DialogPurpose::AddFiles);
         }
         if add_folder {
-            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                self.add_path(dir);
-            }
+            self.open_dialog(DialogPurpose::AddFolder);
         }
         if clear_list {
             self.clear_files();
@@ -2266,6 +2423,7 @@ impl SuturaApp {
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(&ctx, |ui| {
                     ui.heading("Sutura");
                     ui.label(format!("v{}", SUTURA_VERSION));
@@ -2533,11 +2691,12 @@ impl SuturaApp {
             let mut open = true;
             let mut apply = false;
             let mut cancel = false;
-            egui::Window::new(rust_i18n::t!("app.repeat_pick_title").to_string())
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
+            // Modal for the same reason as the profile prompt: the Methods tab
+            // of the Options modal opens it.
+            let resp = egui::Modal::new(egui::Id::new("repeat-picker"))
                 .show(&ctx, |ui| {
+                    ui.heading(rust_i18n::t!("app.repeat_pick_title").to_string());
+                    ui.add_space(SPACE_8);
                     ui.label(rust_i18n::t!("app.repeat_pick_hint").to_string());
                     picker.show(ui);
                     ui.horizontal(|ui| {
@@ -2563,6 +2722,9 @@ impl SuturaApp {
                         }
                     });
                 });
+            if resp.should_close() {
+                open = false;
+            }
             if apply {
                 if let (Some(source), Some(target)) = (picker.source, picker.target) {
                     // The same fields the CLI's `--repeat-source/--repeat-target`
@@ -2659,19 +2821,8 @@ impl SuturaApp {
                 // lives in the thread that wrote it -- so the honest thing is to
                 // offer the choice and redo the write, not to invent a path into
                 // a dead thread's result.
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    if let Some(idx) = self.selected {
-                        let name = self.files[idx]
-                            .path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        if let Some(slot) = self.files.get_mut(idx) {
-                            slot.output = Some(dir.join(name));
-                        }
-                        self.write_error = None;
-                        self.start_repair(idx, true);
-                    }
+                if let Some(idx) = self.selected {
+                    self.open_dialog(DialogPurpose::RetryOutputFolder(idx));
                 }
             } else if dismiss {
                 self.write_error = None;
@@ -2734,11 +2885,12 @@ impl SuturaApp {
             let mut open = true;
             let mut accept = false;
             let mut cancel = false;
-            egui::Window::new(rust_i18n::t!("app.profile_new").to_string())
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
+            // A modal, not a window: it is opened from the Options dialog, which
+            // is itself a modal, and a plain window drew underneath it.
+            let resp = egui::Modal::new(egui::Id::new("profile-prompt"))
                 .show(&ctx, |ui| {
+                    ui.heading(rust_i18n::t!("app.profile_new").to_string());
+                    ui.add_space(SPACE_8);
                     ui.label(rust_i18n::t!("app.profile_name").to_string());
                     ui.add(
                         egui::TextEdit::singleline(&mut name)
@@ -2760,6 +2912,9 @@ impl SuturaApp {
                         }
                     });
                 });
+            if resp.should_close() {
+                open = false;
+            }
             if accept {
                 let name = name.trim().to_string();
                 let mut profiles = sutura_core::config::intensity::load_profiles(None);
@@ -5214,6 +5369,14 @@ impl SuturaApp {
                 });
             self.settings.wall_thicken =
                 self.settings.wall_min_thickness.is_some();
+            // `--force`: write the result even when it is over the risk or
+            // geometry-change limit above. Off, an over-budget repair is
+            // declined and offered again from the report.
+            ui.checkbox(
+                &mut self.settings.force,
+                rust_i18n::t!("app.force_save").to_string(),
+            )
+            .on_hover_text(rust_i18n::t!("app.force_save_tip").to_string());
             ui.separator();
             ui.checkbox(
                 &mut self.settings.join_components,
@@ -5598,18 +5761,7 @@ impl SuturaApp {
                 .on_hover_text(rust_i18n::t!("app.engines_install_tip").to_string())
                 .clicked()
             {
-                if let Some(src) = rfd::FileDialog::new()
-                    .set_title(rust_i18n::t!("app.engines_install").to_string())
-                    .pick_file()
-                {
-                    match sutura_core::ftetwild::install_binary(&src) {
-                        Ok(dest) => {
-                            self.log(format!("installed fTetWild at {}", dest.display()));
-                            self.ftetwild = sutura_core::ftetwild::find_binary();
-                        }
-                        Err(e) => self.log(format!("could not install fTetWild: {e}")),
-                    }
-                }
+                self.open_dialog(DialogPurpose::InstallEngine);
             }
             if ui
                 .add_enabled(
@@ -5687,6 +5839,29 @@ impl SuturaApp {
                     self.log("external engines reloaded".to_string());
                 }
                 if ui
+                    .button(rust_i18n::t!("app.self_check_run").to_string())
+                    .on_hover_text(rust_i18n::t!("app.self_check_tip").to_string())
+                    .clicked()
+                {
+                    // `--self-check`: the full check, fixtures included, the same
+                    // report the CLI prints.
+                    // Runs repairs on built-in fixtures, so off the UI thread.
+                    if self.self_check_rx.is_none() {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let ctx = self.ctx.clone();
+                        std::thread::spawn(move || {
+                            let report = sutura_core::self_check::run(true);
+                            let _ = tx.send(sutura_core::self_check::human_text(&report));
+                            if let Some(ctx) = ctx {
+                                ctx.request_repaint();
+                            }
+                        });
+                        self.self_check_rx = Some(rx);
+                        self.self_check_text =
+                            Some(rust_i18n::t!("app.self_check_running").to_string());
+                    }
+                }
+                if ui
                     .button(rust_i18n::t!("app.engines_open_folder").to_string())
                     .clicked()
                 {
@@ -5705,6 +5880,19 @@ impl SuturaApp {
                     );
                 }
             });
+            if let Some(text) = &self.self_check_text {
+                ui.add_space(SPACE_8);
+                egui::ScrollArea::vertical()
+                    .id_salt("self-check-text")
+                    .max_height(260.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(text).monospace().size(12.0))
+                                .wrap(),
+                        );
+                    });
+            }
         }
     }
 
@@ -6350,6 +6538,16 @@ pub fn fixed_path(input: &Path) -> PathBuf {
     input.with_file_name(format!("{stem}_fixed.{ext}"))
 }
 
+/// Where a repair is written: [`fixed_path`], moved into `dir` when the user
+/// chose an output folder (the CLI's `--output` with a directory).
+fn output_path(input: &Path, dir: Option<&Path>) -> PathBuf {
+    let fixed = fixed_path(input);
+    match (dir, fixed.file_name()) {
+        (Some(dir), Some(name)) => dir.join(name),
+        _ => fixed,
+    }
+}
+
 /// A numeric box that distinguishes "blank" (`None`, keep the tier's value) from
 /// zero. Required by the per-run limits: `Some(0.0)` on a timeout means the run
 /// gets no time at all, which is not what an empty field means.
@@ -6973,6 +7171,7 @@ mod tests {
             report: None,
             raw_report: None,
             output: None,
+            retry_dir: None,
             view: ViewMode::Before,
             analysis: None,
             objects: None,
@@ -7431,6 +7630,7 @@ mod tests {
             report: None,
             raw_report: None,
             output: None,
+            retry_dir: None,
             view: ViewMode::Before,
             analysis: None,
             objects: None,

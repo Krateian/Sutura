@@ -24,6 +24,7 @@ egui-wgpu = "0.37"
 # QTreeWidget equivalent, with real headers and per-column widths.
 egui_extras = { version = "0.37", default-features = false }
 rfd = "0.18"
+pollster = "1"
 rust-i18n = "4"
 tiny-skia = "0.11"
 image = { version = "0.25", default-features = false, features = ["png"] }
