@@ -8,24 +8,15 @@ SI-after pair that decides TRADE-SI.
 A missing OrcaSlicer is not a missing row: the harness reports
 ``orca_number_of_parts=None`` / ``orca_manifold='unknown'`` and the judge falls
 back to the component count, so Orca is reported but never required.
-
-``MODE=rust_ab`` is the post-P10 gate: both sides are release CLIs, the
-baseline being the previous Rust commit's binary and the candidate this
-commit's.  No Python is involved; a row is SAME only when both exit 0 and write
-identical bytes.  ``RUST_BASE_BIN`` / ``RUST_BIN`` name the two binaries and
-``RUST_AB_FLAGS`` (default ``--json --no-history --no-cache``) the shared args.
 """
 import glob
-import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import traceback
 
 VERIFY = os.environ.get(
@@ -61,31 +52,83 @@ QUALITY_MODES = ('quality_ab', 'single_side', 'bench115')
 
 
 
+# --- Stage fingerprints (opt-in) -------------------------------------------
+#
+# `SUTURA_STAGE_FP=1` in ENV_CAND makes the Rust pipeline print one line per
+# stage on stderr:
+#
+#     [stage-fp] <label> <geometry-hash> <faces> <verts>
+#
+# (labels: after_prepass, after_stage1, after_stage2, after_pweld). The hash is a
+# 64-bit rolling digest of the stage's geometry; faces/verts are counts. No paths,
+# no names, no geometry — safe to publish in a shard summary.
+#
+# The point: `broken_37111` and `broken_38631` diverge from Python only on Linux,
+# and a byte diff alone cannot say which stage introduced it. Comparing these
+# hashes stage by stage turns "the outputs differ" into "the outputs first
+# differ after stage N".
+#
+# The harness (`verify_default_vs_optout.py`) does not forward CLI stderr, so this
+# re-runs the candidate alone with the flag set and parses its stderr. That costs
+# one extra repair per mesh, which is why it is opt-in.
 STAGE_FP_RE = re.compile(r'^\[stage-fp\] (\S+) (\d+) (\d+) (\d+)\s*$')
+STAGE_FP_ENV = 'SUTURA_STAGE_FP'
 
 
-def stage_fingerprints(mesh_path):
-    """Run one mesh through the candidate CLI and return its stage fingerprints.
+def stage_fp_requested(env_c):
+    """True when ENV_CAND asks for stage fingerprints."""
+    for pair in (env_c or '').split(','):
+        k, _, v = pair.partition('=')
+        if k.strip() == STAGE_FP_ENV and v.strip() in ('1', 'true', 'yes'):
+            return True
+    return False
 
-    Only hashes and counts are returned: the `[stage-fp] <label> <hash> <faces>
-    <verts>` lines carry no geometry and no file names, so they are safe to put
-    in a shard summary. Returns None when the fingerprinting path is unavailable,
-    so a missing row means "not requested", never "changed".
 
-    Opt-in via SUTURA_STAGE_FP=1: this runs one extra repair per mesh, which is
-    not something every shard should pay for.
+def _stage_fp_runner():
+    """How to run the candidate, as (argv_prefix, extra_env).
+
+    Two branches need different runners and the merge brought both:
+
+    * On a Rust-port branch the packaged CLI at ``RUST_BIN`` (default
+      ``cand-bin/sutura``) emits the stage lines directly, and ``SUTURA_STAGE_FP``
+      is inherited from the environment.
+    * On main there is no Rust CLI artifact, so the candidate's own Python
+      entry point is used and the flag is set explicitly for that child.
+
+    Preferring the CLI keeps a Rust branch measuring the binary it ships; falling
+    back to Python is what makes the feature work on main at all.
     """
-    if os.environ.get('SUTURA_STAGE_FP', '') not in ('1', 'true', 'yes'):
-        return None
     cli = os.environ.get('RUST_BIN', os.path.abspath('cand-bin/sutura'))
-    if not os.path.exists(cli):
+    if os.path.exists(cli):
+        return ([cli], {})
+    py = os.path.abspath('cand-venv/bin/python')
+    script = os.path.join(os.path.abspath('cand'), 'sutura', 'repair.py')
+    if os.path.exists(py) and os.path.exists(script):
+        return ([py, script], {})
+    return (None, {})
+
+
+def collect_stage_fp(mesh_path, extra_env):
+    """Run the candidate once and return its stage fingerprints, or None.
+
+    Returns a list of ``{label, hash, faces, verts}`` in emission order. Any
+    failure yields None: a missing row must read as "not measured", never as
+    "unchanged".
+    """
+    prefix, _ = _stage_fp_runner()
+    if prefix is None:
         return None
     out = tempfile.mkdtemp(prefix='stagefp-')
     try:
         env = dict(os.environ)
-        env['SUTURA_STAGE_FP'] = '1'
+        for pair in (extra_env or '').split(','):
+            k, _, v = pair.partition('=')
+            if k.strip():
+                env[k.strip()] = v.strip()
+        env[STAGE_FP_ENV] = '1'
         proc = subprocess.run(
-            [cli, mesh_path, '-o', os.path.join(out, 'out.stl'), '--json'],
+            prefix + [mesh_path, '-o', os.path.join(out, 'out.stl'),
+                      '--no-history', '--no-cache', '--json'],
             capture_output=True, text=True, env=env, timeout=1800)
         stages = []
         for line in proc.stderr.splitlines():
@@ -94,12 +137,17 @@ def stage_fingerprints(mesh_path):
                 stages.append({'label': m.group(1), 'hash': m.group(2),
                                'faces': int(m.group(3)),
                                'verts': int(m.group(4))})
+        # Optional finer trace: SUTURA_STAGE1_FP=1 adds one line per Stage-1
+        # filter.  Kept verbatim (filter name, counts, hash; no mesh names).
+        sub = [l.strip() for l in proc.stderr.splitlines()
+               if l.startswith('[stage1-fp] ')]
+        if stages and sub:
+            stages.append({'label': 'stage1_trace', 'lines': sub})
         return stages or None
     except Exception:
         return None
     finally:
         shutil.rmtree(out, ignore_errors=True)
-
 
 def resolve_mesh(corpus, rel):
     """Private-corpus path first, then the public checkout's own copy.
@@ -169,73 +217,11 @@ def numeric_log_lines(items):
     return lines
 
 
-RUST_AB_DEFAULT_FLAGS = '--json --no-history --no-cache'
-
-
-def sha256_file(path):
-    digest = hashlib.sha256()
-    with open(path, 'rb') as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def run_rust_ab(files, corpus):
-    """Byte comparison of two release CLIs (P10's Rust-vs-Rust mode)."""
-    baseline = os.path.abspath(os.environ.get('RUST_BASE_BIN', 'base-bin/sutura'))
-    candidate = os.path.abspath(os.environ.get('RUST_BIN', 'cand-bin/sutura'))
-    for label, path in (('baseline', baseline), ('candidate', candidate)):
-        if not os.access(path, os.X_OK):
-            raise SystemExit('rust_ab: no executable %s CLI at %s'
-                             % (label, path))
-    flags = shlex.split(os.environ.get('RUST_AB_FLAGS', RUST_AB_DEFAULT_FLAGS))
-    timeout = float(os.environ.get('RUST_AB_TIMEOUT', '1800'))
-    rows = []
-    log_lines = []
-    for idx, rel in enumerate(files, 1):
-        src = resolve_mesh(corpus, rel)
-        sides = {}
-        for label, binary in (('baseline', baseline), ('candidate', candidate)):
-            work = tempfile.mkdtemp(prefix='rustab-')
-            out = os.path.join(work, 'out.stl')
-            env = dict(os.environ)
-            env['SUTURA_DATA_DIR'] = os.path.join(work, 'data')
-            env['SUTURA_NO_CACHE'] = '1'
-            started = time.time()
-            try:
-                proc = subprocess.run([binary, src, '-o', out] + flags,
-                                      capture_output=True, text=True,
-                                      timeout=timeout, env=env)
-                rc, err = proc.returncode, proc.stderr[-300:]
-            except subprocess.TimeoutExpired:
-                rc, err = 'TIMEOUT', ''
-            elapsed = time.time() - started
-            sha = sha256_file(out) if rc == 0 and os.path.exists(out) else None
-            sides[label] = {'rc': rc, 'sha256': sha,
-                            'seconds': round(elapsed, 3),
-                            'error': None if rc == 0 else err}
-            log_lines.append('%d %s %s %s' % (
-                idx, label, rc, int(round(elapsed * 1000))))
-            shutil.rmtree(work, ignore_errors=True)
-        base, cand = sides['baseline'], sides['candidate']
-        if base['rc'] != 0 or cand['rc'] != 0:
-            verdict = 'TIMEOUT' if 'TIMEOUT' in (base['rc'], cand['rc']) else 'RC'
-        elif base['sha256'] == cand['sha256']:
-            verdict = 'SAME'
-        else:
-            verdict = 'DIFF'
-        rows.append({'id': os.path.basename(rel), 'verdict': verdict,
-                     'reason': None if verdict == 'SAME' else
-                     'baseline rc=%s candidate rc=%s' % (base['rc'], cand['rc']),
-                     'baseline': base, 'candidate': cand})
-    return rows, log_lines
-
-
 def main():
     set_name = os.environ['SET_NAME']
     shard = int(os.environ['SHARD'])
     shards = int(os.environ['SHARDS'])
-    mode = os.environ.get('MODE', 'rust_ab')
+    mode = os.environ['MODE']
     env_c = os.environ.get('ENV_CAND', '')
     env_b = os.environ.get('ENV_BASE', '')
     if env_b:
@@ -260,22 +246,11 @@ def main():
     if set_name != 'bench115':
         files = files[shard::shards]
     outdir = tempfile.mkdtemp(prefix='shard-')
-    # P10: after the Python runtime is gone this is the only shape gate that
-    # runs; both sides are release binaries, so nothing here imports sutura.
-    if mode == 'rust_ab':
-        rows, log_lines = run_rust_ab(files, corpus)
-        json.dump({'set': set_name, 'shard': shard, 'shards': shards,
-                   'mode': mode, 'rc': 0, 'meshes': len(files),
-                   'rows': rows, 'error': None},
-                  open('shard-%s-%d.json' % (set_name, shard), 'w'), indent=1)
-        with open('shard-%s-%d.log' % (set_name, shard), 'w') as handle:
-            if log_lines:
-                handle.write('\n'.join(log_lines) + '\n')
-        failed = sum(1 for row in rows if row['verdict'] != 'SAME')
-        sys.exit(1 if failed else 0)
     # determinism compares two independent runs of the SAME ref (the
     # candidate, or the base when no candidate is given), never base vs cand.
     if mode == 'io_parity':
+        # p10/core's mode: the Rust CLI is compared against the Python path on
+        # the I/O surface. It has its own tool and takes no --extra-arg.
         rust_bin = os.environ.get('RUST_BIN',
                                   os.path.abspath('cand-bin/sutura'))
         cmd = [sys.executable, IO_PARITY] \
@@ -294,28 +269,45 @@ def main():
                 '--repo', os.path.abspath('cand'),
                 '--python', os.path.abspath('cand-venv/bin/python'),
                 '--out-dir', outdir]
-        if mode not in ('determinism', 'io_parity'):
-            # P10: the product default is the Rust backend; the comparison's
-            # baseline side must still be the legacy Python pipeline.
-            cmd += ['--baseline-env', 'SUTURA_BACKEND=python']
+        if mode != 'determinism':
             cmd += ['--baseline-env', 'SUTURA_IO_ENGINE=python']
-            try:
-                probe = subprocess.run(
-                    [os.path.abspath('cand-venv/bin/python'), '-c',
-                     'import sutura_core_py'],
-                    capture_output=True, text=True)
-                bridge = probe.returncode == 0
-            except OSError:
-                bridge = False
-        else:
+
+        # Is the Rust bridge installed in the candidate? From p10/core: probe
+        # once and require Rust when it is there, so a silent Python fallback
+        # cannot be scored as SAME. Tolerate a missing interpreter like main did.
+        try:
+            probe = subprocess.run(
+                [os.path.abspath('cand-venv/bin/python'), '-c',
+                 'import sutura_core_py'], capture_output=True, text=True)
+            bridge = probe.returncode == 0
+        except OSError:
             bridge = False
+
         if env_c:
+            if '_ENGINE=rust' in env_c:
+                # From main: an explicit Rust-engine request must really run
+                # Rust. A missing bridge is a configuration error, not a pass.
+                if not bridge:
+                    raise SystemExit(
+                        'ENV_CAND asks for a Rust engine but the candidate has '
+                        'no sutura_core_py bridge')
+                if 'SUTURA_REQUIRE_RUST' not in env_c:
+                    env_c += ',SUTURA_REQUIRE_RUST=1'
             cmd += ['--opt-out-env', env_c]
-        if bridge:
+        elif bridge:
             cmd += ['--opt-out-env', 'SUTURA_REQUIRE_RUST=1']
+
+        # Repair CLI arguments applied to both sides (e.g. a forced method). The
+        # tokens are restricted to a plain flag/value charset so a dispatch input
+        # cannot smuggle shell or path syntax into the harness command line.
+        for tok in os.environ.get('EXTRA_ARGS', '').split():
+            if not re.fullmatch(r'[A-Za-z0-9_.,=-]+', tok):
+                raise SystemExit('bad EXTRA_ARGS token')
+            cmd.append('--extra-arg=' + tok)
+
         if mode == 'determinism':
             # The baseline half is cached by input SHA + flags + repo head, so a
-            # warmed cache would compare a run against itself.  A fresh cache
+            # warmed cache would compare a run against itself. A fresh cache
             # keeps the two runs independent, which is the point of the check.
             cmd += ['--cache-dir', os.path.join(outdir, 'cache')]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -368,11 +360,13 @@ def main():
                              'candidate': strict_watertight(sides['candidate']),
                          } if quality else None,
                          'missing': missing}
-            # Stage-by-stage fingerprints, when requested, so a byte difference
-            # can be localised to the stage that produced it.
-            fp = stage_fingerprints(resolve_mesh(corpus, item.get('name')))
-            if fp:
-                row['stage_fp'] = fp
+            # Opt-in: only when ENV_CAND names the flag, so a normal shard
+            # pays nothing for the extra repair.
+            if want_stage_fp:
+                fp = collect_stage_fp(resolve_mesh(corpus, by_stem.get(item.get('name'), item.get('name'))),
+                                      env_c)
+                if fp:
+                    row['stage_fp'] = fp
             rows.append(row)
     else:
         err = {'rc': r.returncode, 'error_type': 'MissingSummary',

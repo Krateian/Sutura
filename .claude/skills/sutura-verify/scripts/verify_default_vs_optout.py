@@ -746,13 +746,26 @@ def main():
         cmd = [python_x, os.path.join(repo_x, 'sutura', 'repair.py'), in_path,
                '-o', out_stl, '--no-history'] + flags
         run_env = env.copy()
+        # Both call shapes are supported. `--opt-out-env` is `action='append'`
+        # (p10/core), and main's shard script passes several pairs joined by
+        # commas in ONE value, so a spec is split on commas too. `--baseline-env`
+        # (p10/core) applies to the baseline side only.
         if side in ('optout', 'candidate'):
             for spec in args.opt_out_env:
-                k, v = spec.split('=', 1)
-                run_env[k] = v
+                for pair in spec.split(','):
+                    pair = pair.strip()
+                    if not pair:
+                        continue
+                    k, v = pair.split('=', 1)
+                    run_env[k] = v
         elif side == 'baseline':
             for spec in args.baseline_env:
-                k, v = spec.split('=', 1)
+                for pair in spec.split(','):
+                    pair = pair.strip()
+                    if not pair:
+                        continue
+                    k, v = pair.split('=', 1)
+                    run_env[k] = v
                 run_env[k] = v
         rc, sout, serr, el = run_cli(cmd, run_env, repo_x, args.timeout)
         if not os.path.exists(out_stl):

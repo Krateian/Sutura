@@ -9,7 +9,9 @@ on:
       env_base:      { description: 'Side A env (unsupported by the harness; candidate side only)', required: false, default: '' }
       env_candidate: { description: 'Side B env, e.g. SUTURA_SI_EXCISE=0', required: false, default: '' }
       shards:        { description: 'Shard count override (per set)', required: false, default: '' }
+      extra_args:    { description: 'Repair CLI args for both sides, space separated, e.g. --methods 14 or --deep-repair full', required: false, default: '' }
       stage_fingerprints: { description: 'Set to 1 to add per-stage geometry hashes (and face/vertex counts) to every mesh row, to localise a platform difference to a stage. Costs one extra repair per mesh.', required: false, default: '' }
+      report_only:   { description: 'Set to 1 for a diagnostic run: write the board but do not fail the run on differences (no failure e-mail)', required: false, default: '' }
 permissions:
   contents: read
 jobs:
@@ -67,6 +69,18 @@ jobs:
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip maturin==1.15.0
           (cd rust/sutura-geom && ../../venv/bin/maturin build --release --out dist)
+      # Both sides of this merge build Rust artifacts for the base ref; they are
+      # independent steps, so both are kept. From main: the bridge wheel
+      # (sutura_core_py) without which an ENGINE=rust request would silently run
+      # Python. From p10/core: the Rust CLI artifact.
+      - name: Build bridge wheel (if the base has sutura-py)
+        run: |
+          if [ -f rust/sutura-py/Cargo.toml ]; then
+            (cd rust/sutura-py && ../../venv/bin/maturin build --release --out ../sutura-geom/dist)
+            echo "base has sutura-py; bridge wheel built"
+          else
+            echo "base has no sutura-py crate; bridge wheel skipped"
+          fi
       - name: Build Rust CLI
         if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
         working-directory: rust
@@ -95,6 +109,10 @@ jobs:
         if: hashFiles('rust/sutura-cli/Cargo.toml') != ''
         working-directory: rust
         run: cargo build --release -p sutura-cli
+      # One bridge build for the candidate. It writes to `dist` (the layout
+      # p10/core introduced and the upload step expects) and publishes the
+      # `bridge` output that gates `wheel-cand-py`, so a candidate without
+      # sutura-py uploads nothing instead of failing the job.
       - name: Build bridge wheel (if the candidate has sutura-py)
         id: bridge
         run: |
@@ -154,6 +172,7 @@ jobs:
           # difference between two platforms can be localised to the stage that
           # produced it. Hashes and counts only; no names, no geometry.
           echo "SUTURA_STAGE_FP=${SUTURA_STAGE_FP:-}" >> "$GITHUB_ENV"
+          echo "EXTRA_ARGS=$EXTRA_ARGS" >> "$GITHUB_ENV"
         env:
           MODE: '${{ matrix.mode }}'
           SET_NAME: '${{ matrix.set }}'
@@ -246,12 +265,13 @@ jobs:
           free -m | awk 'NR>1{print $1, $2, $3}'
       - name: Mark Rust CLI executable
         continue-on-error: true
-        if: matrix.mode == 'io_parity'
+        # Every mode needs this, not only io_parity: download-artifact drops the
+        # exec bit, and the stage-fingerprint runner prefers cand-bin/sutura.
         run: |
           if [ -f cand-bin/sutura ]; then
             chmod +x cand-bin/sutura
           else
-            echo "no Rust CLI artifact; io_parity will use the Python path"
+            echo "no Rust CLI artifact; the Python path will be used"
           fi
       - name: Run shard
         run: |
