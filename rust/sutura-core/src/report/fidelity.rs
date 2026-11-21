@@ -17,6 +17,7 @@ const SHARP_ANGLE_DEG: f64 = 30.0;
 const DIHEDRAL_MATCH_DEG: f64 = 15.0;
 const DETAIL_TOL_MM: f64 = 0.1;
 const DETAIL_TOL_FRACTION: f64 = 0.002;
+const BURIED_SAMPLE_FACES: usize = 20_000;
 
 fn g<'a>(cfg: &'a Value, key: &str) -> Option<&'a Value> {
     cfg.get("fidelity").and_then(|f| f.get(key))
@@ -149,7 +150,16 @@ fn buried_face_mask(
         .map(|x| [x[0] as u32, x[1] as u32, x[2] as u32])
         .collect();
     let _t_buried = std::time::Instant::now();
-    let res = shell::buried_face_mask_with_bvh(vi, &rt, delta, bvh);
+    let stride = (ti.len() + BURIED_SAMPLE_FACES - 1) / BURIED_SAMPLE_FACES;
+    let (res, stride) = if stride > 1 {
+        let ids: Vec<u32> = (0..ti.len()).step_by(stride).map(|i| i as u32).collect();
+        (
+            shell::buried_face_mask_subset(vi, &rt, &ids, delta),
+            stride,
+        )
+    } else {
+        (shell::buried_face_mask_with_bvh(vi, &rt, delta, bvh), 1)
+    };
     if std::env::var_os("SUTURA_FIDELITY_TIMES").is_some() {
         eprintln!(
             "[fidelity-time] buried_mask {:.3} ms",
@@ -163,9 +173,14 @@ fn buried_face_mask(
         }
     }
     info["available"] = Value::Bool(true);
-    info["debris_faces"] = Value::from(res.debris_count);
-    info["degenerate_faces"] = Value::from(res.degenerate_count);
-    info["faces"] = Value::from(mask.iter().filter(|&&x| x).count());
+    info["sampled"] = Value::Bool(stride > 1);
+    info["sample_stride"] = Value::from(stride);
+    info["debris_faces"] = Value::from(res.debris_count * stride);
+    info["degenerate_faces"] = Value::from(res.degenerate_count * stride);
+    info["faces"] = Value::from(mask.iter().filter(|&&x| x).count() * stride);
+    if stride > 1 {
+        info["note"] = Value::from("sampled (report budget)");
+    }
     if info["faces"].as_u64().unwrap_or(0) > 0 {
         let areas = face_areas(vi, ti);
         let area: f64 = mask
@@ -173,7 +188,8 @@ fn buried_face_mask(
             .zip(&areas)
             .filter(|(m, _)| **m)
             .map(|(_, a)| *a)
-            .sum();
+            .sum::<f64>()
+            * stride as f64;
         info["area_mm2"] = Value::from((area * 1e6).round() / 1e6);
     }
     (mask, info)
@@ -989,6 +1005,8 @@ pub fn compute_fidelity_value(
             "interior walls unavailable ({})",
             buried_info["note"].as_str().unwrap_or("large mesh")
         )];
+    } else if buried_info["sampled"].as_bool().unwrap_or(false) {
+        wall_bits.push("interior walls sampled (report budget)".into());
     }
     let interior_walls_note = if wall_bits.is_empty() {
         Value::Null
