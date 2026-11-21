@@ -1355,6 +1355,18 @@ fn si_excise_enabled() -> bool {
     }
 }
 
+/// Final-mesh SI-excision fallback. Default on; `SUTURA_SI_EXCISE_FALLBACK=0`
+/// disables it (no CLI flag or GUI control, users only press Repair).
+fn si_excise_fallback_enabled() -> bool {
+    match std::env::var("SUTURA_SI_EXCISE_FALLBACK") {
+        Ok(raw) => !matches!(
+            raw.trim().to_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
 fn si_excise_budget(spec: &IntensitySpec) -> f64 {
     let key = spec.base.as_deref().unwrap_or(spec.name.as_str());
     SI_EXCISE_BUDGET
@@ -1398,6 +1410,8 @@ fn method_used_value(deep: DeepRepair) -> Value {
 
 const SI_METHOD_ID: &str = "scaffold";
 const SI_METHOD_NAME: &str = "Scaffold";
+const SI_EXCISE_FALLBACK_ID: &str = "si_excise_fallback";
+const SI_EXCISE_FALLBACK_NAME: &str = "SI excision (final mesh)";
 const DEFAULT_GRAFT_GRID_BUDGET: i64 = 120_000_000;
 
 #[derive(Clone, Debug, Default)]
@@ -1932,6 +1946,133 @@ fn apply_si_escalation(
         "outcome": Value::Null,
         "reason": Value::Null,
     });
+
+    // Final-mesh SI-excision fallback, before Scaffold. Stage 1 already ran a
+    // shape-guarded excision; when that guard rejected an otherwise
+    // shape-neutral result this retries on the CURRENT final mesh (not the
+    // frozen Stage-1 input) and gates the result with the same never-worse
+    // rule (SI strictly lower, holes/NM/parts not worse, two-sided within the
+    // mesh tolerance, volume within the SI-escalation tolerance). Two
+    // deterministic variants are tried: a single local one-ring pass first
+    // (smallest re-cap, least new-face deviation), then the full three-round
+    // pass. The record keeps every attempt. Env opt-out:
+    // `SUTURA_SI_EXCISE_FALLBACK=0`.
+    if si_excise_fallback_enabled() && !cancel.is_cancelled() {
+        let mut attempts: Vec<Value> = Vec::new();
+        let mut adopted: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value, SiMetrics)> = None;
+        for (variant, rounds) in [("local_1ring", 1_i64), ("full_3round", 3_i64)] {
+            let fb_params = json!({
+                "max_rounds": rounds,
+                "face_fraction": 0.30,
+                "shape_guard": false,
+            });
+            let (fb_v, fb_t, fb_report) =
+                si_excise::run(base_v, base_t, input_v, input_t, &fb_params);
+            let fb_applied = fb_report
+                .get("applied")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let fb_si = si_exact(&fb_v, &fb_t);
+            let fb_facts = si_facts(input_v, input_t, &fb_v, &fb_t);
+            let mut fb_metrics = SiMetrics {
+                si: fb_si,
+                ..Default::default()
+            };
+            if let Some(facts) = fb_facts.as_ref() {
+                fb_metrics.apply_facts(facts);
+            }
+            let mut attempt = json!({
+                "variant": variant,
+                "max_rounds": rounds,
+                "applied": fb_applied,
+                "si_before": base_si,
+                "si_after": fb_si,
+                "outcome": Value::Null,
+                "reason": Value::Null,
+                "candidate": fb_metrics.to_value(),
+                "candidate_sha256": stl_sha256(&fb_v, &fb_t),
+                "si_excise": fb_report.clone(),
+            });
+            if !fb_applied {
+                attempt["outcome"] = Value::from("rejected");
+                attempt["reason"] = Value::from("excise made no accepted change");
+                attempts.push(attempt);
+                continue;
+            }
+            let (ok, why) = si_verdict(&base, &fb_metrics, Some(tolerance), vol_rel_tol);
+            if ok {
+                attempt["outcome"] = Value::from("adopted");
+                attempt["reason"] = Value::from(why.clone());
+                attempts.push(attempt);
+                adopted = Some((fb_v, fb_t, fb_report, fb_metrics));
+                break;
+            }
+            attempt["outcome"] = Value::from("rejected");
+            attempt["reason"] = Value::from(why);
+            attempts.push(attempt);
+        }
+        if let Some((fb_v, fb_t, fb_report, fb_metrics)) = adopted {
+            let fb_entry = json!({
+                "ran": true,
+                "outcome": "adopted",
+                "guard": "never_worse",
+                "variant": attempts
+                    .last()
+                    .and_then(|a| a.get("variant"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "si_before": base_si,
+                "candidate": fb_metrics.to_value(),
+                "candidate_sha256": stl_sha256(&fb_v, &fb_t),
+                "attempts": attempts,
+                "si_excise": fb_report,
+            });
+            let why = fb_entry
+                .get("attempts")
+                .and_then(Value::as_array)
+                .and_then(|a| a.last())
+                .and_then(|a| a.get("reason"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            field.insert("si_excise_fallback".into(), fb_entry.clone());
+            field.insert("method".into(), Value::from(SI_EXCISE_FALLBACK_ID));
+            field.insert("num".into(), Value::from(method_num));
+            field.insert("name".into(), Value::from(SI_EXCISE_FALLBACK_NAME));
+            field.insert("outcome".into(), Value::from("adopted"));
+            field.insert("reason".into(), why);
+            field.insert("candidate".into(), fb_metrics.to_value());
+            field.insert(
+                "candidate_sha256".into(),
+                fb_entry.get("candidate_sha256").cloned().unwrap_or(Value::Null),
+            );
+            let field_value = Value::Object(field);
+            out.insert("si_excise_fallback".into(), fb_entry);
+            out.insert("si_escalation".into(), field_value);
+            let mut adopted = out.clone();
+            adopted.insert(
+                "method_used".into(),
+                json!({
+                    "num": method_num,
+                    "id": SI_EXCISE_FALLBACK_ID,
+                    "name": SI_EXCISE_FALLBACK_NAME,
+                    "source": "auto_si_excise_fallback",
+                    "note": "SI excision on the final mesh",
+                }),
+            );
+            adopted.insert("method_reached_watertight".into(), Value::Bool(true));
+            return Some((fb_v, fb_t, Value::Object(adopted)));
+        }
+        field.insert(
+            "si_excise_fallback".into(),
+            json!({
+                "ran": true,
+                "outcome": "rejected",
+                "guard": "never_worse",
+                "si_before": base_si,
+                "attempts": attempts,
+            }),
+        );
+    }
 
     if method_num != 10 {
         cand_field["reason"] = Value::from("candidate method unavailable");
@@ -5101,6 +5242,49 @@ mod tests {
         let (ok, reason) = si_verdict(&base, &cand, Some(0.0125), 0.005);
         assert!(!ok);
         assert_eq!(reason, "SI not strictly lower");
+    }
+
+    #[test]
+    fn si_excise_fallback_gate_is_never_worse() {
+        // Final-mesh excision: the current output is watertight with SI > 0 and
+        // no deviation from the input; a shape-neutral excision must be adopted,
+        // while a re-cap that moves geometry past the tolerance must not.
+        let base = SiMetrics {
+            si: Some(177),
+            holes: Some(0),
+            nm: Some(0),
+            parts: Some(1),
+            volume_mm3: Some(1000.0),
+            shape_max_mm: Some(0.0),
+            shape_p95_mm: Some(0.0),
+            ..SiMetrics::default()
+        };
+        let good = SiMetrics {
+            si: Some(4),
+            shape_max_mm: Some(0.02),
+            shape_p95_mm: Some(0.005),
+            volume_mm3: Some(1002.0),
+            ..base.clone()
+        };
+        assert!(si_verdict(&base, &good, Some(0.05), 0.005).0);
+        // A re-cap face 0.9 mm off the input is rejected even though SI fell.
+        let shape_bad = SiMetrics {
+            shape_max_mm: Some(0.9),
+            ..good.clone()
+        };
+        assert!(!si_verdict(&base, &shape_bad, Some(0.05), 0.005).0);
+        // Volume loss beyond the SI tolerance is rejected.
+        let vol_bad = SiMetrics {
+            volume_mm3: Some(900.0),
+            ..good.clone()
+        };
+        assert!(!si_verdict(&base, &vol_bad, Some(0.05), 0.005).0);
+        // A new hole is rejected.
+        let hole_bad = SiMetrics {
+            holes: Some(1),
+            ..good
+        };
+        assert!(!si_verdict(&base, &hole_bad, Some(0.05), 0.005).0);
     }
 
     #[test]
