@@ -81,6 +81,20 @@ fn coplanar_charge(faces: usize) -> u64 {
     COPLANAR_WEIGHT.saturating_mul((faces as u64).min(guard::COPLANAR_INTRA_MAX as u64))
 }
 
+/// Add `cost` to a work counter, returning `(value, capped)`. With a preset
+/// budget the counter saturates at the limit instead of overshooting it: the
+/// primary DP/refinement/fairing work is not gated loop-by-loop (the primary
+/// patch always completes so adoption stays deterministic), so a run can reach
+/// the budget, but the reported `work_units` is then the bound, not more.
+/// `capped` records that the budget stopped the accounting.
+fn charge_value(used: u64, cost: u64, limit: Option<u64>) -> (u64, bool) {
+    let want = used.saturating_add(cost);
+    match limit {
+        Some(b) if want > b => (b, true),
+        _ => (want, false),
+    }
+}
+
 /// Charge for one `fair_patch_energy` solve over `verts` patch vertices.
 fn fair_charge(verts: usize, iters: u64) -> u64 {
     FAIR_WEIGHT.saturating_mul(verts as u64).saturating_mul(iters.max(1))
@@ -704,6 +718,9 @@ pub struct Report {
     pub loops_skipped_sliver: usize,
     pub loops_skipped_safety: usize,
     pub work_units: u64,
+    /// True when a charge reached the preset work budget and was clamped, or a
+    /// loop was skipped because it could not fit; the budget truncated the run.
+    pub work_capped: bool,
     pub si_deadline_hit: usize,
     pub si_deadline_s: Option<f64>,
     pub safety_rejections: Vec<(usize, String)>,
@@ -939,6 +956,7 @@ pub fn flap_fill_with_cancel(
         if let Some(limit) = prm.work_budget {
             if loop_cost > limit {
                 report.loops_skipped_work += 1;
+                report.work_capped = true;
                 report.loop_log.push(LoopLog {
                     m,
                     fan: m > prm.max_loop,
@@ -948,7 +966,11 @@ pub fn flap_fill_with_cancel(
                 continue;
             }
         }
-        work_used = work_used.saturating_add(loop_cost);
+        {
+            let (v, capped) = charge_value(work_used, loop_cost, prm.work_budget);
+            work_used = v;
+            report.work_capped |= capped;
+        }
         let pts: Vec<V3> = loop_arr.iter().map(|&i| v2[i as usize]).collect();
 
         // forbidden local chords: an edge that already has >= 2 faces
@@ -1085,8 +1107,15 @@ pub fn flap_fill_with_cancel(
         // proportional to the patch face count; measured against wall time on
         // 37384 s2 and 49544 s1).  This is unconditional: it is the work the
         // caller's adoption gate sees, not a reason to drop a completed loop.
-        work_used = work_used
-            .saturating_add(5u64.saturating_mul(faces.len() as u64));
+        work_used = {
+            let (v, capped) = charge_value(
+                work_used,
+                5u64.saturating_mul(faces.len() as u64),
+                prm.work_budget,
+            );
+            report.work_capped |= capped;
+            v
+        };
 
         // orientation
         if prm.orient == "reverse" {
@@ -1159,8 +1188,15 @@ pub fn flap_fill_with_cancel(
             // Gated by SUTURA_FLAP_MEMBRANE so the default path is byte-identical.
             // Charge the fairing solve(s) before running them (the local-mesh
             // exact-SI check that follows is charged inside `patch_safety`).
-            work_used = work_used.saturating_add(
-                fair_charge(p_pts.len().saturating_sub(m), if ref_on { 3 } else { 1 }));
+            work_used = {
+                let (v, capped) = charge_value(
+                    work_used,
+                    fair_charge(p_pts.len().saturating_sub(m), if ref_on { 3 } else { 1 }),
+                    prm.work_budget,
+                );
+                report.work_capped |= capped;
+                v
+            };
             if ref_on {
                 let built = adj_ref.as_ref().and_then(|adj| {
                     crate::tamponade::build_reference(&v2, &t2, loop_arr, target, adj)
@@ -1248,6 +1284,7 @@ pub fn flap_fill_with_cancel(
         // reaches, falls to Stage-1.
         if select && p_prefair.is_some() {
             work_cell.set(work_used);
+            let capped_cell = std::cell::Cell::new(false);
             let cand_ok = |p: &[V3], fc: &[[u32; 3]], gf: &[T3], primary: bool| -> bool {
                 if let Some(fi) = fi_opt {
                     let comp = stats.lab[fi as usize] as usize;
@@ -1268,8 +1305,13 @@ pub fn flap_fill_with_cancel(
                     }
                 }
                 if prm.avoid_coplanar {
-                    work_cell.set(work_cell.get()
-                        .saturating_add(coplanar_charge(fc.len())));
+                    let (v, capped) = charge_value(
+                        work_cell.get(),
+                        coplanar_charge(fc.len()),
+                        prm.work_budget,
+                    );
+                    work_cell.set(v);
+                    capped_cell.set(capped_cell.get() || capped);
                     if guard::coplanar_collides(
                         p,
                         fc,
@@ -1309,8 +1351,15 @@ pub fn flap_fill_with_cancel(
             if !chosen && work_fits(work_cell.get(), alt_cost, prm.work_budget) {
                 let base = p_prefair.as_ref().unwrap();
                 // 1) Membrane (order-1) fairing of the refined patch.
-                work_cell.set(work_cell.get().saturating_add(alt_cost)
-                    .saturating_add(fair_charge(base.len().saturating_sub(m), 1)));
+                {
+                    let (v, capped) = charge_value(
+                        work_cell.get(),
+                        alt_cost.saturating_add(fair_charge(base.len().saturating_sub(m), 1)),
+                        prm.work_budget,
+                    );
+                    work_cell.set(v);
+                    capped_cell.set(capped_cell.get() || capped);
+                }
                 {
                     let mut c = base.clone();
                     fair::fair_patch_energy(&mut c, &faces, m, &ghost, 1, None, 0.0);
@@ -1322,8 +1371,13 @@ pub fn flap_fill_with_cancel(
                 // 2) Reference fairing (opt-in via SUTURA_FLAP_REF).
                 if !chosen && ref_on
                     && work_fits(work_cell.get(), alt_cost, prm.work_budget) {
-                    work_cell.set(work_cell.get().saturating_add(alt_cost)
-                        .saturating_add(fair_charge(base.len().saturating_sub(m), 3)));
+                    let (v, capped) = charge_value(
+                        work_cell.get(),
+                        alt_cost.saturating_add(fair_charge(base.len().saturating_sub(m), 3)),
+                        prm.work_budget,
+                    );
+                    work_cell.set(v);
+                    capped_cell.set(capped_cell.get() || capped);
                     if let Some(adj) = adj_ref.as_ref() {
                         if let Some(refs) =
                             crate::tamponade::build_reference(&v2, &t2, loop_arr, target, adj)
@@ -1345,7 +1399,9 @@ pub fn flap_fill_with_cancel(
                 }
                 // 3) Unfaired refined patch.
                 if !chosen && work_fits(work_cell.get(), alt_cost, prm.work_budget) {
-                    work_cell.set(work_cell.get().saturating_add(alt_cost));
+                    let (v, capped) = charge_value(work_cell.get(), alt_cost, prm.work_budget);
+                    work_cell.set(v);
+                    capped_cell.set(capped_cell.get() || capped);
                     if cand_ok(base, &faces, &gfaces, false) {
                         p_pts = base.clone();
                         chosen = true;
@@ -1353,7 +1409,9 @@ pub fn flap_fill_with_cancel(
                 }
                 // 4) Projected SI-free patch (independent ear-clipped faces).
                 if !chosen && work_fits(work_cell.get(), alt_cost, prm.work_budget) {
-                    work_cell.set(work_cell.get().saturating_add(alt_cost));
+                    let (v, capped) = charge_value(work_cell.get(), alt_cost, prm.work_budget);
+                    work_cell.set(v);
+                    capped_cell.set(capped_cell.get() || capped);
                     if let Some((pp, pf)) =
                         projected_patch(&v2, &t2, loop_arr, target, adj_ref.as_ref(), &forb)
                     {
@@ -1381,6 +1439,7 @@ pub fn flap_fill_with_cancel(
                 }
             }
             work_used = work_cell.get();
+            report.work_capped |= capped_cell.get();
             if !chosen {
                 report.loops_skipped_coplanar += 1;
                 log.action = Some("coplanar".to_string());
@@ -1434,7 +1493,10 @@ pub fn flap_fill_with_cancel(
         }
 
         if prm.avoid_coplanar {
-            work_used = work_used.saturating_add(coplanar_charge(faces.len()));
+            let (v, capped) =
+                charge_value(work_used, coplanar_charge(faces.len()), prm.work_budget);
+            work_used = v;
+            report.work_capped |= capped;
         }
         if prm.avoid_coplanar
             && guard::coplanar_collides(

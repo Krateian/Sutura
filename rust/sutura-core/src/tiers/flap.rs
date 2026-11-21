@@ -149,7 +149,7 @@ pub fn run_with_cancel(
         si_time_budget: params
             .get("si_time_budget")
             .and_then(Value::as_f64)
-            .or(Some(30.0)),
+            .or(Some(120.0)),
         ..Default::default()
     };
     let (cand_v, cand_t, frep) =
@@ -168,9 +168,9 @@ pub fn run_with_cancel(
     );
     // Over-budget runs cut their expensive steps short rather than producing a
     // worse mesh, so this is recorded, not judged (`flap.py:486-487`). The
-    // record must still say it: Python reports `budget_exceeded: true` when
-    // `work_units > work_budget`, and the Rust record had no such key at all.
-    if budget >= 0 && frep.work_units > budget as u64 {
+    // counter saturates at the budget (`work_capped`), so the record says the
+    // budget truncated the run instead of showing `work_units > budget`.
+    if frep.work_capped {
         rec.insert("budget_exceeded".into(), json!(true));
     }
     rec.insert("loops_found".into(), json!(frep.loops_found));
@@ -211,7 +211,7 @@ pub fn run_with_cancel(
     rec.insert("baseline_damage".into(), json!(base_damage));
     rec.insert("candidate_damage".into(), json!(cand_damage));
 
-    if frep.work_units > budget as u64 {
+    if frep.work_capped {
         rec.insert("budget_exceeded".into(), json!(true));
     }
 

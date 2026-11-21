@@ -1169,7 +1169,7 @@ fn flap_params(tris: &[[i64; 3]], intensity: &str, policy: Option<&LoadedPolicy>
     let si_time_budget = std::env::var("SUTURA_FLAP_SI_BUDGET")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(30.0);
+        .unwrap_or(120.0);
     json!({
         "work_budget": flap_work(policy, intensity),
         "si_time_budget": si_time_budget,
