@@ -1953,14 +1953,14 @@ fn apply_si_escalation(
     // frozen Stage-1 input) and gates the result with the same never-worse
     // rule (SI strictly lower, holes/NM/parts not worse, two-sided within the
     // mesh tolerance, volume within the SI-escalation tolerance). Two
-    // deterministic variants are tried: a single local one-ring pass first
+    // deterministic variants are tried: a single excision round first
     // (smallest re-cap, least new-face deviation), then the full three-round
     // pass. The record keeps every attempt. Env opt-out:
     // `SUTURA_SI_EXCISE_FALLBACK=0`.
     if si_excise_fallback_enabled() && !cancel.is_cancelled() {
         let mut attempts: Vec<Value> = Vec::new();
         let mut adopted: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value, SiMetrics)> = None;
-        for (variant, rounds) in [("local_1ring", 1_i64), ("full_3round", 3_i64)] {
+        for (variant, rounds) in [("one_round", 1_i64), ("full_3round", 3_i64)] {
             let fb_params = json!({
                 "max_rounds": rounds,
                 "face_fraction": 0.30,
