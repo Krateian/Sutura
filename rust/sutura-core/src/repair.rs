@@ -4081,10 +4081,22 @@ fn repair_impl(
                 stats.insert("cdt".into(), rec);
             }
 
+            // A Coaptation rejection for lost bodies or volume means the
+            // multi-body result cannot be safely rebuilt; do not let the auto
+            // fTetWild trigger replace it with another shape-changing rebuild.
+            let coaptation_hard_failed = stats
+                .get("coaptation")
+                .map(|r| {
+                    r.get("reject_reason").and_then(Value::as_str) == Some("body_close_failed")
+                        || r.get("volume_ok").and_then(Value::as_bool) == Some(false)
+                })
+                .unwrap_or(false);
+
             // fTetWild (#7): standalone deterministic binary when installed.
             let ft_trigger =
                 crate::ftetwild::resolve_trigger(opts.ftetwild.as_ref(), spec.ftetwild_enabled);
             if ft_trigger != crate::ftetwild::Trigger::Disabled
+                && (ft_trigger == crate::ftetwild::Trigger::Always || !coaptation_hard_failed)
                 && !graft_ok
                 && !splint_ok
                 && !coaptation_ok
