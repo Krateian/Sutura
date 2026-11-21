@@ -34,15 +34,46 @@ const ZERO_VOL_FRAC: f64 = 1e-3;
 // (a private sample: 594 s for 4_556_806 charged units) and used to be free;
 // charging it makes the preset `work_budget` a real bound. Every charge is a
 // pure function of the input and the preset, and a step that cannot pay its
-// charge is skipped *before* it runs -- there is no wall-clock anywhere.
-const SI_LOCAL_WEIGHT: u64 = 4096;  // units per face of the patch_safety local mesh
-const COPLANAR_WEIGHT: u64 = 64;    // units per face of the coplanar guard patch
-const FAIR_WEIGHT: u64 = 64;        // units per patch vertex per fairing solve
+// charge is skipped *before* it runs. The SI charge uses the broad-phase pair
+// count: exact predicates scale with candidate pairs, not local face count.
+const SI_PAIR_WEIGHT: u64 = 64; // units per broad-phase candidate pair touching the patch
+const COPLANAR_WEIGHT: u64 = 64; // units per face of the coplanar guard patch
+const FAIR_WEIGHT: u64 = 64;    // units per patch vertex per fairing solve
 
-/// Charge for the exact self-intersection check over a local mesh of
-/// `local_faces` faces (`patch_safety` -> `self_intersections_subset_core`).
-fn si_local_charge(local_faces: usize) -> u64 {
-    SI_LOCAL_WEIGHT.saturating_mul(local_faces as u64)
+/// Last-resort bound for the exact-SI safety scan. The deterministic pair
+/// charge is the primary bound; this only stops a pathological scan and is
+/// recorded in the report when it fires.
+struct SiBudget {
+    limit_s: Option<f64>,
+    start: std::cell::Cell<Option<std::time::Instant>>,
+    hits: std::cell::Cell<usize>,
+}
+
+impl SiBudget {
+    fn new(limit_s: Option<f64>) -> Self {
+        Self {
+            limit_s,
+            start: std::cell::Cell::new(None),
+            hits: std::cell::Cell::new(0),
+        }
+    }
+
+    fn allow(&self) -> bool {
+        let Some(limit) = self.limit_s else {
+            return true;
+        };
+        let started = self.start.get().unwrap_or_else(|| {
+            let now = std::time::Instant::now();
+            self.start.set(Some(now));
+            now
+        });
+        if started.elapsed().as_secs_f64() > limit {
+            self.hits.set(self.hits.get() + 1);
+            false
+        } else {
+            true
+        }
+    }
 }
 
 /// Charge for the coplanar-collision guard over a patch of `faces` faces.
@@ -221,9 +252,13 @@ fn patch_safety(
     rim_edges: &[(u32, u32)],
     work_cell: &std::cell::Cell<u64>,
     work_limit: Option<u64>,
+    si_budget: &SiBudget,
 ) -> (bool, &'static str) {
     if patch.is_empty() {
         return (true, "");
+    }
+    if !si_budget.allow() {
+        return (false, "deadline");
     }
     let mut cand_v: Vec<V3> = Vec::with_capacity(base_v.len() + add_v.len());
     cand_v.extend_from_slice(base_v);
@@ -275,28 +310,33 @@ fn patch_safety(
         lt.push([a, b, c]);
     }
 
-    // Charge the exact-SI check before running it: the local mesh (near band +
-    // patch) drives `self_intersections_subset_core`. A step that cannot pay is
-    // skipped before the scan; the caller reads "work" as "do not commit this
-    // candidate" (same outcome as the SI failing, so no decision can flip the
-    // other way).
-    let si_cost = si_local_charge(lt.len());
-    if let Some(limit) = work_limit {
-        if work_cell.get().saturating_add(si_cost) > limit {
-            return (false, "work");
-        }
+    // Charge the exact-SI check by broad-phase pair count before running the
+    // exact predicates. A step that cannot pay is skipped before the scan; the
+    // caller reads "work" as "do not commit this candidate" (same outcome as
+    // the SI failing, so no decision can flip the other way).
+    let pair_budget = match work_limit {
+        Some(limit) => limit.saturating_sub(work_cell.get()) / SI_PAIR_WEIGHT,
+        None => u64::MAX,
+    };
+    if !si_budget.allow() {
+        return (false, "deadline");
     }
-    work_cell.set(work_cell.get().saturating_add(si_cost));
-
-    // (a) exact self-intersection involving a patch face, on the local mesh.
-    {
-        let mut mask = vec![false; lt.len()];
-        for m in mask.iter_mut().skip(nbase) {
-            *m = true;
-        }
-        if crate::self_intersections_subset_core(&lv, &lt, &mask) > 0 {
-            return (false, "si");
-        }
+    let mut mask = vec![false; lt.len()];
+    for m in mask.iter_mut().skip(nbase) {
+        *m = true;
+    }
+    let (si_pairs, candidate_pairs, capped) =
+        crate::self_intersections_subset_capped(&lv, &lt, &mask, pair_budget);
+    if capped {
+        return (false, "work");
+    }
+    work_cell.set(
+        work_cell
+            .get()
+            .saturating_add(SI_PAIR_WEIGHT.saturating_mul(candidate_pairs)),
+    );
+    if si_pairs > 0 {
+        return (false, "si");
     }
 
     // (b) reload-weld seam: every rim edge must be shared by exactly two faces
@@ -586,6 +626,10 @@ pub struct FlapParams {
     /// budget is skipped, so the produced mesh depends only on the input and
     /// the preset (never on CPU speed or load).  `None` = unlimited.
     pub work_budget: Option<u64>,
+    /// Last-resort wall-clock budget for the exact-SI safety scan, in seconds.
+    /// The deterministic pair charge remains the primary bound; firing this
+    /// records a deadline hit in the report.
+    pub si_time_budget: Option<f64>,
 }
 
 impl Default for FlapParams {
@@ -608,6 +652,7 @@ impl Default for FlapParams {
             coplanar_cos: 0.99,
             sliver_cleanup: false,
             work_budget: None,
+            si_time_budget: None,
         }
     }
 }
@@ -659,6 +704,8 @@ pub struct Report {
     pub loops_skipped_sliver: usize,
     pub loops_skipped_safety: usize,
     pub work_units: u64,
+    pub si_deadline_hit: usize,
+    pub si_deadline_s: Option<f64>,
     pub safety_rejections: Vec<(usize, String)>,
     pub non_simple_reported: usize,
     pub orient_reversed: usize,
@@ -695,9 +742,11 @@ pub fn flap_fill_with_cancel(
     // Deterministic work budget for the whole call (see
     // ``FlapParams::work_budget``).  A loop's DP cost is charged before the
     // dynamic programme starts, and each alternative candidate before it is
-    // built; a step that does not fit is skipped.  No clock is read, so the
-    // output is independent of CPU speed and machine load.
+    // built; a step that does not fit is skipped. The pair charge is the
+    // primary deterministic bound; the optional SI deadline is a recorded
+    // last-resort safety net.
     let mut work_used: u64 = 0;
+    let si_budget = SiBudget::new(prm.si_time_budget);
     // Cell so the candidate-safety closure below can charge work without a
     // mutable borrow that would conflict with the surrounding loop state.
     let work_cell = std::cell::Cell::new(0u64);
@@ -1242,7 +1291,7 @@ pub fn flap_fill_with_cancel(
                     }
                     let (safe, _why) = patch_safety(
                         &out_v, &out_t, &p[m..], gf, &rim_edges,
-                        &work_cell, prm.work_budget);
+                        &work_cell, prm.work_budget, &si_budget);
                     if !safe {
                         return false;
                     }
@@ -1432,7 +1481,7 @@ pub fn flap_fill_with_cancel(
         if (membrane || ref_on) && !select {
             work_cell.set(work_used);
             let (safe, why) = patch_safety(&out_v, &out_t, &p_pts[m..], &gfaces, &rim_edges,
-                                           &work_cell, prm.work_budget);
+                                           &work_cell, prm.work_budget, &si_budget);
             work_used = work_cell.get();
             if !safe {
                 if why == "work" {
@@ -1528,6 +1577,8 @@ pub fn flap_fill_with_cancel(
     }
 
     report.work_units = work_used;
+    report.si_deadline_hit = si_budget.hits.get();
+    report.si_deadline_s = prm.si_time_budget;
     (out_v, out_t, report)
 }
 
@@ -1545,4 +1596,20 @@ fn min_angle(a: V3, b: V3, c: V3) -> f64 {
         }
     };
     ang(a, b, c).min(ang(b, a, c)).min(ang(c, a, b))
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::SiBudget;
+
+    #[test]
+    fn si_deadline_is_opt_in_and_records_hits() {
+        let off = SiBudget::new(None);
+        assert!(off.allow());
+        assert_eq!(off.hits.get(), 0);
+
+        let expired = SiBudget::new(Some(-1.0));
+        assert!(!expired.allow());
+        assert_eq!(expired.hits.get(), 1);
+    }
 }

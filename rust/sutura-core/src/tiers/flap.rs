@@ -146,6 +146,10 @@ pub fn run_with_cancel(
     let prm = FlapParams {
         separate_stl: false,
         work_budget: Some(budget as u64),
+        si_time_budget: params
+            .get("si_time_budget")
+            .and_then(Value::as_f64)
+            .or(Some(30.0)),
         ..Default::default()
     };
     let (cand_v, cand_t, frep) =
@@ -157,6 +161,11 @@ pub fn run_with_cancel(
     );
     rec.insert("work_units".into(), json!(frep.work_units));
     rec.insert("work_budget".into(), json!(budget));
+    rec.insert("si_deadline_hit".into(), json!(frep.si_deadline_hit));
+    rec.insert(
+        "si_deadline_s".into(),
+        frep.si_deadline_s.map(Value::from).unwrap_or(Value::Null),
+    );
     // Over-budget runs cut their expensive steps short rather than producing a
     // worse mesh, so this is recorded, not judged (`flap.py:486-487`). The
     // record must still say it: Python reports `budget_exceeded: true` when

@@ -655,7 +655,7 @@ fn contract_order(root: &mut Map<String, Value>) {
     }
 }
 
-const FLAP_ORDER: [&str; 36] = [
+const FLAP_ORDER: [&str; 38] = [
     "ran", "adopted", "reason", "baseline_holes", "baseline_non_manifold",
     "baseline_damage", "candidate_holes", "candidate_non_manifold",
     "candidate_damage", "loops_found", "loops_filled", "loops_skipped",
@@ -669,6 +669,7 @@ const FLAP_ORDER: [&str; 36] = [
     // (`service.py:466-478`): `budget_exceeded` first, then the two the net
     // writes. Leaving them out of this list is why `retain` dropped them.
     "budget_exceeded", "adopted_final", "final_fallback",
+    "si_deadline_hit", "si_deadline_s",
 ];
 
 const TAMPONADE_ORDER: [&str; 72] = [
