@@ -1954,19 +1954,17 @@ fn apply_si_escalation(
     // rule (SI strictly lower, holes/NM/parts not worse, two-sided within the
     // mesh tolerance, volume within the SI-escalation tolerance). The variants
     // are tried cheapest-first: remove only the SI faces (`ring_start` 0) to
-    // keep the re-cap loop small, then the historical one-ring excision; each
-    // with one round then three. The record keeps every attempt. Env opt-out:
-    // `SUTURA_SI_EXCISE_FALLBACK=0`.
+    // keep the re-cap loop small, then the historical one-ring excision, then
+    // the projected re-cap refined onto the input surface. The record keeps
+    // every attempt. Env opt-out: `SUTURA_SI_EXCISE_FALLBACK=0`.
     if si_excise_fallback_enabled() && !cancel.is_cancelled() {
         let mut attempts: Vec<Value> = Vec::new();
         let mut adopted: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value, SiMetrics)> = None;
         for (variant, rounds, ring_start, cap_levels) in [
             ("ring0_one_round", 1_i64, 0_i64, 0_i64),
-            ("ring0_full_3round", 3_i64, 0_i64, 0_i64),
             ("ring1_one_round", 1_i64, 1_i64, 0_i64),
-            ("ring1_full_3round", 3_i64, 1_i64, 0_i64),
-            ("ring1_projected_1", 1_i64, 1_i64, 1_i64),
             ("ring1_projected_4", 3_i64, 1_i64, 4_i64),
+            ("ring1_projected_6", 3_i64, 1_i64, 6_i64),
         ] {
             let fb_params = json!({
                 "max_rounds": rounds,
