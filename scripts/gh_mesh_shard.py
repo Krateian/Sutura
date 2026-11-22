@@ -239,12 +239,29 @@ def main():
     corpus = os.path.join(os.getcwd(), 'corpus')
     sets = os.path.join(corpus, 'sets')
     files = [l.strip() for l in open(manifest(sets, set_name)) if l.strip()]
+    # Optional mesh allow-list (`only` workflow input): match by file stem, so a
+    # manifest's relative path and a bare name are equivalent. An empty `only`
+    # keeps the whole set. A shard with no match still writes a valid empty
+    # summary so the board sees it as present, not missing.
+    only_raw = os.environ.get('ONLY', '')
+    only = {os.path.splitext(os.path.basename(x.strip()))[0]
+            for x in only_raw.split(',') if x.strip()}
+    if only:
+        files = [f for f in files
+                 if os.path.splitext(os.path.basename(f.strip()))[0] in only]
     # bench115 ships one manifest per packed chunk (bench115-chunk-<k>.txt,
     # staged as sets/bench115.txt), so the file list IS this shard's slice and
     # must not be sub-sliced again.  Every other set is sliced from its full
     # manifest here.
     if set_name != 'bench115':
         files = files[shard::shards]
+    if not files:
+        json.dump({'set': set_name, 'shard': shard, 'shards': shards,
+                   'mode': mode, 'rc': 0, 'meshes': 0, 'rows': [],
+                   'error': None},
+                  open('shard-%s-%d.json' % (set_name, shard), 'w'), indent=1)
+        open('shard-%s-%d.log' % (set_name, shard), 'w').close()
+        return
     outdir = tempfile.mkdtemp(prefix='shard-')
     # determinism compares two independent runs of the SAME ref (the
     # candidate, or the base when no candidate is given), never base vs cand.
