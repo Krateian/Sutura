@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 
 ## [0.9.10] - 2026-11-20
 
+### Fixes in the re-issued 0.9.10
+
+The 0.9.10 download has been rebuilt with these fixes. The version number is
+unchanged.
+
+- **A repair no longer loses whole bodies.** The coaptation step could accept a
+  result that kept only part of the model. It now rejects any result that drops a
+  body or changes the overall volume by more than 1 %.
+- **Large meshes no longer time out during hole filling.** The Flap hole-filling
+  safety check now looks only at the faces that can actually meet, so it stays
+  bounded on big models instead of running for minutes.
+- **The report is faster to produce.** On large meshes the report no longer
+  samples every input face, which removes a noticeable pause at the end of a
+  repair.
+- **More meshes come out without self-intersections.** A final cleanup pass can
+  now remove small self-intersections left by the normal stages. It is kept only
+  when it lowers the self-intersection count and leaves holes, non-manifold
+  edges, shape and volume no worse.
+- **Selective mesh jobs.** The benchmark workflow accepts an optional `only`
+  list of mesh names, so a job runs just those meshes and skips the rest.
+
 ### Deprecated
 
 - **The Python backend.** `SUTURA_BACKEND=python` or the launcher flag
