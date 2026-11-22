@@ -1010,9 +1010,29 @@ pub fn repair_non_manifold_vertices_core_with_cancel(
     let mut v_out = vrows.to_vec();
     let mut t_out = trows.to_vec();
 
-    let mut half_edges: Vec<((i64, i64), usize, usize)> = Vec::with_capacity(3 * nf);
-    let mut vert_faces: std::collections::HashMap<i64, Vec<usize>> = std::collections::HashMap::new();
+    // Flat CSR of face indices per vertex: a prefix array plus one face list,
+    // instead of a `HashMap<i64, Vec<usize>>` with one heap `Vec` per vertex.
+    // On a multi-million-face mesh that map (and the per-half-edge `ff_adj`
+    // map) dominated the repair; see `~/sutura-wt/plan-church.md`.
+    let mut counts = vec![0u32; nv];
+    for (fi, tri) in trows.iter().enumerate() {
+        if fi % 65536 == 0 && crate::cancel::cancelled(cancel) {
+            return (vrows.to_vec(), trows.to_vec());
+        }
+        for &v in tri {
+            if v >= 0 && (v as usize) < nv {
+                counts[v as usize] += 1;
+            }
+        }
+    }
+    let mut vert_start = vec![0usize; nv + 1];
+    for v in 0..nv {
+        vert_start[v + 1] = vert_start[v] + counts[v] as usize;
+    }
+    let mut cursor = vert_start.clone();
+    let mut vert_faces = vec![0u32; vert_start[nv]];
 
+    let mut half_edges: Vec<((i64, i64), usize, usize)> = Vec::with_capacity(3 * nf);
     for (fi, tri) in trows.iter().enumerate() {
         if fi % 65536 == 0 && crate::cancel::cancelled(cancel) {
             return (vrows.to_vec(), trows.to_vec());
@@ -1020,14 +1040,22 @@ pub fn repair_non_manifold_vertices_core_with_cancel(
         for k in 0..3 {
             let e = canon(tri[k], tri[(k + 1) % 3]);
             half_edges.push((e, fi, k));
-            vert_faces.entry(tri[k]).or_default().push(fi);
+            let v = tri[k];
+            if v >= 0 && (v as usize) < nv {
+                let vi = v as usize;
+                vert_faces[cursor[vi]] = fi as u32;
+                cursor[vi] += 1;
+            }
         }
     }
     half_edges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
     let mut nm_edge_verts: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    let mut ff_adj: std::collections::HashMap<(usize, usize), (usize, usize)> =
-        std::collections::HashMap::new();
+    // (face, corner) -> opposite (face, corner), or NO_ADJ. One flat array
+    // replaces a `HashMap<(usize,usize),(usize,usize)>` with millions of hash
+    // entries.
+    const NO_ADJ: u32 = u32::MAX;
+    let mut ff_adj: Vec<(u32, u32)> = vec![(NO_ADJ, NO_ADJ); 3 * nf];
 
     let mut i = 0;
     while i < half_edges.len() {
@@ -1043,24 +1071,29 @@ pub fn repair_non_manifold_vertices_core_with_cancel(
         } else if count == 2 {
             let (f0, k0) = (half_edges[i].1, half_edges[i].2);
             let (f1, k1) = (half_edges[i + 1].1, half_edges[i + 1].2);
-            ff_adj.insert((f0, k0), (f1, k1));
-            ff_adj.insert((f1, k1), (f0, k0));
+            ff_adj[f0 * 3 + k0] = (f1 as u32, k1 as u32);
+            ff_adj[f1 * 3 + k1] = (f0 as u32, k0 as u32);
         } else if count == 1 {
             let (f0, k0) = (half_edges[i].1, half_edges[i].2);
-            ff_adj.insert((f0, k0), (f0, k0));
+            ff_adj[f0 * 3 + k0] = (f0 as u32, k0 as u32);
         }
         i = j;
     }
 
     let mut nm_verts: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    for (vfi, (&vi, flist)) in vert_faces.iter().enumerate() {
-        if vfi % 4096 == 0 && crate::cancel::cancelled(cancel) {
+    for vi in 0..nv {
+        if vi % 4096 == 0 && crate::cancel::cancelled(cancel) {
             return (vrows.to_vec(), trows.to_vec());
         }
-        if nm_edge_verts.contains(&vi) {
+        let flist = &vert_faces[vert_start[vi]..vert_start[vi + 1]];
+        if flist.is_empty() {
             continue;
         }
-        let start_f = flist[0];
+        let vi64 = vi as i64;
+        if nm_edge_verts.contains(&vi64) {
+            continue;
+        }
+        let start_f = flist[0] as usize;
         let mut visited_f = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
         visited_f.insert(start_f);
@@ -1073,7 +1106,7 @@ pub fn repair_non_manifold_vertices_core_with_cancel(
             let tri = t_out[curr_f];
             let mut corner = usize::MAX;
             for k in 0..3 {
-                if tri[k] == vi {
+                if tri[k] == vi64 {
                     corner = k;
                     break;
                 }
@@ -1082,8 +1115,10 @@ pub fn repair_non_manifold_vertices_core_with_cancel(
                 continue;
             }
             for &edge_k in &[(corner + 2) % 3, corner] {
-                if let Some(&(adj_f, _)) = ff_adj.get(&(curr_f, edge_k)) {
-                    if !visited_f.contains(&adj_f) && t_out[adj_f].contains(&vi) {
+                let (adj_f, _) = ff_adj[curr_f * 3 + edge_k];
+                if adj_f != NO_ADJ {
+                    let adj_f = adj_f as usize;
+                    if !visited_f.contains(&adj_f) && t_out[adj_f].contains(&vi64) {
                         visited_f.insert(adj_f);
                         queue.push_back(adj_f);
                     }
@@ -1091,7 +1126,7 @@ pub fn repair_non_manifold_vertices_core_with_cancel(
             }
         }
         if visited_f.len() < flist.len() {
-            nm_verts.insert(vi);
+            nm_verts.insert(vi64);
         }
     }
 
@@ -1125,7 +1160,9 @@ pub fn repair_non_manifold_vertices_core_with_cancel(
                         continue;
                     }
                     for &edge_k in &[(c + 2) % 3, c] {
-                        if let Some(&(adj_f, _)) = ff_adj.get(&(curr_f, edge_k)) {
+                        let (adj_f, _) = ff_adj[curr_f * 3 + edge_k];
+                        if adj_f != NO_ADJ {
+                            let adj_f = adj_f as usize;
                             if !fan_faces.contains(&adj_f) && t_out[adj_f].contains(&vi) {
                                 fan_faces.insert(adj_f);
                                 queue.push_back(adj_f);
@@ -1857,6 +1894,28 @@ mod tests {
         assert!(safe.contains(&[0, 1, 2]), "safe mode must keep the load-bearing null face");
         let strict = remove_null_faces_core(&v, &t, false);
         assert!(!strict.contains(&[0, 1, 2]), "non-safe mode drops it");
+    }
+
+    #[test]
+    fn nm_vertex_split_keeps_face_order_and_is_idempotent() {
+        // Two triangles share only vertex 0: a non-manifold pinch.
+        let v = vec![
+            [0.0f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+        ];
+        let t = vec![[0i64, 1, 2], [0, 3, 4]];
+        let (nv, nt) = repair_non_manifold_vertices_core(&v, &t);
+        // Face 0 keeps its index and moves to a fresh copy of vertex 0; face 1
+        // keeps the original. This is the pre-CSR split order, pinned so the
+        // flat data structures cannot silently change the output.
+        assert_eq!(nv.len(), 6);
+        assert_eq!(nt, vec![[5i64, 1, 2], [0, 3, 4]]);
+        let (nv2, nt2) = repair_non_manifold_vertices_core(&nv, &nt);
+        assert_eq!(nv2.len(), nv.len());
+        assert_eq!(nt2, nt);
     }
 }
 
