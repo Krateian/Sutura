@@ -259,6 +259,19 @@ pub struct RepairOptions {
     /// experimental, matching Python.
     #[serde(default)]
     pub classifier_engine: Option<String>,
+    /// Compute the read-only `analysis`/`recommendations` report block.
+    /// The CLI and GUI strip those fields, so their shared settings disable
+    /// it; direct core callers keep it. Disabling it does not skip the ranked
+    /// auto ladder: the analysis is computed on demand when the baseline is
+    /// not watertight, so repair decisions are unchanged.
+    #[serde(default = "default_true")]
+    pub analysis: bool,
+    /// Fill the per-boundary `input`/`output` measures in the report's `trace`
+    /// records. The CLI/GUI never read that block (the CLI's `--trace` file is
+    /// built from progress events), so their settings skip the measurement.
+    /// The record's stage/method/gate fields are still produced.
+    #[serde(default = "default_true")]
+    pub trace_measure: bool,
     /// Internal guard: depth of a nested auto-ladder attempt.  Not part of the
     /// Python-facing option JSON.
     #[serde(skip)]
@@ -313,9 +326,15 @@ impl Default for RepairOptions {
             auto_reorder: false,
             ftetwild_optimize: false,
             classifier_engine: None,
+            analysis: true,
+            trace_measure: true,
             ladder_depth: 0,
         }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// The result of one Rust pipeline run.
@@ -440,12 +459,36 @@ fn quantize(verts: &[[f64; 3]]) -> Vec<[f64; 3]> {
 }
 
 /// `boundary_loop_stats` (count, largest loop edge count) without numpy.
+thread_local! {
+    static BOUNDARY_CACHE: std::cell::RefCell<Vec<(u64, (usize, usize))>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub(crate) fn boundary_loop_stats(tris: &[[i64; 3]]) -> (usize, usize) {
+    // The report's trace measures the same mesh at several stage boundaries;
+    // the loop walk itself scans every edge, so reuse the counts by content.
+    let key = sutura_geom::mesh_hash_i64(&[], tris);
+    if let Some(hit) = BOUNDARY_CACHE.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| *v)
+    }) {
+        return hit;
+    }
     let t32: Vec<[i32; 3]> = tris
         .iter()
         .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
         .collect();
-    crate::validate::boundary_loop_stats(0, &t32)
+    let out = crate::validate::boundary_loop_stats(0, &t32);
+    BOUNDARY_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 8 {
+            c.remove(0);
+        }
+        c.push((key, out));
+    });
+    out
 }
 
 /// Boundary loops exactly as `topology.mesh_topology` counts them: walk the
@@ -1297,13 +1340,15 @@ fn measure_mesh(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> Value {
 struct TraceLog {
     records: Vec<Value>,
     step: u64,
+    measure: bool,
 }
 
 impl TraceLog {
-    fn new() -> Self {
+    fn new(measure: bool) -> Self {
         Self {
             records: Vec::new(),
             step: 0,
+            measure,
         }
     }
 
@@ -1317,6 +1362,8 @@ impl TraceLog {
         tout: &[[i64; 3]],
         gate: Value,
     ) {
+        let input = if self.measure { measure_mesh(vin, tin) } else { Value::Null };
+        let output = if self.measure { measure_mesh(vout, tout) } else { Value::Null };
         let record = json!({
             "step": self.step,
             "object_id": "main",
@@ -1324,8 +1371,8 @@ impl TraceLog {
             "stage": stage,
             "method": method,
             "elapsed_seconds": 0.0,
-            "input": measure_mesh(vin, tin),
-            "output": measure_mesh(vout, tout),
+            "input": input,
+            "output": output,
             "sha256": Value::Null,
             "gate": gate,
         });
@@ -3401,7 +3448,7 @@ fn repair_impl(
     let mut py_v = quantize(verts);
     let mut py_t = tris.to_vec();
     let mut stage1_snapshot: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>)> = None;
-    let mut trace = TraceLog::new();
+    let mut trace = TraceLog::new(opts.trace_measure);
     let mut stats = Map::new();
     stats.insert("timings".into(), json!({}));
     stats.insert("si_mode".into(), Value::from(opts.si_mode.as_str()));
@@ -3445,44 +3492,42 @@ fn repair_impl(
     // The merged read-only analysis feeds the ranking and the report. Its
     // three behavioural scores are not ported yet; the missing list is exposed
     // under `unavailable` instead of being treated as a real 0.0 signal.
-    let mesh32 = Mesh::new(
-        verts
-            .iter()
-            .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
-            .collect(),
-        tris.iter()
-            .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
-            .collect(),
-    );
-    let mesh_analysis: Option<MeshAnalysis> =
-        analyze_mesh(&mesh32, &triage.engine, opts.si_mode != SiMode::Off).ok();
-    if cancel.is_cancelled() {
-        return cancelled();
-    }
-    let ranking: Option<(Vec<Recommendation>, HashSet<u8>)> =
-        match (policy.as_ref(), mesh_analysis.as_ref()) {
-        (Some(loaded), Some(analysis)) => {
-            let rank_analysis = RankingAnalysis {
-                mesh_type: Some(analysis.mesh_type.clone()),
-                type_confidence: analysis.type_confidence,
-                boundary_loops: analysis.boundary_loops as f64,
-                non_manifold_edges: analysis.non_manifold_edges as f64,
-                self_intersections: analysis.self_intersections as f64,
-                components: analysis.components as f64,
-                largest_loop_ratio: analysis.largest_loop_ratio,
-                open_area_ratio: analysis.open_area_ratio,
-                diagnosis_v2: analysis.diagnosis_v2.clone(),
-                ..RankingAnalysis::default()
-            };
-            let mut recs = rank_methods(loaded, &rank_analysis, None, None);
-            if opts.auto_reorder {
-                recs = crate::ranking::apply_auto_reorder(recs, loaded, &rank_analysis);
-            }
-            let recs = order_graft_before_ftetwild(recs);
-            let avoid = prune_avoid_nums(&rank_analysis);
-            Some((recs, avoid))
+    let ranking_for = |analysis: &MeshAnalysis| -> Option<(Vec<Recommendation>, HashSet<u8>)> {
+        let loaded = policy.as_ref()?;
+        let rank_analysis = RankingAnalysis {
+            mesh_type: Some(analysis.mesh_type.clone()),
+            type_confidence: analysis.type_confidence,
+            boundary_loops: analysis.boundary_loops as f64,
+            non_manifold_edges: analysis.non_manifold_edges as f64,
+            self_intersections: analysis.self_intersections as f64,
+            components: analysis.components as f64,
+            largest_loop_ratio: analysis.largest_loop_ratio,
+            open_area_ratio: analysis.open_area_ratio,
+            diagnosis_v2: analysis.diagnosis_v2.clone(),
+            ..RankingAnalysis::default()
+        };
+        let mut recs = rank_methods(loaded, &rank_analysis, None, None);
+        if opts.auto_reorder {
+            recs = crate::ranking::apply_auto_reorder(recs, loaded, &rank_analysis);
         }
-        _ => None,
+        let recs = order_graft_before_ftetwild(recs);
+        let avoid = prune_avoid_nums(&rank_analysis);
+        Some((recs, avoid))
+    };
+    let compute_analysis = |v: &[[f64; 3]], t: &[[i64; 3]]| {
+        let mesh32 = Mesh::new(
+            v.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect(),
+            t.iter().map(|r| [r[0] as i32, r[1] as i32, r[2] as i32]).collect(),
+        );
+        let analysis: Option<MeshAnalysis> =
+            analyze_mesh(&mesh32, &triage.engine, opts.si_mode != SiMode::Off).ok();
+        let ranking = analysis.as_ref().and_then(|a| ranking_for(a));
+        (analysis, ranking)
+    };
+    let (mesh_analysis, mut ranking) = if opts.analysis {
+        compute_analysis(verts, tris)
+    } else {
+        (None, None)
     };
     let recommendations = ranking
         .as_ref()
@@ -5131,6 +5176,16 @@ fn repair_impl(
     // Ranked fallback ladder (Python `triage._auto`), before the final SI
     // escalation.  Nested attempts disable auto_escalation, so this cannot
     // recurse; an adopted candidate replaces the whole baseline result.
+    // The analysis that feeds the ranking is skipped for the CLI/GUI settings
+    // (they strip it from the report); compute it here only when the baseline
+    // is not watertight and the ladder may actually run.
+    if !reachable
+        && auto_ladder_allowed(opts)
+        && ranking.is_none()
+        && !cancel.is_cancelled()
+    {
+        ranking = compute_analysis(&input_v, &input_t).1;
+    }
     if let Some(ranking) = ranking.as_ref() {
         if !reachable && auto_ladder_allowed(opts) && !cancel.is_cancelled() {
             if let Some((adopted_v, adopted_t, adopted_report)) = run_auto_ladder(

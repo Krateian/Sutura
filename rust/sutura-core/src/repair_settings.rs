@@ -363,6 +363,15 @@ pub fn options_from(
         wall_min_thickness: settings.wall_min_thickness,
         repeat,
         classifier_engine,
+        // The CLI and GUI strip `analysis`/`recommendations` from the repair
+        // report, so the shared settings do not pay for them. The auto ladder
+        // still gets its ranking: `repair_impl` computes the analysis on demand
+        // when the baseline is not watertight.
+        analysis: false,
+        // Likewise the report's `trace` measures: the CLI writes its own
+        // `--trace` file from progress events and drops this block, so the
+        // per-boundary topology scan is not needed for their runs.
+        trace_measure: false,
         repeat_source: settings.repeat_source,
         repeat_target: settings.repeat_target,
         solid_engine,
