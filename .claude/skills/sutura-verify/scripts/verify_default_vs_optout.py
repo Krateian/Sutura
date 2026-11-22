@@ -78,12 +78,19 @@ def resolve_meshes(paths, repo, limit):
 
 def run_cli(cmd, env, cwd, timeout):
     t0 = time.time()
+    p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True)
     try:
-        p = subprocess.run(cmd, env=env, cwd=cwd, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, text=True, timeout=timeout)
-        return p.returncode, p.stdout, p.stderr, time.time() - t0
+        out, err = p.communicate(timeout=timeout)
+        return p.returncode, out, err, time.time() - t0
     except subprocess.TimeoutExpired:
-        return 124, '', 'TIMEOUT after %ss' % timeout, time.time() - t0
+        # Keep whatever the child wrote before the kill: with --trace the
+        # stage lines are the whole point of the timeout diagnostic.
+        p.kill()
+        out, err = p.communicate()
+        return (124, out or '',
+                (err or '') + '\nTIMEOUT after %ss' % timeout,
+                time.time() - t0)
 
 
 def no_output_verdict(rcs, timeout):
@@ -666,6 +673,8 @@ def main():
     ap.add_argument('--opt-out-env', action='append', default=[])
     ap.add_argument('--baseline-env', action='append', default=[])
     ap.add_argument('--extra-arg', action='append', default=[])
+    ap.add_argument('--candidate-trace-dir', default=None,
+                    help='candidate-only: write --trace and stderr here')
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--timeout', type=int, default=900)
     ap.add_argument('--measure-timeout', type=int, default=900,
@@ -745,6 +754,10 @@ def main():
                 return meta
         cmd = [python_x, os.path.join(repo_x, 'sutura', 'repair.py'), in_path,
                '-o', out_stl, '--no-history'] + flags
+        trace_dir = args.candidate_trace_dir if side in ('candidate', 'optout') else None
+        if trace_dir:
+            os.makedirs(trace_dir, exist_ok=True)
+            cmd += ['--trace', os.path.join(trace_dir, '%s.trace.json' % name)]
         run_env = env.copy()
         # Both call shapes are supported. `--opt-out-env` is `action='append'`
         # (p10/core), and main's shard script passes several pairs joined by
@@ -768,6 +781,9 @@ def main():
                     run_env[k] = v
                 run_env[k] = v
         rc, sout, serr, el = run_cli(cmd, run_env, repo_x, args.timeout)
+        if trace_dir:
+            with open(os.path.join(trace_dir, '%s.%s.stderr.log' % (name, side)), 'w') as f:
+                f.write(serr or '')
         if not os.path.exists(out_stl):
             print('  %s: no output (rc=%d) %s' % (side, rc, serr.strip()[:160]), flush=True)
             # Keep rc/elapsed so the caller can separate a repair timeout

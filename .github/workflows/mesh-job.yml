@@ -13,6 +13,8 @@ on:
       extra_args:    { description: 'Repair CLI args for both sides, space separated, e.g. --methods 14 or --deep-repair full', required: false, default: '' }
       stage_fingerprints: { description: 'Set to 1 to add per-stage geometry hashes (and face/vertex counts) to every mesh row, to localise a platform difference to a stage. Costs one extra repair per mesh.', required: false, default: '' }
       report_only:   { description: 'Set to 1 for a diagnostic run: write the board but do not fail the run on differences (no failure e-mail)', required: false, default: '' }
+      timeout_s:     { description: 'Seconds allowed for one repair side', required: false, default: '900' }
+      trace:         { description: 'Set to 1 to pass --trace to the candidate and upload its trace/stderr', required: false, default: '' }
 permissions:
   contents: read
 jobs:
@@ -174,6 +176,8 @@ jobs:
           # produced it. Hashes and counts only; no names, no geometry.
           echo "SUTURA_STAGE_FP=${SUTURA_STAGE_FP:-}" >> "$GITHUB_ENV"
           echo "EXTRA_ARGS=$EXTRA_ARGS" >> "$GITHUB_ENV"
+          echo "TIMEOUT_S=${TIMEOUT_S:-900}" >> "$GITHUB_ENV"
+          echo "TRACE=${TRACE:-}" >> "$GITHUB_ENV"
         env:
           MODE: '${{ matrix.mode }}'
           SET_NAME: '${{ matrix.set }}'
@@ -183,6 +187,8 @@ jobs:
           EXTRA_ARGS: '${{ inputs.extra_args }}'
           ENV_BASE: '${{ inputs.env_base }}'
           SUTURA_STAGE_FP: '${{ inputs.stage_fingerprints }}'
+          TIMEOUT_S: '${{ inputs.timeout_s }}'
+          TRACE: '${{ inputs.trace }}'
       - uses: actions/setup-python@v7
         with: { python-version: '3.11' }
       - uses: actions/checkout@v7
@@ -294,6 +300,13 @@ jobs:
         if: failure()
         run: |
           [ -f error.json ] && cat error.json >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: 'trace-${{ matrix.set }}-${{ matrix.mode }}-${{ matrix.shard }}'
+          path: traces/**
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@v7
         if: always()
         with:

@@ -322,6 +322,26 @@ def main():
                 raise SystemExit('bad EXTRA_ARGS token')
             cmd.append('--extra-arg=' + tok)
 
+        # Optional per-repair timeout (`timeout_s` workflow input). The
+        # measurement gets the same budget so a slow shape pass does not turn
+        # a completed repair into a second timeout.
+        try:
+            timeout_s = int(os.environ.get('TIMEOUT_S') or 900)
+        except ValueError:
+            timeout_s = 900
+        if timeout_s > 0:
+            cmd += ['--timeout', str(timeout_s),
+                    '--measure-timeout', str(timeout_s)]
+
+        # Opt-in diagnostic trace (`trace=1`): pass --trace to the candidate
+        # only and keep its stderr under traces/<set>-<shard>/, which the job
+        # uploads even when the repair times out.
+        if os.environ.get('TRACE', '').strip().lower() in ('1', 'true', 'yes', 'on'):
+            trace_dir = os.path.abspath(
+                os.path.join('traces', '%s-%d' % (set_name, shard)))
+            os.makedirs(trace_dir, exist_ok=True)
+            cmd += ['--candidate-trace-dir', trace_dir]
+
         if mode == 'determinism':
             # The baseline half is cached by input SHA + flags + repo head, so a
             # warmed cache would compare a run against itself. A fresh cache
