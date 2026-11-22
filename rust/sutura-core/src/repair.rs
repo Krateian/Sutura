@@ -1959,7 +1959,13 @@ fn apply_si_escalation(
     // every attempt. Env opt-out: `SUTURA_SI_EXCISE_FALLBACK=0`.
     if si_excise_fallback_enabled() && !cancel.is_cancelled() {
         let mut attempts: Vec<Value> = Vec::new();
-        let mut adopted: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value, SiMetrics)> = None;
+        // Evaluate every variant: an early partial SI reduction must not hide a
+        // later variant that removes all of it. Keep the best that passes the
+        // never-worse gate by (SI, two-sided max, face count); ladder order
+        // breaks exact ties, so the choice is deterministic.
+        let mut best: Option<((i64, f64, usize), Vec<[f64; 3]>, Vec<[i64; 3]>, Value, SiMetrics)> =
+            None;
+        let mut best_idx: Option<usize> = None;
         for (variant, rounds, ring_start, cap_levels) in [
             ("ring0_one_round", 1_i64, 0_i64, 0_i64),
             ("ring1_one_round", 1_i64, 1_i64, 0_i64),
@@ -2015,11 +2021,20 @@ fn apply_si_escalation(
             }
             let (ok, why) = si_verdict(&base, &fb_metrics, Some(tolerance), vol_rel_tol);
             if reload_ok && ok {
-                attempt["outcome"] = Value::from("adopted");
-                attempt["reason"] = Value::from(why.clone());
+                let key = (
+                    fb_si.unwrap_or(i64::MAX),
+                    fb_metrics.shape_max_mm.unwrap_or(f64::INFINITY),
+                    fb_t.len(),
+                );
+                attempt["outcome"] = Value::from("passed");
+                attempt["reason"] = Value::from(why);
+                let idx = attempts.len();
                 attempts.push(attempt);
-                adopted = Some((fb_v, fb_t, fb_report, fb_metrics));
-                break;
+                if best.as_ref().map_or(true, |b| key < b.0) {
+                    best = Some((key, fb_v, fb_t, fb_report, fb_metrics));
+                    best_idx = Some(idx);
+                }
+                continue;
             }
             attempt["outcome"] = Value::from("rejected");
             attempt["reason"] = Value::from(if !reload_ok {
@@ -2031,29 +2046,29 @@ fn apply_si_escalation(
             });
             attempts.push(attempt);
         }
-        if let Some((fb_v, fb_t, fb_report, fb_metrics)) = adopted {
+        if let Some(idx) = best_idx {
+            if let Some(obj) = attempts.get_mut(idx).and_then(Value::as_object_mut) {
+                obj.insert("outcome".into(), Value::from("adopted"));
+                obj.insert("selected".into(), Value::Bool(true));
+            }
+        }
+        if let Some((_, fb_v, fb_t, fb_report, fb_metrics)) = best {
+            let selected = best_idx
+                .and_then(|i| attempts.get(i))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let why = selected.get("reason").cloned().unwrap_or(Value::Null);
             let fb_entry = json!({
                 "ran": true,
                 "outcome": "adopted",
                 "guard": "never_worse",
-                "variant": attempts
-                    .last()
-                    .and_then(|a| a.get("variant"))
-                    .cloned()
-                    .unwrap_or(Value::Null),
+                "variant": selected.get("variant").cloned().unwrap_or(Value::Null),
                 "si_before": base_si,
                 "candidate": fb_metrics.to_value(),
                 "candidate_sha256": stl_sha256(&fb_v, &fb_t),
                 "attempts": attempts,
                 "si_excise": fb_report,
             });
-            let why = fb_entry
-                .get("attempts")
-                .and_then(Value::as_array)
-                .and_then(|a| a.last())
-                .and_then(|a| a.get("reason"))
-                .cloned()
-                .unwrap_or(Value::Null);
             field.insert("si_excise_fallback".into(), fb_entry.clone());
             field.insert("method".into(), Value::from(SI_EXCISE_FALLBACK_ID));
             field.insert("num".into(), Value::from(method_num));
