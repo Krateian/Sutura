@@ -61,14 +61,25 @@ pub fn reload_topology(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> (usize, usize, 
     (d.holes.len(), d.non_manifold.len(), pinched_count(&wv, &wt))
 }
 
-pub fn reload_strict_holes_nm(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> (usize, usize) {
-    let (wv, wt) = match weld_reload_equivalent(verts, tris) {
-        Ok(x) => x,
-        Err(_) => return (0, 0),
-    };
+/// Reload holes/non-manifold, distinguishing "clean" from "weld failed".
+///
+/// `reload_strict_holes_nm` returns `(0, 0)` when the reload weld errors,
+/// which is indistinguishable from a watertight mesh and lets a candidate that
+/// fails to reload be adopted (audit MED-4). Gate callers use this checked
+/// form and treat `Err` as not clean. The unchecked wrapper is kept for the
+/// legacy callers that only log the count.
+pub fn reload_strict_holes_nm_checked(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+) -> Result<(usize, usize), String> {
+    let (wv, wt) = weld_reload_equivalent(verts, tris)?;
     let t32: Vec<[i32; 3]> = wt.iter().map(|r| [r[0] as i32, r[1] as i32, r[2] as i32]).collect();
     let d = detect_defects(&wv, &t32, false);
-    (d.holes.len(), d.non_manifold.len())
+    Ok((d.holes.len(), d.non_manifold.len()))
+}
+
+pub fn reload_strict_holes_nm(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> (usize, usize) {
+    reload_strict_holes_nm_checked(verts, tris).unwrap_or((0, 0))
 }
 
 pub fn spacing_f32(x: f32) -> f32 {

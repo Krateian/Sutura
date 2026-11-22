@@ -31,7 +31,9 @@ use crate::graft::shell::{shell_wrap_with_cancel, ShellWrapOptions};
 use crate::local_remesh;
 use crate::mesh::Mesh;
 use crate::mirror::mirror_close;
-use crate::p_weld::{enforce_reload_verdict, p_weld_final, reload_strict_holes_nm};
+use crate::p_weld::{
+    enforce_reload_verdict, p_weld_final, reload_strict_holes_nm, reload_strict_holes_nm_checked,
+};
 use crate::proxy::proxy_template_repair;
 use crate::ranking::{
     order_graft_before_ftetwild, prune_avoid_nums, rank_methods, recommendations_json,
@@ -1208,11 +1210,17 @@ fn tamponade_params(
     })
 }
 
+/// Wall-clock net for Flap's exact-SI safety scan. Disabled by default: the
+/// deterministic pair charge is the only default bound, so output never
+/// depends on host speed (audit MED-3). `SUTURA_FLAP_SI_BUDGET=<seconds>`
+/// (positive) opts in.
+fn flap_si_budget_from(raw: Option<String>) -> Option<f64> {
+    raw.and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s > 0.0)
+}
+
 fn flap_params(tris: &[[i64; 3]], intensity: &str, policy: Option<&LoadedPolicy>) -> Value {
-    let si_time_budget = std::env::var("SUTURA_FLAP_SI_BUDGET")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(120.0);
+    let si_time_budget = flap_si_budget_from(std::env::var("SUTURA_FLAP_SI_BUDGET").ok());
     json!({
         "work_budget": flap_work(policy, intensity),
         "si_time_budget": si_time_budget,
@@ -1614,6 +1622,119 @@ fn si_tolerance(in_v: &[[f64; 3]], policy: Option<&LoadedPolicy>) -> Option<f64>
     Some((diag / div).max(min).min(max))
 }
 
+fn stage1_geom_volume(v: &[[f64; 3]], t: &[[i64; 3]]) -> f64 {
+    let v32: Vec<[f32; 3]> = v
+        .iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect();
+    sutura_geom::topology::mesh_geometric_measures_core(&v32, t)
+        .0
+        .unwrap_or(0.0)
+}
+
+/// Rewrite the Stage-1 fields that describe the mesh actually handed back.
+///
+/// The final-mesh SI-excision fallback replaces the Stage-1 output after the
+/// Stage-1 report was written, so the report would otherwise describe the
+/// pre-fallback mesh (audit HIGH-1). The `*_before` values and the pipeline
+/// record (`applied_filters`, `removed_small_parts`, …) are kept; only the
+/// post fields are recomputed from `v`/`t`.
+fn refresh_stage1_final(
+    stage1: &mut Map<String, Value>,
+    v: &[[f64; 3]],
+    t: &[[i64; 3]],
+    si: Option<i64>,
+    min_component: i64,
+) {
+    let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
+    let int_of = |m: &Map<String, Value>, k: &str| {
+        m.get(k).and_then(Value::as_i64).unwrap_or(0)
+    };
+    let holes_before = int_of(stage1, "holes_closed") + int_of(stage1, "holes_remaining");
+    let nm_before = int_of(stage1, "non_manifold_edges_fixed")
+        + int_of(stage1, "non_manifold_edges_remaining");
+    let faces_before = int_of(stage1, "faces_before");
+    let vol_before = stage1
+        .get("volume_before")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let area_before = stage1
+        .get("surface_area_before")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+
+    let topo = common::topology_summary(v, t);
+    let holes = boundary_loop_stats(t).0;
+    let nm = topo.non_two_manifold_edges;
+    let two_manifold = common::is_two_manifold(v.len(), t);
+    stage1.insert(
+        "holes_closed".into(),
+        Value::from(holes_before.saturating_sub(holes as i64)),
+    );
+    stage1.insert("holes_remaining".into(), Value::from(holes as i64));
+    stage1.insert(
+        "non_manifold_edges_fixed".into(),
+        Value::from(nm_before.saturating_sub(nm as i64)),
+    );
+    stage1.insert("non_manifold_edges_remaining".into(), Value::from(nm));
+    stage1.insert("two_manifold".into(), Value::Bool(two_manifold));
+    stage1.insert("components".into(), Value::from(topo.components));
+    stage1.insert("faces_after".into(), Value::from(topo.faces));
+    stage1.insert(
+        "faces_removed".into(),
+        Value::from(faces_before.saturating_sub(topo.faces as i64)),
+    );
+    stage1.insert("vertices_after".into(), Value::from(v.len()));
+
+    let vol_after = stage1_geom_volume(v, t);
+    stage1.insert("volume_after".into(), Value::from(vol_after));
+    stage1.insert("volume_change_percent".into(), Value::Null);
+    if vol_before != 0.0 {
+        let pct = (vol_after - vol_before) / vol_before.abs() * 100.0;
+        stage1.insert(
+            "volume_change_percent".into(),
+            Value::from((pct * 100.0).round() / 100.0),
+        );
+    }
+    let area_after = py_surface_area(v, t);
+    stage1.insert("surface_area_after".into(), Value::from(round3(area_after)));
+    stage1.insert("surface_area_change_percent".into(), Value::Null);
+    if area_before != 0.0 {
+        let pct = (area_after - area_before) / area_before * 100.0;
+        stage1.insert(
+            "surface_area_change_percent".into(),
+            Value::from((pct * 100.0).round() / 100.0),
+        );
+    }
+    stage1.insert(
+        "self_intersections_remaining".into(),
+        si.map(Value::from).unwrap_or(Value::Null),
+    );
+    let si_work = t.len() as i64
+        * (1 + nm as i64 + topo.non_two_manifold_vertices as i64 + holes as i64);
+    stage1.insert("si_work_units".into(), Value::from(si_work));
+    stage1.insert("si_work_budget".into(), Value::from(15_000_000i64));
+    let possible = crate::report::possible_debris(
+        v,
+        &to_i32(t),
+        min_component.max(0) as usize,
+        0.005,
+    )
+    .map(|d| {
+        json!({
+            "count": d.count,
+            "capped": d.capped,
+            "parts": d.parts.iter().map(|p| json!({
+                "faces": p.faces,
+                "volume_pct": p.volume_pct,
+                "size_pct": p.size_pct,
+                "distance_mm": p.distance_mm,
+            })).collect::<Vec<_>>(),
+        })
+    });
+    stage1.insert("possible_debris".into(), possible.unwrap_or(Value::Null));
+}
+
 fn si_method_num(policy: Option<&LoadedPolicy>) -> i64 {
     policy
         .and_then(|p| p.get("si_escalation"))
@@ -1930,6 +2051,7 @@ fn apply_si_escalation(
     opts: &RepairOptions,
     policy: Option<&LoadedPolicy>,
     stage1_snapshot: Option<&(Vec<[f64; 3]>, Vec<[i64; 3]>)>,
+    min_component: i64,
     cancel: &CancelToken,
 ) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value)> {
     let (snap_v, snap_t) = stage1_snapshot
@@ -2034,8 +2156,12 @@ fn apply_si_escalation(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let fb_si = si_exact(&fb_v, &fb_t);
-            let (fb_rholes, fb_rnm) = reload_strict_holes_nm(&fb_v, &fb_t);
-            let reload_ok = fb_rholes == 0 && fb_rnm == 0;
+            // A reload weld that errors is "not clean", not watertight
+            // (audit MED-4).
+            let fb_reload = reload_strict_holes_nm_checked(&fb_v, &fb_t);
+            let fb_reload_err = fb_reload.as_ref().err().cloned();
+            let (fb_rholes, fb_rnm) = fb_reload.unwrap_or((0, 0));
+            let reload_ok = fb_reload_err.is_none() && fb_rholes == 0 && fb_rnm == 0;
             let fb_facts = si_facts(input_v, input_t, &fb_v, &fb_t);
             let mut fb_metrics = SiMetrics {
                 si: fb_si,
@@ -2052,6 +2178,7 @@ fn apply_si_escalation(
                 "applied": fb_applied,
                 "reload_holes": fb_rholes,
                 "reload_non_manifold": fb_rnm,
+                "reload_error": fb_reload_err,
                 "si_before": base_si,
                 "si_after": fb_si,
                 "outcome": Value::Null,
@@ -2085,9 +2212,12 @@ fn apply_si_escalation(
             }
             attempt["outcome"] = Value::from("rejected");
             attempt["reason"] = Value::from(if !reload_ok {
-                format!(
-                    "reload topology not watertight (holes {fb_rholes}, non-manifold {fb_rnm})"
-                )
+                match &fb_reload_err {
+                    Some(e) => format!("reload weld failed: {e}"),
+                    None => format!(
+                        "reload topology not watertight (holes {fb_rholes}, non-manifold {fb_rnm})"
+                    ),
+                }
             } else {
                 why
             });
@@ -2116,12 +2246,15 @@ fn apply_si_escalation(
                 "attempts": attempts,
                 "si_excise": fb_report,
             });
+            // The fallback is not one of the 19 registry methods, so it has no
+            // method number. Reporting Scaffold's 10 here contradicted the id
+            // (audit MED-5); `null` is the honest value.
             field.insert("si_excise_fallback".into(), fb_entry.clone());
             field.insert("method".into(), Value::from(SI_EXCISE_FALLBACK_ID));
-            field.insert("num".into(), Value::from(method_num));
+            field.insert("num".into(), Value::Null);
             field.insert("name".into(), Value::from(SI_EXCISE_FALLBACK_NAME));
             field.insert("outcome".into(), Value::from("adopted"));
-            field.insert("reason".into(), why);
+            field.insert("reason".into(), why.clone());
             field.insert("candidate".into(), fb_metrics.to_value());
             field.insert(
                 "candidate_sha256".into(),
@@ -2131,16 +2264,52 @@ fn apply_si_escalation(
             out.insert("si_excise_fallback".into(), fb_entry);
             out.insert("si_escalation".into(), field_value);
             let mut adopted = out.clone();
+            // The report was built for `base_v/base_t`; the caller gets
+            // `fb_v/fb_t`. Rewrite the Stage-1 post fields so stage1,
+            // print_report, category/issues and history all describe the
+            // returned mesh (audit HIGH-1).
+            if let Some(s1) = adopted.get_mut("stage1").and_then(Value::as_object_mut) {
+                refresh_stage1_final(s1, &fb_v, &fb_t, fb_metrics.si, min_component);
+            }
+            let mut adopted_value = Value::Object(adopted);
+            enforce_reload_verdict(&mut adopted_value, &fb_v, &fb_t, false);
+            let mut adopted = match adopted_value {
+                Value::Object(m) => m,
+                _ => Map::new(),
+            };
             adopted.insert(
                 "method_used".into(),
                 json!({
-                    "num": method_num,
+                    "num": Value::Null,
                     "id": SI_EXCISE_FALLBACK_ID,
                     "name": SI_EXCISE_FALLBACK_NAME,
                     "source": "auto_si_excise_fallback",
                     "note": "SI excision on the final mesh",
                 }),
             );
+            if let Some(tried) = adopted
+                .get_mut("methods_tried")
+                .and_then(Value::as_array_mut)
+            {
+                tried.push(json!({
+                    "num": Value::Null,
+                    "id": SI_EXCISE_FALLBACK_ID,
+                    "name": SI_EXCISE_FALLBACK_NAME,
+                    "outcome": "accepted",
+                    "watertight": true,
+                    "holes": 0,
+                    "non_manifold": 0,
+                    "hausdorff_rel": Value::Null,
+                    "geom_change_pct": Value::Null,
+                    "guard_rejected": Value::Null,
+                    "guard_reason": Value::Null,
+                    "si_flagged": false,
+                    "adopt_guard": "never_worse",
+                    "reason": why.clone(),
+                    "template": Value::Null,
+                    "elapsed_ms": 0,
+                }));
+            }
             adopted.insert("method_reached_watertight".into(), Value::Bool(true));
             return Some((fb_v, fb_t, Value::Object(adopted)));
         }
@@ -5219,7 +5388,7 @@ fn repair_impl(
     stage_fp_log("after_auto_ladder", &cur_v, &cur_t);
 
     if allow_si_escalation && si_escalation_allowed(opts) {
-        if let Some((adopted_v, adopted_t, adopted_report)) = apply_si_escalation(
+        let adopted = apply_si_escalation(
             &mut out,
             &input_v,
             &input_t,
@@ -5228,8 +5397,25 @@ fn repair_impl(
             opts,
             policy.as_ref(),
             stage1_snapshot.as_ref(),
+            min_component,
             cancel,
-        ) {
+        );
+        // Report the fallback even when it rejects, so `--human`/`--trace`
+        // never hide that the final cleanup ran (audit MED-6).
+        if let Some(esc) = out.get("si_escalation") {
+            if let Some(fb) = esc.get("si_excise_fallback") {
+                sink.emit(json!({
+                    "event": "tier",
+                    "tier": SI_EXCISE_FALLBACK_ID,
+                    "stage": 4,
+                    "ran": fb.get("ran").cloned().unwrap_or(Value::Bool(false)),
+                    "adopted": fb.get("outcome").and_then(Value::as_str) == Some("adopted"),
+                    "variant": fb.get("variant").cloned().unwrap_or(Value::Null),
+                    "reason": esc.get("reason").cloned().unwrap_or(Value::Null),
+                }));
+            }
+        }
+        if let Some((adopted_v, adopted_t, adopted_report)) = adopted {
             stage_fp_log("after_si_final", &adopted_v, &adopted_t);
             return RepairOutcome::Ok {
                 verts: adopted_v,
@@ -5348,6 +5534,71 @@ mod tests {
     }
 
     #[test]
+    fn refresh_stage1_final_describes_the_returned_mesh() {
+        // The fallback hands back a different mesh than the report was built
+        // for; the refreshed stage1 must describe the returned arrays
+        // (audit HIGH-1).
+        let (_verts, tris) = two_shells(false);
+        let mut s1 = Map::new();
+        s1.insert("holes_closed".into(), Value::from(0i64));
+        s1.insert("holes_remaining".into(), Value::from(0i64));
+        s1.insert("non_manifold_edges_fixed".into(), Value::from(0i64));
+        s1.insert("non_manifold_edges_remaining".into(), Value::from(0i64));
+        s1.insert("faces_before".into(), Value::from(tris.len() as i64));
+        s1.insert("volume_before".into(), Value::from(1.0f64));
+        s1.insert("surface_area_before".into(), Value::from(1.0f64));
+        s1.insert("self_intersections_remaining".into(), Value::from(232i64));
+        s1.insert("components".into(), Value::from(2i64));
+        // A closed box: SI 0, holes 0, one component.
+        let (bv, bt) = cube();
+        refresh_stage1_final(&mut s1, &bv, &bt, Some(0), 8);
+        assert_eq!(
+            s1.get("self_intersections_remaining").and_then(Value::as_i64),
+            Some(0)
+        );
+        assert_eq!(s1.get("holes_remaining").and_then(Value::as_i64), Some(0));
+        assert_eq!(s1.get("components").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            s1.get("faces_after").and_then(Value::as_i64),
+            Some(bt.len() as i64)
+        );
+        assert_eq!(
+            s1.get("vertices_after").and_then(Value::as_i64),
+            Some(bv.len() as i64)
+        );
+        assert_eq!(
+            s1.get("two_manifold").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn flap_si_budget_is_opt_in_only() {
+        // The wall-clock net must be off unless explicitly set (audit MED-3).
+        assert_eq!(flap_si_budget_from(None), None);
+        assert_eq!(flap_si_budget_from(Some("".into())), None);
+        assert_eq!(flap_si_budget_from(Some("0".into())), None);
+        assert_eq!(flap_si_budget_from(Some("-5".into())), None);
+        assert_eq!(flap_si_budget_from(Some("off".into())), None);
+        assert_eq!(flap_si_budget_from(Some("120".into())), Some(120.0));
+    }
+
+    #[test]
+    fn reload_strict_holes_nm_checked_separates_weld_failure() {
+        // A non-finite coordinate makes the reload weld fail; the checked form
+        // must say so instead of reporting a clean (0, 0) (audit MED-4).
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [f64::NAN, 0.0, 0.0],
+        ];
+        let tris = vec![[0i64, 1, 2], [1, 3, 2]];
+        assert!(reload_strict_holes_nm_checked(&verts, &tris).is_err());
+        assert_eq!(reload_strict_holes_nm(&verts, &tris), (0, 0));
+    }
+
+    #[test]
     fn si_excise_fallback_gate_is_never_worse() {
         // Final-mesh excision: the current output is watertight with SI > 0 and
         // no deviation from the input; a shape-neutral excision must be adopted,
@@ -5430,6 +5681,7 @@ mod tests {
             &opts,
             None,
             Some(&snapshot),
+            8,
             &CancelToken::new(),
         );
         let field = out
@@ -5454,7 +5706,14 @@ mod tests {
             .and_then(Value::as_array)
             .expect("methods_tried");
         assert_eq!(tried.len(), 2);
-        assert_eq!(tried[1].get("num").and_then(Value::as_i64), Some(10));
+        // The fallback is not a registry method, so its entry carries no
+        // number (audit MED-5); the Scaffold entry still does.
+        let second_id = tried[1].get("id").and_then(Value::as_str);
+        if second_id == Some(SI_EXCISE_FALLBACK_ID) {
+            assert_eq!(tried[1].get("num").and_then(Value::as_i64), None);
+        } else {
+            assert_eq!(tried[1].get("num").and_then(Value::as_i64), Some(10));
+        }
         if let Some((v, t, report)) = adopted {
             assert!(!v.is_empty() && !t.is_empty());
             assert!(report.get("methods_tried").is_some());

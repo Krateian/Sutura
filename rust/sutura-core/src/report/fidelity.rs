@@ -141,6 +141,19 @@ fn buried_face_mask(
     delta: f64,
     bvh: &MeshBvh,
 ) -> (Vec<bool>, Value) {
+    buried_face_mask_with_cap(vi, ti, defect, delta, bvh, BURIED_SAMPLE_FACES)
+}
+
+/// `buried_face_mask` with an explicit sample cap, so a unit test can force
+/// the sampled path on a small mesh.
+fn buried_face_mask_with_cap(
+    vi: &[[f64; 3]],
+    ti: &[[i32; 3]],
+    defect: &[bool],
+    delta: f64,
+    bvh: &MeshBvh,
+    sample_cap: usize,
+) -> (Vec<bool>, Value) {
     let mut info = json!({
         "available": false, "faces": 0, "area_mm2": 0.0,
         "debris_faces": 0, "degenerate_faces": 0, "note": Value::Null
@@ -150,7 +163,7 @@ fn buried_face_mask(
         .map(|x| [x[0] as u32, x[1] as u32, x[2] as u32])
         .collect();
     let _t_buried = std::time::Instant::now();
-    let stride = (ti.len() + BURIED_SAMPLE_FACES - 1) / BURIED_SAMPLE_FACES;
+    let stride = (ti.len() + sample_cap.max(1) - 1) / sample_cap.max(1);
     let (res, stride) = if stride > 1 {
         let ids: Vec<u32> = (0..ti.len()).step_by(stride).map(|i| i as u32).collect();
         (
@@ -175,11 +188,18 @@ fn buried_face_mask(
     info["available"] = Value::Bool(true);
     info["sampled"] = Value::Bool(stride > 1);
     info["sample_stride"] = Value::from(stride);
-    info["debris_faces"] = Value::from(res.debris_count * stride);
-    info["degenerate_faces"] = Value::from(res.degenerate_count * stride);
-    info["faces"] = Value::from(mask.iter().filter(|&&x| x).count() * stride);
+    // Report the sampled values, not a `×stride` estimate. Every other field
+    // in this family (`interior_walls_buried_faces/area`, `removed_*`,
+    // `feature_buried_*`, `feature_recall`) is computed over the sampled mask,
+    // so scaling only these four made the report internally inconsistent
+    // (audit MED-7). The note says the counts are sample values.
+    info["debris_faces"] = Value::from(res.debris_count);
+    info["degenerate_faces"] = Value::from(res.degenerate_count);
+    info["faces"] = Value::from(mask.iter().filter(|&&x| x).count());
     if stride > 1 {
-        info["note"] = Value::from("sampled (report budget)");
+        info["note"] = Value::from(format!(
+            "sampled (report budget: 1 in {stride} faces; counts/lengths are sample values)"
+        ));
     }
     if info["faces"].as_u64().unwrap_or(0) > 0 {
         let areas = face_areas(vi, ti);
@@ -188,8 +208,7 @@ fn buried_face_mask(
             .zip(&areas)
             .filter(|(m, _)| **m)
             .map(|(_, a)| *a)
-            .sum::<f64>()
-            * stride as f64;
+            .sum::<f64>();
         info["area_mm2"] = Value::from((area * 1e6).round() / 1e6);
     }
     (mask, info)
@@ -1129,4 +1148,69 @@ pub fn compute_fidelity_json(
     let report: Value = serde_json::from_str(report).map_err(|e| e.to_string())?;
     let cfg: Value = serde_json::from_str(cfg).map_err(|e| e.to_string())?;
     Ok(compute_fidelity_value(vi, ti, vo, to, &report, &cfg).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Two nested boxes: the inner faces are "buried". Enough faces that a
+    // sample cap of 4 forces the sampled path.
+    fn nested_boxes() -> (Vec<[f64; 3]>, Vec<[i32; 3]>) {
+        let cube = |origin: [f64; 3], s: f64| {
+            let v: Vec<[f64; 3]> = [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 1.0],
+            ]
+            .into_iter()
+            .map(|p| [origin[0] + p[0] * s, origin[1] + p[1] * s, origin[2] + p[2] * s])
+            .collect();
+            let t: Vec<[i32; 3]> = vec![
+                [0, 2, 1],
+                [0, 3, 2],
+                [4, 5, 6],
+                [4, 6, 7],
+                [0, 1, 5],
+                [0, 5, 4],
+                [1, 2, 6],
+                [1, 6, 5],
+                [2, 3, 7],
+                [2, 7, 6],
+                [3, 0, 4],
+                [3, 4, 7],
+            ];
+            (v, t)
+        };
+        let (mut v, mut t) = cube([0.0; 3], 2.0);
+        let (iv, it) = cube([0.5, 0.5, 0.5], 1.0);
+        let base = v.len() as i32;
+        v.extend(iv);
+        t.extend(it.into_iter().map(|f| [f[0] + base, f[1] + base, f[2] + base]));
+        (v, t)
+    }
+
+    #[test]
+    fn buried_mask_reports_sampled_counts_not_scaled_estimates() {
+        let (vi, ti) = nested_boxes();
+        let defect = vec![false; ti.len()];
+        let rt: Vec<[usize; 3]> = ti
+            .iter()
+            .map(|x| [x[0] as usize, x[1] as usize, x[2] as usize])
+            .collect();
+        let bvh = MeshBvh::from_arrays(&vi, &rt);
+        let (mask, info) = buried_face_mask_with_cap(&vi, &ti, &defect, 0.1, &bvh, 4);
+        assert!(info["sampled"].as_bool().unwrap_or(false));
+        let sampled = mask.iter().filter(|&&x| x).count() as u64;
+        assert!(sampled > 0, "the nested inner box must have buried faces");
+        // The reported count is exactly the sampled mask, never `×stride`; the
+        // rest of the family reads the same mask (audit MED-7).
+        assert_eq!(info["faces"].as_u64(), Some(sampled));
+        assert!(info["sample_stride"].as_u64().unwrap_or(1) > 1);
+    }
 }

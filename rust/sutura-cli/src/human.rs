@@ -511,6 +511,39 @@ pub fn human_report(report: &Value, _show_defects: bool, _show_diff: bool) -> St
     if let Some(vol) = s1.get("volume_change_percent") {
         lines.push(format!("  Volume change          : {}%", display(vol)));
     }
+    if let Some(fb) = report
+        .get("si_escalation")
+        .and_then(|s| s.get("si_excise_fallback"))
+        .or_else(|| report.get("si_excise_fallback"))
+    {
+        lines.push(String::new());
+        lines.push("SI excision (final mesh):".to_string());
+        let outcome = fb
+            .get("outcome")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let mut detail = vec![format!("outcome: {outcome}")];
+        if let Some(si) = fb
+            .get("candidate")
+            .and_then(|c| c.get("si"))
+            .and_then(Value::as_i64)
+        {
+            let before = fb.get("si_before").and_then(Value::as_i64);
+            match before {
+                Some(b) => detail.push(format!("SI {b} -> {si}")),
+                None => detail.push(format!("SI {si}")),
+            }
+        }
+        if let Some(variant) = fb.get("variant").and_then(Value::as_str) {
+            detail.push(format!("variant: {variant}"));
+        }
+        if let Some(reason) = fb.get("reason").and_then(Value::as_str) {
+            if outcome == "rejected" {
+                detail.push(format!("reason: {reason}"));
+            }
+        }
+        lines.push(format!("  {}", detail.join(" \u{00b7} ")));
+    }
     if let Some(stage2) = report.get("stage2") {
         lines.push(String::new());
         lines.push("Stage 2 (Manifold):".to_string());

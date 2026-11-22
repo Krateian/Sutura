@@ -235,7 +235,12 @@ fn unique_remap(tris: &[[i64; 3]]) -> (Vec<i64>, Vec<[i64; 3]>) {
 }
 
 fn measure(v: &[[f64; 3]], t: &[[i64; 3]]) -> (usize, usize, usize, Option<i64>, bool) {
-    let (holes, nm) = common::reload_strict_holes_nm(v, t);
+    // A failed reload weld is "not clean": report holes/non-manifold so no
+    // adoption path can read it as watertight (audit MED-4).
+    let (holes, nm) = match crate::p_weld::reload_strict_holes_nm_checked(v, t) {
+        Ok(pair) => pair,
+        Err(_) => (1, 1),
+    };
     let (_n, labels) = common::edge_face_labels(t);
     let parts = labels
         .iter()
@@ -478,15 +483,21 @@ pub fn run(
     let cand_vol = common::signed_volume(&acc_v, &acc_t);
     let volume_rel = coaptation_volume_rel(base_vol, cand_vol);
     let volume_ok = coaptation_volume_ok(base_vol, cand_vol);
+    // The two-sided pair is REPORT-ONLY. The adoption gates are body loss
+    // (`guard_ok`) and volume (`volume_ok`); `strictly_better` deliberately
+    // does not include this comparison, because a legitimate coaptation win
+    // (`thingi10k_1038439`, 1.6074 mm in 0.9.9) exceeds the per-mesh
+    // tolerance. The fields therefore say "report" and not "gate" (audit
+    // HIGH-2).
     let shape_tol = shape_tol_mm(input_v);
     let shape_current = shape_max_mm(input_v, input_t, v, t);
     let shape_max = shape_max_mm(input_v, input_t, &acc_v, &acc_t);
-    let shape_ok = shape_ok(shape_current, shape_max, shape_tol);
-    let shape_reason = if shape_ok {
+    let shape_report_within_tol = shape_ok(shape_current, shape_max, shape_tol);
+    let shape_report_note = if shape_report_within_tol {
         Value::Null
     } else {
         Value::from(format!(
-            "two-sided shape {:.4} mm > {:.4} mm + {:.4} mm",
+            "report only: two-sided shape {:.4} mm > {:.4} mm + {:.4} mm",
             shape_max, shape_current, shape_tol
         ))
     };
@@ -506,8 +517,11 @@ pub fn run(
     rec.insert("shape_current_mm".into(), json!(shape_current));
     rec.insert("shape_max_mm".into(), json!(shape_max));
     rec.insert("shape_tol_mm".into(), json!(shape_tol));
-    rec.insert("shape_ok".into(), json!(shape_ok));
-    rec.insert("shape_note".into(), shape_reason);
+    rec.insert(
+        "shape_report_within_tol".into(),
+        json!(shape_report_within_tol),
+    );
+    rec.insert("shape_report_note".into(), shape_report_note);
     if !volume_ok {
         guard_ok = false;
         guard.insert("guard_rejected".into(), volume_reason.clone());
@@ -582,7 +596,9 @@ mod tests {
     }
 
     #[test]
-    fn coaptation_shape_gate_rejects_large_jump() {
+    fn coaptation_shape_report_flags_large_jump() {
+        // Report-only predicate: it classifies the recorded pair, it does not
+        // gate adoption (body loss and volume do).
         assert!(coaptation_shape_ok(0.0, 0.0125, 0.0125));
         assert!(!coaptation_shape_ok(0.0, 18.9894, 0.0125));
         assert!(coaptation_shape_ok(1.6074, 1.6074, 0.0133));

@@ -661,12 +661,13 @@ fn contract_order(root: &mut Map<String, Value>) {
     }
 }
 
-const FLAP_ORDER: [&str; 38] = [
+const FLAP_ORDER: [&str; 39] = [
     "ran", "adopted", "reason", "baseline_holes", "baseline_non_manifold",
     "baseline_damage", "candidate_holes", "candidate_non_manifold",
     "candidate_damage", "loops_found", "loops_filled", "loops_skipped",
     "loops_skipped_by_reason", "patch_faces", "new_vertices", "time_s",
-    "cache_hit", "work_units", "work_budget", "max_orig_vertex_move_mm",
+    "cache_hit", "work_units", "work_budget", "work_capped",
+    "max_orig_vertex_move_mm",
     "input_faces", "input_vertices", "candidate_faces", "candidate_vertices",
     "loop_vertex_total", "slack_units", "baseline_self_intersections",
     "candidate_self_intersections", "si_flagged", "si_checked", "si_policy",
@@ -700,9 +701,12 @@ const TAMPONADE_ORDER: [&str; 72] = [
     "shell_prepass",
 ];
 
-const COAPTATION_ORDER: [&str; 27] = [
+const COAPTATION_ORDER: [&str; 36] = [
     "tier", "ran", "adopted", "gate", "ulp_k", "tol", "bodies_in",
     "bodies_after_weld", "merged", "baseline", "candidate", "output_faces",
+    "volume_before", "volume_after", "volume_rel", "volume_ok",
+    "shape_current_mm", "shape_max_mm", "shape_tol_mm",
+    "shape_report_within_tol", "shape_report_note",
     "guard_rejected", "guard_reason", "si_policy", "si_checked", "si_flagged",
     "seconds", "skipped_budget", "aborted", "work_units", "work_budget",
     "budget_limited_by", "reject_reason", "reason", "warnings", "input_faces",
