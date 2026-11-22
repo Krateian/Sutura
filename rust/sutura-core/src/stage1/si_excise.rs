@@ -305,6 +305,13 @@ pub fn run(
     let face_fraction = params.get("face_fraction").and_then(Value::as_f64).unwrap_or(MAX_FACE_FRACTION);
     let guard_on = params.get("shape_guard").and_then(Value::as_bool).unwrap_or(true);
     let guard_mode = params.get("guard_mode").and_then(Value::as_str).unwrap_or("local");
+    // First dilation-ring count to try (default 1, the historical behaviour).
+    // 0 removes only the intersecting faces so the re-cap spans a smaller loop.
+    let ring_start = params
+        .get("ring_start")
+        .and_then(Value::as_i64)
+        .unwrap_or(1)
+        .clamp(0, 2) as usize;
     let mut report = Map::new();
     report.insert("ran".into(), json!(false));
     report.insert("applied".into(), json!(false));
@@ -314,6 +321,7 @@ pub fn run(
     report.insert("removed_si".into(), json!(0));
     report.insert("reason".into(), Value::Null);
     report.insert("dilation_rings".into(), json!(1));
+    report.insert("ring_start".into(), json!(ring_start));
     report.insert("budget_s".into(), time_budget.map(Value::from).unwrap_or(Value::Null));
     report.insert("seconds".into(), json!(0.0));
     report.insert("history".into(), json!([]));
@@ -372,8 +380,8 @@ pub fn run(
             }
         };
         let mut accepted = false;
-        for attempt in 0..2usize {
-            let rings = attempt + 1;
+        for attempt in 0..(3 - ring_start) {
+            let rings = attempt + ring_start;
             if attempt > 0 {
                 v = saved_v.clone();
                 t = saved_t.clone();
@@ -530,7 +538,7 @@ pub fn run(
                 report.insert("reason".into(), json!("shape_guard"));
                 break;
             }
-            if rings == 1 && after.boundary_edges > 0 && after.boundary_edges < before.boundary_edges && si_ok && nm_after <= nm_before {
+            if attempt == 0 && after.boundary_edges > 0 && after.boundary_edges < before.boundary_edges && si_ok && nm_after <= nm_before {
                 continue;
             }
             v = saved_v.clone();

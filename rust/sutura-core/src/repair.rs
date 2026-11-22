@@ -1952,19 +1952,25 @@ fn apply_si_escalation(
     // shape-neutral result this retries on the CURRENT final mesh (not the
     // frozen Stage-1 input) and gates the result with the same never-worse
     // rule (SI strictly lower, holes/NM/parts not worse, two-sided within the
-    // mesh tolerance, volume within the SI-escalation tolerance). Two
-    // deterministic variants are tried: a single excision round first
-    // (smallest re-cap, least new-face deviation), then the full three-round
-    // pass. The record keeps every attempt. Env opt-out:
+    // mesh tolerance, volume within the SI-escalation tolerance). The variants
+    // are tried cheapest-first: remove only the SI faces (`ring_start` 0) to
+    // keep the re-cap loop small, then the historical one-ring excision; each
+    // with one round then three. The record keeps every attempt. Env opt-out:
     // `SUTURA_SI_EXCISE_FALLBACK=0`.
     if si_excise_fallback_enabled() && !cancel.is_cancelled() {
         let mut attempts: Vec<Value> = Vec::new();
         let mut adopted: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value, SiMetrics)> = None;
-        for (variant, rounds) in [("one_round", 1_i64), ("full_3round", 3_i64)] {
+        for (variant, rounds, ring_start) in [
+            ("ring0_one_round", 1_i64, 0_i64),
+            ("ring0_full_3round", 3_i64, 0_i64),
+            ("ring1_one_round", 1_i64, 1_i64),
+            ("ring1_full_3round", 3_i64, 1_i64),
+        ] {
             let fb_params = json!({
                 "max_rounds": rounds,
                 "face_fraction": 0.30,
                 "shape_guard": false,
+                "ring_start": ring_start,
             });
             let (fb_v, fb_t, fb_report) =
                 si_excise::run(base_v, base_t, input_v, input_t, &fb_params);
@@ -1973,6 +1979,8 @@ fn apply_si_escalation(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let fb_si = si_exact(&fb_v, &fb_t);
+            let (fb_rholes, fb_rnm) = reload_strict_holes_nm(&fb_v, &fb_t);
+            let reload_ok = fb_rholes == 0 && fb_rnm == 0;
             let fb_facts = si_facts(input_v, input_t, &fb_v, &fb_t);
             let mut fb_metrics = SiMetrics {
                 si: fb_si,
@@ -1984,7 +1992,10 @@ fn apply_si_escalation(
             let mut attempt = json!({
                 "variant": variant,
                 "max_rounds": rounds,
+                "ring_start": ring_start,
                 "applied": fb_applied,
+                "reload_holes": fb_rholes,
+                "reload_non_manifold": fb_rnm,
                 "si_before": base_si,
                 "si_after": fb_si,
                 "outcome": Value::Null,
@@ -2000,7 +2011,7 @@ fn apply_si_escalation(
                 continue;
             }
             let (ok, why) = si_verdict(&base, &fb_metrics, Some(tolerance), vol_rel_tol);
-            if ok {
+            if reload_ok && ok {
                 attempt["outcome"] = Value::from("adopted");
                 attempt["reason"] = Value::from(why.clone());
                 attempts.push(attempt);
@@ -2008,7 +2019,13 @@ fn apply_si_escalation(
                 break;
             }
             attempt["outcome"] = Value::from("rejected");
-            attempt["reason"] = Value::from(why);
+            attempt["reason"] = Value::from(if !reload_ok {
+                format!(
+                    "reload topology not watertight (holes {fb_rholes}, non-manifold {fb_rnm})"
+                )
+            } else {
+                why
+            });
             attempts.push(attempt);
         }
         if let Some((fb_v, fb_t, fb_report, fb_metrics)) = adopted {
