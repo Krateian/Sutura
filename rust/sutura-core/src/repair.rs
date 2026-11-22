@@ -1960,17 +1960,21 @@ fn apply_si_escalation(
     if si_excise_fallback_enabled() && !cancel.is_cancelled() {
         let mut attempts: Vec<Value> = Vec::new();
         let mut adopted: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value, SiMetrics)> = None;
-        for (variant, rounds, ring_start) in [
-            ("ring0_one_round", 1_i64, 0_i64),
-            ("ring0_full_3round", 3_i64, 0_i64),
-            ("ring1_one_round", 1_i64, 1_i64),
-            ("ring1_full_3round", 3_i64, 1_i64),
+        for (variant, rounds, ring_start, cap_levels) in [
+            ("ring0_one_round", 1_i64, 0_i64, 0_i64),
+            ("ring0_full_3round", 3_i64, 0_i64, 0_i64),
+            ("ring1_one_round", 1_i64, 1_i64, 0_i64),
+            ("ring1_full_3round", 3_i64, 1_i64, 0_i64),
+            ("ring1_projected_1", 1_i64, 1_i64, 1_i64),
+            ("ring1_projected_4", 3_i64, 1_i64, 4_i64),
         ] {
             let fb_params = json!({
                 "max_rounds": rounds,
                 "face_fraction": 0.30,
                 "shape_guard": false,
                 "ring_start": ring_start,
+                "cap_refine_levels": cap_levels,
+                "cap_tol_mm": tolerance,
             });
             let (fb_v, fb_t, fb_report) =
                 si_excise::run(base_v, base_t, input_v, input_t, &fb_params);
@@ -1993,6 +1997,7 @@ fn apply_si_escalation(
                 "variant": variant,
                 "max_rounds": rounds,
                 "ring_start": ring_start,
+                "cap_refine_levels": cap_levels,
                 "applied": fb_applied,
                 "reload_holes": fb_rholes,
                 "reload_non_manifold": fb_rnm,

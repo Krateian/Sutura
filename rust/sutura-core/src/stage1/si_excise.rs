@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
+use sutura_geom::flap::{cross, dot, norm, sub};
 use sutura_geom::hole::close_holes_core;
 use sutura_geom::shell::{buried_face_mask, BuriedMaskContext};
 use sutura_geom::topology::{
@@ -24,6 +25,7 @@ const MAX_FACE_FRACTION: f64 = 0.30;
 const DEFAULT_BUDGET: f64 = 5.0;
 const SHAPE_BUDGET_MM: f64 = 0.1;
 const MOVE_EPS_MM: f64 = 1e-9;
+const CAP_FACE_LIMIT: usize = 60_000;
 
 fn py_round(x: f64, nd: usize) -> f64 {
     if !x.is_finite() {
@@ -134,6 +136,108 @@ fn new_face_max_mm(ref_v: &[[f64; 3]], ref_t: &[[i64; 3]], cand_v: &[[f64; 3]], 
     }
     let d = distances(ref_v, ref_t, &pts)?;
     Some(d.iter().fold(0.0f64, |m, x| m.max(*x)))
+}
+
+/// Make a re-cap follow the reference surface instead of chording across the
+/// hole. Each cap face whose centroid is farther than `tol_mm` from the
+/// reference is replaced by three sub-faces at the projected centroid; the
+/// split is rolled back for a face whose sub-faces would flip or collapse.
+/// Returns `(levels_done, faces_added, max_before_mm, max_after_mm)`.
+fn refine_cap_projected(
+    bvh: &MeshBvh,
+    verts: &mut Vec<[f64; 3]>,
+    tris: &mut Vec<[i64; 3]>,
+    cap_start: usize,
+    max_levels: usize,
+    tol_mm: f64,
+    face_limit: usize,
+) -> (usize, usize, f64, f64) {
+    let mut cap_faces: Vec<usize> = (cap_start.min(tris.len())..tris.len()).collect();
+    if cap_faces.is_empty() || max_levels == 0 || !(tol_mm > 0.0) {
+        return (0, 0, 0.0, 0.0);
+    }
+    let centroid = |v: &[[f64; 3]], r: [i64; 3]| -> [f64; 3] {
+        let a = v[r[0] as usize];
+        let b = v[r[1] as usize];
+        let c = v[r[2] as usize];
+        [
+            (a[0] + b[0] + c[0]) / 3.0,
+            (a[1] + b[1] + c[1]) / 3.0,
+            (a[2] + b[2] + c[2]) / 3.0,
+        ]
+    };
+    let mut max_before = 0.0f64;
+    for &fi in &cap_faces {
+        let m = centroid(verts, tris[fi]);
+        let (_, d, f) = bvh.closest_point(m);
+        if f != usize::MAX && d > max_before {
+            max_before = d;
+        }
+    }
+    let mut levels = 0usize;
+    let mut added = 0usize;
+    for _ in 0..max_levels {
+        if tris.len().saturating_sub(cap_start) >= face_limit {
+            break;
+        }
+        let mut next: Vec<usize> = Vec::new();
+        let mut any = false;
+        for &fi in &cap_faces {
+            let r = tris[fi];
+            let m = centroid(verts, r);
+            let (q, d, f) = bvh.closest_point(m);
+            if f == usize::MAX {
+                continue;
+            }
+            if d <= tol_mm {
+                continue;
+            }
+            let a = verts[r[0] as usize];
+            let b = verts[r[1] as usize];
+            let c = verts[r[2] as usize];
+            let n0 = cross(sub(b, a), sub(c, a));
+            if norm(n0) <= 1e-18 {
+                continue;
+            }
+            let f0 = cross(sub(b, a), sub(q, a));
+            let f1 = cross(sub(c, b), sub(q, b));
+            let f2 = cross(sub(a, c), sub(q, c));
+            if dot(f0, n0) <= 0.0
+                || norm(f0) <= 1e-18
+                || dot(f1, n0) <= 0.0
+                || norm(f1) <= 1e-18
+                || dot(f2, n0) <= 0.0
+                || norm(f2) <= 1e-18
+            {
+                continue;
+            }
+            let mi = verts.len() as i64;
+            verts.push(q);
+            let tail = tris.len();
+            tris[fi] = [r[0], r[1], mi];
+            tris.push([r[1], r[2], mi]);
+            tris.push([r[2], r[0], mi]);
+            next.push(fi);
+            next.push(tail);
+            next.push(tail + 1);
+            added += 2;
+            any = true;
+        }
+        if !any {
+            break;
+        }
+        cap_faces = next;
+        levels += 1;
+    }
+    let mut max_after = 0.0f64;
+    for &fi in &cap_faces {
+        let m = centroid(verts, tris[fi]);
+        let (_, d, f) = bvh.closest_point(m);
+        if f != usize::MAX && d > max_after {
+            max_after = d;
+        }
+    }
+    (levels, added, max_before, max_after)
 }
 
 struct Guard {
@@ -312,6 +416,18 @@ pub fn run(
         .and_then(Value::as_i64)
         .unwrap_or(1)
         .clamp(0, 2) as usize;
+    // Projected re-cap: split cap faces at their input-projected centroid for
+    // up to `cap_refine_levels` levels when the centroid is farther than
+    // `cap_tol_mm`. 0 levels keeps the historical chord/fan cap.
+    let cap_levels = params
+        .get("cap_refine_levels")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .clamp(0, 6) as usize;
+    let cap_tol = params
+        .get("cap_tol_mm")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0125);
     let mut report = Map::new();
     report.insert("ran".into(), json!(false));
     report.insert("applied".into(), json!(false));
@@ -322,6 +438,8 @@ pub fn run(
     report.insert("reason".into(), Value::Null);
     report.insert("dilation_rings".into(), json!(1));
     report.insert("ring_start".into(), json!(ring_start));
+    report.insert("cap_refine_levels".into(), json!(cap_levels));
+    report.insert("cap_tol_mm".into(), json!(cap_tol));
     report.insert("budget_s".into(), time_budget.map(Value::from).unwrap_or(Value::Null));
     report.insert("seconds".into(), json!(0.0));
     report.insert("history".into(), json!([]));
@@ -407,6 +525,7 @@ pub fn run(
             v_work = v_work2;
             t_work = t_work2;
             let vw64 = f32_to_f64(&v_work);
+            let cap_start = t_work.len();
             let rep = match close_holes_core(&vw64, &t_work, maxholesize, true) {
                 Ok(r) => r,
                 Err(_) => {
@@ -416,15 +535,38 @@ pub fn run(
                     break;
                 }
             };
-            let mut new_face_mask = vec![false; rep.tris.len()];
-            if rep.new_faces > 0 {
-                let start = rep.tris.len().saturating_sub(rep.new_faces);
-                for m in &mut new_face_mask[start..] {
-                    *m = true;
-                }
+            let mut cap_v = rep.verts;
+            let mut cap_t = rep.tris;
+            let mut cap_refine_info = Value::Null;
+            if cap_levels > 0 && cap_start < cap_t.len() {
+                let ref_ut: Vec<[usize; 3]> = ref_tris
+                    .iter()
+                    .map(|r| [r[0] as usize, r[1] as usize, r[2] as usize])
+                    .collect();
+                let bvh = MeshBvh::from_arrays(ref_verts, &ref_ut);
+                let (levels, added, max_before, max_after) = refine_cap_projected(
+                    &bvh,
+                    &mut cap_v,
+                    &mut cap_t,
+                    cap_start,
+                    cap_levels,
+                    cap_tol,
+                    CAP_FACE_LIMIT,
+                );
+                cap_refine_info = json!({
+                    "levels": levels,
+                    "added_faces": added,
+                    "max_before_mm": py_round(max_before, 4),
+                    "max_after_mm": py_round(max_after, 4),
+                });
+                report.insert("cap_refine".into(), cap_refine_info.clone());
             }
-            let vw32b = as_f32(&rep.verts);
-            let (v_final, t_final) = remove_unreferenced_vertices_core(&vw32b, &rep.tris);
+            let mut new_face_mask = vec![false; cap_t.len()];
+            for m in new_face_mask.iter_mut().skip(cap_start.min(cap_t.len())) {
+                *m = true;
+            }
+            let vw32b = as_f32(&cap_v);
+            let (v_final, t_final) = remove_unreferenced_vertices_core(&vw32b, &cap_t);
             let v_final64 = f32_to_f64(&v_final);
             let after = common::topology_summary(&v_final64, &t_final);
             let ut2: Vec<[usize; 3]> = t_final.iter().map(|r| [r[0] as usize, r[1] as usize, r[2] as usize]).collect();
@@ -465,6 +607,7 @@ pub fn run(
                 entry.insert("si_after".into(), json!(si_after));
                 entry.insert("faces_after".into(), json!(after.faces));
                 entry.insert("dilation_rings".into(), json!(rings));
+                entry.insert("cap_refine".into(), cap_refine_info.clone());
                 if let Some(pv) = post_vis {
                     entry.insert(
                         "pre_vis_mm".into(),
