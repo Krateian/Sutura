@@ -363,14 +363,17 @@ pub fn options_from(
         wall_min_thickness: settings.wall_min_thickness,
         repeat,
         classifier_engine,
-        // The CLI and GUI strip `analysis`/`recommendations` from the repair
-        // report, so the shared settings do not pay for them. The auto ladder
-        // still gets its ranking: `repair_impl` computes the analysis on demand
-        // when the baseline is not watertight.
-        analysis: false,
-        // Likewise the report's `trace` measures: the CLI writes its own
-        // `--trace` file from progress events and drops this block, so the
-        // per-boundary topology scan is not needed for their runs.
+        // The GUI reads `recommendations` from the per-object repair report for
+        // its Recommended panel, so the shared settings keep the analysis. The
+        // CLI removes those fields before JSON output and turns this off in
+        // `build_options` instead; the auto ladder still gets its ranking
+        // because `repair_impl` computes it on demand when the baseline is not
+        // watertight.
+        analysis: true,
+        // The GUI does not read the report's per-boundary `trace` measures (the
+        // CLI writes its own `--trace` file from progress events), so the
+        // shared settings skip that scan. The record's stage/method/gate fields
+        // are still produced.
         trace_measure: false,
         repeat_source: settings.repeat_source,
         repeat_target: settings.repeat_target,

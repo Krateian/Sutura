@@ -5869,6 +5869,30 @@ mod tests {
         assert!(health.get("methods").and_then(Value::as_object).is_some());
     }
 
+    #[test]
+    fn gui_settings_report_carries_recommendations() {
+        let (verts, tris) = cube();
+        let (mut opts, _, _) = crate::repair_settings::options_from(
+            &crate::repair_settings::RepairSettings::default(),
+        )
+        .expect("GUI settings must convert");
+        assert!(opts.analysis, "the GUI keeps the analysis for its panel");
+        opts.tamponade = Some(false);
+        opts.flap = Some(false);
+        opts.coaptation = Some(false);
+        opts.deep_repair = DeepRepair::Off;
+        let outcome = repair(&verts, &tris, &opts, &NoopSink, &CancelToken::new());
+        let report = match outcome {
+            RepairOutcome::Ok { report, .. } => report,
+            other => panic!("unexpected outcome: {}", outcome_name(&other)),
+        };
+        let recs = report
+            .get("recommendations")
+            .and_then(Value::as_array)
+            .expect("the GUI path must emit recommendations");
+        assert!(!recs.is_empty());
+    }
+
     fn outcome_name(outcome: &RepairOutcome) -> &'static str {
         match outcome {
             RepairOutcome::Ok { .. } => "ok",
