@@ -17,12 +17,38 @@ const MAX_NUDGE_ATTEMPTS: usize = 12;
 const MAX_HOLE: i64 = 200;
 const MIN_FACE_FRACTION: f64 = 0.98;
 
+thread_local! {
+    // The pipeline welds the same large mesh at several boundaries (P-WELD,
+    // Flap debris, stage gates, report health). The weld is a pure function of
+    // the buffers, so keep the last two results by content.
+    static WELD_CACHE: std::cell::RefCell<Vec<(u64, (Vec<[f32; 3]>, Vec<[i64; 3]>))>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub fn weld_reload_equivalent(
     verts: &[[f64; 3]],
     tris: &[[i64; 3]],
 ) -> Result<(Vec<[f32; 3]>, Vec<[i64; 3]>), String> {
+    let key = sutura_geom::mesh_hash_i64(verts, tris);
+    if let Some(hit) = WELD_CACHE.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+    }) {
+        return Ok(hit);
+    }
     let v32: Vec<[f32; 3]> = verts.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
-    weld_reload_equivalent_core(&v32, tris)
+    let out = weld_reload_equivalent_core(&v32, tris)?;
+    let ret = out.clone();
+    WELD_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 1 {
+            c.remove(0);
+        }
+        c.push((key, out));
+    });
+    Ok(ret)
 }
 
 pub fn reload_topology(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> (usize, usize, usize) {
@@ -35,14 +61,25 @@ pub fn reload_topology(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> (usize, usize, 
     (d.holes.len(), d.non_manifold.len(), pinched_count(&wv, &wt))
 }
 
-pub fn reload_strict_holes_nm(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> (usize, usize) {
-    let (wv, wt) = match weld_reload_equivalent(verts, tris) {
-        Ok(x) => x,
-        Err(_) => return (0, 0),
-    };
+/// Reload holes/non-manifold, distinguishing "clean" from "weld failed".
+///
+/// `reload_strict_holes_nm` returns `(0, 0)` when the reload weld errors,
+/// which is indistinguishable from a watertight mesh and lets a candidate that
+/// fails to reload be adopted (audit MED-4). Gate callers use this checked
+/// form and treat `Err` as not clean. The unchecked wrapper is kept for the
+/// legacy callers that only log the count.
+pub fn reload_strict_holes_nm_checked(
+    verts: &[[f64; 3]],
+    tris: &[[i64; 3]],
+) -> Result<(usize, usize), String> {
+    let (wv, wt) = weld_reload_equivalent(verts, tris)?;
     let t32: Vec<[i32; 3]> = wt.iter().map(|r| [r[0] as i32, r[1] as i32, r[2] as i32]).collect();
     let d = detect_defects(&wv, &t32, false);
-    (d.holes.len(), d.non_manifold.len())
+    Ok((d.holes.len(), d.non_manifold.len()))
+}
+
+pub fn reload_strict_holes_nm(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> (usize, usize) {
+    reload_strict_holes_nm_checked(verts, tris).unwrap_or((0, 0))
 }
 
 pub fn spacing_f32(x: f32) -> f32 {

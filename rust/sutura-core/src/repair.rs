@@ -31,7 +31,9 @@ use crate::graft::shell::{shell_wrap_with_cancel, ShellWrapOptions};
 use crate::local_remesh;
 use crate::mesh::Mesh;
 use crate::mirror::mirror_close;
-use crate::p_weld::{enforce_reload_verdict, p_weld_final, reload_strict_holes_nm};
+use crate::p_weld::{
+    enforce_reload_verdict, p_weld_final, reload_strict_holes_nm, reload_strict_holes_nm_checked,
+};
 use crate::proxy::proxy_template_repair;
 use crate::ranking::{
     order_graft_before_ftetwild, prune_avoid_nums, rank_methods, recommendations_json,
@@ -259,6 +261,19 @@ pub struct RepairOptions {
     /// experimental, matching Python.
     #[serde(default)]
     pub classifier_engine: Option<String>,
+    /// Compute the read-only `analysis`/`recommendations` report block.
+    /// The CLI and GUI strip those fields, so their shared settings disable
+    /// it; direct core callers keep it. Disabling it does not skip the ranked
+    /// auto ladder: the analysis is computed on demand when the baseline is
+    /// not watertight, so repair decisions are unchanged.
+    #[serde(default = "default_true")]
+    pub analysis: bool,
+    /// Fill the per-boundary `input`/`output` measures in the report's `trace`
+    /// records. The CLI/GUI never read that block (the CLI's `--trace` file is
+    /// built from progress events), so their settings skip the measurement.
+    /// The record's stage/method/gate fields are still produced.
+    #[serde(default = "default_true")]
+    pub trace_measure: bool,
     /// Internal guard: depth of a nested auto-ladder attempt.  Not part of the
     /// Python-facing option JSON.
     #[serde(skip)]
@@ -313,9 +328,15 @@ impl Default for RepairOptions {
             auto_reorder: false,
             ftetwild_optimize: false,
             classifier_engine: None,
+            analysis: true,
+            trace_measure: true,
             ladder_depth: 0,
         }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// The result of one Rust pipeline run.
@@ -440,12 +461,36 @@ fn quantize(verts: &[[f64; 3]]) -> Vec<[f64; 3]> {
 }
 
 /// `boundary_loop_stats` (count, largest loop edge count) without numpy.
+thread_local! {
+    static BOUNDARY_CACHE: std::cell::RefCell<Vec<(u64, (usize, usize))>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub(crate) fn boundary_loop_stats(tris: &[[i64; 3]]) -> (usize, usize) {
+    // The report's trace measures the same mesh at several stage boundaries;
+    // the loop walk itself scans every edge, so reuse the counts by content.
+    let key = sutura_geom::mesh_hash_i64(&[], tris);
+    if let Some(hit) = BOUNDARY_CACHE.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| *v)
+    }) {
+        return hit;
+    }
     let t32: Vec<[i32; 3]> = tris
         .iter()
         .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
         .collect();
-    crate::validate::boundary_loop_stats(0, &t32)
+    let out = crate::validate::boundary_loop_stats(0, &t32);
+    BOUNDARY_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 8 {
+            c.remove(0);
+        }
+        c.push((key, out));
+    });
+    out
 }
 
 /// Boundary loops exactly as `topology.mesh_topology` counts them: walk the
@@ -1165,9 +1210,20 @@ fn tamponade_params(
     })
 }
 
+/// Wall-clock net for Flap's exact-SI safety scan. Disabled by default: the
+/// deterministic pair charge is the only default bound, so output never
+/// depends on host speed (audit MED-3). `SUTURA_FLAP_SI_BUDGET=<seconds>`
+/// (positive) opts in.
+fn flap_si_budget_from(raw: Option<String>) -> Option<f64> {
+    raw.and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s > 0.0)
+}
+
 fn flap_params(tris: &[[i64; 3]], intensity: &str, policy: Option<&LoadedPolicy>) -> Value {
+    let si_time_budget = flap_si_budget_from(std::env::var("SUTURA_FLAP_SI_BUDGET").ok());
     json!({
         "work_budget": flap_work(policy, intensity),
+        "si_time_budget": si_time_budget,
         "intensity": intensity,
         "input_faces": tris.len(),
     })
@@ -1292,13 +1348,15 @@ fn measure_mesh(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> Value {
 struct TraceLog {
     records: Vec<Value>,
     step: u64,
+    measure: bool,
 }
 
 impl TraceLog {
-    fn new() -> Self {
+    fn new(measure: bool) -> Self {
         Self {
             records: Vec::new(),
             step: 0,
+            measure,
         }
     }
 
@@ -1312,6 +1370,8 @@ impl TraceLog {
         tout: &[[i64; 3]],
         gate: Value,
     ) {
+        let input = if self.measure { measure_mesh(vin, tin) } else { Value::Null };
+        let output = if self.measure { measure_mesh(vout, tout) } else { Value::Null };
         let record = json!({
             "step": self.step,
             "object_id": "main",
@@ -1319,8 +1379,8 @@ impl TraceLog {
             "stage": stage,
             "method": method,
             "elapsed_seconds": 0.0,
-            "input": measure_mesh(vin, tin),
-            "output": measure_mesh(vout, tout),
+            "input": input,
+            "output": output,
             "sha256": Value::Null,
             "gate": gate,
         });
@@ -1342,6 +1402,18 @@ const SI_EXCISE_BUDGET: [(&str, f64); 4] = [
 
 fn si_excise_enabled() -> bool {
     match std::env::var("SUTURA_SI_EXCISE") {
+        Ok(raw) => !matches!(
+            raw.trim().to_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Final-mesh SI-excision fallback. Default on; `SUTURA_SI_EXCISE_FALLBACK=0`
+/// disables it (no CLI flag or GUI control, users only press Repair).
+fn si_excise_fallback_enabled() -> bool {
+    match std::env::var("SUTURA_SI_EXCISE_FALLBACK") {
         Ok(raw) => !matches!(
             raw.trim().to_lowercase().as_str(),
             "0" | "false" | "no" | "off"
@@ -1393,6 +1465,8 @@ fn method_used_value(deep: DeepRepair) -> Value {
 
 const SI_METHOD_ID: &str = "scaffold";
 const SI_METHOD_NAME: &str = "Scaffold";
+const SI_EXCISE_FALLBACK_ID: &str = "si_excise_fallback";
+const SI_EXCISE_FALLBACK_NAME: &str = "SI excision (final mesh)";
 const DEFAULT_GRAFT_GRID_BUDGET: i64 = 120_000_000;
 
 #[derive(Clone, Debug, Default)]
@@ -1546,6 +1620,119 @@ fn si_tolerance(in_v: &[[f64; 3]], policy: Option<&LoadedPolicy>) -> Option<f64>
     let min = policy_number(policy, "si_escalation", "dist_tol_min_mm", 0.0125);
     let max = policy_number(policy, "si_escalation", "dist_tol_max_mm", 0.05);
     Some((diag / div).max(min).min(max))
+}
+
+fn stage1_geom_volume(v: &[[f64; 3]], t: &[[i64; 3]]) -> f64 {
+    let v32: Vec<[f32; 3]> = v
+        .iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect();
+    sutura_geom::topology::mesh_geometric_measures_core(&v32, t)
+        .0
+        .unwrap_or(0.0)
+}
+
+/// Rewrite the Stage-1 fields that describe the mesh actually handed back.
+///
+/// The final-mesh SI-excision fallback replaces the Stage-1 output after the
+/// Stage-1 report was written, so the report would otherwise describe the
+/// pre-fallback mesh (audit HIGH-1). The `*_before` values and the pipeline
+/// record (`applied_filters`, `removed_small_parts`, …) are kept; only the
+/// post fields are recomputed from `v`/`t`.
+fn refresh_stage1_final(
+    stage1: &mut Map<String, Value>,
+    v: &[[f64; 3]],
+    t: &[[i64; 3]],
+    si: Option<i64>,
+    min_component: i64,
+) {
+    let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
+    let int_of = |m: &Map<String, Value>, k: &str| {
+        m.get(k).and_then(Value::as_i64).unwrap_or(0)
+    };
+    let holes_before = int_of(stage1, "holes_closed") + int_of(stage1, "holes_remaining");
+    let nm_before = int_of(stage1, "non_manifold_edges_fixed")
+        + int_of(stage1, "non_manifold_edges_remaining");
+    let faces_before = int_of(stage1, "faces_before");
+    let vol_before = stage1
+        .get("volume_before")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let area_before = stage1
+        .get("surface_area_before")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+
+    let topo = common::topology_summary(v, t);
+    let holes = boundary_loop_stats(t).0;
+    let nm = topo.non_two_manifold_edges;
+    let two_manifold = common::is_two_manifold(v.len(), t);
+    stage1.insert(
+        "holes_closed".into(),
+        Value::from(holes_before.saturating_sub(holes as i64)),
+    );
+    stage1.insert("holes_remaining".into(), Value::from(holes as i64));
+    stage1.insert(
+        "non_manifold_edges_fixed".into(),
+        Value::from(nm_before.saturating_sub(nm as i64)),
+    );
+    stage1.insert("non_manifold_edges_remaining".into(), Value::from(nm));
+    stage1.insert("two_manifold".into(), Value::Bool(two_manifold));
+    stage1.insert("components".into(), Value::from(topo.components));
+    stage1.insert("faces_after".into(), Value::from(topo.faces));
+    stage1.insert(
+        "faces_removed".into(),
+        Value::from(faces_before.saturating_sub(topo.faces as i64)),
+    );
+    stage1.insert("vertices_after".into(), Value::from(v.len()));
+
+    let vol_after = stage1_geom_volume(v, t);
+    stage1.insert("volume_after".into(), Value::from(vol_after));
+    stage1.insert("volume_change_percent".into(), Value::Null);
+    if vol_before != 0.0 {
+        let pct = (vol_after - vol_before) / vol_before.abs() * 100.0;
+        stage1.insert(
+            "volume_change_percent".into(),
+            Value::from((pct * 100.0).round() / 100.0),
+        );
+    }
+    let area_after = py_surface_area(v, t);
+    stage1.insert("surface_area_after".into(), Value::from(round3(area_after)));
+    stage1.insert("surface_area_change_percent".into(), Value::Null);
+    if area_before != 0.0 {
+        let pct = (area_after - area_before) / area_before * 100.0;
+        stage1.insert(
+            "surface_area_change_percent".into(),
+            Value::from((pct * 100.0).round() / 100.0),
+        );
+    }
+    stage1.insert(
+        "self_intersections_remaining".into(),
+        si.map(Value::from).unwrap_or(Value::Null),
+    );
+    let si_work = t.len() as i64
+        * (1 + nm as i64 + topo.non_two_manifold_vertices as i64 + holes as i64);
+    stage1.insert("si_work_units".into(), Value::from(si_work));
+    stage1.insert("si_work_budget".into(), Value::from(15_000_000i64));
+    let possible = crate::report::possible_debris(
+        v,
+        &to_i32(t),
+        min_component.max(0) as usize,
+        0.005,
+    )
+    .map(|d| {
+        json!({
+            "count": d.count,
+            "capped": d.capped,
+            "parts": d.parts.iter().map(|p| json!({
+                "faces": p.faces,
+                "volume_pct": p.volume_pct,
+                "size_pct": p.size_pct,
+                "distance_mm": p.distance_mm,
+            })).collect::<Vec<_>>(),
+        })
+    });
+    stage1.insert("possible_debris".into(), possible.unwrap_or(Value::Null));
 }
 
 fn si_method_num(policy: Option<&LoadedPolicy>) -> i64 {
@@ -1864,6 +2051,7 @@ fn apply_si_escalation(
     opts: &RepairOptions,
     policy: Option<&LoadedPolicy>,
     stage1_snapshot: Option<&(Vec<[f64; 3]>, Vec<[i64; 3]>)>,
+    min_component: i64,
     cancel: &CancelToken,
 ) -> Option<(Vec<[f64; 3]>, Vec<[i64; 3]>, Value)> {
     let (snap_v, snap_t) = stage1_snapshot
@@ -1927,6 +2115,215 @@ fn apply_si_escalation(
         "outcome": Value::Null,
         "reason": Value::Null,
     });
+
+    // Final-mesh SI-excision fallback, before Scaffold. Stage 1 already ran a
+    // shape-guarded excision; when that guard rejected an otherwise
+    // shape-neutral result this retries on the CURRENT final mesh (not the
+    // frozen Stage-1 input) and gates the result with the same never-worse
+    // rule (SI strictly lower, holes/NM/parts not worse, two-sided within the
+    // mesh tolerance, volume within the SI-escalation tolerance). The variants
+    // are tried cheapest-first: remove only the SI faces (`ring_start` 0) to
+    // keep the re-cap loop small, then the historical one-ring excision, then
+    // the projected re-cap refined onto the input surface. The record keeps
+    // every attempt. Env opt-out: `SUTURA_SI_EXCISE_FALLBACK=0`.
+    if si_excise_fallback_enabled() && !cancel.is_cancelled() {
+        let mut attempts: Vec<Value> = Vec::new();
+        // Evaluate every variant: an early partial SI reduction must not hide a
+        // later variant that removes all of it. Keep the best that passes the
+        // never-worse gate by (SI, two-sided max, face count); ladder order
+        // breaks exact ties, so the choice is deterministic.
+        let mut best: Option<((i64, f64, usize), Vec<[f64; 3]>, Vec<[i64; 3]>, Value, SiMetrics)> =
+            None;
+        let mut best_idx: Option<usize> = None;
+        for (variant, rounds, ring_start, cap_levels) in [
+            ("ring0_one_round", 1_i64, 0_i64, 0_i64),
+            ("ring1_one_round", 1_i64, 1_i64, 0_i64),
+            ("ring1_projected_4", 3_i64, 1_i64, 4_i64),
+            ("ring1_projected_6", 3_i64, 1_i64, 6_i64),
+        ] {
+            let fb_params = json!({
+                "max_rounds": rounds,
+                "face_fraction": 0.30,
+                "shape_guard": false,
+                "ring_start": ring_start,
+                "cap_refine_levels": cap_levels,
+                "cap_tol_mm": tolerance,
+            });
+            let (fb_v, fb_t, fb_report) =
+                si_excise::run(base_v, base_t, input_v, input_t, &fb_params);
+            let fb_applied = fb_report
+                .get("applied")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let fb_si = si_exact(&fb_v, &fb_t);
+            // A reload weld that errors is "not clean", not watertight
+            // (audit MED-4).
+            let fb_reload = reload_strict_holes_nm_checked(&fb_v, &fb_t);
+            let fb_reload_err = fb_reload.as_ref().err().cloned();
+            let (fb_rholes, fb_rnm) = fb_reload.unwrap_or((0, 0));
+            let reload_ok = fb_reload_err.is_none() && fb_rholes == 0 && fb_rnm == 0;
+            let fb_facts = si_facts(input_v, input_t, &fb_v, &fb_t);
+            let mut fb_metrics = SiMetrics {
+                si: fb_si,
+                ..Default::default()
+            };
+            if let Some(facts) = fb_facts.as_ref() {
+                fb_metrics.apply_facts(facts);
+            }
+            let mut attempt = json!({
+                "variant": variant,
+                "max_rounds": rounds,
+                "ring_start": ring_start,
+                "cap_refine_levels": cap_levels,
+                "applied": fb_applied,
+                "reload_holes": fb_rholes,
+                "reload_non_manifold": fb_rnm,
+                "reload_error": fb_reload_err,
+                "si_before": base_si,
+                "si_after": fb_si,
+                "outcome": Value::Null,
+                "reason": Value::Null,
+                "candidate": fb_metrics.to_value(),
+                "candidate_sha256": stl_sha256(&fb_v, &fb_t),
+                "si_excise": fb_report.clone(),
+            });
+            if !fb_applied {
+                attempt["outcome"] = Value::from("rejected");
+                attempt["reason"] = Value::from("excise made no accepted change");
+                attempts.push(attempt);
+                continue;
+            }
+            let (ok, why) = si_verdict(&base, &fb_metrics, Some(tolerance), vol_rel_tol);
+            if reload_ok && ok {
+                let key = (
+                    fb_si.unwrap_or(i64::MAX),
+                    fb_metrics.shape_max_mm.unwrap_or(f64::INFINITY),
+                    fb_t.len(),
+                );
+                attempt["outcome"] = Value::from("passed");
+                attempt["reason"] = Value::from(why);
+                let idx = attempts.len();
+                attempts.push(attempt);
+                if best.as_ref().map_or(true, |b| key < b.0) {
+                    best = Some((key, fb_v, fb_t, fb_report, fb_metrics));
+                    best_idx = Some(idx);
+                }
+                continue;
+            }
+            attempt["outcome"] = Value::from("rejected");
+            attempt["reason"] = Value::from(if !reload_ok {
+                match &fb_reload_err {
+                    Some(e) => format!("reload weld failed: {e}"),
+                    None => format!(
+                        "reload topology not watertight (holes {fb_rholes}, non-manifold {fb_rnm})"
+                    ),
+                }
+            } else {
+                why
+            });
+            attempts.push(attempt);
+        }
+        if let Some(idx) = best_idx {
+            if let Some(obj) = attempts.get_mut(idx).and_then(Value::as_object_mut) {
+                obj.insert("outcome".into(), Value::from("adopted"));
+                obj.insert("selected".into(), Value::Bool(true));
+            }
+        }
+        if let Some((_, fb_v, fb_t, fb_report, fb_metrics)) = best {
+            let selected = best_idx
+                .and_then(|i| attempts.get(i))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let why = selected.get("reason").cloned().unwrap_or(Value::Null);
+            let fb_entry = json!({
+                "ran": true,
+                "outcome": "adopted",
+                "guard": "never_worse",
+                "variant": selected.get("variant").cloned().unwrap_or(Value::Null),
+                "si_before": base_si,
+                "candidate": fb_metrics.to_value(),
+                "candidate_sha256": stl_sha256(&fb_v, &fb_t),
+                "attempts": attempts,
+                "si_excise": fb_report,
+            });
+            // The fallback is not one of the 19 registry methods, so it has no
+            // method number. Reporting Scaffold's 10 here contradicted the id
+            // (audit MED-5); `null` is the honest value.
+            field.insert("si_excise_fallback".into(), fb_entry.clone());
+            field.insert("method".into(), Value::from(SI_EXCISE_FALLBACK_ID));
+            field.insert("num".into(), Value::Null);
+            field.insert("name".into(), Value::from(SI_EXCISE_FALLBACK_NAME));
+            field.insert("outcome".into(), Value::from("adopted"));
+            field.insert("reason".into(), why.clone());
+            field.insert("candidate".into(), fb_metrics.to_value());
+            field.insert(
+                "candidate_sha256".into(),
+                fb_entry.get("candidate_sha256").cloned().unwrap_or(Value::Null),
+            );
+            let field_value = Value::Object(field);
+            out.insert("si_excise_fallback".into(), fb_entry);
+            out.insert("si_escalation".into(), field_value);
+            let mut adopted = out.clone();
+            // The report was built for `base_v/base_t`; the caller gets
+            // `fb_v/fb_t`. Rewrite the Stage-1 post fields so stage1,
+            // print_report, category/issues and history all describe the
+            // returned mesh (audit HIGH-1).
+            if let Some(s1) = adopted.get_mut("stage1").and_then(Value::as_object_mut) {
+                refresh_stage1_final(s1, &fb_v, &fb_t, fb_metrics.si, min_component);
+            }
+            let mut adopted_value = Value::Object(adopted);
+            enforce_reload_verdict(&mut adopted_value, &fb_v, &fb_t, false);
+            let mut adopted = match adopted_value {
+                Value::Object(m) => m,
+                _ => Map::new(),
+            };
+            adopted.insert(
+                "method_used".into(),
+                json!({
+                    "num": Value::Null,
+                    "id": SI_EXCISE_FALLBACK_ID,
+                    "name": SI_EXCISE_FALLBACK_NAME,
+                    "source": "auto_si_excise_fallback",
+                    "note": "SI excision on the final mesh",
+                }),
+            );
+            if let Some(tried) = adopted
+                .get_mut("methods_tried")
+                .and_then(Value::as_array_mut)
+            {
+                tried.push(json!({
+                    "num": Value::Null,
+                    "id": SI_EXCISE_FALLBACK_ID,
+                    "name": SI_EXCISE_FALLBACK_NAME,
+                    "outcome": "accepted",
+                    "watertight": true,
+                    "holes": 0,
+                    "non_manifold": 0,
+                    "hausdorff_rel": Value::Null,
+                    "geom_change_pct": Value::Null,
+                    "guard_rejected": Value::Null,
+                    "guard_reason": Value::Null,
+                    "si_flagged": false,
+                    "adopt_guard": "never_worse",
+                    "reason": why.clone(),
+                    "template": Value::Null,
+                    "elapsed_ms": 0,
+                }));
+            }
+            adopted.insert("method_reached_watertight".into(), Value::Bool(true));
+            return Some((fb_v, fb_t, Value::Object(adopted)));
+        }
+        field.insert(
+            "si_excise_fallback".into(),
+            json!({
+                "ran": true,
+                "outcome": "rejected",
+                "guard": "never_worse",
+                "si_before": base_si,
+                "attempts": attempts,
+            }),
+        );
+    }
 
     if method_num != 10 {
         cand_field["reason"] = Value::from("candidate method unavailable");
@@ -3220,7 +3617,7 @@ fn repair_impl(
     let mut py_v = quantize(verts);
     let mut py_t = tris.to_vec();
     let mut stage1_snapshot: Option<(Vec<[f64; 3]>, Vec<[i64; 3]>)> = None;
-    let mut trace = TraceLog::new();
+    let mut trace = TraceLog::new(opts.trace_measure);
     let mut stats = Map::new();
     stats.insert("timings".into(), json!({}));
     stats.insert("si_mode".into(), Value::from(opts.si_mode.as_str()));
@@ -3264,44 +3661,42 @@ fn repair_impl(
     // The merged read-only analysis feeds the ranking and the report. Its
     // three behavioural scores are not ported yet; the missing list is exposed
     // under `unavailable` instead of being treated as a real 0.0 signal.
-    let mesh32 = Mesh::new(
-        verts
-            .iter()
-            .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
-            .collect(),
-        tris.iter()
-            .map(|r| [r[0] as i32, r[1] as i32, r[2] as i32])
-            .collect(),
-    );
-    let mesh_analysis: Option<MeshAnalysis> =
-        analyze_mesh(&mesh32, &triage.engine, opts.si_mode != SiMode::Off).ok();
-    if cancel.is_cancelled() {
-        return cancelled();
-    }
-    let ranking: Option<(Vec<Recommendation>, HashSet<u8>)> =
-        match (policy.as_ref(), mesh_analysis.as_ref()) {
-        (Some(loaded), Some(analysis)) => {
-            let rank_analysis = RankingAnalysis {
-                mesh_type: Some(analysis.mesh_type.clone()),
-                type_confidence: analysis.type_confidence,
-                boundary_loops: analysis.boundary_loops as f64,
-                non_manifold_edges: analysis.non_manifold_edges as f64,
-                self_intersections: analysis.self_intersections as f64,
-                components: analysis.components as f64,
-                largest_loop_ratio: analysis.largest_loop_ratio,
-                open_area_ratio: analysis.open_area_ratio,
-                diagnosis_v2: analysis.diagnosis_v2.clone(),
-                ..RankingAnalysis::default()
-            };
-            let mut recs = rank_methods(loaded, &rank_analysis, None, None);
-            if opts.auto_reorder {
-                recs = crate::ranking::apply_auto_reorder(recs, loaded, &rank_analysis);
-            }
-            let recs = order_graft_before_ftetwild(recs);
-            let avoid = prune_avoid_nums(&rank_analysis);
-            Some((recs, avoid))
+    let ranking_for = |analysis: &MeshAnalysis| -> Option<(Vec<Recommendation>, HashSet<u8>)> {
+        let loaded = policy.as_ref()?;
+        let rank_analysis = RankingAnalysis {
+            mesh_type: Some(analysis.mesh_type.clone()),
+            type_confidence: analysis.type_confidence,
+            boundary_loops: analysis.boundary_loops as f64,
+            non_manifold_edges: analysis.non_manifold_edges as f64,
+            self_intersections: analysis.self_intersections as f64,
+            components: analysis.components as f64,
+            largest_loop_ratio: analysis.largest_loop_ratio,
+            open_area_ratio: analysis.open_area_ratio,
+            diagnosis_v2: analysis.diagnosis_v2.clone(),
+            ..RankingAnalysis::default()
+        };
+        let mut recs = rank_methods(loaded, &rank_analysis, None, None);
+        if opts.auto_reorder {
+            recs = crate::ranking::apply_auto_reorder(recs, loaded, &rank_analysis);
         }
-        _ => None,
+        let recs = order_graft_before_ftetwild(recs);
+        let avoid = prune_avoid_nums(&rank_analysis);
+        Some((recs, avoid))
+    };
+    let compute_analysis = |v: &[[f64; 3]], t: &[[i64; 3]]| {
+        let mesh32 = Mesh::new(
+            v.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect(),
+            t.iter().map(|r| [r[0] as i32, r[1] as i32, r[2] as i32]).collect(),
+        );
+        let analysis: Option<MeshAnalysis> =
+            analyze_mesh(&mesh32, &triage.engine, opts.si_mode != SiMode::Off).ok();
+        let ranking = analysis.as_ref().and_then(|a| ranking_for(a));
+        (analysis, ranking)
+    };
+    let (mesh_analysis, mut ranking) = if opts.analysis {
+        compute_analysis(verts, tris)
+    } else {
+        (None, None)
     };
     let recommendations = ranking
         .as_ref()
@@ -3338,8 +3733,18 @@ fn repair_impl(
     let nm_before = before.non_two_manifold_edges;
     let before_verts = cur_v.len();
 
-    let stage1_volume_before_v = cur_v.clone();
-    let stage1_volume_before_t = cur_t.clone();
+    // Measure the pre-Stage-1 volume now and keep only the number: the full
+    // f64/i64 copy would otherwise stay alive through Stage 2 and the report.
+    let stage1_volume_before = {
+        let v32: Vec<[f32; 3]> = cur_v
+            .iter()
+            .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+            .collect();
+        sutura_geom::topology::mesh_geometric_measures_core(&v32, &cur_t)
+            .0
+            .unwrap_or(0.0)
+    };
+    let stage1_surface_before = py_surface_area(&cur_v, &cur_t);
 
     // --- Tamponade pre-pass ------------------------------------------------
     if cancel.is_cancelled() {
@@ -4081,10 +4486,22 @@ fn repair_impl(
                 stats.insert("cdt".into(), rec);
             }
 
+            // A Coaptation rejection for lost bodies or volume means the
+            // multi-body result cannot be safely rebuilt; do not let the auto
+            // fTetWild trigger replace it with another shape-changing rebuild.
+            let coaptation_hard_failed = stats
+                .get("coaptation")
+                .map(|r| {
+                    r.get("reject_reason").and_then(Value::as_str) == Some("body_close_failed")
+                        || r.get("volume_ok").and_then(Value::as_bool) == Some(false)
+                })
+                .unwrap_or(false);
+
             // fTetWild (#7): standalone deterministic binary when installed.
             let ft_trigger =
                 crate::ftetwild::resolve_trigger(opts.ftetwild.as_ref(), spec.ftetwild_enabled);
             if ft_trigger != crate::ftetwild::Trigger::Disabled
+                && (ft_trigger == crate::ftetwild::Trigger::Always || !coaptation_hard_failed)
                 && !graft_ok
                 && !splint_ok
                 && !coaptation_ok
@@ -4403,10 +4820,14 @@ fn repair_impl(
     stats.insert("deep_repair".into(), Value::Object(deep));
 
     t_deep = t_deep_start.elapsed().as_secs_f64();
+    // The deep ladder is the last user of the original post-prepass mesh;
+    // release that full-size copy before the debris BVH and Stage 2.
+    drop(s1_in_v);
+    drop(s1_in_t);
 
     // Pinch split before Stage 2, matching the pipeline's P1a split.
-    let pinch_in_v = cur_v.clone();
-    let pinch_in_t = cur_t.clone();
+    let pinch_in_v = if trace.measure { cur_v.clone() } else { Vec::new() };
+    let pinch_in_t = if trace.measure { cur_t.clone() } else { Vec::new() };
     let pinch = split_pinched_vertices(&cur_v, &cur_t);
     // Match Python: only take the split result when the tier actually ran.
     // On the no-pinch path Python keeps the input arrays, while the core
@@ -4473,13 +4894,10 @@ fn repair_impl(
             .0
             .unwrap_or(0.0)
     };
-    stage1.insert(
-        "volume_before".into(),
-        Value::from(geom_volume(&stage1_volume_before_v, &stage1_volume_before_t)),
-    );
+    stage1.insert("volume_before".into(), Value::from(stage1_volume_before));
     stage1.insert("volume_after".into(), Value::from(geom_volume(&cur_v, &cur_t)));
     {
-        let vb = geom_volume(&stage1_volume_before_v, &stage1_volume_before_t);
+        let vb = stage1_volume_before;
         let va = geom_volume(&cur_v, &cur_t);
         stage1.insert("volume_change_percent".into(), Value::Null);
         if vb != 0.0 {
@@ -4491,7 +4909,7 @@ fn repair_impl(
         }
     }
     {
-        let sa_before = py_surface_area(&stage1_volume_before_v, &stage1_volume_before_t);
+        let sa_before = stage1_surface_before;
         let sa_after = py_surface_area(&cur_v, &cur_t);
         let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
         stage1.insert("surface_area_before".into(), Value::from(round3(sa_before)));
@@ -4599,7 +5017,9 @@ fn repair_impl(
     );
     stats.insert("stage1".into(), Value::Object(stage1));
     if allow_si_escalation && si_escalation_allowed(opts) {
-        stage1_snapshot = Some((py_v.clone(), py_t.clone()));
+        // py_v/py_t are not used after this point; move them into the
+        // snapshot instead of holding a second pair through the report.
+        stage1_snapshot = Some((std::mem::take(&mut py_v), std::mem::take(&mut py_t)));
     }
 
     // Python `_deep_repair_offer`: name the final tier and list the tiers a
@@ -4713,8 +5133,8 @@ fn repair_impl(
         return cancelled();
     }
     emit_stage(sink, 6, "reload weld");
-    let pw_in_v = cur_v.clone();
-    let pw_in_t = cur_t.clone();
+    let pw_in_v = if trace.measure { cur_v.clone() } else { Vec::new() };
+    let pw_in_t = if trace.measure { cur_t.clone() } else { Vec::new() };
     crate::engines::run_and_replace(
         &selected_engines,
         "after_stage2",
@@ -4938,6 +5358,16 @@ fn repair_impl(
     // Ranked fallback ladder (Python `triage._auto`), before the final SI
     // escalation.  Nested attempts disable auto_escalation, so this cannot
     // recurse; an adopted candidate replaces the whole baseline result.
+    // The analysis that feeds the ranking is skipped for the CLI/GUI settings
+    // (they strip it from the report); compute it here only when the baseline
+    // is not watertight and the ladder may actually run.
+    if !reachable
+        && auto_ladder_allowed(opts)
+        && ranking.is_none()
+        && !cancel.is_cancelled()
+    {
+        ranking = compute_analysis(&input_v, &input_t).1;
+    }
     if let Some(ranking) = ranking.as_ref() {
         if !reachable && auto_ladder_allowed(opts) && !cancel.is_cancelled() {
             if let Some((adopted_v, adopted_t, adopted_report)) = run_auto_ladder(
@@ -4958,7 +5388,7 @@ fn repair_impl(
     stage_fp_log("after_auto_ladder", &cur_v, &cur_t);
 
     if allow_si_escalation && si_escalation_allowed(opts) {
-        if let Some((adopted_v, adopted_t, adopted_report)) = apply_si_escalation(
+        let adopted = apply_si_escalation(
             &mut out,
             &input_v,
             &input_t,
@@ -4967,8 +5397,25 @@ fn repair_impl(
             opts,
             policy.as_ref(),
             stage1_snapshot.as_ref(),
+            min_component,
             cancel,
-        ) {
+        );
+        // Report the fallback even when it rejects, so `--human`/`--trace`
+        // never hide that the final cleanup ran (audit MED-6).
+        if let Some(esc) = out.get("si_escalation") {
+            if let Some(fb) = esc.get("si_excise_fallback") {
+                sink.emit(json!({
+                    "event": "tier",
+                    "tier": SI_EXCISE_FALLBACK_ID,
+                    "stage": 4,
+                    "ran": fb.get("ran").cloned().unwrap_or(Value::Bool(false)),
+                    "adopted": fb.get("outcome").and_then(Value::as_str) == Some("adopted"),
+                    "variant": fb.get("variant").cloned().unwrap_or(Value::Null),
+                    "reason": esc.get("reason").cloned().unwrap_or(Value::Null),
+                }));
+            }
+        }
+        if let Some((adopted_v, adopted_t, adopted_report)) = adopted {
             stage_fp_log("after_si_final", &adopted_v, &adopted_t);
             return RepairOutcome::Ok {
                 verts: adopted_v,
@@ -5087,6 +5534,114 @@ mod tests {
     }
 
     #[test]
+    fn refresh_stage1_final_describes_the_returned_mesh() {
+        // The fallback hands back a different mesh than the report was built
+        // for; the refreshed stage1 must describe the returned arrays
+        // (audit HIGH-1).
+        let (_verts, tris) = two_shells(false);
+        let mut s1 = Map::new();
+        s1.insert("holes_closed".into(), Value::from(0i64));
+        s1.insert("holes_remaining".into(), Value::from(0i64));
+        s1.insert("non_manifold_edges_fixed".into(), Value::from(0i64));
+        s1.insert("non_manifold_edges_remaining".into(), Value::from(0i64));
+        s1.insert("faces_before".into(), Value::from(tris.len() as i64));
+        s1.insert("volume_before".into(), Value::from(1.0f64));
+        s1.insert("surface_area_before".into(), Value::from(1.0f64));
+        s1.insert("self_intersections_remaining".into(), Value::from(232i64));
+        s1.insert("components".into(), Value::from(2i64));
+        // A closed box: SI 0, holes 0, one component.
+        let (bv, bt) = cube();
+        refresh_stage1_final(&mut s1, &bv, &bt, Some(0), 8);
+        assert_eq!(
+            s1.get("self_intersections_remaining").and_then(Value::as_i64),
+            Some(0)
+        );
+        assert_eq!(s1.get("holes_remaining").and_then(Value::as_i64), Some(0));
+        assert_eq!(s1.get("components").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            s1.get("faces_after").and_then(Value::as_i64),
+            Some(bt.len() as i64)
+        );
+        assert_eq!(
+            s1.get("vertices_after").and_then(Value::as_i64),
+            Some(bv.len() as i64)
+        );
+        assert_eq!(
+            s1.get("two_manifold").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn flap_si_budget_is_opt_in_only() {
+        // The wall-clock net must be off unless explicitly set (audit MED-3).
+        assert_eq!(flap_si_budget_from(None), None);
+        assert_eq!(flap_si_budget_from(Some("".into())), None);
+        assert_eq!(flap_si_budget_from(Some("0".into())), None);
+        assert_eq!(flap_si_budget_from(Some("-5".into())), None);
+        assert_eq!(flap_si_budget_from(Some("off".into())), None);
+        assert_eq!(flap_si_budget_from(Some("120".into())), Some(120.0));
+    }
+
+    #[test]
+    fn reload_strict_holes_nm_checked_separates_weld_failure() {
+        // A non-finite coordinate makes the reload weld fail; the checked form
+        // must say so instead of reporting a clean (0, 0) (audit MED-4).
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [f64::NAN, 0.0, 0.0],
+        ];
+        let tris = vec![[0i64, 1, 2], [1, 3, 2]];
+        assert!(reload_strict_holes_nm_checked(&verts, &tris).is_err());
+        assert_eq!(reload_strict_holes_nm(&verts, &tris), (0, 0));
+    }
+
+    #[test]
+    fn si_excise_fallback_gate_is_never_worse() {
+        // Final-mesh excision: the current output is watertight with SI > 0 and
+        // no deviation from the input; a shape-neutral excision must be adopted,
+        // while a re-cap that moves geometry past the tolerance must not.
+        let base = SiMetrics {
+            si: Some(177),
+            holes: Some(0),
+            nm: Some(0),
+            parts: Some(1),
+            volume_mm3: Some(1000.0),
+            shape_max_mm: Some(0.0),
+            shape_p95_mm: Some(0.0),
+            ..SiMetrics::default()
+        };
+        let good = SiMetrics {
+            si: Some(4),
+            shape_max_mm: Some(0.02),
+            shape_p95_mm: Some(0.005),
+            volume_mm3: Some(1002.0),
+            ..base.clone()
+        };
+        assert!(si_verdict(&base, &good, Some(0.05), 0.005).0);
+        // A re-cap face 0.9 mm off the input is rejected even though SI fell.
+        let shape_bad = SiMetrics {
+            shape_max_mm: Some(0.9),
+            ..good.clone()
+        };
+        assert!(!si_verdict(&base, &shape_bad, Some(0.05), 0.005).0);
+        // Volume loss beyond the SI tolerance is rejected.
+        let vol_bad = SiMetrics {
+            volume_mm3: Some(900.0),
+            ..good.clone()
+        };
+        assert!(!si_verdict(&base, &vol_bad, Some(0.05), 0.005).0);
+        // A new hole is rejected.
+        let hole_bad = SiMetrics {
+            holes: Some(1),
+            ..good
+        };
+        assert!(!si_verdict(&base, &hole_bad, Some(0.05), 0.005).0);
+    }
+
+    #[test]
     fn si_escalation_triggers_on_small_positive_mesh() {
         let (verts, tris) = two_shells(false);
         assert!(si_exact(&verts, &tris).unwrap_or(0) > 0);
@@ -5126,6 +5681,7 @@ mod tests {
             &opts,
             None,
             Some(&snapshot),
+            8,
             &CancelToken::new(),
         );
         let field = out
@@ -5150,7 +5706,14 @@ mod tests {
             .and_then(Value::as_array)
             .expect("methods_tried");
         assert_eq!(tried.len(), 2);
-        assert_eq!(tried[1].get("num").and_then(Value::as_i64), Some(10));
+        // The fallback is not a registry method, so its entry carries no
+        // number (audit MED-5); the Scaffold entry still does.
+        let second_id = tried[1].get("id").and_then(Value::as_str);
+        if second_id == Some(SI_EXCISE_FALLBACK_ID) {
+            assert_eq!(tried[1].get("num").and_then(Value::as_i64), None);
+        } else {
+            assert_eq!(tried[1].get("num").and_then(Value::as_i64), Some(10));
+        }
         if let Some((v, t, report)) = adopted {
             assert!(!v.is_empty() && !t.is_empty());
             assert!(report.get("methods_tried").is_some());
@@ -5576,6 +6139,30 @@ mod tests {
             .map(|n| n > 0)
             .unwrap_or(false));
         assert!(health.get("methods").and_then(Value::as_object).is_some());
+    }
+
+    #[test]
+    fn gui_settings_report_carries_recommendations() {
+        let (verts, tris) = cube();
+        let (mut opts, _, _) = crate::repair_settings::options_from(
+            &crate::repair_settings::RepairSettings::default(),
+        )
+        .expect("GUI settings must convert");
+        assert!(opts.analysis, "the GUI keeps the analysis for its panel");
+        opts.tamponade = Some(false);
+        opts.flap = Some(false);
+        opts.coaptation = Some(false);
+        opts.deep_repair = DeepRepair::Off;
+        let outcome = repair(&verts, &tris, &opts, &NoopSink, &CancelToken::new());
+        let report = match outcome {
+            RepairOutcome::Ok { report, .. } => report,
+            other => panic!("unexpected outcome: {}", outcome_name(&other)),
+        };
+        let recs = report
+            .get("recommendations")
+            .and_then(Value::as_array)
+            .expect("the GUI path must emit recommendations");
+        assert!(!recs.is_empty());
     }
 
     fn outcome_name(outcome: &RepairOutcome) -> &'static str {

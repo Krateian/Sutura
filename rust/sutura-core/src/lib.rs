@@ -56,7 +56,7 @@ pub use mesh_io::{
     TriangleAttrStats, UnitWarning,
 };
 pub use stage2::{should_run_stage2, split_pinched_vertices, PinchResult};
-pub use p_weld::{enforce_reload_verdict, p_weld_final, separate_weld_collisions, reload_strict_holes_nm, reload_topology, weld_reload_equivalent, PWeldResult};
+pub use p_weld::{enforce_reload_verdict, p_weld_final, reload_strict_holes_nm, reload_strict_holes_nm_checked, reload_topology, separate_weld_collisions, weld_reload_equivalent, PWeldResult};
 pub use report::{
     aggregate_print_reports_value, build_health_report_json, build_print_report_json,
     build_print_report_value, build_record_json, classify_json, classify_value,

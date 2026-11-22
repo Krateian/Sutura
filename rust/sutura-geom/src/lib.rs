@@ -2358,25 +2358,46 @@ pub fn self_intersections_subset_core(
     tris: &[[usize; 3]],
     subset: &[bool],
 ) -> i64 {
+    self_intersections_subset_capped(verts, tris, subset, u64::MAX).0
+}
+
+/// Subset self-intersection count with a deterministic broad-phase pair cap.
+/// Returns `(proper_pairs, candidate_pairs, capped)`. When the candidate pair
+/// count exceeds `pair_budget`, the exact predicates are not run and the
+/// result is `(0, candidate_pairs, true)`.
+pub fn self_intersections_subset_capped(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    subset: &[bool],
+    pair_budget: u64,
+) -> (i64, u64, bool) {
     let f = tris.len();
     if f == 0 || f > SI_MAX_FACES {
-        return 0;
+        return (0, 0, false);
     }
     if !subset.iter().take(f).any(|&b| b) {
-        return 0;
+        return (0, 0, false);
     }
     let triangles: Vec<triangle_intersection::Triangle> = tris
         .iter()
         .map(|t| triangle_intersection::Triangle::explicit(verts[t[0]], verts[t[1]], verts[t[2]]))
         .collect();
-    let pairs = arrangement::broad_phase_candidates(verts, tris);
-    let mut count = 0i64;
-    for (i, j) in pairs {
+    let mut touching: u64 = 0;
+    let mut candidates: Vec<(usize, usize)> = Vec::new();
+    for (i, j) in arrangement::broad_phase_candidates(verts, tris) {
         let si = subset.get(i).copied().unwrap_or(false);
         let sj = subset.get(j).copied().unwrap_or(false);
         if !(si || sj) {
             continue;
         }
+        touching += 1;
+        if touching > pair_budget {
+            return (0, touching, true);
+        }
+        candidates.push((i, j));
+    }
+    let mut count = 0i64;
+    for (i, j) in candidates {
         let (a, b) = (tris[i], tris[j]);
         if a.iter().any(|x| b.contains(x)) {
             continue;
@@ -2387,7 +2408,7 @@ pub fn self_intersections_subset_core(
             count += 1;
         }
     }
-    count
+    (count, touching, false)
 }
 
 /// Ray-stabbing inside/outside for arbitrary query points.
@@ -3982,7 +4003,10 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{insphere_coords, orient3d_coords, self_intersections_subset_core};
+    use super::{
+        insphere_coords, orient3d_coords, self_intersections_subset_capped,
+        self_intersections_subset_core,
+    };
 
     const ORIGIN: [f64; 3] = [0.0, 0.0, 0.0];
     const X: [f64; 3] = [1.0, 0.0, 0.0];
@@ -4049,6 +4073,16 @@ mod tests {
             self_intersections_subset_core(&verts, &tris, &[false, false]),
             0
         );
+        let (count, pairs, capped) =
+            self_intersections_subset_capped(&verts, &tris, &[true, false], 0);
+        assert_eq!(count, 0);
+        assert!(pairs >= 1);
+        assert!(capped);
+        let (count, pairs, capped) =
+            self_intersections_subset_capped(&verts, &tris, &[true, false], u64::MAX);
+        assert_eq!(count, 1);
+        assert!(pairs >= 1);
+        assert!(!capped);
     }
 
     #[test]

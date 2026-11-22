@@ -16,6 +16,54 @@ use sutura_geom::manifold::{union_pair_core, watertight_check_core};
 
 use super::common::{self, json_i, GuardPolicy};
 
+const COAPTATION_VOLUME_REL_MAX: f64 = 0.01;
+const SHAPE_SAMPLE_CAP: usize = 100_000;
+
+fn shape_tol_mm(verts: &[[f64; 3]]) -> f64 {
+    let diag = common::bbox_diagonal(verts);
+    (diag / 10_000.0).clamp(0.0125, 0.05)
+}
+
+fn max_closest_mm(points: &[[f64; 3]], verts: &[[f64; 3]], tris: &[[i64; 3]]) -> f64 {
+    if points.is_empty() || verts.is_empty() || tris.is_empty() {
+        return 0.0;
+    }
+    let stride = (points.len() / SHAPE_SAMPLE_CAP).max(1);
+    let sampled: Vec<[f64; 3]> = points.iter().step_by(stride).copied().collect();
+    common::closest_points(verts, tris, &sampled)
+        .into_iter()
+        .map(|row| row.1)
+        .fold(0.0f64, f64::max)
+}
+
+fn shape_max_mm(
+    ref_v: &[[f64; 3]],
+    ref_t: &[[i64; 3]],
+    cand_v: &[[f64; 3]],
+    cand_t: &[[i64; 3]],
+) -> f64 {
+    max_closest_mm(ref_v, cand_v, cand_t).max(max_closest_mm(cand_v, ref_v, ref_t))
+}
+
+fn coaptation_volume_ok(before: f64, after: f64) -> bool {
+    if before.abs() <= 1e-12 {
+        return true;
+    }
+    ((after - before) / before).abs() <= COAPTATION_VOLUME_REL_MAX
+}
+
+fn coaptation_volume_rel(before: f64, after: f64) -> f64 {
+    if before.abs() <= 1e-12 {
+        0.0
+    } else {
+        ((after - before) / before).abs()
+    }
+}
+
+fn shape_ok(shape_current: f64, shape_cand: f64, tol: f64) -> bool {
+    shape_cand <= shape_current + tol
+}
+
 fn rec_base(params: &Value) -> Map<String, Value> {
     let mut rec = Map::new();
     rec.insert("tier".into(), json!("coaptation"));
@@ -187,7 +235,12 @@ fn unique_remap(tris: &[[i64; 3]]) -> (Vec<i64>, Vec<[i64; 3]>) {
 }
 
 fn measure(v: &[[f64; 3]], t: &[[i64; 3]]) -> (usize, usize, usize, Option<i64>, bool) {
-    let (holes, nm) = common::reload_strict_holes_nm(v, t);
+    // A failed reload weld is "not clean": report holes/non-manifold so no
+    // adoption path can read it as watertight (audit MED-4).
+    let (holes, nm) = match crate::p_weld::reload_strict_holes_nm_checked(v, t) {
+        Ok(pair) => pair,
+        Err(_) => (1, 1),
+    };
     let (_n, labels) = common::edge_face_labels(t);
     let parts = labels
         .iter()
@@ -306,7 +359,15 @@ pub fn run(
         let max_hole = 1000.max(bt.len() as i64);
         let rep = match close_holes_core(&bv, &bt, max_hole, true) {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(e) => {
+                rec.insert("reject_reason".into(), json!("body_close_failed"));
+                rec.insert(
+                    "reason".into(),
+                    json!(format!("per-body hole closing failed: {}", e)),
+                );
+                rec.insert("seconds".into(), json!(t0.elapsed().as_secs_f64()));
+                return (v.to_vec(), t.to_vec(), Value::Object(rec));
+            }
         };
         let mut bt2 = rep.tris;
         if common::signed_volume(&rep.verts, &bt2) < 0.0 {
@@ -402,7 +463,7 @@ pub fn run(
         }),
     );
     let policy = policy_from(params);
-    let guard = common::guard_fields(
+    let mut guard = common::guard_fields(
         input_t.len(),
         input_v.len(),
         acc_t.len(),
@@ -413,16 +474,66 @@ pub fn run(
         &policy,
         false,
     );
-    let guard_ok = guard
+    let mut guard_ok = guard
         .get("guard_ok")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+
+    let base_vol = common::signed_volume(v, t);
+    let cand_vol = common::signed_volume(&acc_v, &acc_t);
+    let volume_rel = coaptation_volume_rel(base_vol, cand_vol);
+    let volume_ok = coaptation_volume_ok(base_vol, cand_vol);
+    // The two-sided pair is REPORT-ONLY. The adoption gates are body loss
+    // (`guard_ok`) and volume (`volume_ok`); `strictly_better` deliberately
+    // does not include this comparison, because a legitimate coaptation win
+    // (`thingi10k_1038439`, 1.6074 mm in 0.9.9) exceeds the per-mesh
+    // tolerance. The fields therefore say "report" and not "gate" (audit
+    // HIGH-2).
+    let shape_tol = shape_tol_mm(input_v);
+    let shape_current = shape_max_mm(input_v, input_t, v, t);
+    let shape_max = shape_max_mm(input_v, input_t, &acc_v, &acc_t);
+    let shape_report_within_tol = shape_ok(shape_current, shape_max, shape_tol);
+    let shape_report_note = if shape_report_within_tol {
+        Value::Null
+    } else {
+        Value::from(format!(
+            "report only: two-sided shape {:.4} mm > {:.4} mm + {:.4} mm",
+            shape_max, shape_current, shape_tol
+        ))
+    };
+    let volume_reason = if volume_ok {
+        Value::Null
+    } else {
+        Value::from(format!(
+            "volume change {:.2}% > {:.2}%",
+            volume_rel * 100.0,
+            COAPTATION_VOLUME_REL_MAX * 100.0
+        ))
+    };
+    rec.insert("volume_before".into(), json!(base_vol));
+    rec.insert("volume_after".into(), json!(cand_vol));
+    rec.insert("volume_rel".into(), json!(volume_rel));
+    rec.insert("volume_ok".into(), json!(volume_ok));
+    rec.insert("shape_current_mm".into(), json!(shape_current));
+    rec.insert("shape_max_mm".into(), json!(shape_max));
+    rec.insert("shape_tol_mm".into(), json!(shape_tol));
+    rec.insert(
+        "shape_report_within_tol".into(),
+        json!(shape_report_within_tol),
+    );
+    rec.insert("shape_report_note".into(), shape_report_note);
+    if !volume_ok {
+        guard_ok = false;
+        guard.insert("guard_rejected".into(), volume_reason.clone());
+        guard.insert("guard_reason".into(), volume_reason);
+    }
     for (k, val) in guard {
         if rec.contains_key(&k) && k != "guard_ok" {
             rec.insert(k, val);
         }
     }
     let strictly_better = guard_ok
+        && volume_ok
         && cand.4
         && cand.0 == 0
         && cand.1 == 0
@@ -474,7 +585,25 @@ pub fn measure_json(v: &[[f64; 3]], t: &[[i64; 3]]) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::seam_weld;
+    use super::{coaptation_volume_ok, seam_weld, shape_ok as coaptation_shape_ok};
+
+    #[test]
+    fn coaptation_volume_gate_rejects_large_loss() {
+        assert!(coaptation_volume_ok(100.0, 100.0));
+        assert!(coaptation_volume_ok(100.0, 99.5));
+        assert!(!coaptation_volume_ok(100.0, 108.2));
+        assert!(!coaptation_volume_ok(100.0, 91.0));
+    }
+
+    #[test]
+    fn coaptation_shape_report_flags_large_jump() {
+        // Report-only predicate: it classifies the recorded pair, it does not
+        // gate adoption (body loss and volume do).
+        assert!(coaptation_shape_ok(0.0, 0.0125, 0.0125));
+        assert!(!coaptation_shape_ok(0.0, 18.9894, 0.0125));
+        assert!(coaptation_shape_ok(1.6074, 1.6074, 0.0133));
+        assert!(!coaptation_shape_ok(0.0, 1.6074, 0.0133));
+    }
 
     #[test]
     fn seam_weld_merges_one_ulp_boundary_vertices() {

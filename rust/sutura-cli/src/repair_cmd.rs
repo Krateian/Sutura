@@ -462,6 +462,12 @@ pub fn build_options(cli: &crate::Cli) -> Result<(RepairOptions, bool, Vec<u64>)
     // (they are CLI-only today). `options_from` owns everything else.
     opts.autorefine = cli.experimental_autorefine;
     opts.indirect_autorefine = cli.experimental_indirect_autorefine;
+    // The CLI strips `analysis`/`recommendations` and the per-boundary trace
+    // measures before it writes the report (`augment_report`), so it does not
+    // pay for them. The GUI calls `options_from` directly and keeps the
+    // analysis for its Recommended panel.
+    opts.analysis = false;
+    opts.trace_measure = false;
     opts.ladder_depth = 0;
     Ok((opts, methods_given, methods))
 }
@@ -655,12 +661,13 @@ fn contract_order(root: &mut Map<String, Value>) {
     }
 }
 
-const FLAP_ORDER: [&str; 36] = [
+const FLAP_ORDER: [&str; 39] = [
     "ran", "adopted", "reason", "baseline_holes", "baseline_non_manifold",
     "baseline_damage", "candidate_holes", "candidate_non_manifold",
     "candidate_damage", "loops_found", "loops_filled", "loops_skipped",
     "loops_skipped_by_reason", "patch_faces", "new_vertices", "time_s",
-    "cache_hit", "work_units", "work_budget", "max_orig_vertex_move_mm",
+    "cache_hit", "work_units", "work_budget", "work_capped",
+    "max_orig_vertex_move_mm",
     "input_faces", "input_vertices", "candidate_faces", "candidate_vertices",
     "loop_vertex_total", "slack_units", "baseline_self_intersections",
     "candidate_self_intersections", "si_flagged", "si_checked", "si_policy",
@@ -669,6 +676,7 @@ const FLAP_ORDER: [&str; 36] = [
     // (`service.py:466-478`): `budget_exceeded` first, then the two the net
     // writes. Leaving them out of this list is why `retain` dropped them.
     "budget_exceeded", "adopted_final", "final_fallback",
+    "si_deadline_hit", "si_deadline_s",
 ];
 
 const TAMPONADE_ORDER: [&str; 72] = [
@@ -693,9 +701,12 @@ const TAMPONADE_ORDER: [&str; 72] = [
     "shell_prepass",
 ];
 
-const COAPTATION_ORDER: [&str; 27] = [
+const COAPTATION_ORDER: [&str; 36] = [
     "tier", "ran", "adopted", "gate", "ulp_k", "tol", "bodies_in",
     "bodies_after_weld", "merged", "baseline", "candidate", "output_faces",
+    "volume_before", "volume_after", "volume_rel", "volume_ok",
+    "shape_current_mm", "shape_max_mm", "shape_tol_mm",
+    "shape_report_within_tol", "shape_report_note",
     "guard_rejected", "guard_reason", "si_policy", "si_checked", "si_flagged",
     "seconds", "skipped_budget", "aborted", "work_units", "work_budget",
     "budget_limited_by", "reject_reason", "reason", "warnings", "input_faces",
@@ -2471,17 +2482,31 @@ mod equivalence_tests {
     ///
     /// `RepairOptions` has no `PartialEq`, so values are compared through serde;
     /// field order is fixed by the struct, so equal JSON means equal options.
+    ///
+    /// `analysis`/`trace_measure` are report-work switches, not user intent:
+    /// the CLI drops those report fields and disables the work, while the GUI
+    /// keeps the analysis for its Recommended panel. They are excluded here so
+    /// this test stays about the shared settings.
+    fn comparable_json(opts: &sutura_core::repair::RepairOptions) -> String {
+        let mut value = serde_json::to_value(opts).expect("options must serialise");
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("analysis");
+            obj.remove("trace_measure");
+        }
+        serde_json::to_string(&value).expect("options must serialise")
+    }
+
     fn json_of(cli_args: &[&str]) -> String {
         let cli = <crate::Cli as clap::Parser>::try_parse_from(cli_args)
             .expect("CLI args must parse");
         let (opts, _, _) = super::build_options(&cli).expect("must convert");
-        serde_json::to_string(&opts).expect("options must serialise")
+        comparable_json(&opts)
     }
 
     fn json_of_settings(s: &RepairSettings) -> String {
         let (opts, _, _) =
             sutura_core::repair_settings::options_from(s).expect("must convert");
-        serde_json::to_string(&opts).expect("options must serialise")
+        comparable_json(&opts)
     }
 
     #[test]
@@ -2532,6 +2557,30 @@ mod equivalence_tests {
             from_cli,
             json_of_settings(&RepairSettings::from_intensity("balanced", false)),
             "an untouched GUI must match the CLI's no-flag run"
+        );
+    }
+
+    #[test]
+    fn gui_keeps_the_analysis_for_its_recommended_panel() {
+        let (gui, _, _) = sutura_core::repair_settings::options_from(
+            &RepairSettings::default(),
+        )
+        .expect("GUI settings must convert");
+        assert!(
+            gui.analysis,
+            "the GUI reads recommendations from the repair report"
+        );
+        assert!(
+            !gui.trace_measure,
+            "the GUI does not read the report's per-boundary trace measures"
+        );
+
+        let cli = <crate::Cli as clap::Parser>::try_parse_from(["sutura", "in.stl"])
+            .expect("CLI args must parse");
+        let (cli, _, _) = super::build_options(&cli).expect("must convert");
+        assert!(
+            !cli.analysis && !cli.trace_measure,
+            "the CLI strips both report blocks before writing JSON"
         );
     }
 

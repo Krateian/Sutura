@@ -91,6 +91,20 @@ fn policy_from(p: &Value) -> GuardPolicy {
     common::policy_from_json(p.get("guard").unwrap_or(&Value::Null))
 }
 
+/// Record the work-budget outcome.
+///
+/// `budget_exceeded` means work was actually skipped for the budget
+/// (`loops_skipped_work > 0`), which is the field's original meaning.
+/// `work_capped` only means a charge saturated the counter, which also happens
+/// on charges whose work always completes, so it is recorded separately and
+/// never claims work was lost (audit LOW-8).
+fn insert_budget_fields(rec: &mut Map<String, Value>, work_capped: bool, skipped_work: usize) {
+    rec.insert("work_capped".into(), json!(work_capped));
+    if skipped_work > 0 {
+        rec.insert("budget_exceeded".into(), json!(true));
+    }
+}
+
 /// Run the Flap pre-pass tier.  Returns `(out_verts, out_tris, report_json)`.
 pub fn run(
     verts: &[[f64; 3]],
@@ -146,6 +160,10 @@ pub fn run_with_cancel(
     let prm = FlapParams {
         separate_stl: false,
         work_budget: Some(budget as u64),
+        // Opt-in only: the deterministic pair charge is the default bound and
+        // the wall-clock net must not be able to change bytes on a slower host
+        // (audit MED-3).
+        si_time_budget: params.get("si_time_budget").and_then(Value::as_f64),
         ..Default::default()
     };
     let (cand_v, cand_t, frep) =
@@ -157,13 +175,12 @@ pub fn run_with_cancel(
     );
     rec.insert("work_units".into(), json!(frep.work_units));
     rec.insert("work_budget".into(), json!(budget));
-    // Over-budget runs cut their expensive steps short rather than producing a
-    // worse mesh, so this is recorded, not judged (`flap.py:486-487`). The
-    // record must still say it: Python reports `budget_exceeded: true` when
-    // `work_units > work_budget`, and the Rust record had no such key at all.
-    if budget >= 0 && frep.work_units > budget as u64 {
-        rec.insert("budget_exceeded".into(), json!(true));
-    }
+    rec.insert("si_deadline_hit".into(), json!(frep.si_deadline_hit));
+    rec.insert(
+        "si_deadline_s".into(),
+        frep.si_deadline_s.map(Value::from).unwrap_or(Value::Null),
+    );
+    insert_budget_fields(&mut rec, frep.work_capped, frep.loops_skipped_work);
     rec.insert("loops_found".into(), json!(frep.loops_found));
     rec.insert("loops_filled".into(), json!(frep.loops_filled));
     rec.insert("loops_skipped".into(), json!(frep.loops_skipped));
@@ -201,10 +218,6 @@ pub fn run_with_cancel(
     let cand_damage = cand_holes + cand_nm;
     rec.insert("baseline_damage".into(), json!(base_damage));
     rec.insert("candidate_damage".into(), json!(cand_damage));
-
-    if frep.work_units > budget as u64 {
-        rec.insert("budget_exceeded".into(), json!(true));
-    }
 
     let would_adopt = cand_damage <= base_damage;
     if would_adopt {
@@ -538,6 +551,25 @@ pub fn si_rose_json(rec: &Value) -> bool {
 mod safety_net_tests {
     use super::*;
     use serde_json::json;
+
+    /// `budget_exceeded` only when work was actually skipped (audit LOW-8).
+    #[test]
+    fn budget_fields_separate_skip_from_cap() {
+        let mut rec = Map::new();
+        insert_budget_fields(&mut rec, true, 0);
+        assert_eq!(rec.get("work_capped"), Some(&json!(true)));
+        assert_eq!(rec.get("budget_exceeded"), None);
+
+        let mut rec = Map::new();
+        insert_budget_fields(&mut rec, true, 3);
+        assert_eq!(rec.get("work_capped"), Some(&json!(true)));
+        assert_eq!(rec.get("budget_exceeded"), Some(&json!(true)));
+
+        let mut rec = Map::new();
+        insert_budget_fields(&mut rec, false, 0);
+        assert_eq!(rec.get("work_capped"), Some(&json!(false)));
+        assert_eq!(rec.get("budget_exceeded"), None);
+    }
 
     /// `si_rose` reads the candidate/baseline exact SI counts; either missing
     /// means "unknown", which must not look like a rise.

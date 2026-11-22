@@ -18,6 +18,13 @@ use sutura_geom::tamponade::{self, TamponadeConfig, TamponadeInfo};
 use super::common::{self, json_b, json_f, json_i, json_opt_i, json_s, json_u, GuardPolicy};
 
 fn thin_sample_fraction(v: &[[f64; 3]], t: &[[i64; 3]]) -> Option<f64> {
+    // `diagnose_core` only builds the BVH needed by the thin-wall channel up
+    // to `SI_MAX_FACES`; above that `thin_report` returns `available=false`
+    // without looking at the mesh. Skip the whole diagnosis on those meshes so
+    // the value is identical without the other phases' scan.
+    if t.len() > sutura_geom::SI_MAX_FACES {
+        return None;
+    }
     let ut = common::to_usize_tris(t);
     let d = diagnosis::diagnose_core(v, &ut, "fast");
     if !d.thin_wall.available {

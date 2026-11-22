@@ -939,88 +939,169 @@ fn topology_summary_uncached(verts: &[[f64; 3]], tris: &[[i64; 3]]) -> TopologyS
     if nf == 0 {
         return TopologySummary { faces: 0, ..Default::default() };
     }
-    let mut edge_counts: HashMap<(i64, i64), usize> = HashMap::new();
-    for t in tris {
-        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-            let k = if a <= b { (a, b) } else { (b, a) };
-            *edge_counts.entry(k).or_insert(0) += 1;
-        }
+    #[inline]
+    fn pack(a: i64, b: i64) -> u64 {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        ((lo as u32 as u64) << 32) | (hi as u32 as u64)
     }
-    let mut boundary = 0;
-    let mut nm_edges = 0;
-    let mut nm_verts = HashSet::new();
-    for (&(a, b), &c) in &edge_counts {
-        if c == 1 {
-            boundary += 1;
-        } else if c > 2 {
-            nm_edges += 1;
-            nm_verts.insert(a);
-            nm_verts.insert(b);
+    fn find(p: &mut [u32], mut x: u32) -> u32 {
+        let mut root = x;
+        while p[root as usize] != root {
+            root = p[root as usize];
         }
+        while p[x as usize] != root {
+            let next = p[x as usize];
+            p[x as usize] = root;
+            x = next;
+        }
+        root
     }
-    let mut v_faces: Vec<Vec<usize>> = vec![Vec::new(); nv];
+    // One edge map carries the face count per undirected edge and the first
+    // face that used it (count in the high 32 bits). Faces sharing an edge are
+    // unioned when the edge is seen again, so the same pass yields the
+    // boundary/non-manifold edge counts and the face-connected component
+    // count. This replaces a `HashMap<(i64,i64),usize>` plus a second
+    // `HashMap<...,Vec<usize>>` (one heap Vec per edge) with no change to the
+    // counts.
+    let mut edges: HashMap<u64, u64> = HashMap::with_capacity(nf * 3);
+    let mut parent: Vec<u32> = (0..nf as u32).collect();
     for (fi, t) in tris.iter().enumerate() {
-        let mut uv = vec![t[0], t[1], t[2]];
-        uv.sort_unstable();
-        uv.dedup();
-        for v in uv {
-            if v >= 0 && (v as usize) < nv {
-                v_faces[v as usize].push(fi);
+        let fi = fi as u32;
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let key = pack(a, b);
+            match edges.get_mut(&key) {
+                Some(v) => {
+                    let first = *v as u32;
+                    let count = (*v >> 32) as u32;
+                    let ra = find(&mut parent, first);
+                    let rb = find(&mut parent, fi);
+                    if ra != rb {
+                        parent[rb as usize] = ra;
+                    }
+                    *v = (((count + 1) as u64) << 32) | first as u64;
+                }
+                None => {
+                    edges.insert(key, (1u64 << 32) | fi as u64);
+                }
             }
         }
     }
-    let mut nm_vertices = 0usize;
+    let mut boundary = 0usize;
+    let mut nm_edges = 0usize;
+    let mut nm_mark = vec![false; nv];
+    for (&key, &v) in &edges {
+        let count = (v >> 32) as usize;
+        if count == 1 {
+            boundary += 1;
+        } else if count > 2 {
+            nm_edges += 1;
+            let lo = (key >> 32) as u32 as i64;
+            let hi = (key as u32) as i64;
+            if lo >= 0 && (lo as usize) < nv {
+                nm_mark[lo as usize] = true;
+            }
+            if hi >= 0 && (hi as usize) < nv {
+                nm_mark[hi as usize] = true;
+            }
+        }
+    }
+    // `components` means Python's `mesh_topology` value here: FACE-connected,
+    // not vertex-connected. See `count_face_components`.
+    let mut roots: Vec<u32> = (0..nf as u32).map(|i| find(&mut parent, i)).collect();
+    roots.sort_unstable();
+    roots.dedup();
+    let components = roots.len();
+    // CSR vertex -> incident faces, in ascending face order (same order the
+    // former `Vec<Vec<usize>>` produced).
+    let mut deg = vec![0u32; nv];
+    for t in tris {
+        let mut uv = [t[0], t[1], t[2]];
+        uv.sort_unstable();
+        let mut prev: Option<i64> = None;
+        for v in uv {
+            if Some(v) == prev {
+                continue;
+            }
+            prev = Some(v);
+            if v >= 0 && (v as usize) < nv {
+                deg[v as usize] += 1;
+            }
+        }
+    }
+    let mut vert_start = vec![0u32; nv + 1];
+    let mut acc = 0u32;
     for v in 0..nv {
-        if nm_verts.contains(&(v as i64)) {
+        vert_start[v] = acc;
+        acc += deg[v];
+    }
+    vert_start[nv] = acc;
+    let mut cursor = vert_start.clone();
+    let mut v_faces = vec![0u32; acc as usize];
+    for (fi, t) in tris.iter().enumerate() {
+        let mut uv = [t[0], t[1], t[2]];
+        uv.sort_unstable();
+        let mut prev: Option<i64> = None;
+        for v in uv {
+            if Some(v) == prev {
+                continue;
+            }
+            prev = Some(v);
+            if v >= 0 && (v as usize) < nv {
+                let slot = cursor[v as usize] as usize;
+                v_faces[slot] = fi as u32;
+                cursor[v as usize] += 1;
+            }
+        }
+    }
+    // Non-manifold vertices: the incident faces split into more than one fan
+    // when two faces around the vertex share a vertex other than itself.
+    // Small per-vertex pair buffers replace one HashMap per vertex.
+    let mut nm_vertices = 0usize;
+    let mut pairs: Vec<(i64, u32)> = Vec::new();
+    let mut local_parent: Vec<u32> = Vec::new();
+    for v in 0..nv {
+        if nm_mark[v] {
             continue;
         }
-        let inc = &v_faces[v];
-        if inc.len() <= 1 {
+        let start = vert_start[v] as usize;
+        let end = vert_start[v + 1] as usize;
+        let n_inc = end - start;
+        if n_inc <= 1 {
             continue;
         }
-        let n_inc = inc.len();
-        let mut parent: Vec<usize> = (0..n_inc).collect();
-        fn find(p: &mut [usize], mut x: usize) -> usize {
-            let mut root = x;
-            while p[root] != root {
-                root = p[root];
-            }
-            while p[x] != root {
-                let next = p[x];
-                p[x] = root;
-                x = next;
-            }
-            root
-        }
-        let mut by_other: HashMap<i64, Vec<usize>> = HashMap::new();
-        for (li, &fi) in inc.iter().enumerate() {
+        pairs.clear();
+        for li in 0..n_inc {
+            let fi = v_faces[start + li] as usize;
             for &w in &tris[fi] {
                 if w != v as i64 {
-                    by_other.entry(w).or_default().push(li);
+                    pairs.push((w, li as u32));
                 }
             }
         }
-        for list in by_other.values() {
-            if list.len() > 1 {
-                let r0 = find(&mut parent, list[0]);
-                for &k in &list[1..] {
-                    let rk = find(&mut parent, k);
-                    if rk != r0 {
-                        parent[rk] = r0;
-                    }
+        pairs.sort_unstable_by_key(|p| p.0);
+        local_parent.clear();
+        local_parent.extend(0..n_inc as u32);
+        let mut i = 0usize;
+        while i < pairs.len() {
+            let w = pairs[i].0;
+            let first = pairs[i].1;
+            i += 1;
+            while i < pairs.len() && pairs[i].0 == w {
+                let ra = find(&mut local_parent, first);
+                let rb = find(&mut local_parent, pairs[i].1);
+                if ra != rb {
+                    local_parent[rb as usize] = ra;
                 }
+                i += 1;
             }
         }
-        let mut roots: Vec<usize> = (0..n_inc).map(|i| find(&mut parent, i)).collect();
+        let mut roots: Vec<u32> = (0..n_inc as u32).map(|i| find(&mut local_parent, i)).collect();
         roots.sort_unstable();
         roots.dedup();
         if roots.len() > 1 {
             nm_vertices += 1;
         }
     }
-    // `components` means Python's `mesh_topology` value here: FACE-connected,
-    // not vertex-connected. See `count_face_components`.
-    let components = count_face_components(nf, tris);
     TopologySummary {
         boundary_edges: boundary,
         non_two_manifold_edges: nm_edges,

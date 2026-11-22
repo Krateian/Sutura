@@ -156,6 +156,7 @@ pub fn flap_fill_py<'py>(
         coplanar_cos,
         sliver_cleanup,
         work_budget,
+        si_time_budget: None,
     };
 
     let _guard = crate::cancel::SignalGuard::install();
@@ -201,6 +202,8 @@ pub fn flap_fill_py<'py>(
     rep.set_item("loops_skipped_work", report.loops_skipped_work)?;
     rep.set_item("work_units", report.work_units)?;
     rep.set_item("work_budget", prm.work_budget)?;
+    rep.set_item("si_deadline_hit", report.si_deadline_hit)?;
+    rep.set_item("si_deadline_s", report.si_deadline_s)?;
     rep.set_item("loops_skipped_flat", report.loops_skipped_flat)?;
     rep.set_item("loops_skipped_safety", report.loops_skipped_safety)?;
     if !report.safety_rejections.is_empty() {
