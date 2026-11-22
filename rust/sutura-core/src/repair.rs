@@ -3564,8 +3564,18 @@ fn repair_impl(
     let nm_before = before.non_two_manifold_edges;
     let before_verts = cur_v.len();
 
-    let stage1_volume_before_v = cur_v.clone();
-    let stage1_volume_before_t = cur_t.clone();
+    // Measure the pre-Stage-1 volume now and keep only the number: the full
+    // f64/i64 copy would otherwise stay alive through Stage 2 and the report.
+    let stage1_volume_before = {
+        let v32: Vec<[f32; 3]> = cur_v
+            .iter()
+            .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+            .collect();
+        sutura_geom::topology::mesh_geometric_measures_core(&v32, &cur_t)
+            .0
+            .unwrap_or(0.0)
+    };
+    let stage1_surface_before = py_surface_area(&cur_v, &cur_t);
 
     // --- Tamponade pre-pass ------------------------------------------------
     if cancel.is_cancelled() {
@@ -4641,10 +4651,14 @@ fn repair_impl(
     stats.insert("deep_repair".into(), Value::Object(deep));
 
     t_deep = t_deep_start.elapsed().as_secs_f64();
+    // The deep ladder is the last user of the original post-prepass mesh;
+    // release that full-size copy before the debris BVH and Stage 2.
+    drop(s1_in_v);
+    drop(s1_in_t);
 
     // Pinch split before Stage 2, matching the pipeline's P1a split.
-    let pinch_in_v = cur_v.clone();
-    let pinch_in_t = cur_t.clone();
+    let pinch_in_v = if trace.measure { cur_v.clone() } else { Vec::new() };
+    let pinch_in_t = if trace.measure { cur_t.clone() } else { Vec::new() };
     let pinch = split_pinched_vertices(&cur_v, &cur_t);
     // Match Python: only take the split result when the tier actually ran.
     // On the no-pinch path Python keeps the input arrays, while the core
@@ -4711,13 +4725,10 @@ fn repair_impl(
             .0
             .unwrap_or(0.0)
     };
-    stage1.insert(
-        "volume_before".into(),
-        Value::from(geom_volume(&stage1_volume_before_v, &stage1_volume_before_t)),
-    );
+    stage1.insert("volume_before".into(), Value::from(stage1_volume_before));
     stage1.insert("volume_after".into(), Value::from(geom_volume(&cur_v, &cur_t)));
     {
-        let vb = geom_volume(&stage1_volume_before_v, &stage1_volume_before_t);
+        let vb = stage1_volume_before;
         let va = geom_volume(&cur_v, &cur_t);
         stage1.insert("volume_change_percent".into(), Value::Null);
         if vb != 0.0 {
@@ -4729,7 +4740,7 @@ fn repair_impl(
         }
     }
     {
-        let sa_before = py_surface_area(&stage1_volume_before_v, &stage1_volume_before_t);
+        let sa_before = stage1_surface_before;
         let sa_after = py_surface_area(&cur_v, &cur_t);
         let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
         stage1.insert("surface_area_before".into(), Value::from(round3(sa_before)));
@@ -4837,7 +4848,9 @@ fn repair_impl(
     );
     stats.insert("stage1".into(), Value::Object(stage1));
     if allow_si_escalation && si_escalation_allowed(opts) {
-        stage1_snapshot = Some((py_v.clone(), py_t.clone()));
+        // py_v/py_t are not used after this point; move them into the
+        // snapshot instead of holding a second pair through the report.
+        stage1_snapshot = Some((std::mem::take(&mut py_v), std::mem::take(&mut py_t)));
     }
 
     // Python `_deep_repair_offer`: name the final tier and list the tiers a
@@ -4951,8 +4964,8 @@ fn repair_impl(
         return cancelled();
     }
     emit_stage(sink, 6, "reload weld");
-    let pw_in_v = cur_v.clone();
-    let pw_in_t = cur_t.clone();
+    let pw_in_v = if trace.measure { cur_v.clone() } else { Vec::new() };
+    let pw_in_t = if trace.measure { cur_t.clone() } else { Vec::new() };
     crate::engines::run_and_replace(
         &selected_engines,
         "after_stage2",

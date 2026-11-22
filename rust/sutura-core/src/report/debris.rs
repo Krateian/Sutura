@@ -344,6 +344,8 @@ pub fn possible_debris(
     } else {
         Some(MeshBvh::from_arrays(&main_v, &main_t))
     };
+    drop(main_v);
+    drop(main_t);
     let mut flagged = Vec::new();
     for c in 0..tab.n_comp {
         if c == tab.largest || tab.faces[c] < min_faces {

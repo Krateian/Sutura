@@ -43,7 +43,7 @@ pub fn weld_reload_equivalent(
     let ret = out.clone();
     WELD_CACHE.with(|c| {
         let mut c = c.borrow_mut();
-        if c.len() >= 2 {
+        if c.len() >= 1 {
             c.remove(0);
         }
         c.push((key, out));
