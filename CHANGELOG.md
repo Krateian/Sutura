@@ -11,13 +11,32 @@ unchanged.
 
 - **A repair no longer loses whole bodies.** The coaptation step could accept a
   result that kept only part of the model. It now rejects any result that drops a
-  body or changes the overall volume by more than 1 %.
-- **Large meshes no longer time out during hole filling.** The Flap hole-filling
-  safety check now looks only at the faces that can actually meet, so it stays
-  bounded on big models instead of running for minutes.
-- **The report is faster to produce.** On large meshes the report no longer
-  samples every input face, which removes a noticeable pause at the end of a
-  repair.
+  body or changes the overall volume by more than 1 %. The report still shows how
+  far the surface moved, but only body loss and volume decide whether the result
+  is kept.
+- **The report now describes the file you get.** When the final
+  self-intersection cleanup runs, the report used to keep the numbers from the
+  model before that cleanup. It now recalculates the summary from the saved
+  model, so the self-intersection count, holes, parts, print advice, category and
+  history all match the file.
+- **Hole filling no longer depends on machine speed.** The Flap hole-filling
+  safety check is limited by a fixed amount of work, so it stays bounded on big
+  models. The separate time limit could cut the cleanup short on a slower
+  machine and change the result; it is now off by default and only enabled if
+  you set `SUTURA_FLAP_SI_BUDGET`, so the same model produces the same file on a
+  fast laptop and a slow build machine.
+- **The text report shows the final cleanup.** `--human` now prints an
+  “SI excision (final mesh)” line with whether the cleanup ran, its result, and
+  the self-intersection count before and after, so you can see that the final
+  step happened. `--trace` records the same step.
+- **Large-mesh report numbers say when they are sampled.** On large meshes the
+  interior-wall measurement looks at a sample of the input faces instead of every
+  face, which removes a noticeable pause at the end of a repair. The reported
+  counts and areas are the sampled values, and the note says so instead of
+  presenting them as exact totals.
+- **Very large meshes no longer time out.** Less memory is held at once and the
+  topology and report steps are faster, so a 5-million-triangle scan now finishes
+  well within the limit where 0.9.10 ran out of time.
 - **More meshes come out without self-intersections.** A final cleanup pass can
   now remove small self-intersections left by the normal stages. It is kept only
   when it lowers the self-intersection count and leaves holes, non-manifold
