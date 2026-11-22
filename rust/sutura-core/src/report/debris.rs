@@ -225,6 +225,35 @@ fn subset(
     (mv, mt)
 }
 
+fn distance_to_bvh(
+    verts: &[[f64; 3]],
+    query_vids: &[i64],
+    bvh: &MeshBvh,
+) -> Option<f64> {
+    if query_vids.is_empty() {
+        return None;
+    }
+    let mut pts: Vec<[f64; 3]> = query_vids.iter().map(|&i| verts[i as usize]).collect();
+    if pts.len() > MAX_DISTANCE_SAMPLES {
+        let last = pts.len() - 1;
+        pts = (0..MAX_DISTANCE_SAMPLES)
+            .map(|i| {
+                let t = i as f64 * last as f64 / (MAX_DISTANCE_SAMPLES - 1) as f64;
+                pts[t.floor() as usize]
+            })
+            .collect();
+    }
+    let mut best = f64::INFINITY;
+    for p in pts {
+        let (_, d, _) = bvh.closest_point(p);
+        best = best.min(d);
+    }
+    if !best.is_finite() {
+        return None;
+    }
+    Some(round_to(best, 4))
+}
+
 fn distance_to_main(
     verts: &[[f64; 3]],
     tris: &[[i32; 3]],
@@ -238,26 +267,8 @@ fn distance_to_main(
     if mt.is_empty() {
         return None;
     }
-    let mut pts: Vec<[f64; 3]> = query_vids.iter().map(|&i| verts[i as usize]).collect();
-    if pts.len() > MAX_DISTANCE_SAMPLES {
-        let last = pts.len() - 1;
-        pts = (0..MAX_DISTANCE_SAMPLES)
-            .map(|i| {
-                let t = i as f64 * last as f64 / (MAX_DISTANCE_SAMPLES - 1) as f64;
-                pts[t.floor() as usize]
-            })
-            .collect();
-    }
     let bvh = MeshBvh::from_arrays(&mv, &mt);
-    let mut best = f64::INFINITY;
-    for p in pts {
-        let (_, d, _) = bvh.closest_point(p);
-        best = best.min(d);
-    }
-    if !best.is_finite() {
-        return None;
-    }
-    Some(round_to(best, 4))
+    distance_to_bvh(verts, query_vids, &bvh)
 }
 
 pub fn removed_small_parts(
@@ -325,6 +336,14 @@ pub fn possible_debris(
     let zero_vol = ZERO_VOL_REL * gdiag.powi(3);
     let degenerate = DEGENERATE_REL * gdiag.powi(2);
     let main_faces = comp_faces(&tab.labels, tab.largest);
+    // The main component is the same for every flagged part; build its BVH
+    // once instead of once per part.
+    let (main_v, main_t) = subset(verts, tris, &main_faces);
+    let main_bvh = if main_t.is_empty() {
+        None
+    } else {
+        Some(MeshBvh::from_arrays(&main_v, &main_t))
+    };
     let mut flagged = Vec::new();
     for c in 0..tab.n_comp {
         if c == tab.largest || tab.faces[c] < min_faces {
@@ -347,7 +366,9 @@ pub fn possible_debris(
             faces: tab.faces[c],
             volume_pct: round_to(100.0 * tab.vols[c].abs() / max_vol, 4),
             size_pct: round_to(100.0 * size / gdiag, 3),
-            distance_mm: distance_to_main(verts, tris, &vids, &main_faces),
+            distance_mm: main_bvh
+                .as_ref()
+                .and_then(|bvh| distance_to_bvh(verts, &vids, bvh)),
         });
     }
     if flagged.is_empty() {
