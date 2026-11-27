@@ -357,7 +357,7 @@ pub enum ProfileAction {
 /// `CARGO_PKG_VERSION` is the crate's own 0.1.0 placeholder and showed as
 /// "v0.1.0" in the window; a user compares versions with the release they
 /// downloaded, and this is that number (`sutura/repair.py:171`).
-pub(crate) const SUTURA_VERSION: &str = "0.9.10";
+pub(crate) const SUTURA_VERSION: &str = "0.9.11";
 
 pub(crate) const COLOR_ERROR: egui::Color32 = egui::Color32::from_rgb(0xff, 0x5b, 0x5b);
 pub(crate) const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(0xf5, 0x9e, 0x0b);

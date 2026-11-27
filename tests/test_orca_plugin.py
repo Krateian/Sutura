@@ -1148,6 +1148,7 @@ def test_register_capabilities_declares_cli_fs_read():
 def test_register_capabilities_skips_missing_cli():
     mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
     mod._DEFAULT_CLI = '/nonexistent/definitely-not/sutura'
+    mod._MAC_APP_CLIS = ()
     old_which = mod.shutil.which
     old = os.environ.pop('SUTURA_CLI', None)
     calls = []
@@ -1354,3 +1355,27 @@ if __name__ == '__main__':
             fn()
             print('ok  %s' % name)
     print('orca plugin stub tests passed')
+
+
+def test_resolve_cli_finds_macos_app_bundle():
+    mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    app_dir = tempfile.mkdtemp()
+    app_cli = os.path.join(app_dir, 'sutura')
+    with open(app_cli, 'w') as fh:
+        fh.write('#!/bin/sh\necho "sutura 0.0.0"\n')
+    os.chmod(app_cli, 0o755)
+    mod._DEFAULT_CLI = '/nonexistent/definitely-not/sutura'
+    mod._MAC_APP_CLIS = ('/nonexistent/app/sutura', app_cli)
+    old_which = mod.shutil.which
+    old = os.environ.pop('SUTURA_CLI', None)
+    mod.shutil.which = lambda name: None
+    try:
+        path, found, _version = mod._resolve_cli({})
+        # an explicit setting still wins over the app bundle
+        explicit, explicit_found, _ = mod._resolve_cli({'sutura_cli': '/nonexistent/explicit'})
+    finally:
+        mod.shutil.which = old_which
+        if old is not None:
+            os.environ['SUTURA_CLI'] = old
+    assert (path, found) == (app_cli, True)
+    assert (explicit, explicit_found) == ('/nonexistent/explicit', False)
