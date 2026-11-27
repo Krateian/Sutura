@@ -79,7 +79,7 @@ pub fn analysis_path(mesh_id: &str) -> PathBuf {
 /// the same value Python writes — a differing value would invalidate every
 /// shared entry on each Rust release.
 pub fn app_version() -> &'static str {
-    option_env!("SUTURA_PRODUCT_VERSION").unwrap_or("0.9.10")
+    option_env!("SUTURA_PRODUCT_VERSION").unwrap_or("0.9.11")
 }
 
 /// Whether caching is enabled (`chart.is_cache_enabled`).

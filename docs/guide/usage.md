@@ -697,7 +697,10 @@ Install (OrcaSlicer 2.5.0+):
 
    macOS: use `~/Library/Application Support/OrcaSlicer/orca_plugins/` as the
    parent. The file name is a naming artifact — the same single file runs on
-   both Linux and macOS.
+   both Linux and macOS. On OrcaCloud it is also published as
+   `sutura_repair_macosx.py`, so macOS users can install it from the Plugins
+   dialog too. On macOS the plugin finds the CLI inside `Sutura.app` in
+   `~/Applications` or `/Applications` automatically.
 3. Enable the plugin in the OrcaSlicer **Plugins** dialog, then run it to open
    the panel.
 

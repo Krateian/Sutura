@@ -38,9 +38,16 @@ guaranteed-working product, and report issues (see "Feedback" below).
 - **Verified reload.** Linux reload is verified with OrcaSlicer 2.5.1 Flatpak on
   SteamOS (`5d53f74`), and the macOS reload is verified on 2.5.1.
 
-**File name.** The single file is `sutura_repair_linux_x86_64.py`. That name
-reflects the OrcaCloud/plugin naming convention, not a platform restriction —
-the same file runs on both Linux and macOS.
+**File name.** The repo keeps one source file, `sutura_repair_linux_x86_64.py`,
+and it runs on both Linux and macOS. OrcaCloud reads the supported OS from the
+file-name suffix, so the release workflow also uploads the same file as
+`sutura_repair_macosx.py`; since 0.9.11 the OrcaCloud listing therefore offers
+the plugin on macOS (Apple Silicon and Intel) as well as Linux x86_64.
+
+**Finding the CLI on macOS.** Besides `~/.local/bin/sutura` and `PATH`, the
+plugin also finds the CLI inside `Sutura.app` in `~/Applications` or
+`/Applications`, so a plain dmg install (drag Sutura.app to Applications) works
+without any setting.
 
 ## The dock panel
 

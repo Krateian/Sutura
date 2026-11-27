@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## [0.9.11] - 2026-11-27
+
+- **OrcaSlicer plugin on macOS.** OrcaCloud decides which systems a plugin is
+  offered on from the file name, and the plugin was only listed for Linux. It is
+  now also published as `sutura_repair_macosx.py`, so it can be installed from
+  OrcaSlicer's Plugins dialog on Macs with Apple Silicon or Intel. The plugin
+  code itself is unchanged and already worked on macOS.
+- **The plugin finds Sutura.app on macOS.** If Sutura was installed by dragging
+  Sutura.app from the dmg into Applications (or `~/Applications`), the plugin
+  now finds the command-line tool inside the app on its own; no `sutura_cli`
+  setting is needed.
+
 ## [0.9.10] - 2026-11-20
 
 ### Fixes in the re-issued 0.9.10

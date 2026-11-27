@@ -6,7 +6,7 @@
 # name = "Sutura Repair"
 # description = "Sutura mesh repair in an OrcaSlicer dock panel: repairs the model parts on the plate with the Sutura CLI and loads the repaired copy back as a new object."
 # author = "Krateian"
-# version = "0.9.10"
+# version = "0.9.11"
 # ///
 """Sutura Repair - OrcaSlicer script plugin (v2, dock panel).
 
@@ -93,6 +93,13 @@ _INTENSITIES = ('quick', 'balanced', 'thorough', 'extreme')
 
 # The default Sutura CLI. Overridable via SUTURA_CLI or the plugin's sutura_cli setting.
 _DEFAULT_CLI = os.path.expanduser('~/.local/bin/sutura')
+
+# macOS: the CLI inside the app bundle from the release dmg, for installs that
+# only dragged Sutura.app to Applications (no ~/.local/bin launcher).
+_MAC_APP_CLIS = (
+    os.path.expanduser('~/Applications/Sutura.app/Contents/MacOS/sutura'),
+    '/Applications/Sutura.app/Contents/MacOS/sutura',
+) if sys.platform == 'darwin' else ()
 
 # OrcaSlicer binary used for --single-instance (Linux). macOS uses the native
 # bundle-id `open -b com.orcaslicer.OrcaSlicer` instead. Overridable via ORCA_BIN.
@@ -1109,12 +1116,17 @@ def _resolve_cli(cfg=None):
     """Resolve the Sutura CLI: (path, found, version).
 
     Precedence: the SUTURA_CLI environment variable, then the plugin's
-    ``sutura_cli`` setting, then ``~/.local/bin/sutura``, then PATH."""
+    ``sutura_cli`` setting, then ``~/.local/bin/sutura``, then (macOS) the CLI
+    inside Sutura.app in ~/Applications or /Applications, then PATH."""
     cfg = cfg or {}
     env = os.environ.get('SUTURA_CLI')
     path = env or (cfg.get('sutura_cli') or '') or _DEFAULT_CLI
     if path and os.path.exists(path):
         return path, True, _cli_version(path)
+    if not env and not cfg.get('sutura_cli'):
+        for app_cli in _MAC_APP_CLIS:
+            if os.path.exists(app_cli):
+                return app_cli, True, _cli_version(app_cli)
     found = shutil.which('sutura')
     if found:
         return found, True, _cli_version(found)
@@ -2022,7 +2034,8 @@ class SuturaRepairPlugin(orca.base):
         # the call site. CLI repair/analyze spawns are NOT declared: they happen
         # inside plugin-created worker threads (empty audit context, unaudited)
         # and carry unique staging paths that cannot be a stable target.
-        candidates = [os.environ.get('SUTURA_CLI'), _DEFAULT_CLI, shutil.which('sutura')]
+        candidates = [os.environ.get('SUTURA_CLI'), _DEFAULT_CLI, *_MAC_APP_CLIS,
+                      shutil.which('sutura')]
         fs_read = [p for p in dict.fromkeys(candidates) if p and os.path.exists(p)]
         process = [str(_PGREP_CMD)]
         reveal = _reveal_command()

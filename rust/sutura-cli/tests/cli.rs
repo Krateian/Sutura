@@ -53,7 +53,7 @@ fn version_prints_the_product_version() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "sutura 0.9.10\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "sutura 0.9.11\n");
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn long_flag_prefixes_resolve_like_argparse() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "sutura 0.9.10\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "sutura 0.9.11\n");
 }
 
 fn cube_stl() -> String {

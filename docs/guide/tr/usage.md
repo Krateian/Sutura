@@ -700,7 +700,10 @@ Kurulum (OrcaSlicer 2.5.0+):
 
    macOS: üst dizin olarak `~/Library/Application Support/OrcaSlicer/orca_plugins/`
    kullanın. Dosya adı bir adlandırma artığıdır — aynı tek dosya hem Linux'ta
-   hem macOS'ta çalışır.
+   hem macOS'ta çalışır. OrcaCloud'da ayrıca `sutura_repair_macosx.py` adıyla
+   yayınlanır, böylece macOS kullanıcıları da Plugins diyaloğundan kurabilir.
+   macOS'ta eklenti CLI'yi `~/Applications` veya `/Applications` içindeki
+   `Sutura.app` içinde kendiliğinden bulur.
 3. Eklentiyi OrcaSlicer **Plugins** diyaloğunda etkinleştirin, ardından paneli
    açmak için çalıştırın.
 

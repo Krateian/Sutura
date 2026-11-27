@@ -58,7 +58,7 @@ pub fn backup_root() -> PathBuf {
 /// The Rust binaries take it from `sutura/repair.py` at build time; this reads
 /// the same value when the caller has not supplied one.
 pub fn current_version() -> String {
-    std::env::var("SUTURA_PRODUCT_VERSION").unwrap_or_else(|_| "0.9.10".to_string())
+    std::env::var("SUTURA_PRODUCT_VERSION").unwrap_or_else(|_| "0.9.11".to_string())
 }
 
 /// Names inside `app_dir()` the updater must never touch.

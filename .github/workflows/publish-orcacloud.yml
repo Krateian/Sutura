@@ -19,8 +19,12 @@ permissions:
   contents: read
 
 env:
-  # Space-separated globs matching the plugin files to upload (.whl / .py).
-  PLUGIN_FILES: "orcaslicer-plugin/sutura_repair_linux_x86_64.py"
+  # The single plugin source file. OrcaCloud reads the supported OS from the
+  # file-name suffix, so the same file is uploaded under a Linux and a macOS
+  # name (copied at publish time; the repo keeps one source file).
+  PLUGIN_SRC: "orcaslicer-plugin/sutura_repair_linux_x86_64.py"
+  # Space-separated paths of the files to upload (.whl / .py).
+  PLUGIN_FILES: "orcaslicer-plugin/sutura_repair_linux_x86_64.py dist-orca/sutura_repair_macosx.py"
   TAG: ${{ github.event.release.tag_name }}
 
 jobs:
@@ -42,13 +46,21 @@ jobs:
           if [ -z "$prev_tag" ]; then
             echo "No earlier tag found -- publishing unconditionally."
             echo "changed=true" >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "$prev_tag" "$current_tag" -- $PLUGIN_FILES; then
+          elif git diff --quiet "$prev_tag" "$current_tag" -- $PLUGIN_SRC; then
             echo "Plugin files unchanged since $prev_tag -- skipping OrcaCloud publish for $current_tag."
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "Plugin files changed since $prev_tag -- publishing."
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Stage the macOS-named copy of the plugin
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p dist-orca
+          cp "$PLUGIN_SRC" dist-orca/sutura_repair_macosx.py
+          cmp "$PLUGIN_SRC" dist-orca/sutura_repair_macosx.py
 
       - name: Publish release to OrcaCloud
         if: steps.check.outputs.changed == 'true'
